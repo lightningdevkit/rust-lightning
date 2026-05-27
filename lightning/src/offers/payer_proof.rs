@@ -222,9 +222,13 @@ impl From<DecodeError> for PayerProofError {
 pub struct PayerProof {
 	bytes: Vec<u8>,
 	contents: PayerProofContents,
+	proof_signature: Signature,
 	merkle_root: sha256::Hash,
 }
 
+/// The contents of a [`PayerProof`] -- everything shared between a signed
+/// [`PayerProof`] and its [`UnsignedPayerProof`] sibling, with the exception
+/// of the `proof_signature` which is only available after signing.
 #[derive(Clone, Debug)]
 struct PayerProofContents {
 	payer_signing_pubkey: PublicKey,
@@ -232,7 +236,6 @@ struct PayerProofContents {
 	issuer_signing_pubkey: PublicKey,
 	preimage: PaymentPreimage,
 	invoice_signature: Signature,
-	proof_signature: Signature,
 	proof_note: Option<String>,
 	disclosed_fields: DisclosedFields,
 }
@@ -297,7 +300,7 @@ impl<'a> PayerProofBuilder<'a, ExplicitSigningPubkey> {
 	}
 
 	/// Builds an [`UnsignedPayerProof`] that can be signed with [`UnsignedPayerProof::sign`].
-	pub fn build(self) -> Result<UnsignedPayerProof<'a>, PayerProofError> {
+	pub fn build(self) -> Result<UnsignedPayerProof, PayerProofError> {
 		self.build_unsigned()
 	}
 }
@@ -397,7 +400,7 @@ impl<'a, S: SigningPubkeyStrategy> PayerProofBuilder<'a, S> {
 		self
 	}
 
-	fn build_unsigned(self) -> Result<UnsignedPayerProof<'a>, PayerProofError> {
+	fn build_unsigned(self) -> Result<UnsignedPayerProof, PayerProofError> {
 		let invoice_bytes = self.invoice.invoice_bytes();
 		let disclosed_fields =
 			DisclosedFields::from_records(TlvStream::new(invoice_bytes).filter(|r| {
@@ -409,33 +412,17 @@ impl<'a, S: SigningPubkeyStrategy> PayerProofBuilder<'a, S> {
 			&self.included_types,
 		)?;
 
-		let invoice_signature = self.invoice.signature();
-
-		// Construct a partial UnsignedPayerProof so we can call its serializer.
-		// `tagged_hash` is filled in below once we have the proof bytes.
-		let mut unsigned = UnsignedPayerProof {
-			invoice_signature,
-			preimage: self.preimage,
+		let contents = PayerProofContents {
 			payer_signing_pubkey: self.invoice.payer_signing_pubkey(),
 			payment_hash: self.invoice.payment_hash().clone(),
 			issuer_signing_pubkey: self.invoice.signing_pubkey(),
-			invoice_bytes,
-			included_types: self.included_types,
-			disclosed_fields,
-			disclosure,
+			preimage: self.preimage,
+			invoice_signature: self.invoice.signature(),
 			proof_note: self.proof_note,
-			tagged_hash: TaggedHash::from_merkle_root(
-				PROOF_SIGNATURE_TAG,
-				sha256::Hash::all_zeros(),
-			),
+			disclosed_fields,
 		};
 
-		// Serialize the proof bytes excluding the `payer_signature` TLV. The
-		// tagged hash for the payer signature is computed over those bytes.
-		let bytes_for_signing = unsigned.serialize_payer_proof(None);
-		unsigned.tagged_hash = proof_signature_hash(&bytes_for_signing);
-
-		Ok(unsigned)
+		Ok(UnsignedPayerProof::new(invoice_bytes, &self.included_types, contents, disclosure))
 	}
 }
 
@@ -446,21 +433,28 @@ fn proof_signature_hash(bytes: &[u8]) -> TaggedHash {
 }
 
 /// An unsigned [`PayerProof`] ready for signing.
-pub struct UnsignedPayerProof<'a> {
-	invoice_signature: Signature,
-	preimage: PaymentPreimage,
-	payer_signing_pubkey: PublicKey,
-	payment_hash: PaymentHash,
-	issuer_signing_pubkey: PublicKey,
-	invoice_bytes: &'a [u8],
-	included_types: BTreeSet<u64>,
-	disclosed_fields: DisclosedFields,
-	disclosure: SelectiveDisclosure,
-	proof_note: Option<String>,
+///
+/// The serialised proof is stored as two byte buffers split at the
+/// `proof_signature` TLV insertion point. [`Self::sign`] writes the freshly
+/// computed `proof_signature` TLV between them to produce the final
+/// [`PayerProof`] bytes, so no second serialisation pass is needed. The
+/// [`TaggedHash`] is computed up front over the same concatenated stream.
+pub struct UnsignedPayerProof {
+	/// Bytes of the included invoice records up to and including the
+	/// `invoice_signature` TLV (`PAYER_PROOF_ISSUER_SIGNATURE_TYPE`).
+	bytes_before_proof_signature: Vec<u8>,
+	/// Bytes of the payer-proof data TLVs followed by any disclosed
+	/// experimental invoice TLVs. Together with the bytes above, these form
+	/// the merkle-root input the `proof_signature` is computed over.
+	bytes_after_proof_signature: Vec<u8>,
+	contents: PayerProofContents,
+	/// Merkle root of the underlying invoice, surfaced on the resulting
+	/// [`PayerProof`].
+	merkle_root: sha256::Hash,
 	tagged_hash: TaggedHash,
 }
 
-impl AsRef<TaggedHash> for UnsignedPayerProof<'_> {
+impl AsRef<TaggedHash> for UnsignedPayerProof {
 	fn as_ref(&self) -> &TaggedHash {
 		&self.tagged_hash
 	}
@@ -481,7 +475,7 @@ where
 	}
 }
 
-impl<F> merkle::SignFn<UnsignedPayerProof<'_>> for F
+impl<F> merkle::SignFn<UnsignedPayerProof> for F
 where
 	F: SignPayerProofFn,
 {
@@ -550,76 +544,106 @@ impl CursorReadable for FullPayerProofTlvStream {
 	}
 }
 
-impl UnsignedPayerProof<'_> {
+impl UnsignedPayerProof {
+	/// Build an `UnsignedPayerProof` from the underlying invoice bytes, the
+	/// included TLV types, the proof contents (everything except
+	/// `proof_signature`), and the precomputed selective-disclosure data.
+	///
+	/// This performs the byte-level serialization split at the
+	/// `proof_signature` TLV insertion point and computes the tagged hash,
+	/// so callers never see a partially-initialised struct.
+	fn new(
+		invoice_bytes: &[u8], included_types: &BTreeSet<u64>, contents: PayerProofContents,
+		disclosure: SelectiveDisclosure,
+	) -> Self {
+		// Pre-`proof_signature` bytes hold the included invoice records plus the
+		// `invoice_signature` TLV; post-`proof_signature` bytes hold the
+		// payer-proof data TLVs plus any disclosed experimental invoice TLVs.
+		// Data TLVs always carry the preimage and the merkle proof, so the
+		// post-signature buffer is typically the larger of the two.
+		const BYTES_BEFORE_PROOF_SIGNATURE_ALLOCATION_SIZE: usize = 256;
+		const BYTES_AFTER_PROOF_SIGNATURE_ALLOCATION_SIZE: usize = 512;
+		let mut bytes_before_proof_signature =
+			Vec::with_capacity(BYTES_BEFORE_PROOF_SIGNATURE_ALLOCATION_SIZE);
+		let mut bytes_after_proof_signature =
+			Vec::with_capacity(BYTES_AFTER_PROOF_SIGNATURE_ALLOCATION_SIZE);
+
+		// Emit included invoice records below the signature range, then the
+		// `invoice_signature` TLV. The `proof_signature` TLV is inserted at
+		// sign time between the buffer above and the buffer assembled below.
+		for record in TlvStream::new(invoice_bytes)
+			.range(0..PAYER_PROOF_ISSUER_SIGNATURE_TYPE)
+			.filter(|r| included_types.contains(&r.r#type))
+		{
+			bytes_before_proof_signature.extend_from_slice(record.record_bytes);
+		}
+		let invoice_signature_tlv = PayerProofSignatureTlvStreamRef {
+			invoice_signature: Some(&contents.invoice_signature),
+			proof_signature: None,
+		};
+		invoice_signature_tlv
+			.write(&mut bytes_before_proof_signature)
+			.expect("Vec write should not fail");
+
+		// Post-signature half: payer-proof data TLVs, then disclosed
+		// experimental invoice records.
+		let proof_omitted_markers = (!disclosure.omitted_markers.is_empty())
+			.then(|| disclosure.omitted_markers.iter().copied().map(BigSize).collect::<Vec<_>>());
+		let data = PayerProofDataTlvStreamRef {
+			proof_preimage: Some(&contents.preimage),
+			proof_omitted_markers: proof_omitted_markers.as_ref(),
+			proof_missing_hashes: (!disclosure.missing_hashes.is_empty())
+				.then_some(&disclosure.missing_hashes),
+			proof_leaf_hashes: (!disclosure.leaf_hashes.is_empty())
+				.then_some(&disclosure.leaf_hashes),
+			proof_note: contents.proof_note.as_ref(),
+		};
+		data.write(&mut bytes_after_proof_signature).expect("Vec write should not fail");
+		for record in TlvStream::new(invoice_bytes)
+			.range(EXPERIMENTAL_OFFER_TYPES.start..)
+			.filter(|r| included_types.contains(&r.r#type))
+		{
+			bytes_after_proof_signature.extend_from_slice(record.record_bytes);
+		}
+
+		// The tagged hash for `proof_signature` is the merkle root over the
+		// full proof TLV stream excluding the `proof_signature` TLV itself.
+		// Iterate the two halves in sequence so no third buffer is allocated.
+		let tlv_stream = TlvStream::new(&bytes_before_proof_signature)
+			.chain(TlvStream::new(&bytes_after_proof_signature));
+		let tagged_hash = TaggedHash::from_tlv_stream(PROOF_SIGNATURE_TAG, tlv_stream);
+
+		Self {
+			bytes_before_proof_signature,
+			bytes_after_proof_signature,
+			contents,
+			merkle_root: disclosure.merkle_root,
+			tagged_hash,
+		}
+	}
+
 	/// Signs the [`UnsignedPayerProof`] using the given function.
-	pub fn sign<F: SignPayerProofFn>(mut self, sign: F) -> Result<PayerProof, SignError> {
-		let pubkey = self.payer_signing_pubkey;
+	pub fn sign<F: SignPayerProofFn>(self, sign: F) -> Result<PayerProof, SignError> {
+		let pubkey = self.contents.payer_signing_pubkey;
 		let proof_signature = merkle::sign_message(sign, &self, pubkey)?;
 
-		let bytes = self.serialize_payer_proof(Some(&proof_signature));
+		// Assemble the final proof bytes by inserting the proof_signature TLV
+		// between the pre- and post-signature halves we serialised at build
+		// time.
+		let mut bytes = self.bytes_before_proof_signature;
+		let proof_signature_tlv = PayerProofSignatureTlvStreamRef {
+			invoice_signature: None,
+			proof_signature: Some(&proof_signature),
+		};
+		proof_signature_tlv.write(&mut bytes).expect("Vec write should not fail");
+		bytes.extend_from_slice(&self.bytes_after_proof_signature);
 
 		Ok(PayerProof {
 			bytes,
-			contents: PayerProofContents {
-				payer_signing_pubkey: self.payer_signing_pubkey,
-				payment_hash: self.payment_hash,
-				issuer_signing_pubkey: self.issuer_signing_pubkey,
-				preimage: self.preimage,
-				invoice_signature: self.invoice_signature,
-				proof_signature,
-				proof_note: self.proof_note.take(),
-				disclosed_fields: self.disclosed_fields,
-			},
-			merkle_root: self.disclosure.merkle_root,
-		})
-	}
-
-	/// Serialize the proof. If `proof_signature` is `None`, the proof-signature
-	/// TLV is omitted from the output, producing the bytes that the merkle
-	/// root for `proof_signature` is computed over.
-	fn serialize_payer_proof(&self, proof_signature: Option<&Signature>) -> Vec<u8> {
-		const PAYER_PROOF_ALLOCATION_SIZE: usize = 512;
-		let mut bytes = Vec::with_capacity(PAYER_PROOF_ALLOCATION_SIZE);
-
-		// Preserve TLV ordering by emitting included invoice records below the
-		// payer-proof range first, then payer-proof TLVs, then any disclosed
-		// experimental invoice records above the reserved range.
-		for record in TlvStream::new(&self.invoice_bytes)
-			.range(0..PAYER_PROOF_ISSUER_SIGNATURE_TYPE)
-			.filter(|r| self.included_types.contains(&r.r#type))
-		{
-			bytes.extend_from_slice(record.record_bytes);
-		}
-
-		// Signature TLVs (240, 241) come first, then data TLVs (1001..=1005).
-		let signatures = PayerProofSignatureTlvStreamRef {
-			invoice_signature: Some(&self.invoice_signature),
+			contents: self.contents,
 			proof_signature,
-		};
-		signatures.write(&mut bytes).expect("Vec write should not fail");
-
-		let proof_omitted_markers = (!self.disclosure.omitted_markers.is_empty()).then(|| {
-			self.disclosure.omitted_markers.iter().copied().map(BigSize).collect::<Vec<_>>()
-		});
-		let data = PayerProofDataTlvStreamRef {
-			proof_preimage: Some(&self.preimage),
-			proof_omitted_markers: proof_omitted_markers.as_ref(),
-			proof_missing_hashes: (!self.disclosure.missing_hashes.is_empty())
-				.then_some(&self.disclosure.missing_hashes),
-			proof_leaf_hashes: (!self.disclosure.leaf_hashes.is_empty())
-				.then_some(&self.disclosure.leaf_hashes),
-			proof_note: self.proof_note.as_ref(),
-		};
-		data.write(&mut bytes).expect("Vec write should not fail");
-
-		for record in TlvStream::new(&self.invoice_bytes)
-			.range(EXPERIMENTAL_OFFER_TYPES.start..)
-			.filter(|r| self.included_types.contains(&r.r#type))
-		{
-			bytes.extend_from_slice(record.record_bytes);
-		}
-
-		bytes
+			merkle_root: self.merkle_root,
+		})
 	}
 }
 
@@ -651,7 +675,7 @@ impl PayerProof {
 
 	/// The payer's schnorr signature proving who authorized the payment.
 	pub fn proof_signature(&self) -> Signature {
-		self.contents.proof_signature
+		self.proof_signature
 	}
 
 	/// The disclosed offer description, if included in the proof.
@@ -750,6 +774,7 @@ impl DisclosedFields {
 
 struct ParsedPayerProofFields {
 	contents: PayerProofContents,
+	proof_signature: Signature,
 	omitted_markers: Vec<u64>,
 	missing_hashes: Vec<sha256::Hash>,
 	leaf_hashes: Vec<sha256::Hash>,
@@ -804,7 +829,6 @@ impl TryFrom<FullPayerProofTlvStream> for ParsedPayerProofFields {
 				issuer_signing_pubkey,
 				preimage,
 				invoice_signature,
-				proof_signature,
 				proof_note,
 				disclosed_fields: DisclosedFields {
 					offer_description: description,
@@ -813,6 +837,7 @@ impl TryFrom<FullPayerProofTlvStream> for ParsedPayerProofFields {
 					invoice_created_at: created_at.map(Duration::from_secs),
 				},
 			},
+			proof_signature,
 			omitted_markers: proof_omitted_markers
 				.unwrap_or_default()
 				.into_iter()
@@ -839,8 +864,13 @@ impl TryFrom<Vec<u8>> for PayerProof {
 	fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
 		let parsed_proof = ParsedMessage::<FullPayerProofTlvStream>::try_from(bytes)?;
 		let ParsedMessage { bytes, tlv_stream } = parsed_proof;
-		let ParsedPayerProofFields { contents, omitted_markers, missing_hashes, leaf_hashes } =
-			ParsedPayerProofFields::try_from(tlv_stream)?;
+		let ParsedPayerProofFields {
+			contents,
+			proof_signature,
+			omitted_markers,
+			missing_hashes,
+			leaf_hashes,
+		} = ParsedPayerProofFields::try_from(tlv_stream)?;
 		let included_records: Vec<_> = tlv_stream_iter(&bytes).collect();
 		let included_types = included_records.iter().map(|record| record.r#type).collect();
 
@@ -879,13 +909,13 @@ impl TryFrom<Vec<u8>> for PayerProof {
 		// `proof_signature` TLV being verified. See module docs.
 		let proof_tagged_hash = proof_signature_hash(&bytes);
 		merkle::verify_signature(
-			&contents.proof_signature,
+			&proof_signature,
 			&proof_tagged_hash,
 			contents.payer_signing_pubkey,
 		)
 		.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
 
-		Ok(PayerProof { bytes, contents, merkle_root })
+		Ok(PayerProof { bytes, contents, proof_signature, merkle_root })
 	}
 }
 
@@ -1061,24 +1091,17 @@ mod tests {
 		let disclosure =
 			compute_selective_disclosure(TlvStream::new(&invoice_bytes), &included_types).unwrap();
 
-		let mut unsigned = UnsignedPayerProof {
-			invoice_signature,
-			preimage,
+		let contents = PayerProofContents {
 			payer_signing_pubkey,
 			payment_hash,
 			issuer_signing_pubkey,
-			invoice_bytes: &invoice_bytes,
-			included_types,
-			disclosed_fields,
-			tagged_hash: TaggedHash::from_merkle_root(
-				PROOF_SIGNATURE_TAG,
-				sha256::Hash::all_zeros(),
-			),
-			disclosure,
+			preimage,
+			invoice_signature,
 			proof_note: None,
+			disclosed_fields,
 		};
-		let bytes_for_signing = unsigned.serialize_payer_proof(None);
-		unsigned.tagged_hash = proof_signature_hash(&bytes_for_signing);
+		let unsigned =
+			UnsignedPayerProof::new(&invoice_bytes, &included_types, contents, disclosure);
 
 		unsigned
 			.sign(|proof: &UnsignedPayerProof| {
@@ -1132,24 +1155,17 @@ mod tests {
 			compute_selective_disclosure(TlvStream::new(&invoice_bytes), &included_types).unwrap();
 		assert_eq!(disclosure.omitted_markers, vec![177, 178]);
 
-		let mut unsigned = UnsignedPayerProof {
-			invoice_signature,
-			preimage,
+		let contents = PayerProofContents {
 			payer_signing_pubkey,
 			payment_hash,
 			issuer_signing_pubkey,
-			invoice_bytes: &invoice_bytes,
-			included_types,
-			disclosed_fields,
-			tagged_hash: TaggedHash::from_merkle_root(
-				PROOF_SIGNATURE_TAG,
-				sha256::Hash::all_zeros(),
-			),
-			disclosure,
+			preimage,
+			invoice_signature,
 			proof_note: None,
+			disclosed_fields,
 		};
-		let bytes_for_signing = unsigned.serialize_payer_proof(None);
-		unsigned.tagged_hash = proof_signature_hash(&bytes_for_signing);
+		let unsigned =
+			UnsignedPayerProof::new(&invoice_bytes, &included_types, contents, disclosure);
 
 		unsigned
 			.sign(|proof: &UnsignedPayerProof| {
@@ -2484,15 +2500,25 @@ mod tests {
 			if let Some(note) = vector.note {
 				builder = builder.with_proof_note(note.to_owned());
 			}
-			let unsigned = builder
-				.build_unsigned()
-				.unwrap_or_else(|e| panic!("{}: build failed: {:?}", vector.name, e));
 
 			// The selective-disclosure data is derived from the invoice's merkle
 			// tree and is independent of how the proof's optional TLVs are
-			// encoded, so every spec vector must match here.
+			// encoded, so every spec vector must match here. Recompute it
+			// independently of the builder so we can compare leaf hashes,
+			// omitted markers, missing hashes, and merkle root against the
+			// spec vector before signing the proof.
+			let invoice_bytes_for_check = invoice.invoice_bytes();
+			let included_types_for_check: BTreeSet<u64> =
+				vector.included_types.iter().copied().collect();
+			let disclosure = compute_selective_disclosure(
+				TlvStream::new(invoice_bytes_for_check)
+					.filter(|r| !SIGNATURE_TYPES.contains(&r.r#type)),
+				&included_types_for_check,
+			)
+			.unwrap_or_else(|e| panic!("{}: disclosure computation failed: {:?}", vector.name, e));
+
 			let got_leaves: Vec<String> =
-				unsigned.disclosure.leaf_hashes.iter().map(|h| hex_encode(h.as_ref())).collect();
+				disclosure.leaf_hashes.iter().map(|h| hex_encode(h.as_ref())).collect();
 			assert_eq!(
 				got_leaves,
 				split_hashes_hex(vector.leaf_hashes_hex),
@@ -2501,13 +2527,13 @@ mod tests {
 			);
 
 			assert_eq!(
-				unsigned.disclosure.omitted_markers, vector.omitted_tlvs,
+				disclosure.omitted_markers, vector.omitted_tlvs,
 				"{}: omitted_tlvs mismatch",
 				vector.name
 			);
 
 			let got_missing: Vec<String> =
-				unsigned.disclosure.missing_hashes.iter().map(|h| hex_encode(h.as_ref())).collect();
+				disclosure.missing_hashes.iter().map(|h| hex_encode(h.as_ref())).collect();
 			assert_eq!(
 				got_missing,
 				split_hashes_hex(vector.missing_hashes_hex),
@@ -2515,8 +2541,12 @@ mod tests {
 				vector.name
 			);
 
-			let got_root = hex_encode(unsigned.disclosure.merkle_root.as_ref());
+			let got_root = hex_encode(disclosure.merkle_root.as_ref());
 			assert_eq!(got_root, vector.merkle_root_hex, "{}: merkle_root mismatch", vector.name);
+
+			let unsigned = builder
+				.build_unsigned()
+				.unwrap_or_else(|e| panic!("{}: build failed: {:?}", vector.name, e));
 
 			let proof = unsigned
 				.sign(|proof: &UnsignedPayerProof| {
