@@ -1361,10 +1361,7 @@ pub fn do_test_multiple_package_conflicts(p2a_anchor: bool) {
 	};
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
-	if nodes[0].node.test_persistent_monitor_events_enabled() {
-		// If persistent_monitor_events is enabled, the RAA monitor update is not blocked.
-		check_added_monitors(&nodes[0], 1);
-	}
+	check_added_monitors(&nodes[0], 1);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_sent!(nodes[0], preimage_2);
 
@@ -1632,10 +1629,6 @@ pub fn test_htlc_on_chain_success() {
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(
-		&nodes[0],
-		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 2 },
-	);
 	assert_eq!(events.len(), 5);
 	let mut first_claimed = false;
 	for event in events {
@@ -2075,12 +2068,7 @@ fn do_test_commitment_revoked_fail_backward_exhaustive(
 
 	check_added_monitors(&nodes[1], 0);
 	let events = nodes[1].node.get_and_clear_pending_events();
-	if deliver_bs_raa {
-		let persistent_mon_evs = nodes[1].node.test_persistent_monitor_events_enabled();
-		check_added_monitors(&nodes[1], if persistent_mon_evs { 1 } else { 2 });
-	} else {
-		check_added_monitors(&nodes[1], 1);
-	}
+	check_added_monitors(&nodes[1], 1);
 	assert_eq!(events.len(), if deliver_bs_raa { 3 + nodes.len() - 1 } else { 3 + nodes.len() });
 	assert!(events.iter().any(|ev| matches!(
 		ev,
@@ -2690,10 +2678,6 @@ pub fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	check_added_monitors(
-		&nodes[0],
-		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
-	);
 
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_4);
 	fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash_6);
@@ -5910,9 +5894,6 @@ fn do_test_failure_delay_dust_htlc_local_commitment(announce_latest: bool) {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	check_added_monitors(&nodes[0], 0);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	if !nodes[0].node.test_persistent_monitor_events_enabled() {
-		check_added_monitors(&nodes[0], 2); // ReleasePaymentComplete updates
-	}
 	// Only 2 PaymentPathFailed events should show up, over-dust HTLC has to be failed by timeout tx
 	assert_eq!(events.len(), 4);
 	let mut first_failed = false;
@@ -7938,14 +7919,10 @@ fn do_test_onchain_htlc_settlement_after_close(
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &carol_revocation);
-	if nodes[1].node.test_persistent_monitor_events_enabled() {
-		if broadcast_alice && !go_onchain_before_fulfill {
-			check_added_monitors(&nodes[1], 1);
-		} else {
-			check_added_monitors(&nodes[1], 2);
-		}
-	} else {
+	if broadcast_alice && !go_onchain_before_fulfill {
 		check_added_monitors(&nodes[1], 1);
+	} else {
+		check_added_monitors(&nodes[1], 2);
 	}
 
 	// If this test requires the force-closed channel to not be on-chain until after the fulfill,
@@ -7980,12 +7957,10 @@ fn do_test_onchain_htlc_settlement_after_close(
 			check_spends!(bob_txn[0], chan_ab.3);
 		}
 	}
-	if nodes[1].node.test_persistent_monitor_events_enabled() {
-		if !broadcast_alice || go_onchain_before_fulfill {
-			// In some cases we'll replay the claim via a MonitorEvent and be unable to detect that it's
-			// a duplicate since the inbound edge is on-chain.
-			expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], fee, went_onchain, false);
-		}
+	if !broadcast_alice || go_onchain_before_fulfill {
+		// In some cases we'll replay the claim via a MonitorEvent and be unable to detect that it's
+		// a duplicate since the inbound edge is on-chain.
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], fee, went_onchain, false);
 	}
 
 	// Step (6):
@@ -8621,8 +8596,7 @@ pub fn test_inconsistent_mpp_params() {
 	pass_along_path(&nodes[0], path_b, real_amt, hash, Some(payment_secret), event, true, None);
 
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path_a, path_b], preimage));
-	let expect_post_ev_mon_update =
-		if nodes[0].node.test_persistent_monitor_events_enabled() { false } else { true };
+	let expect_post_ev_mon_update = false;
 	expect_payment_sent(&nodes[0], preimage, Some(None), true, expect_post_ev_mon_update);
 }
 
@@ -9972,117 +9946,6 @@ fn test_manual_broadcast_skips_commitment_until_funding() {
 	do_test_manual_broadcast_skips_commitment_until_funding(false, true, true);
 	do_test_manual_broadcast_skips_commitment_until_funding(false, false, true);
 	do_test_manual_broadcast_skips_commitment_until_funding(false, false, false);
-}
-
-fn do_test_multi_post_event_actions(do_reload: bool) {
-	// Tests handling multiple post-Event actions at once.
-	// There is specific code in ChannelManager to handle channels where multiple post-Event
-	// `ChannelMonitorUpdates` are pending at once. This test exercises that code.
-	//
-	// Specifically, we test calling `get_and_clear_pending_events` while there are two
-	// PaymentSents from different channels and one channel has two pending `ChannelMonitorUpdate`s
-	// - one from an RAA and one from an inbound commitment_signed.
-	let chanmon_cfgs = create_chanmon_cfgs(3);
-	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
-	let (persister, chain_monitor);
-	let mut cfg = test_default_channel_config();
-	// If persistent_monitor_events is enabled, RAAs will not be blocked on events.
-	cfg.override_persistent_monitor_events = Some(false);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(cfg), None, None]);
-	let node_a_reload;
-	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
-
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let node_b_id = nodes[1].node.get_our_node_id();
-
-	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
-	let chan_id_2 = create_announced_chan_between_nodes(&nodes, 0, 2).2;
-
-	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	send_payment(&nodes[0], &[&nodes[2]], 1_000_000);
-
-	let (our_payment_preimage, our_payment_hash, ..) =
-		route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
-	let (payment_preimage_2, payment_hash_2, ..) =
-		route_payment(&nodes[0], &[&nodes[2]], 1_000_000);
-
-	nodes[1].node.claim_funds(our_payment_preimage);
-	check_added_monitors(&nodes[1], 1);
-	expect_payment_claimed!(nodes[1], our_payment_hash, 1_000_000);
-
-	nodes[2].node.claim_funds(payment_preimage_2);
-	check_added_monitors(&nodes[2], 1);
-	expect_payment_claimed!(nodes[2], payment_hash_2, 1_000_000);
-
-	for dest in &[1, 2] {
-		let mut htlc_fulfill = get_htlc_update_msgs(&nodes[*dest], &node_a_id);
-		let dest_node_id = nodes[*dest].node.get_our_node_id();
-		nodes[0]
-			.node
-			.handle_update_fulfill_htlc(dest_node_id, htlc_fulfill.update_fulfill_htlcs.remove(0));
-		let commitment = &htlc_fulfill.commitment_signed;
-		do_commitment_signed_dance(&nodes[0], &nodes[*dest], commitment, false, false);
-		check_added_monitors(&nodes[0], 0);
-	}
-
-	let (route, payment_hash_3, _, payment_secret_3) =
-		get_route_and_payment_hash!(nodes[1], nodes[0], 100_000);
-	let payment_id = PaymentId(payment_hash_3.0);
-	let onion = RecipientOnionFields::secret_only(payment_secret_3, 100_000);
-	nodes[1].node.send_payment_with_route(route, payment_hash_3, onion, payment_id).unwrap();
-	check_added_monitors(&nodes[1], 1);
-
-	let send_event = SendEvent::from_node(&nodes[1]);
-	nodes[0].node.handle_update_add_htlc(node_b_id, &send_event.msgs[0]);
-	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &send_event.commitment_msg);
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-
-	if do_reload {
-		let node_ser = nodes[0].node.encode();
-		let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
-		let chan_1_monitor_serialized = get_monitor!(nodes[0], chan_id_2).encode();
-		let mons = [&chan_0_monitor_serialized[..], &chan_1_monitor_serialized[..]];
-		let config = test_default_channel_config();
-		reload_node!(nodes[0], config, &node_ser, &mons, persister, chain_monitor, node_a_reload);
-
-		nodes[1].node.peer_disconnected(node_a_id);
-		nodes[2].node.peer_disconnected(node_a_id);
-
-		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
-		reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[2]));
-	}
-
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 4);
-	if let Event::PaymentSent { payment_preimage, .. } = events[0] {
-		assert!(payment_preimage == our_payment_preimage || payment_preimage == payment_preimage_2);
-	} else {
-		panic!();
-	}
-	if let Event::PaymentSent { payment_preimage, .. } = events[1] {
-		assert!(payment_preimage == our_payment_preimage || payment_preimage == payment_preimage_2);
-	} else {
-		panic!();
-	}
-	if let Event::PaymentPathSuccessful { .. } = events[2] {
-	} else {
-		panic!();
-	}
-	if let Event::PaymentPathSuccessful { .. } = events[3] {
-	} else {
-		panic!();
-	}
-
-	// After the events are processed, the ChannelMonitorUpdates will be released and, upon their
-	// completion, we'll respond to nodes[1] with an RAA + CS.
-	get_revoke_commit_msgs(&nodes[0], &node_b_id);
-	check_added_monitors(&nodes[0], 3);
-}
-
-#[xtest(feature = "_externalize_tests")]
-pub fn test_multi_post_event_actions() {
-	do_test_multi_post_event_actions(true);
-	do_test_multi_post_event_actions(false);
 }
 
 #[xtest(feature = "_externalize_tests")]

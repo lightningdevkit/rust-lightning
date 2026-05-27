@@ -1227,7 +1227,6 @@ pub(super) struct MonitorRestoreUpdates {
 	pub commitment_update: Option<msgs::CommitmentUpdate>,
 	pub commitment_order: RAACommitmentOrder,
 	pub accepted_htlcs: Vec<(PendingHTLCInfo, u64)>,
-	pub failed_htlcs: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	pub finalized_claimed_htlcs: Vec<(HTLCSource, Option<AttributionData>)>,
 	/// Inbound update_adds that are now irrevocably committed to this channel and are ready for the
 	/// onion to be processed in order to forward or receive the HTLC.
@@ -8137,65 +8136,6 @@ where
 		})
 	}
 
-	/// Returns committed inbound HTLCs that have been forwarded but not yet fully resolved. Useful
-	/// when reconstructing the set of pending HTLCs when deserializing the `ChannelManager`.
-	pub(super) fn inbound_forwarded_htlcs(
-		&self,
-	) -> impl Iterator<Item = (PaymentHash, HTLCPreviousHopData, OutboundHop)> + '_ {
-		// We don't want to return an HTLC as needing processing if it already has a resolution that's
-		// pending in the holding cell.
-		let htlc_resolution_in_holding_cell = |id: u64| -> bool {
-			self.context.holding_cell_htlc_updates.iter().any(|holding_cell_htlc| {
-				match holding_cell_htlc {
-					HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => *htlc_id == id,
-					HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } => *htlc_id == id,
-					HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => *htlc_id == id,
-					HTLCUpdateAwaitingACK::AddHTLC { .. } => false,
-				}
-			})
-		};
-
-		let prev_outbound_scid_alias = self.context.outbound_scid_alias();
-		let user_channel_id = self.context.get_user_id();
-		let channel_id = self.context.channel_id();
-		let outpoint = self.funding_outpoint();
-		let counterparty_node_id = self.context.get_counterparty_node_id();
-
-		self.context.pending_inbound_htlcs.iter().filter_map(move |htlc| match &htlc.state {
-			InboundHTLCState::Committed {
-				update_add_htlc:
-					InboundUpdateAdd::Forwarded {
-						incoming_packet_shared_secret,
-						phantom_shared_secret,
-						trampoline_shared_secret,
-						blinded_failure,
-						outbound_hop,
-					},
-			} => {
-				if htlc_resolution_in_holding_cell(htlc.htlc_id) {
-					return None;
-				}
-				// The reconstructed `HTLCPreviousHopData` is used to fail or claim the HTLC backwards
-				// post-restart, if it is missing in the outbound edge.
-				let prev_hop_data = HTLCPreviousHopData {
-					prev_outbound_scid_alias,
-					user_channel_id: Some(user_channel_id),
-					htlc_id: htlc.htlc_id,
-					incoming_packet_shared_secret: *incoming_packet_shared_secret,
-					phantom_shared_secret: *phantom_shared_secret,
-					trampoline_shared_secret: *trampoline_shared_secret,
-					blinded_failure: *blinded_failure,
-					channel_id,
-					outpoint,
-					counterparty_node_id: Some(counterparty_node_id),
-					cltv_expiry: Some(htlc.cltv_expiry),
-				};
-				Some((htlc.payment_hash, prev_hop_data, *outbound_hop))
-			},
-			_ => None,
-		})
-	}
-
 	/// Useful when reconstructing the set of pending HTLC forwards when deserializing the
 	/// `ChannelManager`. We don't want to cache an HTLC as needing to be forwarded if it's already
 	/// present in the outbound edge, or else we'll double-forward.
@@ -10034,7 +9974,7 @@ where
 			self.context.monitor_pending_commitment_signed = false;
 			return MonitorRestoreUpdates {
 				raa: None, commitment_update: None, commitment_order: RAACommitmentOrder::RevokeAndACKFirst,
-				accepted_htlcs, failed_htlcs, finalized_claimed_htlcs, pending_update_adds,
+				accepted_htlcs, finalized_claimed_htlcs, pending_update_adds,
 				funding_broadcastable, channel_ready, announcement_sigs, funding_tx_signed,
 				channel_ready_order, committed_outbound_htlc_sources
 			};
@@ -10065,7 +10005,7 @@ where
 			if commitment_update.is_some() { "a" } else { "no" }, if raa.is_some() { "an" } else { "no" },
 			match commitment_order { RAACommitmentOrder::CommitmentFirst => "commitment", RAACommitmentOrder::RevokeAndACKFirst => "RAA"});
 		MonitorRestoreUpdates {
-			raa, commitment_update, commitment_order, accepted_htlcs, failed_htlcs, finalized_claimed_htlcs,
+			raa, commitment_update, commitment_order, accepted_htlcs, finalized_claimed_htlcs,
 			pending_update_adds, funding_broadcastable, channel_ready, announcement_sigs, funding_tx_signed,
 			channel_ready_order, committed_outbound_htlc_sources
 		}

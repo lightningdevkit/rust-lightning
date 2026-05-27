@@ -787,20 +787,6 @@ pub(crate) enum ChannelMonitorUpdateStep {
 	RenegotiatedFundingLocked {
 		funding_txid: Txid,
 	},
-	/// When a payment is finally resolved by the user handling an [`Event::PaymentSent`] or
-	/// [`Event::PaymentFailed`] event, the `ChannelManager` no longer needs to hear about it on
-	/// startup (which would cause it to re-hydrate the payment information even though the user
-	/// already learned about the payment's result).
-	///
-	/// This will remove the HTLC from [`ChannelMonitor::get_all_current_outbound_htlcs`] and
-	/// [`ChannelMonitor::get_onchain_failed_outbound_htlcs`].
-	///
-	/// Note that this is only generated for closed channels as this is implicit in the
-	/// [`Self::CommitmentSecret`] update which clears the payment information from all un-revoked
-	/// counterparty commitment transactions.
-	ReleasePaymentComplete {
-		htlc: SentHTLCId,
-	},
 }
 
 impl ChannelMonitorUpdateStep {
@@ -817,7 +803,6 @@ impl ChannelMonitorUpdateStep {
 			ChannelMonitorUpdateStep::ShutdownScript { .. } => "ShutdownScript",
 			ChannelMonitorUpdateStep::RenegotiatedFunding { .. } => "RenegotiatedFunding",
 			ChannelMonitorUpdateStep::RenegotiatedFundingLocked { .. } => "RenegotiatedFundingLocked",
-			ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => "ReleasePaymentComplete",
 		}
 	}
 }
@@ -876,9 +861,6 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	(6, LatestCounterpartyCommitment) => {
 		(1, commitment_txs, required_vec),
 		(3, htlc_data, required),
-	},
-	(7, ReleasePaymentComplete) => {
-		(1, htlc, required),
 	},
 	(8, LatestHolderCommitment) => {
 		(1, commitment_txs, required_vec),
@@ -1442,12 +1424,6 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// [`ChannelMonitor::ack_monitor_event`] for removal. If an event in this queue is not ack'd, it
 	// will be re-provided to the `ChannelManager` on startup.
 	provided_monitor_events: Vec<(u64, MonitorEvent)>,
-	/// When set, monitor events are retained until explicitly acked rather than cleared on read.
-	///
-	/// Allows the ChannelManager to reconstruct pending HTLC state by replaying monitor events on
-	/// startup, and make the monitor responsible for both off- and on-chain payment resolution. Will
-	/// be always set once support for this feature is complete.
-	persistent_events_enabled: bool,
 	next_monitor_event_id: u64,
 
 	pub(super) pending_events: Vec<Event>,
@@ -1501,14 +1477,6 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	/// the requisite confirmations on the claim/fail transaction (either ANTI_REORG_DELAY or the
 	/// spending CSV for revocable outputs).
 	htlcs_resolved_on_chain: Vec<IrrevocablyResolvedHTLC>,
-
-	/// When a payment is resolved through an on-chain transaction, we tell the `ChannelManager`
-	/// about this via [`ChannelMonitor::get_onchain_failed_outbound_htlcs`] and
-	/// [`ChannelMonitor::get_all_current_outbound_htlcs`] at startup. We'll keep repeating the
-	/// same payments until they're eventually fully resolved by the user processing a
-	/// `PaymentSent` or `PaymentFailed` event, at which point the `ChannelManager` will inform of
-	/// this and we'll store the set of fully resolved payments here.
-	htlcs_resolved_to_user: HashSet<SentHTLCId>,
 
 	/// The set of `SpendableOutput` events which we have already passed upstream to be claimed.
 	/// These are tracked explicitly to ensure that we don't generate the same events redundantly
@@ -1829,39 +1797,8 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		writer.write_all(&payment_preimage.0[..])?;
 	}
 
-	if !channel_monitor.persistent_events_enabled {
-		writer.write_all(
-			&(channel_monitor
-				.pending_monitor_events
-				.iter()
-				.filter(|(_, ev)| match ev {
-					MonitorEvent::HTLCEvent(_) => true,
-					MonitorEvent::HolderForceClosed(_) => true,
-					MonitorEvent::HolderForceClosedWithInfo { .. } => true,
-					_ => false,
-				})
-				.count() as u64)
-				.to_be_bytes(),
-		)?;
-		for (_, event) in channel_monitor.pending_monitor_events.iter() {
-			match event {
-				MonitorEvent::HTLCEvent(upd) => {
-					0u8.write(writer)?;
-					upd.write(writer)?;
-				},
-				MonitorEvent::HolderForceClosed(_) => 1u8.write(writer)?,
-				// `HolderForceClosedWithInfo` replaced `HolderForceClosed` in v0.0.122. To keep
-				// backwards compatibility, we write a `HolderForceClosed` event along with the
-				// `HolderForceClosedWithInfo` event. This is deduplicated in the reader.
-				MonitorEvent::HolderForceClosedWithInfo { .. } => 1u8.write(writer)?,
-				_ => {}, // Covered in the TLV writes below
-			}
-		}
-	} else {
-		// If `persistent_events_enabled` is set, we'll write the events with their event ids in the
-		// TLV section below.
-		writer.write_all(&(0u64).to_be_bytes())?;
-	}
+	// Used for monitor events in 0.3- before we started serializing them in TLVs.
+	writer.write_all(&(0u64).to_be_bytes())?;
 
 	writer.write_all(&(channel_monitor.pending_events.len() as u64).to_be_bytes())?;
 	for event in channel_monitor.pending_events.iter() {
@@ -1893,47 +1830,21 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	channel_monitor.lockdown_from_offchain.write(writer)?;
 	channel_monitor.holder_tx_signed.write(writer)?;
 
-	// If we have a `HolderForceClosedWithInfo` event, we need to write the `HolderForceClosed`
-	// for backwards compatibility.
-	let holder_force_closed_compat =
-		channel_monitor.pending_monitor_events.iter().find_map(|(_, ev)| {
-			if let MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } = ev {
-				Some(MonitorEvent::HolderForceClosed(*outpoint))
-			} else {
-				None
-			}
-		});
-	let pending_monitor_events_legacy = if !channel_monitor.persistent_events_enabled {
-		Some(Iterable(
-			channel_monitor
-				.pending_monitor_events
-				.iter()
-				.map(|(_, ev)| ev)
-				.chain(holder_force_closed_compat.as_ref()),
-		))
-	} else {
-		None
-	};
-
-	// Only write `persistent_events_enabled` if it's set to true, as it's an even TLV.
-	let persistent_events_enabled = channel_monitor.persistent_events_enabled.then_some(());
-	let pending_mon_evs_with_ids = if persistent_events_enabled.is_some() {
+	let pending_mon_evs_with_ids = {
 		Some(Iterable(
 			channel_monitor
 				.provided_monitor_events
 				.iter()
 				.chain(channel_monitor.pending_monitor_events.iter()),
 		))
-	} else {
-		None
 	};
 
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
-		(2, persistent_events_enabled, option),
+		// 2 was was previously used for the persistent_monitor_events flag.
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
 		(4, pending_mon_evs_with_ids, option),
-		(5, pending_monitor_events_legacy, option), // Equivalent to optional_vec because Iterable also writes as WithoutLength
+		// 5 was previously used for pending monitor events without IDs.
 		(7, channel_monitor.funding_spend_seen, required),
 		(9, channel_monitor.counterparty_node_id, required),
 		(11, channel_monitor.confirmed_commitment_tx_counterparty_output, option),
@@ -1948,7 +1859,6 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(29, channel_monitor.initial_counterparty_commitment_tx, option),
 		(31, channel_monitor.funding.channel_parameters, required),
 		(32, channel_monitor.pending_funding, optional_vec),
-		(33, channel_monitor.htlcs_resolved_to_user, required),
 		(34, channel_monitor.alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
@@ -2145,7 +2055,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			payment_preimages: new_hash_map(),
 			pending_monitor_events: Vec::new(),
 			provided_monitor_events: Vec::new(),
-			persistent_events_enabled: false,
 			next_monitor_event_id: 0,
 			pending_events: Vec::new(),
 			is_processing_pending_events: false,
@@ -2162,7 +2071,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			funding_spend_confirmed: None,
 			confirmed_commitment_tx_counterparty_output: None,
 			htlcs_resolved_on_chain: Vec::new(),
-			htlcs_resolved_to_user: new_hash_set(),
 			spendable_txids_confirmed: Vec::new(),
 
 			best_block,
@@ -2383,16 +2291,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	pub fn ack_monitor_event(&self, event_id: u64) {
 		let inner = &mut *self.inner.lock().unwrap();
 		inner.ack_monitor_event(event_id);
-	}
-
-	/// Enables persistent monitor events mode. When enabled, monitor events are retained until
-	/// explicitly acked rather than cleared on read.
-	pub(crate) fn set_persistent_events_enabled(&self, enabled: bool) {
-		self.inner.lock().unwrap().persistent_events_enabled = enabled;
-	}
-
-	pub(crate) fn has_pending_event_for_htlc(&self, source: &HTLCSource) -> bool {
-		self.inner.lock().unwrap().has_pending_event_for_htlc(source)
 	}
 
 	/// Copies [`MonitorEvent`] state from `other` into `self`.
@@ -3381,7 +3279,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				for &(ref htlc, ref source_option) in latest_outpoints.iter() {
 					if let &Some(ref source) = source_option {
 						let htlc_id = SentHTLCId::from_source(source);
-						let skip_htlc = if us.persistent_events_enabled {
+						let skip_htlc = {
 							let htlc_resolved_on_chain = match htlc.transaction_output_index {
 								Some(idx) => us
 									.htlcs_resolved_on_chain
@@ -3396,8 +3294,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 							// If the HTLC was resolved on-chain and we don't have a pending monitor event for
 							// it, that implies the event was acked due to the HTLC being resolved to the user.
 							htlc_resolved_on_chain && !us.has_pending_event_for_htlc(source)
-						} else {
-							us.htlcs_resolved_to_user.contains(&htlc_id)
 						};
 						if !skip_htlc {
 							let preimage_opt =
@@ -3414,117 +3310,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		if let Some(ref txid) = us.funding.prev_counterparty_commitment_txid {
 			walk_counterparty_commitment(txid);
 		}
-		res
-	}
-
-	/// Gets the set of outbound HTLCs which hit the chain and ultimately were claimed by us via
-	/// the timeout path and reached [`ANTI_REORG_DELAY`] confirmations. This is used to determine
-	/// if an HTLC has failed without the `ChannelManager` having seen it prior to being persisted.
-	pub(crate) fn get_onchain_failed_outbound_htlcs(&self) -> HashMap<HTLCSource, PaymentHash> {
-		let mut res = new_hash_map();
-		let us = self.inner.lock().unwrap();
-
-		// We only want HTLCs with ANTI_REORG_DELAY confirmations, which implies the commitment
-		// transaction has least ANTI_REORG_DELAY confirmations for any dependent HTLC transactions
-		// to have been confirmed.
-		let confirmed_txid = us.confirmed_funding_spend_past_anti_reorg();
-
-		let confirmed_txid = if let Some(txid) = confirmed_txid {
-			txid
-		} else {
-			return res;
-		};
-
-		macro_rules! walk_htlcs {
-			($htlc_iter: expr) => {
-				let mut walk_candidate_htlcs = |htlcs| {
-					for &(ref candidate_htlc, ref candidate_source) in htlcs {
-						let candidate_htlc: &HTLCOutputInCommitment = &candidate_htlc;
-						let candidate_source: &Option<Box<HTLCSource>> = &candidate_source;
-
-						let source: &HTLCSource = if let Some(source) = candidate_source {
-							source
-						} else {
-							continue;
-						};
-						let htlc_id = SentHTLCId::from_source(source);
-						if us.htlcs_resolved_to_user.contains(&htlc_id) {
-							continue;
-						}
-
-						let confirmed = $htlc_iter.find(|(_, conf_src)| Some(source) == *conf_src);
-						if let Some((confirmed_htlc, _)) = confirmed {
-							let filter = |v: &&IrrevocablyResolvedHTLC| {
-								v.commitment_tx_output_idx
-									== confirmed_htlc.transaction_output_index
-							};
-
-							// The HTLC was included in the confirmed commitment transaction, so we
-							// need to see if it has been irrevocably failed yet.
-							if confirmed_htlc.transaction_output_index.is_none() {
-								// Dust HTLCs are always implicitly failed once the commitment
-								// transaction reaches ANTI_REORG_DELAY confirmations.
-								res.insert(source.clone(), confirmed_htlc.payment_hash);
-							} else if let Some(state) =
-								us.htlcs_resolved_on_chain.iter().filter(filter).next()
-							{
-								if state.payment_preimage.is_none() {
-									res.insert(source.clone(), confirmed_htlc.payment_hash);
-								}
-							}
-						} else {
-							// The HTLC was not included in the confirmed commitment transaction,
-							// which has now reached ANTI_REORG_DELAY confirmations and thus the
-							// HTLC has been failed.
-							// However, if we have the preimage, the HTLC was fulfilled off-chain
-							// and should not be reported as failed.
-							if !us.counterparty_fulfilled_htlcs.contains_key(&htlc_id) {
-								res.insert(source.clone(), candidate_htlc.payment_hash);
-							}
-						}
-					}
-				};
-
-				// We walk the set of HTLCs in the unrevoked counterparty commitment transactions (see
-				// `fail_unbroadcast_htlcs` for a description of why).
-				if let Some(ref txid) = us.funding.current_counterparty_commitment_txid {
-					let htlcs = us.funding.counterparty_claimable_outpoints.get(txid);
-					walk_candidate_htlcs(htlcs.expect("Missing tx info for latest tx"));
-				}
-				if let Some(ref txid) = us.funding.prev_counterparty_commitment_txid {
-					let htlcs = us.funding.counterparty_claimable_outpoints.get(txid);
-					walk_candidate_htlcs(htlcs.expect("Missing tx info for previous tx"));
-				}
-			};
-		}
-
-		let funding = get_confirmed_funding_scope!(us);
-
-		if Some(confirmed_txid) == funding.current_counterparty_commitment_txid
-			|| Some(confirmed_txid) == funding.prev_counterparty_commitment_txid
-		{
-			let htlcs = funding.counterparty_claimable_outpoints.get(&confirmed_txid).unwrap();
-			walk_htlcs!(htlcs.iter().filter_map(|(a, b)| {
-				if let &Some(ref source) = b {
-					Some((a, Some(&**source)))
-				} else {
-					None
-				}
-			}));
-		} else if confirmed_txid == funding.current_holder_commitment_tx.trust().txid() {
-			walk_htlcs!(holder_commitment_htlcs!(us, CURRENT_WITH_SOURCES));
-		} else if let Some(prev_commitment_tx) = &funding.prev_holder_commitment_tx {
-			if confirmed_txid == prev_commitment_tx.trust().txid() {
-				walk_htlcs!(holder_commitment_htlcs!(us, PREV_WITH_SOURCES).unwrap());
-			} else {
-				let htlcs_confirmed: &[(&HTLCOutputInCommitment, _)] = &[];
-				walk_htlcs!(htlcs_confirmed.iter());
-			}
-		} else {
-			let htlcs_confirmed: &[(&HTLCOutputInCommitment, _)] = &[];
-			walk_htlcs!(htlcs_confirmed.iter());
-		}
-
 		res
 	}
 
@@ -3689,7 +3474,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let mut removed_fulfilled_htlcs = false;
 		let counterparty_fulfilled_htlcs = &mut self.counterparty_fulfilled_htlcs;
 		let counterparty_failed_htlcs = &mut self.counterparty_failed_htlcs;
-		let persistent_events_enabled = self.persistent_events_enabled;
 		let pending_monitor_events = &mut self.pending_monitor_events;
 		let provided_monitor_events = &self.provided_monitor_events;
 		let next_monitor_event_id = &mut self.next_monitor_event_id;
@@ -3709,7 +3493,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								{
 									let htlc_id = SentHTLCId::from_source(source);
 									let was_fulfilled = counterparty_fulfilled_htlcs.remove(&htlc_id).is_some();
-									if !was_fulfilled && persistent_events_enabled {
+									if !was_fulfilled {
 										// The HTLC was removed without a preimage, i.e.
 										// it was failed back. Generate a persistent
 										// failure event so the ChannelManager can fail
@@ -4070,30 +3854,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					None
 				});
 			debug_assert!(htlc_opt.is_some());
-			if self.persistent_events_enabled {
-				if let Some((htlc, source)) = htlc_opt {
-					// If persistent_events_enabled is set, the ChannelMonitor is responsible for providing
-					// off-chain resolutions of HTLCs to the ChannelManager, will re-provide this event on
-					// startup until it is explicitly acked.
-					self.push_monitor_event(MonitorEvent::HTLCEvent(HTLCUpdate {
-						payment_hash: htlc.payment_hash,
-						resolution: OutboundHTLCResolution::Claimed {
-							preimage: claim.preimage,
-							skimmed_fee_msat: claim.skimmed_fee_msat,
-						},
-						source: *source.clone(),
-						htlc_value_msat: Some(htlc.amount_msat),
-						user_channel_id: self.user_channel_id,
-					}));
-				}
+			if let Some((htlc, source)) = htlc_opt {
+				// The ChannelMonitor is responsible for providing off-chain resolutions of HTLCs to the
+				// ChannelManager, will re-provide this event on startup until it is explicitly acked.
+				self.push_monitor_event(MonitorEvent::HTLCEvent(HTLCUpdate {
+					payment_hash: htlc.payment_hash,
+					resolution: OutboundHTLCResolution::Claimed {
+						preimage: claim.preimage,
+						skimmed_fee_msat: claim.skimmed_fee_msat,
+					},
+					source: *source.clone(),
+					htlc_value_msat: Some(htlc.amount_msat),
+					user_channel_id: self.user_channel_id,
+				}));
 			}
 			self.counterparty_fulfilled_htlcs.insert(claim.htlc_id, claim.preimage);
 		}
 
-		if self.persistent_events_enabled {
-			for fail in failed_htlcs {
-				self.counterparty_failed_htlcs.insert(fail.htlc_id, fail.failure_reason.clone());
-			}
+		for fail in failed_htlcs {
+			self.counterparty_failed_htlcs.insert(fail.htlc_id, fail.failure_reason.clone());
 		}
 
 		Ok(())
@@ -4534,7 +4313,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		if updates.update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID || self.lockdown_from_offchain {
 			assert_eq!(updates.updates.len(), 1);
 			match updates.updates[0] {
-				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
 				// We should have already seen a `ChannelForceClosed` update if we're trying to
 				// provide a preimage at this point.
@@ -4664,10 +4442,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						panic!("Attempted to replace shutdown script {} with {}", shutdown_script, scriptpubkey);
 					}
 				},
-				ChannelMonitorUpdateStep::ReleasePaymentComplete { htlc } => {
-					log_trace!(logger, "HTLC {htlc:?} permanently and fully resolved");
-					self.htlcs_resolved_to_user.insert(*htlc);
-				},
 			}
 		}
 
@@ -4748,7 +4522,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				// updates are generated while talking to our peer.
 				ChannelMonitorUpdateStep::PaymentPreimage { .. } => {},
 				ChannelMonitorUpdateStep::ChannelForceClosed { .. } => {},
-				ChannelMonitorUpdateStep::ReleasePaymentComplete { .. } => {},
 			}
 		}
 
@@ -4964,9 +4737,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 		self.pending_monitor_events = retained;
-		if self.persistent_events_enabled {
-			self.provided_monitor_events.extend(released.iter().cloned());
-		}
+		self.provided_monitor_events.extend(released.iter().cloned());
 		released
 	}
 
@@ -7120,7 +6891,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		let mut funding_spend_confirmed = None;
 		let mut htlcs_resolved_on_chain = Some(Vec::new());
-		let mut htlcs_resolved_to_user = Some(new_hash_set());
 		let mut funding_spend_seen = Some(false);
 		let mut counterparty_node_id = None;
 		let mut confirmed_commitment_tx_counterparty_output = None;
@@ -7142,12 +6912,10 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut best_block_previous_blocks = None;
 		let mut current_funding_contribution = None;
 		let mut user_channel_id: Option<u128> = None;
-		let mut persistent_events_enabled: Option<()> = None;
 		let mut next_monitor_event_id: Option<u64> = None;
 		let mut pending_mon_evs_with_ids: Option<Vec<ReadableIdMonitorEvent>> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
-			(2, persistent_events_enabled, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
 			(4, pending_mon_evs_with_ids, optional_vec),
 			(5, pending_monitor_events_legacy, optional_vec),
@@ -7165,7 +6933,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(29, initial_counterparty_commitment_tx, option),
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
-			(33, htlcs_resolved_to_user, option),
 			(34, alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
@@ -7177,12 +6944,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		});
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
-		}
-
-		#[cfg(not(any(feature = "_test_utils", test)))]
-		if persistent_events_enabled.is_some() {
-			// This feature isn't supported yet so error if the writer expected it to be.
-			return Err(DecodeError::InvalidValue)
 		}
 
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
@@ -7215,21 +6976,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			}
 		}
 
-		// If persistent events are enabled, use the events with their persisted IDs from TLV 4.
-		// Otherwise, use the legacy events from TLV 5 and assign sequential IDs.
-		let (next_monitor_event_id, pending_monitor_events): (u64, Vec<(u64, MonitorEvent)>) =
-			if persistent_events_enabled.is_some() {
+		let (next_monitor_event_id, pending_monitor_events): (u64, Vec<(u64, MonitorEvent)>) = {
 				let evs = pending_mon_evs_with_ids.unwrap_or_default()
 					.into_iter().map(|ev| (ev.0, ev.1)).collect();
 				(next_monitor_event_id.unwrap_or(0), evs)
-			} else if let Some(events) = pending_monitor_events_legacy {
-				let next_id = next_monitor_event_id.unwrap_or(events.len() as u64);
-				let evs = events.into_iter().enumerate()
-					.map(|(i, ev)| (i as u64, ev)).collect();
-				(next_id, evs)
-			} else {
-				(next_monitor_event_id.unwrap_or(0), Vec::new())
-			};
+		};
 
 		let channel_parameters = channel_parameters.unwrap_or_else(|| {
 			onchain_tx_handler.channel_parameters().clone()
@@ -7353,7 +7104,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			payment_preimages,
 			pending_monitor_events,
 			provided_monitor_events: Vec::new(),
-			persistent_events_enabled: persistent_events_enabled.is_some(),
 			next_monitor_event_id,
 			pending_events,
 			is_processing_pending_events: false,
@@ -7370,7 +7120,6 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			funding_spend_confirmed,
 			confirmed_commitment_tx_counterparty_output,
 			htlcs_resolved_on_chain: htlcs_resolved_on_chain.unwrap(),
-			htlcs_resolved_to_user: htlcs_resolved_to_user.unwrap(),
 			spendable_txids_confirmed: spendable_txids_confirmed.unwrap(),
 
 			best_block,
@@ -7641,8 +7390,7 @@ mod tests {
 			assert!(events.iter().any(|e| matches!(e, Event::ChannelClosed { .. })));
 			// If persistent monitor events are enabled, there won't be a ReleasePaymentComplete monitor
 			// update.
-			let persistent_mon_evs = nodes[1].node.test_persistent_monitor_events_enabled();
-			check_added_monitors(&nodes[1], if persistent_mon_evs { 1 } else { 2 });
+			check_added_monitors(&nodes[1], 1);
 		} else {
 			check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 			check_added_monitors(&nodes[1], 1);

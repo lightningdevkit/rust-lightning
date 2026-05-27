@@ -1229,11 +1229,6 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 		},
 		_ => panic!("Unexpected event: {:?}", claim_events[0]),
 	}
-	if !nodes[0].node.test_persistent_monitor_events_enabled() {
-		// The `PaymentSent` event above releases the monitor update that nodes[0] held after the final
-		// channel A startup revocation.
-		check_added_monitors(&nodes[0], 1);
-	}
 	// Handling `PaymentClaimed` releases channel B's held revocation update and then the fulfill
 	// that was waiting behind it.
 	check_added_monitors(&nodes[1], 2);
@@ -1548,8 +1543,7 @@ fn removed_payment_no_manager_persistence() {
 	// monitor events nodes[1] re-provides the recipient's `IncorrectPaymentDetails` rejection via
 	// a monitor event; otherwise it proactively fails the forwarded HTLC back with
 	// `ChannelClosed` (non-permanent).
-	let payment_failed_permanently = nodes[1].node.test_persistent_monitor_events_enabled();
-	expect_payment_failed!(nodes[0], payment_hash, payment_failed_permanently);
+	expect_payment_failed!(nodes[0], payment_hash, true);
 }
 
 #[test]
@@ -2331,12 +2325,10 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 		Some(true)
 	);
 
-	if nodes[1].node.test_persistent_monitor_events_enabled() {
 		// Polling messages causes us to re-release the unacked HTLC claim monitor event, which
 		// regenerates a preimage monitor update and forward event below.
 		let msgs = nodes[1].node.get_and_clear_pending_msg_events();
 		assert!(msgs.is_empty());
-	}
 
 	// When the claim is reconstructed during reload, a PaymentForwarded event is generated.
 	// Fetching events triggers the pending monitor update (adding preimage) to be applied.
@@ -2460,10 +2452,8 @@ fn test_reload_node_without_preimage_fails_htlc() {
 	reconnect_args.pending_cell_htlc_fails = (0, 1);
 	reconnect_nodes(reconnect_args);
 
-	// nodes[0] should now have received the failure and generate PaymentFailed. If persistent
-	// monitor events are enabled, nodes[1] will remember that the recipient rejected the payment.
-	let payment_failed_permanently = nodes[1].node.test_persistent_monitor_events_enabled();
-	expect_payment_failed_conditions(&nodes[0], payment_hash, payment_failed_permanently, PaymentFailedConditions::new());
+	// nodes[0] should now have received the failure and generate PaymentFailed.
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
 }
 
 #[test]
@@ -2635,7 +2625,6 @@ fn test_reload_mon_event_skimmed_fee() {
 	let mut intercept_forwards_config = test_default_channel_config();
 	intercept_forwards_config.htlc_interception_flags =
 		HTLCInterceptionFlags::ToInterceptSCIDs as u8;
-	intercept_forwards_config.override_persistent_monitor_events = Some(true);
 	let mut underpay_config = test_default_channel_config();
 	underpay_config.channel_config.accept_underpaying_htlcs = true;
 

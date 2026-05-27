@@ -965,7 +965,6 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	{
 		// Drive the commitment signed dance manually so we can account for the extra monitor
 		// update when persistent monitor events are enabled.
-		let persistent = nodes[1].node.test_persistent_monitor_events_enabled();
 		nodes[1]
 			.node
 			.handle_commitment_signed_batch_test(node_c_id, &htlc_fulfill.commitment_signed);
@@ -974,22 +973,17 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 			do_main_commitment_signed_dance(&nodes[1], &nodes[2], false);
 		assert!(htlcs.is_empty());
 		assert!(extra_msg.is_none());
-		// nodes[1] handles nodes[2]'s RAA. When persistent monitor events are enabled, this
-		// triggers the re-provided outbound monitor event, generating an extra preimage update
-		// on the (closed) inbound channel.
+		// nodes[1] handles nodes[2]'s RAA. This triggers the re-provided outbound monitor event,
+		// generating an extra preimage update on the (closed) inbound channel.
 		nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa);
-		check_added_monitors(&nodes[1], if persistent { 2 } else { 1 });
+		check_added_monitors(&nodes[1], 2);
 	}
-	if nodes[1].node.test_persistent_monitor_events_enabled() {
-		// The re-provided monitor event generates a duplicate PaymentForwarded against the
-		// closed inbound channel.
-		let events = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 2);
-		for event in events {
-			assert!(matches!(event, Event::PaymentForwarded { .. }));
-		}
-	} else {
-		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	// The re-provided monitor event generates a duplicate PaymentForwarded against the
+	// closed inbound channel.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	for event in events {
+		assert!(matches!(event, Event::PaymentForwarded { .. }));
 	}
 
 	if confirm_before_reload {
@@ -1468,23 +1462,6 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		} else {
 			expect_payment_sent(&nodes[0], payment_preimage, None, true, false);
 		}
-		if !nodes[0].node.test_persistent_monitor_events_enabled() {
-			if persist_manager_post_event {
-				// After reload, the ChannelManager identified the failed payment and queued up the
-				// PaymentSent (or not, if `persist_manager_post_event` resulted in us detecting we
-				// already did that) and corresponding ChannelMonitorUpdate to mark the payment
-				// handled, but while processing the pending `MonitorEvent`s (which were not processed
-				// before the monitor was persisted) we will end up with a duplicate
-				// ChannelMonitorUpdate.
-				check_added_monitors(&nodes[0], 2);
-			} else {
-				// ...unless we got the PaymentSent event, in which case we have de-duplication logic
-				// preventing a redundant monitor event.
-				check_added_monitors(&nodes[0], 1);
-			}
-		} else {
-			check_added_monitors(&nodes[0], 0);
-		}
 	}
 
 	// Note that if we re-connect the block which exposed nodes[0] to the payment preimage (but
@@ -1790,9 +1767,6 @@ fn onchain_failed_probe_yields_event() {
 
 	check_added_monitors(&nodes[0], 0);
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	if !nodes[0].node.test_persistent_monitor_events_enabled() {
-		check_added_monitors(&nodes[0], 1);
-	}
 	assert_eq!(events.len(), 2);
 	let mut found_probe_failed = false;
 	for event in events.drain(..) {
@@ -2494,11 +2468,6 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 				assert_eq!(payment_hash, Some(hash));
 			},
 			_ => panic!("Unexpected event"),
-		}
-		if nodes[0].node.test_persistent_monitor_events_enabled() {
-			check_added_monitors(&nodes[0], 0);
-		} else {
-			check_added_monitors(&nodes[0], 1);
 		}
 	} else if test == InterceptTest::Timeout {
 		let mut block = create_dummy_block(nodes[0].best_block_hash(), 42, Vec::new());
@@ -4289,13 +4258,6 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 	nodes[0].node.test_process_background_events();
 	check_added_monitors(&nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	if nodes[0].node.test_persistent_monitor_events_enabled() {
-		check_added_monitors(&nodes[0], 0);
-	} else {
-		// Once we process the PaymentSent event we'll apply a monitor update to remove the
-		// pending payment from being re-hydrated on the next startup.
-		check_added_monitors(&nodes[0], 1);
-	}
 	assert_eq!(events.len(), 3, "{events:?}");
 	if let Event::ChannelClosed { reason: ClosureReason::OutdatedChannelManager, .. } = events[0] {
 	} else {
@@ -5710,10 +5672,6 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 	}
 
 	let payment_sent = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(
-		&nodes[0],
-		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
-	);
 
 	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
@@ -5742,10 +5700,6 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 	}
 
 	let payment_sent = nodes[1].node.get_and_clear_pending_events();
-	check_added_monitors(
-		&nodes[1],
-		if nodes[1].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
-	);
 
 	assert_eq!(payment_sent.len(), 2, "{payment_sent:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, fee_paid_msat, .. } =
@@ -6001,11 +5955,6 @@ fn bolt11_multi_node_mpp_with_retry() {
 	}
 
 	let payment_sent_a = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(
-		&nodes[0],
-		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
-	);
-
 	assert_eq!(payment_sent_a.len(), 2, "{payment_sent_a:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_a[0] {
 		assert_eq!(*payment_id, Some(payment_id_a));
@@ -6029,11 +5978,6 @@ fn bolt11_multi_node_mpp_with_retry() {
 	}
 
 	let payment_sent_b = nodes[1].node.get_and_clear_pending_events();
-	check_added_monitors(
-		&nodes[1],
-		if nodes[1].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
-	);
-
 	assert_eq!(payment_sent_b.len(), 2, "{payment_sent_b:?}");
 	if let Event::PaymentSent { payment_id, payment_hash, amount_msat, .. } = &payment_sent_b[0] {
 		assert_eq!(*payment_id, Some(payment_id_b));

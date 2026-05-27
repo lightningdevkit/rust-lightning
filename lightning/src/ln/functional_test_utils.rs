@@ -3090,7 +3090,7 @@ macro_rules! expect_payment_sent {
 			$expected_payment_preimage,
 			$expected_fee_msat_opt.map(|o| Some(o)),
 			$expect_paths,
-			if $node.node.test_persistent_monitor_events_enabled() { false } else { true },
+			false,
 		)
 	};
 }
@@ -3501,9 +3501,6 @@ pub fn expect_payment_failed_conditions<'a, 'b, 'c, 'd, 'e>(
 		check_added_monitors(node, 0);
 	}
 	let events = node.node.get_and_clear_pending_events();
-	if conditions.from_mon_update && !node.node.test_persistent_monitor_events_enabled() {
-		check_added_monitors(node, 1); // ReleasePaymentComplete update
-	}
 	expect_payment_failed_conditions_event(
 		events,
 		expected_payment_hash,
@@ -4253,8 +4250,7 @@ pub fn claim_payment_along_route(
 		do_claim_payment_along_route(args) + expected_extra_total_fees_msat;
 
 	if !skip_last {
-		let expect_post_ev_mon_update =
-			if origin_node.node.test_persistent_monitor_events_enabled() { false } else { true };
+		let expect_post_ev_mon_update = false;
 		expect_payment_sent(
 			origin_node,
 			payment_preimage,
@@ -5689,16 +5685,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 					get_event_msg!(node_b, MessageSendEvent::SendRevokeAndACK, node_a_id);
 				// No commitment_signed so get_event_msg's assert(len == 1) passes
 				node_a.node.handle_revoke_and_ack(node_b_id, &bs_revoke_and_ack);
-				check_added_monitors(
-					&node_a,
-					if pending_responding_commitment_signed_dup_monitor.1
-						&& !node_a.node.test_persistent_monitor_events_enabled()
-					{
-						0
-					} else {
-						1
-					},
-				);
+				check_added_monitors(&node_a, 1);
 				if !allow_post_commitment_dance_msgs.1 {
 					assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 				}
