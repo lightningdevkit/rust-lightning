@@ -1597,13 +1597,16 @@ pub const PAYER_NOTE_LIMIT: usize = 8;
 impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		let payer_offer_bytes = self.payer_offer.as_ref().map(|offer| offer.as_ref().to_vec());
+		// BLIP 42 fields use odd TLV types (7, 9) so older LDK nodes reading newer
+		// `Bolt12OfferContext.path_id` blobs silently ignore unknown fields per BOLT 1
+		// "odd, it's OK". TLVs 11 and 13 are reserved for invreq_payer_bip_353_{name,signature}.
 		write_tlv_fields!(writer, {
 			(0, self.payer_signing_pubkey, required),
 			(1, self.human_readable_name, option),
 			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
-			(6, self.contact_secret, option),
-			(8, payer_offer_bytes.as_ref().map(|v| WithoutLength(&v[..])), option),
+			(7, self.contact_secret, option),
+			(9, payer_offer_bytes.as_ref().map(|v| WithoutLength(&v[..])), option),
 		});
 		Ok(())
 	}
@@ -1616,8 +1619,8 @@ impl Readable for InvoiceRequestFields {
 			(1, human_readable_name, option),
 			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
-			(6, contact_secret, option),
-			(8, payer_offer_bytes, (option, encoding: (Vec<u8>, WithoutLength))),
+			(7, contact_secret, option),
+			(9, payer_offer_bytes, (option, encoding: (Vec<u8>, WithoutLength))),
 		});
 
 		let payer_offer =
