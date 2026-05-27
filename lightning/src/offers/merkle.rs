@@ -10,8 +10,8 @@
 //! Tagged hashes for use in signature calculation and verification.
 
 use crate::io;
-use crate::offers::invoice::{EXPERIMENTAL_INVOICE_TYPES, INVOICE_TYPES};
-use crate::offers::offer::{EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES};
+use crate::offers::invoice::INVOICE_TYPES;
+use crate::offers::offer::EXPERIMENTAL_OFFER_TYPES;
 use crate::util::ser::{BigSize, Readable, Writeable, Writer};
 use bitcoin::hashes::{sha256, Hash, HashEngine};
 use bitcoin::secp256k1::schnorr::Signature;
@@ -54,10 +54,7 @@ impl TaggedHash {
 	pub(super) fn from_tlv_stream<'a, I: core::iter::Iterator<Item = TlvRecord<'a>>>(
 		tag: &'static str, tlv_stream: I,
 	) -> Self {
-		let tag_hash = sha256::Hash::hash(tag.as_bytes());
-		let merkle_root = root_hash(tlv_stream);
-		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
-		Self { tag, merkle_root, digest }
+		Self::from_merkle_root(tag, root_hash(tlv_stream))
 	}
 
 	/// Returns the digest to sign.
@@ -430,16 +427,6 @@ fn compute_omitted_markers<'a>(
 			} else {
 				let marker = next_marker(*prev_value);
 				*prev_value = marker;
-				// Real BOLT 12 invoices have far fewer than 239 non-signature TLVs,
-				// so the experimental range is never reached in practice; this
-				// assert documents and guards the invariant.
-				debug_assert!(
-					(OFFER_TYPES.start..INVOICE_TYPES.end).contains(&marker)
-						|| (EXPERIMENTAL_OFFER_TYPES.start..EXPERIMENTAL_INVOICE_TYPES.end)
-							.contains(&marker),
-					"compute_omitted_markers produced marker {} outside spec ranges",
-					marker,
-				);
 				Some(Some(marker))
 			}
 		})

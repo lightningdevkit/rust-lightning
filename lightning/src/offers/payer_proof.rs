@@ -25,8 +25,9 @@ use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, ExperimentalInvoiceTlvStream, ExplicitSigningPubkey,
-	InvoiceTlvStream, SigningPubkeyStrategy, INVOICE_AMOUNT_TYPE, INVOICE_CREATED_AT_TYPE,
-	INVOICE_FEATURES_TYPE, INVOICE_NODE_ID_TYPE, INVOICE_PAYMENT_HASH_TYPE, SIGNATURE_TAG,
+	InvoiceTlvStream, SigningPubkeyStrategy, EXPERIMENTAL_INVOICE_TYPES, INVOICE_AMOUNT_TYPE,
+	INVOICE_CREATED_AT_TYPE, INVOICE_FEATURES_TYPE, INVOICE_NODE_ID_TYPE,
+	INVOICE_PAYMENT_HASH_TYPE, SIGNATURE_TAG,
 };
 use crate::offers::invoice_request::{
 	ExperimentalInvoiceRequestTlvStream, InvoiceRequestTlvStream, INVOICE_REQUEST_PAYER_ID_TYPE,
@@ -168,7 +169,7 @@ const PAYER_PROOF_LEAF_HASHES_TYPE: u64 = 1004;
 const PAYER_PROOF_PROOF_NOTE_TYPE: u64 = 1005;
 
 /// Range covering the data-bearing payer-proof TLVs.
-pub(super) const PAYER_PROOF_DATA_TYPES: core::ops::RangeInclusive<u64> = 1001..=999_999_999;
+pub(super) const PAYER_PROOF_DATA_TYPES: core::ops::Range<u64> = 1001..1_000_000_000;
 
 /// Human-readable prefix for payer proofs in bech32 encoding.
 pub const PAYER_PROOF_HRP: &str = "lnp";
@@ -193,9 +194,8 @@ pub enum PayerProofError {
 	/// Failed to re-derive the payer signing key from the provided nonce and payment ID.
 	KeyDerivationFailed,
 	/// The given TLV type cannot be included in a payer proof. Carries the offending
-	/// type number. Reasons include `PAYER_METADATA_TYPE` (type 0), TLVs in the
-	/// signature/payer-proof range (`SIGNATURE_TYPES`, i.e. `240..=1000`), or types
-	/// in the unsupported gap between `SIGNATURE_TYPES` and `EXPERIMENTAL_OFFER_TYPES`.
+	/// type number. Reasons include `PAYER_METADATA_TYPE`, TLVs in `SIGNATURE_TYPES`,
+	/// or TLVs in `PAYER_PROOF_DATA_TYPES`.
 	DisallowedTlvType(u64),
 
 	/// Error decoding the payer proof.
@@ -349,13 +349,12 @@ impl<'a> PayerProofBuilder<'a, DerivedSigningPubkey> {
 impl<'a, S: SigningPubkeyStrategy> PayerProofBuilder<'a, S> {
 	/// Include a specific TLV type in the proof.
 	///
-	/// Returns an error if the type is not allowed: `PAYER_METADATA_TYPE`, types in
-	/// `SIGNATURE_TYPES`, or types in the unsupported gap below
-	/// `EXPERIMENTAL_OFFER_TYPES.start`.
+	/// Returns an error if the type is not allowed: `PAYER_METADATA_TYPE`, TLVs in
+	/// `SIGNATURE_TYPES`, or TLVs in `PAYER_PROOF_DATA_TYPES`.
 	pub fn include_type(mut self, tlv_type: u64) -> Result<Self, PayerProofError> {
 		if tlv_type == PAYER_METADATA_TYPE
 			|| SIGNATURE_TYPES.contains(&tlv_type)
-			|| (tlv_type > *SIGNATURE_TYPES.end() && tlv_type < EXPERIMENTAL_OFFER_TYPES.start)
+			|| PAYER_PROOF_DATA_TYPES.contains(&tlv_type)
 		{
 			return Err(PayerProofError::DisallowedTlvType(tlv_type));
 		}
@@ -491,8 +490,8 @@ where
 	}
 }
 
-// The proof's signature TLVs sit in the BOLT 12 `SIGNATURE_TYPES` range
-// (240..=1000) and are excluded from the standard merkle-root computation.
+// The proof's signature TLVs sit in the BOLT 12 `SIGNATURE_TYPES` range and are
+// excluded from the standard merkle-root computation.
 tlv_stream!(
 	PayerProofSignatureTlvStream, PayerProofSignatureTlvStreamRef<'a>, SIGNATURE_TYPES, {
 		(PAYER_PROOF_ISSUER_SIGNATURE_TYPE, invoice_signature: Signature),
@@ -500,9 +499,9 @@ tlv_stream!(
 	}
 );
 
-// The data-bearing TLVs sit in `PAYER_PROOF_DATA_TYPES` (1001..=999_999_999),
-// outside the signature range, so the standard merkle root for `proof_signature`
-// includes them as leaves.
+// The data-bearing TLVs sit in `PAYER_PROOF_DATA_TYPES`, outside the signature
+// range, so the standard merkle root for `proof_signature` includes them as
+// leaves.
 tlv_stream!(
 	PayerProofDataTlvStream, PayerProofDataTlvStreamRef<'a>, PAYER_PROOF_DATA_TYPES, {
 		(PAYER_PROOF_PREIMAGE_TYPE, proof_preimage: PaymentPreimage),
@@ -513,10 +512,9 @@ tlv_stream!(
 	}
 );
 
-// Ordered to match canonical TLV ordering: offer (1..80), invoice_request
-// (80..160), invoice (160..240), signature (240..=1000), proof data
-// (1001..=999_999_999), experimental_offer (1B..2B), experimental_invoice_request
-// (2B..3B), experimental_invoice (3B..).
+// Ordered to match canonical TLV ordering: offer, invoice_request, invoice,
+// signature, proof data, experimental_offer, experimental_invoice_request,
+// experimental_invoice.
 type FullPayerProofTlvStream = (
 	OfferTlvStream,
 	InvoiceRequestTlvStream,
@@ -912,20 +910,19 @@ fn validate_omitted_markers_for_parsing(
 	let mut inc_iter = included_types.iter().copied().peekable();
 	// After implicit TLV0 (marker 0), the first minimized marker would be 1
 	let mut expected_next: u64 = 1;
-	let mut prev = 0u64;
+	let mut prev = PAYER_METADATA_TYPE;
 
 	for &marker in omitted_markers {
-		// MUST NOT contain 0
-		if marker == 0 {
+		// MUST NOT contain PAYER_METADATA_TYPE
+		if marker == PAYER_METADATA_TYPE {
 			return Err(DecodeError::InvalidValue);
 		}
 
 		// MUST be inside one of the two valid ranges (`1..=239` or
-		// `1_000_000_000..=3_999_999_999`). Reject anything in the signature
-		// range, the payer-proof data range, or above 4_000_000_000.
+		// `1_000_000_000..=3_999_999_999`).
 		if SIGNATURE_TYPES.contains(&marker)
 			|| PAYER_PROOF_DATA_TYPES.contains(&marker)
-			|| marker >= 4_000_000_000
+			|| marker >= EXPERIMENTAL_INVOICE_TYPES.end
 		{
 			return Err(DecodeError::InvalidValue);
 		}
@@ -1623,7 +1620,7 @@ mod tests {
 		fn check_include_type(tlv_type: u64) -> Result<(), PayerProofError> {
 			if tlv_type == PAYER_METADATA_TYPE
 				|| SIGNATURE_TYPES.contains(&tlv_type)
-				|| (tlv_type > *SIGNATURE_TYPES.end() && tlv_type < EXPERIMENTAL_OFFER_TYPES.start)
+				|| PAYER_PROOF_DATA_TYPES.contains(&tlv_type)
 			{
 				return Err(PayerProofError::DisallowedTlvType(tlv_type));
 			}
