@@ -1149,6 +1149,72 @@ mod tests {
 		assert_eq!(super::next_marker(1_000_000_000), 1_000_000_001);
 	}
 
+	/// Demonstrates the contradiction in BOLT 12 PR #1295 (@`db3eff3a54`) between
+	/// the *writer* rule (lines 1041-1049), which mandates the 239 -> 1_000_000_000
+	/// marker jump, and the *reader* rule (lines 1065-1067), which never got a
+	/// matching carve-out: a reader applying the spec text literally rejects
+	/// exactly what the writer rule must produce.
+	///
+	/// The assertion below expects `Ok` (a proof the writer rule emits MUST be
+	/// accepted), so this test FAILS today, reproducing the spec problem. It
+	/// will pass once the reader rule is amended to allow the jump.
+	///
+	/// LDK's actual reader (`validate_omitted_markers_for_parsing`) follows the
+	/// writer rule's intent via the shared [`next_marker`] helper, so LDK
+	/// round-trips fine. This test uses a stripped-down literal transcription of
+	/// the reader rule to document the spec text's self-contradiction
+	/// independently of LDK's implementation choices.
+	///
+	/// Raised on the spec PR:
+	/// <https://github.com/lightning/bolts/pull/1295#discussion_r3286972971>
+	#[test]
+	fn spec_writer_reader_rules_contradict_on_gap_jump() {
+		// Literal transcription of BOLT 12 PR #1295 reader rule 1065-1067:
+		// "MUST reject ... if `proof_omitted_tlvs` is not one greater than:
+		//    - an included TLV number, or
+		//    - the previous `proof_omitted_tlvs` or 0 if it is the first number."
+		fn reader_rule_1065_literal(markers: &[u64], included: &[u64]) -> Result<(), String> {
+			let mut prev: u64 = 0;
+			for &m in markers {
+				let is_continuation = m == prev + 1;
+				let is_after_included = included.iter().any(|&inc| inc + 1 == m);
+				if !is_continuation && !is_after_included {
+					return Err(format!(
+						"marker {} is neither prev+1 (={}) nor inc+1 for any included TLV",
+						m,
+						prev + 1,
+					));
+				}
+				prev = m;
+			}
+			Ok(())
+		}
+
+		// Producer (writer rule lines 1041-1049): 240 consecutive omitted TLVs
+		// produce markers 1..=239 and then a jump to 1_000_000_000.
+		let dummy = sha256::Hash::all_zeros();
+		let tlv_data: Vec<TlvMerkleData> = (1u64..=240)
+			.map(|t| TlvMerkleData { tlv_type: t, per_tlv_hash: dummy, is_included: false })
+			.collect();
+		let markers: Vec<u64> = compute_omitted_markers(tlv_data.iter()).collect();
+		assert_eq!(
+			markers.last(),
+			Some(&1_000_000_000),
+			"writer rule mandates the 239 -> 1_000_000_000 jump",
+		);
+
+		// A correct reader MUST accept this marker sequence (the writer rule
+		// requires the producer to emit exactly it). A literal reading of reader
+		// rule 1065-1067 returns Err — that's the spec contradiction.
+		let result = reader_rule_1065_literal(&markers, &[]);
+		assert!(
+			result.is_ok(),
+			"spec contradiction reproduced: a marker sequence the writer rule \
+			 mandates was rejected by a literal reading of reader rule 1065-1067 — {:?}",
+			result,
+		);
+	}
+
 	#[test]
 	fn test_tlv_record_read_value_rejects_trailing_bytes() {
 		use bitcoin::secp256k1::PublicKey;
