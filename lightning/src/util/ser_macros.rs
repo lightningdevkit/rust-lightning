@@ -839,6 +839,58 @@ macro_rules! write_tlv_fields {
 	}
 }
 
+#[doc(hidden)]
+#[macro_export]
+macro_rules! _tlv_fields_serialized_length {
+	({$(($type: expr, $field: expr, $fieldty: tt $(, $self: ident)?)),* $(,)*}) => { {
+		use $crate::util::ser::BigSize;
+		let len = {
+			#[allow(unused_mut)]
+			let mut len = $crate::util::ser::LengthCalculatingWriter(0);
+			$(
+				$crate::_get_varint_length_prefixed_tlv_length!(len, $type, &$field, $fieldty $(, $self)?);
+			)*
+			len.0
+		};
+		let mut len_calc = $crate::util::ser::LengthCalculatingWriter(0);
+		BigSize(len as u64).write(&mut len_calc).expect("No in-memory data may fail to serialize");
+		len + len_calc.0
+	} }
+}
+
+/// Implements [`Writeable`] for a type serialized as a length-prefixed TLV stream.
+///
+/// This is useful for types that share the TLV-writing format used by
+/// [`impl_ser_tlv_based`] but need a custom read implementation. The field list uses the
+/// same entries accepted by [`write_tlv_fields`], and the macro derives both `write` and
+/// `serialized_length` from that list so the two paths stay aligned.
+///
+/// The `$self` argument names the generated `self` binding, allowing field expressions to refer
+/// to it explicitly.
+///
+/// [`Writeable`]: crate::util::ser::Writeable
+/// [`impl_ser_tlv_based`]: crate::impl_ser_tlv_based
+/// [`write_tlv_fields`]: crate::write_tlv_fields
+macro_rules! impl_writeable_tlv_based {
+	($st: ty, $self: ident, {$(($type: expr, $field: expr, $fieldty: tt)),* $(,)*}) => {
+		impl $crate::util::ser::Writeable for $st {
+			fn write<W: $crate::util::ser::Writer>(&$self, writer: &mut W) -> Result<(), $crate::io::Error> {
+				write_tlv_fields!(writer, {
+					$(($type, $field, $fieldty)),*
+				});
+				Ok(())
+			}
+
+			#[inline]
+			fn serialized_length(&$self) -> usize {
+				$crate::_tlv_fields_serialized_length!({
+					$(($type, $field, $fieldty)),*
+				})
+			}
+		}
+	}
+}
+
 /// Reads a prefix added by [`write_ver_prefix`], above. Takes the current version of the
 /// serialization logic for this object. This is compared against the
 /// `$min_version_that_can_read_this` added by [`write_ver_prefix`].
@@ -1095,18 +1147,9 @@ macro_rules! impl_ser_tlv_based {
 
 			#[inline]
 			fn serialized_length(&self) -> usize {
-				use $crate::util::ser::BigSize;
-				let len = {
-					#[allow(unused_mut)]
-					let mut len = $crate::util::ser::LengthCalculatingWriter(0);
-					$(
-						$crate::_get_varint_length_prefixed_tlv_length!(len, $type, &self.$field, $fieldty, self);
-					)*
-					len.0
-				};
-				let mut len_calc = $crate::util::ser::LengthCalculatingWriter(0);
-				BigSize(len as u64).write(&mut len_calc).expect("No in-memory data may fail to serialize");
-				len + len_calc.0
+				$crate::_tlv_fields_serialized_length!({
+					$(($type, self.$field, $fieldty, self)),*
+				})
 			}
 		}
 
