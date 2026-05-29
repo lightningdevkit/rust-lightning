@@ -525,44 +525,38 @@ where
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
 
-		// Ensure peers have at least three channels so that it is more difficult to infer the
-		// recipient's node_id.
-		const MIN_PEER_CHANNELS: usize = 3;
-
 		let network_graph = network_graph.deref().read_only();
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
 
 		let has_one_peer = peers.len() == 1;
-		let mut peer_info = peers
-			// Limit to peers with announced channels unless the recipient is unannounced.
-			.filter_map(|peer|
-				network_graph
-					.node(&NodeId::from_pubkey(&peer.node_id))
-					.filter(|info|
-						!is_recipient_announced || info.channels.len() >= MIN_PEER_CHANNELS
-					)
-					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
-					// Allow messages directly with the only peer when unannounced.
-					.or_else(|| (!is_recipient_announced && has_one_peer)
-						.then(|| (peer, false, 0))
-					)
-			)
-			// Exclude Tor-only nodes when the recipient is announced.
-			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
-			.collect::<Vec<_>>();
+		let paths = if !is_recipient_announced {
+			let mut peer_info = peers
+				// Limit to peers with announced channels unless the recipient is unannounced.
+				.filter_map(|peer|
+					network_graph
+						.node(&NodeId::from_pubkey(&peer.node_id))
+						.map(|info| (peer, info.is_tor_only(), info.channels.len()))
+						// Allow messages directly with the only peer
+						.or_else(|| has_one_peer.then(|| (peer, false, 0)))
+				)
+				.collect::<Vec<_>>();
 
-		// Prefer using non-Tor nodes with the most channels as the introduction node.
-		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
-			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
-		});
+			// Prefer using non-Tor nodes with the most channels as the introduction node.
+			peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
+				a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
+			});
 
-		let paths = peer_info.into_iter()
-			.map(|(peer, _, _)| {
-				BlindedMessagePath::new(&[peer], recipient, context.clone(), &**entropy_source, secp_ctx)
-			})
-			.take(MAX_PATHS)
-			.collect::<Result<Vec<_>, _>>();
+			peer_info
+				.into_iter()
+				.map(|(peer, _, _)| {
+					BlindedMessagePath::new(&[peer], recipient, context.clone(), &**entropy_source, secp_ctx)
+				})
+				.take(MAX_PATHS)
+				.collect::<Result<Vec<_>, _>>()
+		} else {
+			Ok(vec![])
+		};
 
 		let mut paths = match paths {
 			Ok(paths) if !paths.is_empty() => Ok(paths),
