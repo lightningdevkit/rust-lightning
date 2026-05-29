@@ -252,9 +252,13 @@ jobs:
               "hfuzz_workspace/${NAME}_target/input"
           done
       - name: Run fuzzers
+        id: run_fuzzers
         run: cd fuzz && ./ci-fuzz.sh && cd ..
         env:
           FUZZ_MINIMIZE: ${{ contains(github.event.pull_request.labels.*.name, 'fuzz-minimize') }}
+      - name: Replay fuzz crash for stacktrace
+        if: ${{ failure() && steps.run_fuzzers.outcome == 'failure' }}
+        run: cd fuzz && ./ci-replay-crashes.sh && cd ..
       - name: Stage new corpus entries for upload
         if: success() || failure()
         run: |
