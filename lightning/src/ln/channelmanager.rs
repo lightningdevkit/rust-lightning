@@ -61,8 +61,8 @@ use crate::ln::channel::QuiescentError;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
-	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, StfuResponse,
-	UpdateFulfillCommitFetch, WithChannelContext,
+	OutboundV1Channel, PendingV2Channel, QueueFulfillStatus, ReconnectionMsg, ShutdownResult,
+	StfuResponse, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -9643,6 +9643,12 @@ impl<
 					},
 				);
 			}
+			// Each `claim_funds_from_hop` above only queued the claim into the channel's
+			// holding cell (mirroring how failures are queued via `queue_fail_htlc`). Flush
+			// the holding cells now to release each affected channel's queued claims as a
+			// single combined `ChannelMonitorUpdate` plus one `commitment_signed`, batching
+			// any MPP parts that landed on the same channel.
+			self.check_free_holding_cells();
 		} else {
 			for htlc in sources {
 				let err_data = invalid_payment_err_data(
@@ -9869,16 +9875,66 @@ impl<
 			{
 				if let Some(chan) = chan_entry.get_mut().as_funded_mut() {
 					let logger = WithChannelContext::from(&self.logger, &chan.context, None);
-					let fulfill_res = chan.get_update_fulfill_htlc_and_commit(
+					// If RAA monitor updates on this channel are currently blocked (e.g. by an
+					// outstanding `MonitorUpdateCompletionAction` waiting on an event), we must
+					// still persist the preimage immediately for HTLC-preimage safety, even
+					// though we cannot yet release the combined `commitment_signed` update.
+					// Tell `queue_fulfill_htlc` so it falls back to a standalone preimage-only
+					// `ChannelMonitorUpdate` instead of relying on the upcoming holding-cell
+					// flush to produce a combined update.
+					//
+					// We deliberately ignore `ClaimedMPPPayment` blockers when computing this:
+					// those blockers are registered by the current MPP claim itself (and only
+					// resolved after every part has been persisted), so the first MPP part on
+					// a given channel would otherwise force every subsequent part on that same
+					// channel onto the standalone preimage path - defeating batching of MPP
+					// parts that share a channel.
+					let raa_blocked = peer_state
+						.actions_blocking_raa_monitor_updates
+						.get(&chan_id)
+						.map(|actions| {
+							actions.iter().any(|a| {
+								!matches!(
+									a,
+									RAAMonitorUpdateBlockingAction::ClaimedMPPPayment { .. }
+								)
+							})
+						})
+						.unwrap_or(false) || self
+						.pending_events
+						.lock()
+						.unwrap()
+						.iter()
+						.any(|(_, action)| {
+							if let Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+								channel_id: ev_channel_id,
+								counterparty_node_id: ev_counterparty_node_id,
+								..
+							}) = action
+							{
+								*ev_channel_id == chan_id
+									&& *ev_counterparty_node_id == prev_hop.counterparty_node_id
+							} else {
+								false
+							}
+						});
+					// Queue the claim into the channel's holding cell. The accompanying
+					// `update_fulfill_htlc` + `commitment_signed` + combined
+					// `ChannelMonitorUpdate` are produced by the holding-cell flush
+					// triggered later via `check_free_holding_cells()`, batching multiple
+					// claims on the same channel into a single round trip (the same path
+					// failures already use via `queue_fail_htlc`).
+					let fulfill_res = chan.queue_fulfill_htlc(
 						prev_hop.htlc_id,
 						payment_preimage,
 						payment_info,
 						attribution_data,
+						raa_blocked,
 						&&logger,
 					);
 
 					match fulfill_res {
-						UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
+						QueueFulfillStatus::NewClaim { htlc_value_msat, preimage_update } => {
 							let (action_opt, raa_blocker_opt) =
 								completion_action(Some(htlc_value_msat), false);
 							if let Some(action) = action_opt {
@@ -9900,21 +9956,28 @@ impl<
 									.or_insert_with(Vec::new)
 									.push(raa_blocker);
 							}
-							if let Some(data) = self.handle_new_monitor_update(
-								&mut peer_state.in_flight_monitor_updates,
-								&mut peer_state.monitor_update_blocked_actions,
-								&mut peer_state.pending_msg_events,
-								peer_state.is_connected,
-								chan,
-								prev_hop.funding_txo,
-								monitor_update,
-							) {
-								mem::drop(peer_state_lock);
-								mem::drop(per_peer_state);
-								let _ = self.handle_post_monitor_update_chan_resume(data);
+							// If the channel cannot immediately flush its holding cell,
+							// ship a preimage-only `ChannelMonitorUpdate` now to preserve
+							// HTLC-preimage safety. Otherwise the upcoming
+							// `check_free_holding_cells()` call produces a single combined
+							// update (preimage + commitment).
+							if let Some(monitor_update) = preimage_update {
+								if let Some(data) = self.handle_new_monitor_update(
+									&mut peer_state.in_flight_monitor_updates,
+									&mut peer_state.monitor_update_blocked_actions,
+									&mut peer_state.pending_msg_events,
+									peer_state.is_connected,
+									chan,
+									prev_hop.funding_txo,
+									monitor_update,
+								) {
+									mem::drop(peer_state_lock);
+									mem::drop(per_peer_state);
+									let _ = self.handle_post_monitor_update_chan_resume(data);
+								}
 							}
 						},
-						UpdateFulfillCommitFetch::DuplicateClaim {} => {
+						QueueFulfillStatus::DuplicateClaim => {
 							let (action_opt, raa_blocker_opt) = completion_action(None, true);
 							if let Some(raa_blocker) = raa_blocker_opt {
 								// If we're making a claim during startup, its a replay of a
@@ -13810,6 +13873,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 								None,
 							);
+							// `claim_funds_internal` only queues the claim into the previous
+							// hop's holding cell (mirroring `queue_fail_htlc`). Flush now so
+							// the resulting `PaymentForwarded` event is queued before any
+							// `ChannelClosed` event from a subsequent monitor event in the
+							// same batch, preserving the legacy event ordering.
+							self.check_free_holding_cells();
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
 							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
@@ -13939,11 +14008,50 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		);
 
 		let mut updates = Vec::new();
+		// Snapshot the channel ids whose RAA monitor updates are currently blocked, so we can
+		// skip flushing their holding cells (the flush would generate a `commitment_signed`,
+		// which would entail receiving the next RAA - exactly what's blocked). The preimage
+		// half of any queued claim has already been persisted as a standalone monitor update
+		// by `queue_fulfill_htlc` in this case, so HTLC-preimage safety is preserved.
+		//
+		// We deliberately ignore `ClaimedMPPPayment` blockers here: those are registered by
+		// the in-progress MPP claim flow and would otherwise prevent us from releasing the
+		// very combined update produced by that same flow.
+		//
+		// Note: unlike `queue_fulfill_htlc`'s `raa_blocked` computation and
+		// `raa_monitor_updates_held`, we intentionally do NOT also scan `pending_events` for
+		// `ReleaseRAAChannelMonitorUpdate` entries. Those two callers must over-approximate the
+		// set of RAA blockers because they gate either (a) persisting the preimage as a
+		// standalone monitor update for HTLC-preimage safety, or (b) sending out an inbound-RAA-
+		// derived `ChannelMonitorUpdate`. The flush here is neither: the combined
+		// `ChannelMonitorUpdate` it produces is applied immediately by `handle_new_monitor_update`
+		// (which does not consult `raa_monitor_updates_held`), so it never sits in
+		// `blocked_monitor_updates` and there is no preimage-loss risk. Skipping the flush merely
+		// because a `ReleaseRAAChannelMonitorUpdate` event is pending would suppress legitimate
+		// commitment generation (e.g. when resuming from quiescence with a holding-cell-queued
+		// fulfill whose preimage was already persisted standalone).
+		let raa_blocked_chan_ids: alloc::collections::BTreeSet<ChannelId> = peer_state
+			.actions_blocking_raa_monitor_updates
+			.iter()
+			.filter_map(|(chan_id, actions)| {
+				let has_real_blocker = actions.iter().any(|a| {
+					!matches!(a, RAAMonitorUpdateBlockingAction::ClaimedMPPPayment { .. })
+				});
+				if has_real_blocker {
+					Some(*chan_id)
+				} else {
+					None
+				}
+			})
+			.collect();
 		let funded_chan_iter = peer_state
 			.channel_by_id
 			.iter_mut()
 			.filter_map(|(chan_id, chan)| chan.as_funded_mut().map(|chan| (chan_id, chan)));
 		for (chan_id, chan) in funded_chan_iter {
+			if raa_blocked_chan_ids.contains(chan_id) {
+				continue;
+			}
 			let (monitor_opt, holding_cell_failed_htlcs) = chan.maybe_free_holding_cell_htlcs(
 				&self.fee_estimator,
 				&&WithChannelContext::from(&self.logger, &chan.context, None),
@@ -16914,6 +17022,11 @@ impl<
 	) {
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let res = self.internal_update_fulfill_htlc(&counterparty_node_id, msg);
+		// `internal_update_fulfill_htlc` may queue a fulfill into the previous hop's
+		// holding cell (mirroring `queue_fail_htlc`). Flush now so the queued claim is
+		// released through the same combined `ChannelMonitorUpdate` + `commitment_signed`
+		// path used by failures.
+		self.check_free_holding_cells();
 		let _ = self.handle_error(res, counterparty_node_id);
 	}
 
@@ -21110,40 +21223,20 @@ mod tests {
 		assert_eq!(events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
 
-		// Claim the full MPP payment. Note that we can't use a test utility like
-		// claim_funds_along_route because the ordering of the messages causes the second half of the
-		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
-		// lightning messages manually.
+		// Claim the full MPP payment. Both MPP parts arrived on the same channel, so the
+		// `ChannelManager` queues both fulfills into the channel's holding cell and releases
+		// them together as a single `ChannelMonitorUpdate` + `commitment_signed` (with two
+		// `update_fulfill_htlc`s) instead of two sequential rounds.
 		nodes[1].node.claim_funds(payment_preimage);
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
-		check_added_monitors(&nodes[1], 2);
+		check_added_monitors(&nodes[1], 1);
 
-		let mut bs_1st_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_1st_updates.update_fulfill_htlcs.remove(0));
+		let mut bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+		assert_eq!(bs_updates.update_fulfill_htlcs.len(), 2);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_updates.update_fulfill_htlcs.remove(0));
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
-		check_added_monitors(&nodes[0], 1);
-		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
-		check_added_monitors(&nodes[1], 1);
-		let mut bs_2nd_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
-		check_added_monitors(&nodes[1], 1);
-		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_2nd_updates.update_fulfill_htlcs.remove(0));
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_2nd_updates.commitment_signed);
-		check_added_monitors(&nodes[0], 1);
-		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
-		let as_second_updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-		check_added_monitors(&nodes[0], 1);
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
-		check_added_monitors(&nodes[1], 1);
-		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
-		check_added_monitors(&nodes[1], 1);
-		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
-		check_added_monitors(&nodes[0], 1);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, false);
 
 		// Note that successful MPP payments will generate a single PaymentSent event upon the first
 		// path's success and a PaymentPathSuccessful event for each path's success.
