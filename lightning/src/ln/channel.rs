@@ -13774,6 +13774,8 @@ where
 			remote_stats.available_balances.next_splice_out_maximum_sat;
 
 		#[cfg(debug_assertions)]
+		if !self.context.is_waiting_on_peer_pending_channel_update()
+			&& !self.context.is_monitor_or_signer_pending_channel_update()
 		{
 			// After this max splice out, validation passes, accounting for the updated reserves
 			self.validate_splice_contributions(
