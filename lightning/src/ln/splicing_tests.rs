@@ -2726,6 +2726,100 @@ fn test_splice_locked_waits_for_channel_reestablish() {
 }
 
 #[test]
+fn test_promoted_splice_locked_sent_after_channel_reestablish() {
+	// Test that a splice gets promoted for both nodes if one of the nodes sees the splice lock
+	// before reestablishment and the other after.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	let prev_funding_txo = get_monitor!(nodes[0], channel_id).get_funding_txo();
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	let outputs = vec![
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		},
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		},
+	];
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Confirm the splice for node 0 first. This should result in them sending `splice_locked`, but
+	// node 1 should not send it back yet as it hasn't seen the confirmation.
+	confirm_transaction(&nodes[0], &splice_tx);
+	let splice_locked_0 = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Reconnect the peers.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	connect_nodes(&nodes[0], &nodes[1]);
+	let reestablish_0 =
+		get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, node_id_1);
+	let reestablish_1 =
+		get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, node_id_0);
+
+	// Before delivering the reestablish message to each other, confirm the splice for node 1. We
+	// should see a `ChannelReady` event for node 1 as the pending splice should have been promoted,
+	// but `splice_locked` should not be sent until it receives node 0's reestablish.
+	confirm_transaction(&nodes[1], &splice_tx);
+	check_added_monitors(&nodes[1], 1);
+	let new_funding_txo =
+		get_monitor!(nodes[1], channel_id).get_funding_txo().into_bitcoin_outpoint();
+	let channel_ready_1 = get_event!(&nodes[1], Event::ChannelReady);
+	assert!(matches!(
+		channel_ready_1, Event::ChannelReady { funding_txo, .. }
+		if funding_txo == Some(new_funding_txo)
+	));
+
+	nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3, "{msg_events:?}");
+	assert!(matches!(&msg_events[0], MessageSendEvent::SendAnnouncementSignatures { .. }));
+	let splice_locked_1 = if let MessageSendEvent::SendSpliceLocked { msg, .. } = &msg_events[1] {
+		msg
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	assert!(matches!(&msg_events[2], MessageSendEvent::SendChannelUpdate { .. }));
+
+	// Deliver node 1's reestablish to node 0. Since it was generated prior to the splice
+	// confirmation, it should not promote the splice for node 0 yet.
+	nodes[0].node.handle_channel_reestablish(node_id_1, &reestablish_1);
+	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_id_1);
+
+	// Deliver node 1's splice locked to node 0, allowing the splice to be promoted on node 0's side
+	// as well.
+	nodes[0].node.handle_splice_locked(node_id_1, splice_locked_1);
+	check_added_monitors(&nodes[0], 1);
+	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, node_id_1);
+	let channel_ready_0 = get_event!(&nodes[0], Event::ChannelReady);
+	assert!(matches!(
+		channel_ready_0, Event::ChannelReady { funding_txo, .. }
+		if funding_txo == Some(new_funding_txo)
+	));
+
+	for node in [&nodes[0], &nodes[1]] {
+		node.chain_source.remove_watched_by_txid(prev_funding_txo.txid);
+	}
+}
+
+#[test]
 fn test_splice_reestablish_waits_for_holder_tx_signatures_before_commitment_signed() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
