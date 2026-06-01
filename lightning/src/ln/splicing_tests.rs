@@ -1153,6 +1153,55 @@ fn do_test_splice_state_reset_on_disconnect(reload: bool) {
 }
 
 #[test]
+fn test_reload_resets_splice_negotiation_without_dropping_candidates() {
+	// A reload should abort an in-flight RBF negotiation, but it must not drop the previously
+	// negotiated splice candidate that the monitor is still tracking.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_0, chain_monitor_0);
+	let node_0;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (_splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution.clone());
+
+	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(funding_template.min_rbf_feerate(), Some(rbf_feerate));
+	assert!(funding_template.prior_contribution().is_some());
+
+	let rbf_contribution =
+		funding_template.with_prior_contribution(rbf_feerate, FeeRate::MAX).build().unwrap();
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, rbf_contribution, None).unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+
+	let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
+	reload_node!(
+		nodes[0],
+		nodes[0].node.encode(),
+		&[&encoded_monitor_0],
+		persister_0,
+		chain_monitor_0,
+		node_0
+	);
+	let _ = get_event!(&nodes[0], Event::SpliceNegotiationFailed);
+
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(funding_template.min_rbf_feerate(), Some(rbf_feerate));
+	assert_eq!(funding_template.prior_contribution().unwrap(), &funding_contribution);
+}
+
+#[test]
 fn test_config_reject_inbound_splices() {
 	// Tests that nodes with `reject_inbound_splices` properly reject inbound splices but still
 	// allow outbound ones.
