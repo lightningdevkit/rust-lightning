@@ -119,7 +119,7 @@ impl DelayedPaymentOutputDescriptor {
 		+ chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH) as u64;
 }
 
-impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
+impl_ser_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(0, outpoint, required),
 	(2, per_commitment_point, required),
 	(4, to_self_delay, required),
@@ -217,7 +217,7 @@ impl StaticPaymentOutputDescriptor {
 		chan_params.is_some_and(|p| p.channel_type_features.supports_anchors_zero_fee_htlc_tx())
 	}
 }
-impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
+impl_ser_tlv_based!(StaticPaymentOutputDescriptor, {
 	(0, outpoint, required),
 	(2, output, required),
 	(4, channel_keys_id, required),
@@ -320,7 +320,7 @@ pub enum SpendableOutputDescriptor {
 	StaticPaymentOutput(StaticPaymentOutputDescriptor),
 }
 
-impl_writeable_tlv_based_enum_legacy!(SpendableOutputDescriptor,
+impl_ser_tlv_based_enum_legacy!(SpendableOutputDescriptor,
 	(0, StaticOutput) => {
 		(0, outpoint, required),
 		(1, channel_keys_id, option),
@@ -582,7 +582,7 @@ pub struct ChannelDerivationParameters {
 	pub transaction_parameters: ChannelTransactionParameters,
 }
 
-impl_writeable_tlv_based!(ChannelDerivationParameters, {
+impl_ser_tlv_based!(ChannelDerivationParameters, {
 	(0, value_satoshis, required),
 	(2, keys_id, required),
 	(4, transaction_parameters, (required: ReadableArgs, Some(value_satoshis.0.unwrap()))),
@@ -616,7 +616,7 @@ pub struct HTLCDescriptor {
 	pub counterparty_sig: Signature,
 }
 
-impl_writeable_tlv_based!(HTLCDescriptor, {
+impl_ser_tlv_based!(HTLCDescriptor, {
 	(0, channel_derivation_parameters, required),
 	(1, feerate_per_kw, (default_value, 0)),
 	(2, commitment_txid, required),

@@ -2131,8 +2131,8 @@ mod bucketed_history {
 		}
 	}
 
-	impl_writeable_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
-	impl_writeable_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
+	impl_ser_tlv_based!(HistoricalBucketRangeTracker, { (0, buckets, required) });
+	impl_ser_tlv_based!(LegacyHistoricalBucketRangeTracker, { (0, buckets, required) });
 
 	#[derive(Clone, Copy)]
 	#[repr(C)] // Force the fields in memory to be in the order we specify.

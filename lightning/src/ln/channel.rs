@@ -172,7 +172,7 @@ enum InboundHTLCResolution {
 	Pending { update_add_htlc: msgs::UpdateAddHTLC },
 }
 
-impl_writeable_tlv_based_enum!(InboundHTLCResolution,
+impl_ser_tlv_based_enum!(InboundHTLCResolution,
 	(0, Resolved) => {
 		(0, pending_htlc_status, required),
 	},
@@ -337,7 +337,7 @@ pub(super) struct OutboundHop {
 	pub(super) user_channel_id: u128,
 }
 
-impl_writeable_tlv_based!(OutboundHop, {
+impl_ser_tlv_based!(OutboundHop, {
 	(0, amt_msat, required),
 	(2, channel_id, required),
 	(4, node_id, required),
@@ -1517,7 +1517,7 @@ struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
 
-impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
+impl_ser_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
 
@@ -2596,22 +2596,17 @@ pub(super) struct FundingScope {
 	minimum_depth_override: Option<u32>,
 }
 
-impl Writeable for FundingScope {
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(writer, {
-			(1, self.value_to_self_msat, required),
-			(3, self.counterparty_selected_channel_reserve_satoshis, option),
-			(5, self.holder_selected_channel_reserve_satoshis, required),
-			(7, self.channel_transaction_parameters, (required: ReadableArgs, None)),
-			(9, self.funding_transaction, option),
-			(11, self.funding_tx_confirmed_in, option),
-			(13, self.funding_tx_confirmation_height, required),
-			(15, self.short_channel_id, option),
-			(17, self.minimum_depth_override, option),
-		});
-		Ok(())
-	}
-}
+impl_writeable_tlv_based!(FundingScope, self, {
+	(1, self.value_to_self_msat, required),
+	(3, self.counterparty_selected_channel_reserve_satoshis, option),
+	(5, self.holder_selected_channel_reserve_satoshis, required),
+	(7, self.channel_transaction_parameters, (required: ReadableArgs, None)),
+	(9, self.funding_transaction, option),
+	(11, self.funding_tx_confirmed_in, option),
+	(13, self.funding_tx_confirmation_height, required),
+	(15, self.short_channel_id, option),
+	(17, self.minimum_depth_override, option),
+});
 
 impl Readable for FundingScope {
 	#[rustfmt::skip]
@@ -2994,7 +2989,7 @@ struct PendingFunding {
 	contributions: Vec<FundingContribution>,
 }
 
-impl_writeable_tlv_based!(PendingFunding, {
+impl_ser_tlv_based!(PendingFunding, {
 	(1, funding_negotiation, upgradable_option),
 	(3, negotiated_candidates, required_vec),
 	(5, sent_funding_txid, option),

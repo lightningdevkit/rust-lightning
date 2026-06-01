@@ -106,7 +106,7 @@ pub struct InboundHTLCDetails {
 	pub is_dust: bool,
 }
 
-impl_writeable_tlv_based!(InboundHTLCDetails, {
+impl_ser_tlv_based!(InboundHTLCDetails, {
 	(0, htlc_id, required),
 	(2, amount_msat, required),
 	(4, cltv_expiry, required),
@@ -200,7 +200,7 @@ pub struct OutboundHTLCDetails {
 	pub is_dust: bool,
 }
 
-impl_writeable_tlv_based!(OutboundHTLCDetails, {
+impl_ser_tlv_based!(OutboundHTLCDetails, {
 	(0, htlc_id, required),
 	(2, amount_msat, required),
 	(4, cltv_expiry, required),
@@ -223,7 +223,7 @@ pub struct CounterpartyForwardingInfo {
 	pub cltv_expiry_delta: u16,
 }
 
-impl_writeable_tlv_based!(CounterpartyForwardingInfo, {
+impl_ser_tlv_based!(CounterpartyForwardingInfo, {
 	(2, fee_base_msat, required),
 	(4, fee_proportional_millionths, required),
 	(6, cltv_expiry_delta, required),
@@ -258,7 +258,7 @@ pub struct ChannelCounterparty {
 	pub outbound_htlc_maximum_msat: Option<u64>,
 }
 
-impl_writeable_tlv_based!(ChannelCounterparty, {
+impl_ser_tlv_based!(ChannelCounterparty, {
 	(2, node_id, required),
 	(4, features, required),
 	(6, unspendable_punishment_reserve, required),
@@ -621,7 +621,7 @@ impl ChannelDetails {
 	}
 }
 
-impl_writeable_tlv_based!(ChannelDetails, {
+impl_ser_tlv_based!(ChannelDetails, {
 	(1, inbound_scid_alias, option),
 	(2, channel_id, required),
 	(3, channel_type, option),
@@ -686,7 +686,7 @@ pub enum ChannelShutdownState {
 	ShutdownComplete,
 }
 
-impl_writeable_tlv_based_enum!(ChannelShutdownState,
+impl_ser_tlv_based_enum!(ChannelShutdownState,
 	(0, NotShuttingDown) => {},
 	(2, ShutdownInitiated) => {},
 	(4, ResolvingHTLCs) => {},

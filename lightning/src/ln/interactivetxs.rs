@@ -253,16 +253,16 @@ impl TxOutMetadata {
 	}
 }
 
-impl_writeable_tlv_based!(TxInMetadata, {
+impl_ser_tlv_based!(TxInMetadata, {
 	(1, serial_id, required),
 	(3, prev_output, required),
 });
 
-impl_writeable_tlv_based!(TxOutMetadata, {
+impl_ser_tlv_based!(TxOutMetadata, {
 	(1, serial_id, required),
 });
 
-impl_writeable_tlv_based!(ConstructedTransaction, {
+impl_ser_tlv_based!(ConstructedTransaction, {
 	(1, holder_is_initiator, required),
 	(3, input_metadata, required),
 	(5, output_metadata, required),
@@ -530,7 +530,7 @@ pub(crate) struct SharedInputSignature {
 	witness_script: ScriptBuf,
 }
 
-impl_writeable_tlv_based!(SharedInputSignature, {
+impl_ser_tlv_based!(SharedInputSignature, {
 	(1, holder_signature_first, required),
 	(3, witness_script, required),
 });
@@ -930,7 +930,7 @@ impl InteractiveTxSigningSession {
 	}
 }
 
-impl_writeable_tlv_based!(InteractiveTxSigningSession, {
+impl_ser_tlv_based!(InteractiveTxSigningSession, {
 	(1, unsigned_tx, required),
 	(3, has_received_commitment_signed, required),
 	(5, holder_tx_signatures, required),
@@ -1656,7 +1656,7 @@ enum AddingRole {
 	Remote,
 }
 
-impl_writeable_tlv_based_enum!(AddingRole,
+impl_ser_tlv_based_enum!(AddingRole,
 	(1, Local) => {},
 	(3, Remote) => {},
 );
@@ -1806,7 +1806,7 @@ pub(super) struct SharedOwnedOutput {
 	local_owned: u64,
 }
 
-impl_writeable_tlv_based!(SharedOwnedOutput, {
+impl_ser_tlv_based!(SharedOwnedOutput, {
 	(1, tx_out, required),
 	(3, local_owned, required),
 });
@@ -1836,7 +1836,7 @@ enum OutputOwned {
 	Shared(SharedOwnedOutput),
 }
 
-impl_writeable_tlv_based_enum!(OutputOwned,
+impl_ser_tlv_based_enum!(OutputOwned,
 	{1, Single} => (),
 	{3, Shared} => (),
 );

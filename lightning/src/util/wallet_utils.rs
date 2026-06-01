@@ -79,7 +79,7 @@ pub struct Utxo {
 	pub sequence: Sequence,
 }
 
-impl_writeable_tlv_based!(Utxo, {
+impl_ser_tlv_based!(Utxo, {
 	(1, outpoint, required),
 	(3, output, required),
 	(5, satisfaction_weight, required),
@@ -164,7 +164,7 @@ pub struct ConfirmedUtxo {
 	pub(crate) prevtx: Transaction,
 }
 
-impl_writeable_tlv_based!(ConfirmedUtxo, {
+impl_ser_tlv_based!(ConfirmedUtxo, {
 	(1, utxo, required),
 	(3, _sequence, (legacy, Sequence,
 		|read_val: Option<&Sequence>| {

@@ -76,7 +76,7 @@ impl AsyncReceiveOffer {
 	}
 }
 
-impl_writeable_tlv_based_enum!(OfferStatus,
+impl_ser_tlv_based_enum!(OfferStatus,
 	(0, Used) => {
 		(0, invoice_created_at, required),
 	},
@@ -86,7 +86,7 @@ impl_writeable_tlv_based_enum!(OfferStatus,
 	(2, Pending) => {},
 );
 
-impl_writeable_tlv_based!(AsyncReceiveOffer, {
+impl_ser_tlv_based!(AsyncReceiveOffer, {
 	(0, offer, required),
 	(2, offer_nonce, required),
 	(4, status, required),

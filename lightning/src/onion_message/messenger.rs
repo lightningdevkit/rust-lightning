@@ -358,7 +358,7 @@ pub struct Responder {
 	reply_path: BlindedMessagePath,
 }
 
-impl_writeable_tlv_based!(Responder, {
+impl_ser_tlv_based!(Responder, {
 	(0, reply_path, required),
 });
 

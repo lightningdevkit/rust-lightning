@@ -317,6 +317,11 @@ impl<'a, T: Writeable> Writeable for &'a T {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		(*self).write(writer)
 	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		(*self).serialized_length()
+	}
 }
 
 /// A trait that various LDK types implement allowing them to be read in from a [`Read`].
@@ -846,6 +851,11 @@ impl<S: AsWriteableSlice> Writeable for WithoutLength<S> {
 		}
 		Ok(())
 	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		self.0.as_slice().iter().map(|v| v.serialized_length()).sum()
+	}
 }
 
 impl<T: MaybeReadable> LengthReadable for WithoutLength<Vec<T>> {
@@ -1366,6 +1376,11 @@ impl<T: Writeable> Writeable for Box<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		T::write(&**self, w)
 	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		T::serialized_length(&**self)
+	}
 }
 
 impl<T: Readable> Readable for Box<T> {
@@ -1384,6 +1399,17 @@ impl<T: Writeable> Writeable for Option<T> {
 			},
 		}
 		Ok(())
+	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		match *self {
+			None => 1,
+			Some(ref data) => {
+				let data_len = data.serialized_length();
+				BigSize(data_len as u64 + 1).serialized_length() + data_len
+			},
+		}
 	}
 }
 

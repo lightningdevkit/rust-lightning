@@ -660,7 +660,7 @@ pub enum AsyncPaymentsContext {
 	},
 }
 
-impl_writeable_tlv_based_enum!(MessageContext,
+impl_ser_tlv_based_enum!(MessageContext,
 	{0, Offers} => (),
 	{1, Custom} => (),
 	{2, AsyncPayments} => (),
@@ -671,7 +671,7 @@ impl_writeable_tlv_based_enum!(MessageContext,
 // introduction of `ReceiveAuthKey`-based authentication for inbound `BlindedMessagePath`s. Because
 // we do not support receiving to those contexts anymore (they will fail the `ReceiveAuthKey`-based
 // authentication checks), we can reuse those fields here.
-impl_writeable_tlv_based_enum!(OffersContext,
+impl_ser_tlv_based_enum!(OffersContext,
 	(0, InvoiceRequest) => {
 		(0, nonce, required),
 		(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
@@ -694,7 +694,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	},
 );
 
-impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
+impl_ser_tlv_based_enum!(AsyncPaymentsContext,
 	(0, OutboundPayment) => {
 		(0, payment_id, required),
 	},
@@ -737,7 +737,7 @@ pub struct DNSResolverContext {
 	pub nonce: [u8; 16],
 }
 
-impl_writeable_tlv_based!(DNSResolverContext, {
+impl_ser_tlv_based!(DNSResolverContext, {
 	(0, nonce, required),
 });
 

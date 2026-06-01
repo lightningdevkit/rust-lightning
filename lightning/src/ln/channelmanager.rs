@@ -819,7 +819,7 @@ impl SentHTLCId {
 		}
 	}
 }
-impl_writeable_tlv_based_enum!(SentHTLCId,
+impl_ser_tlv_based_enum!(SentHTLCId,
 	(0, PreviousHopData) => {
 		(0, prev_outbound_scid_alias, required),
 		(2, htlc_id, required),
@@ -1228,7 +1228,7 @@ struct ClaimingPayment {
 	/// outpoint), allowing us to remove this field.
 	durable_preimage_channel: Option<(OutPoint, PublicKey, ChannelId)>,
 }
-impl_writeable_tlv_based!(ClaimingPayment, {
+impl_ser_tlv_based!(ClaimingPayment, {
 	(0, amount_msat, required),
 	(1, durable_preimage_channel, option),
 	(2, payment_purpose, required),
@@ -1614,7 +1614,7 @@ pub(crate) struct PaymentCompleteUpdate {
 	htlc_id: SentHTLCId,
 }
 
-impl_writeable_tlv_based!(PaymentCompleteUpdate, {
+impl_ser_tlv_based!(PaymentCompleteUpdate, {
 	(1, channel_funding_outpoint, required),
 	(3, counterparty_node_id, required),
 	(5, channel_id, required),
@@ -1636,7 +1636,7 @@ pub(crate) enum EventCompletionAction {
 	/// Note that this action will be dropped on downgrade to LDK prior to 0.2!
 	ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate),
 }
-impl_writeable_tlv_based_enum!(EventCompletionAction,
+impl_ser_tlv_based_enum!(EventCompletionAction,
 	(0, ReleaseRAAChannelMonitorUpdate) => {
 		(0, channel_funding_outpoint, option),
 		(2, counterparty_node_id, required),
@@ -1691,7 +1691,7 @@ struct MPPClaimHTLCSource {
 	htlc_id: u64,
 }
 
-impl_writeable_tlv_based!(MPPClaimHTLCSource, {
+impl_ser_tlv_based!(MPPClaimHTLCSource, {
 	(0, counterparty_node_id, required),
 	(2, funding_txo, required),
 	(4, channel_id, required),
@@ -1710,7 +1710,7 @@ pub(crate) struct PaymentClaimDetails {
 	claiming_payment: ClaimingPayment,
 }
 
-impl_writeable_tlv_based!(PaymentClaimDetails, {
+impl_ser_tlv_based!(PaymentClaimDetails, {
 	(0, mpp_parts, required_vec),
 	(2, claiming_payment, required),
 });
@@ -17835,19 +17835,19 @@ const MIN_SERIALIZATION_VERSION: u8 = 1;
 // Left as `None` for now until we are committed to writing inbound committed onions in `Channel`s.
 const RECONSTRUCT_HTLCS_FROM_CHANS_VERSION: Option<u8> = None;
 
-impl_writeable_tlv_based!(PhantomRouteHints, {
+impl_ser_tlv_based!(PhantomRouteHints, {
 	(2, channels, required_vec),
 	(4, phantom_scid, required),
 	(6, real_node_pubkey, required),
 });
 
-impl_writeable_tlv_based!(BlindedForward, {
+impl_ser_tlv_based!(BlindedForward, {
 	(0, inbound_blinding_point, required),
 	(1, failure, (default_value, BlindedFailure::FromIntroductionNode)),
 	(3, next_blinding_override, option),
 });
 
-impl_writeable_tlv_based_enum!(PendingHTLCRouting,
+impl_ser_tlv_based_enum!(PendingHTLCRouting,
 	(0, Forward) => {
 		(0, onion_packet, required),
 		(1, blinded, option),
@@ -17885,7 +17885,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 	}
 );
 
-impl_writeable_tlv_based!(PendingHTLCInfo, {
+impl_ser_tlv_based!(PendingHTLCInfo, {
 	(0, routing, required),
 	(2, incoming_shared_secret, required),
 	(4, payment_hash, required),
@@ -17970,17 +17970,17 @@ impl Readable for HTLCFailureMsg {
 	}
 }
 
-impl_writeable_tlv_based_enum_legacy!(PendingHTLCStatus, ;
+impl_ser_tlv_based_enum_legacy!(PendingHTLCStatus, ;
 	(0, Forward),
 	(1, Fail),
 );
 
-impl_writeable_tlv_based_enum!(BlindedFailure,
+impl_ser_tlv_based_enum!(BlindedFailure,
 	(0, FromIntroductionNode) => {},
 	(2, FromBlindedNode) => {},
 );
 
-impl_writeable_tlv_based!(HTLCPreviousHopData, {
+impl_ser_tlv_based!(HTLCPreviousHopData, {
 	(0, prev_outbound_scid_alias, required),
 	(1, phantom_shared_secret, option),
 	(2, outpoint, required),
@@ -18155,7 +18155,7 @@ impl Writeable for HTLCSource {
 	}
 }
 
-impl_writeable_tlv_based!(PendingAddHTLCInfo, {
+impl_ser_tlv_based!(PendingAddHTLCInfo, {
 	(0, forward_info, required),
 	(1, prev_user_channel_id, (default_value, 0)),
 	(2, prev_outbound_scid_alias, required),
@@ -18167,7 +18167,7 @@ impl_writeable_tlv_based!(PendingAddHTLCInfo, {
 	(9, prev_counterparty_node_id, required),
 });
 
-impl_writeable_tlv_based!(TrampolineDispatch, {
+impl_ser_tlv_based!(TrampolineDispatch, {
 	(1, payment_id, required),
 	(3, path, required),
 	(5, session_priv, required),
@@ -18244,7 +18244,7 @@ impl Readable for HTLCForwardInfo {
 	}
 }
 
-impl_writeable_tlv_based!(PendingInboundPayment, {
+impl_ser_tlv_based!(PendingInboundPayment, {
 	(0, payment_secret, required),
 	(2, expiry_time, required),
 	(4, user_payment_id, required),

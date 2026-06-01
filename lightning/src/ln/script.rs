@@ -56,7 +56,7 @@ impl Readable for ShutdownScript {
 	}
 }
 
-impl_writeable_tlv_based_enum_legacy!(ShutdownScriptImpl, ;
+impl_ser_tlv_based_enum_legacy!(ShutdownScriptImpl, ;
 	(0, Legacy),
 	(1, Bolt2),
 );

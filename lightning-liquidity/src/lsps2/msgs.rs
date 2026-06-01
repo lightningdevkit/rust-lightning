@@ -21,7 +21,7 @@ use bitcoin::secp256k1::PublicKey;
 
 use serde::{Deserialize, Serialize};
 
-use lightning::impl_writeable_tlv_based;
+use lightning::impl_ser_tlv_based;
 use lightning::util::scid_utils;
 
 use crate::lsps0::ser::{
@@ -123,7 +123,7 @@ pub struct LSPS2OpeningFeeParams {
 	pub promise: String,
 }
 
-impl_writeable_tlv_based!(LSPS2OpeningFeeParams, {
+impl_ser_tlv_based!(LSPS2OpeningFeeParams, {
 	(0, min_fee_msat, required),
 	(2, proportional, required),
 	(4, valid_until, required),

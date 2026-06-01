@@ -159,19 +159,19 @@ pub enum FundingPurpose {
 
 // Needed so downstream consumers can persist these without needing to define wrapper types
 // mirroring the type structure.
-impl_writeable_tlv_based!(FundingCandidate, {
+impl_ser_tlv_based!(FundingCandidate, {
 	(1, txid, required),
 	(3, channels, required_vec),
 });
 
-impl_writeable_tlv_based!(ChannelFunding, {
+impl_ser_tlv_based!(ChannelFunding, {
 	(1, counterparty_node_id, required),
 	(3, channel_id, required),
 	(5, purpose, required),
 	(7, contribution, option),
 });
 
-impl_writeable_tlv_based_enum!(FundingPurpose,
+impl_ser_tlv_based_enum!(FundingPurpose,
 	(0, Establishment) => {},
 	(2, Splice) => {},
 );
