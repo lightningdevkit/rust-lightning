@@ -2989,15 +2989,6 @@ struct PendingFunding {
 	contributions: Vec<FundingContribution>,
 }
 
-impl_ser_tlv_based!(PendingFunding, {
-	(1, funding_negotiation, upgradable_option),
-	(3, negotiated_candidates, required_vec),
-	(5, sent_funding_txid, option),
-	(7, received_funding_txid, option),
-	(8, last_funding_feerate_sat_per_1000_weight, option),
-	(10, contributions, optional_vec),
-});
-
 #[derive(Debug)]
 enum FundingNegotiation {
 	AwaitingAck {
@@ -3036,6 +3027,57 @@ impl_writeable_tlv_based_enum_upgradable!(FundingNegotiation,
 	},
 	unread_variants: AwaitingAck, ConstructingTransaction
 );
+
+struct PendingFundingWriteable<'a> {
+	pending_funding: &'a PendingFunding,
+	reset_funding_negotiation: bool,
+}
+
+impl Writeable for PendingFundingWriteable<'_> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let funding_negotiation = if self.reset_funding_negotiation {
+			None
+		} else {
+			self.pending_funding.funding_negotiation.as_ref()
+		};
+		debug_assert!(
+			funding_negotiation.is_none()
+				|| matches!(
+					funding_negotiation,
+					Some(FundingNegotiation::AwaitingSignatures { .. })
+				)
+		);
+		let contributions_len = if self.reset_funding_negotiation
+			&& self.pending_funding.funding_negotiation.is_some()
+		{
+			self.pending_funding.contributions.len().saturating_sub(1)
+		} else {
+			self.pending_funding.contributions.len()
+		};
+		write_tlv_fields!(writer, {
+			(1, funding_negotiation, upgradable_option),
+			(3, self.pending_funding.negotiated_candidates, required_vec),
+			(5, self.pending_funding.sent_funding_txid, option),
+			(7, self.pending_funding.received_funding_txid, option),
+			(8, self.pending_funding.last_funding_feerate_sat_per_1000_weight, option),
+			(10, self.pending_funding.contributions[..contributions_len], optional_vec),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for PendingFunding {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(_decode_and_build!(reader, Self, {
+			(1, funding_negotiation, upgradable_option),
+			(3, negotiated_candidates, required_vec),
+			(5, sent_funding_txid, option),
+			(7, received_funding_txid, option),
+			(8, last_funding_feerate_sat_per_1000_weight, option),
+			(10, contributions, optional_vec),
+		}))
+	}
+}
 
 impl FundingNegotiation {
 	fn as_funding(&self) -> Option<&FundingScope> {
@@ -16305,10 +16347,18 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		let holder_commitment_point_next = self.holder_commitment_point.next_point();
 		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
 
-		// We don't have to worry about resetting the pending `FundingNegotiation` because we
-		// can only read `FundingNegotiation::AwaitingSignatures` variants anyway.
-		let pending_splice =
-			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state(true));
+		// Avoid writing any negotiations that are not at the signing stage yet, as they cannot be
+		// resumed on reestablishment, but keep any already-negotiated candidates.
+		let reset_funding_negotiation = self.should_reset_pending_splice_state(true);
+		let should_persist_pending_splice =
+			!reset_funding_negotiation || !self.pending_funding().is_empty();
+		let pending_splice = should_persist_pending_splice
+			.then(|| ())
+			.and_then(|_| self.pending_splice.as_ref())
+			.map(|pending_funding| PendingFundingWriteable {
+				pending_funding,
+				reset_funding_negotiation,
+			});
 
 		let monitor_pending_tx_signatures =
 			self.context.monitor_pending_tx_signatures.then_some(());
