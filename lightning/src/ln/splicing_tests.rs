@@ -9770,3 +9770,44 @@ fn test_splice_out_maximum_on_both_commitments_dust_on_funder_commitment() {
 		CHANNEL_VALUE_SAT - node_0_payment_sat - TOTAL_ANCHORS_SAT - reserved_fee_sat;
 	assert_eq!(details.next_splice_out_maximum_sat, expected_next_splice_out_maximum_sat);
 }
+
+// When we advertise the next splice out maximum, we include any HTLCs in the state
+// `InboundHTLCState::LocalRemoved(Fulfill { .. })` in our balance; by the time we clear this update
+// and splice the channel, our settled balance will include it.
+#[test]
+fn test_splice_out_maximum_includes_pending_claimed_inbound_htlc() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	const CHANNEL_VALUE_MSAT: u64 = 100_000_000;
+	const PENDING_CLAIMED_INBOUND_HTLC_MSAT: u64 = 10_000_000;
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, CHANNEL_VALUE_MSAT / 1000, 0);
+
+	let (payment_preimage, payment_hash, ..) =
+		route_payment(&nodes[0], &[&nodes[1]], PENDING_CLAIMED_INBOUND_HTLC_MSAT);
+
+	nodes[1].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, PENDING_CLAIMED_INBOUND_HTLC_MSAT);
+
+	let updates = get_htlc_update_msgs(&nodes[1], &node_id_0);
+	assert!(updates.update_add_htlcs.is_empty());
+	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+	assert!(updates.update_fail_htlcs.is_empty());
+	assert!(updates.update_fail_malformed_htlcs.is_empty());
+	assert!(updates.update_fee.is_none());
+	assert_eq!(updates.commitment_signed.len(), 1);
+
+	let node_1_details = &nodes[1].node.list_channels()[0];
+	let local_balance_before_fee_sat = PENDING_CLAIMED_INBOUND_HTLC_MSAT / 1000;
+	let dividend_sat = local_balance_before_fee_sat * 100 + 100 - CHANNEL_VALUE_MSAT / 1000;
+	let expected_splice_out_max = (dividend_sat - 1) / 99;
+	assert_eq!(node_1_details.next_splice_out_maximum_sat, expected_splice_out_max);
+
+	assert!(nodes[1].node.splice_channel(&channel_id, &node_id_0).is_ok());
+}
