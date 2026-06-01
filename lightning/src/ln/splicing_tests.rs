@@ -3241,6 +3241,153 @@ fn test_holding_cell_claim_freed_after_inferred_splice_locked() {
 }
 
 #[test]
+fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
+	// A stale ChannelManager may be reloaded after a monitor update completed and released its
+	// messages to the peer. If a later splice-locked monitor update is in-flight while the channel
+	// reestablishes, completing it must not release the stale messages again.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let chain_monitor;
+	let node_1_reload;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	let prev_funding_outpoint = get_monitor!(nodes[1], channel_id).get_funding_txo();
+	let prev_funding_script = get_monitor!(nodes[1], channel_id).get_funding_script();
+
+	let outputs = vec![
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		},
+		TxOut {
+			value: Amount::from_sat(initial_channel_value_sat / 4),
+			script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+		},
+	];
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Only let node 0 see the splice lock for now.
+	confirm_transaction(&nodes[0], &splice_tx);
+	let splice_locked_0 = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Send an HTLC from node 0 to 1 that will get fully committed to.
+	let payment_amount = 1_000_000;
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], payment_amount);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	let htlc_update = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	check_added_monitors(&nodes[0], 1);
+
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[1].node.handle_update_add_htlc(node_id_0, &htlc_update.update_add_htlcs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &htlc_update.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Persist the `ChannelManager` while node 1 is still pending to send their RAA+CS to node 0.
+	let stale_manager_1 = nodes[1].node.encode();
+
+	// Let node 1 release its RAA+CS to node 0 and process them.
+	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	let (raa, commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
+	nodes[0].node.handle_revoke_and_ack(node_id_1, &raa);
+	check_added_monitors(&nodes[0], 1);
+	nodes[0].node.handle_commitment_signed_batch_test(node_id_1, &commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+	let _dropped_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, node_id_1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Reload node 1 with the stale `ChannelManager` and confirm the splice.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	let latest_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
+	reload_node!(
+		nodes[1],
+		&stale_manager_1,
+		&[&latest_monitor_1],
+		persister,
+		chain_monitor,
+		node_1_reload
+	);
+
+	mine_transaction_without_consistency_checks(&nodes[1], &splice_tx);
+	connect_blocks(&nodes[1], 5);
+	persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+	// Reestablish the channel. While the `ChannelManager` should think it still owes node 0 its
+	// RAA+CS, it should determine from node 0's `channel_reestablish` that they were already
+	// delivered.
+	connect_nodes(&nodes[0], &nodes[1]);
+	check_added_monitors(&nodes[1], 1);
+	let reestablish_0 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	nodes[1].node.handle_channel_reestablish(node_id_0, reestablish_0.first().unwrap());
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(
+		msg_events.iter().all(|event| !matches!(
+			event,
+			MessageSendEvent::SendRevokeAndACK { .. } | MessageSendEvent::UpdateHTLCs { .. }
+		)),
+		"stale monitor-pending resend leaked during reestablish: {msg_events:?}"
+	);
+
+	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert!(
+		msg_events.iter().all(|event| !matches!(
+			event,
+			MessageSendEvent::SendRevokeAndACK { .. } | MessageSendEvent::UpdateHTLCs { .. }
+		)),
+		"stale monitor-pending resend leaked after reestablish: {msg_events:?}"
+	);
+	expect_channel_ready_event(&nodes[1], &node_id_0);
+
+	nodes[0].node.handle_channel_reestablish(node_id_1, reestablish_1.first().unwrap());
+	check_added_monitors(&nodes[0], 1);
+	expect_channel_ready_event(&nodes[0], &node_id_1);
+
+	// Finish fully committing the HTLC and make sure we can still send more payments.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 3, "{msg_events:?}");
+	if let MessageSendEvent::SendRevokeAndACK { msg, .. } = &msg_events[0] {
+		nodes[1].node.handle_revoke_and_ack(node_id_0, msg);
+		check_added_monitors(&nodes[1], 1);
+		nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+		persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		nodes[1].node.process_pending_htlc_forwards();
+		expect_payment_claimable!(&nodes[1], payment_hash, payment_secret, payment_amount);
+	} else {
+		panic!("Unexpected event {:?}", &msg_events[0]);
+	}
+
+	send_payment(&nodes[0], &[&nodes[1]], payment_amount);
+
+	for node in &[&nodes[0], &nodes[1]] {
+		node.chain_source
+			.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script.clone());
+	}
+}
+
+#[test]
 fn test_stale_announcement_signatures_ignored_after_splice_lock() {
 	// Regression test: a peer may transmit `announcement_signatures` signed over a pre-splice
 	// `short_channel_id` (for example, a stale retransmission or a peer implementation that
