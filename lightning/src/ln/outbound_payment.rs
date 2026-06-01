@@ -164,6 +164,9 @@ pub(crate) enum PendingOutboundPayment {
 		/// The total payment amount across all paths, used to be able to issue `PaymentSent` if
 		/// an HTLC still happens to succeed after we marked the payment as abandoned.
 		total_msat: Option<u64>,
+		/// Preserved from `Retryable` so we can still report `fee_paid_msat` if an HTLC succeeds after
+		/// the payment was abandoned. Added in 0.3.
+		pending_fee_msat: Option<u64>,
 	},
 }
 
@@ -252,6 +255,7 @@ impl PendingOutboundPayment {
 	fn get_pending_fee_msat(&self) -> Option<u64> {
 		match self {
 			PendingOutboundPayment::Retryable { pending_fee_msat, .. } => pending_fee_msat.clone(),
+			PendingOutboundPayment::Abandoned { pending_fee_msat, .. } => pending_fee_msat.clone(),
 			_ => None,
 		}
 	}
@@ -308,6 +312,7 @@ impl PendingOutboundPayment {
 			_ => new_hash_set(),
 		};
 		let total_msat = self.total_msat();
+		let pending_fee_msat = self.get_pending_fee_msat();
 		match self {
 			Self::Retryable { payment_hash, .. } |
 				Self::InvoiceReceived { payment_hash, .. } |
@@ -318,6 +323,7 @@ impl PendingOutboundPayment {
 					payment_hash: *payment_hash,
 					reason: Some(reason),
 					total_msat,
+					pending_fee_msat,
 				};
 			},
 			_ => {}
@@ -2778,6 +2784,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(1, reason, upgradable_option),
 		(2, payment_hash, required),
 		(3, total_msat, option),
+		(5, pending_fee_msat, option),
 	},
 	(5, AwaitingInvoice) => {
 		(0, expiration, required),
