@@ -71,7 +71,11 @@ fn main() {
 
 	let mut data = Vec::with_capacity(8192);
 	std::io::stdin().read_to_end(&mut data).unwrap();
-	msg_splice_ack_test(&data, test_logger::Stdout {});
+	if std::env::var_os("LDK_FUZZ_SUPPRESS_LOGS").is_some() {
+		msg_splice_ack_test(&data, test_logger::DevNull {});
+	} else {
+		msg_splice_ack_test(&data, test_logger::Stdout {});
+	}
 }
 
 #[test]
