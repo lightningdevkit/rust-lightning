@@ -358,7 +358,7 @@ mod tests {
 		field2: Vec<u8>,
 		field3: Vec<u8>,
 	}
-	impl_writeable_tlv_based!(TestWriteable, {
+	impl_ser_tlv_based!(TestWriteable, {
 		(1, field1, required_vec),
 		(2, field2, required_vec),
 		(3, field3, required_vec),

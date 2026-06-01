@@ -172,7 +172,7 @@ impl RevokedOutput {
 	}
 }
 
-impl_writeable_tlv_based!(RevokedOutput, {
+impl_ser_tlv_based!(RevokedOutput, {
 	(0, per_commitment_point, required),
 	(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 	(2, counterparty_delayed_payment_base_key, required),
@@ -238,7 +238,7 @@ impl RevokedHTLCOutput {
 	}
 }
 
-impl_writeable_tlv_based!(RevokedHTLCOutput, {
+impl_ser_tlv_based!(RevokedHTLCOutput, {
 	(0, per_commitment_point, required),
 	(1, outpoint_confirmation_height, option), // Added in 0.1.4/0.2 and always set
 	(2, counterparty_delayed_payment_base_key, required),
@@ -1066,7 +1066,7 @@ impl PackageSolvingData {
 	}
 }
 
-impl_writeable_tlv_based_enum_legacy!(PackageSolvingData, ;
+impl_ser_tlv_based_enum_legacy!(PackageSolvingData, ;
 	(0, RevokedOutput),
 	(1, RevokedHTLCOutput),
 	(2, CounterpartyOfferedHTLCOutput),

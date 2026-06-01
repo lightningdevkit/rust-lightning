@@ -14,7 +14,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use bitcoin::secp256k1::PublicKey;
 
-use lightning::impl_writeable_tlv_based_enum;
+use lightning::impl_ser_tlv_based_enum;
 
 use super::msgs::LSPS5AppName;
 use super::msgs::LSPS5Error;
@@ -76,7 +76,7 @@ pub enum LSPS5ServiceEvent {
 	},
 }
 
-impl_writeable_tlv_based_enum!(LSPS5ServiceEvent,
+impl_ser_tlv_based_enum!(LSPS5ServiceEvent,
 	(0, SendWebhookNotification) => {
 		(0, counterparty_node_id, required),
 		(2, app_name, required),

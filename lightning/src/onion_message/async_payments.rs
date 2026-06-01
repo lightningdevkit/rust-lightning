@@ -279,25 +279,25 @@ impl OnionMessageContents for ReleaseHeldHtlc {
 	}
 }
 
-impl_writeable_tlv_based!(OfferPathsRequest, {
+impl_ser_tlv_based!(OfferPathsRequest, {
 	(0, invoice_slot, required),
 });
 
-impl_writeable_tlv_based!(OfferPaths, {
+impl_ser_tlv_based!(OfferPaths, {
 	(0, paths, required_vec),
 	(2, paths_absolute_expiry, option),
 });
 
-impl_writeable_tlv_based!(ServeStaticInvoice, {
+impl_ser_tlv_based!(ServeStaticInvoice, {
 	(0, invoice, required),
 	(2, forward_invoice_request_path, required),
 });
 
-impl_writeable_tlv_based!(StaticInvoicePersisted, {});
+impl_ser_tlv_based!(StaticInvoicePersisted, {});
 
-impl_writeable_tlv_based!(HeldHtlcAvailable, {});
+impl_ser_tlv_based!(HeldHtlcAvailable, {});
 
-impl_writeable_tlv_based!(ReleaseHeldHtlc, {});
+impl_ser_tlv_based!(ReleaseHeldHtlc, {});
 
 impl AsyncPaymentsMessage {
 	/// Returns whether `tlv_type` corresponds to a TLV record for async payment messages.

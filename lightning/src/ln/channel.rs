@@ -172,7 +172,7 @@ enum InboundHTLCResolution {
 	Pending { update_add_htlc: msgs::UpdateAddHTLC },
 }
 
-impl_writeable_tlv_based_enum!(InboundHTLCResolution,
+impl_ser_tlv_based_enum!(InboundHTLCResolution,
 	(0, Resolved) => {
 		(0, pending_htlc_status, required),
 	},
@@ -337,7 +337,7 @@ pub(super) struct OutboundHop {
 	pub(super) user_channel_id: u128,
 }
 
-impl_writeable_tlv_based!(OutboundHop, {
+impl_ser_tlv_based!(OutboundHop, {
 	(0, amt_msat, required),
 	(2, channel_id, required),
 	(4, node_id, required),
@@ -1517,7 +1517,7 @@ struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
 }
 
-impl_writeable_tlv_based!(PendingChannelMonitorUpdate, {
+impl_ser_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
 });
 
@@ -2994,7 +2994,7 @@ struct PendingFunding {
 	contributions: Vec<FundingContribution>,
 }
 
-impl_writeable_tlv_based!(PendingFunding, {
+impl_ser_tlv_based!(PendingFunding, {
 	(1, funding_negotiation, upgradable_option),
 	(3, negotiated_candidates, required_vec),
 	(5, sent_funding_txid, option),

@@ -590,7 +590,7 @@ pub struct TxCreationKeys {
 	pub broadcaster_delayed_payment_key: DelayedPaymentKey,
 }
 
-impl_writeable_tlv_based!(TxCreationKeys, {
+impl_ser_tlv_based!(TxCreationKeys, {
 	(0, per_commitment_point, required),
 	(2, revocation_key, required),
 	(4, broadcaster_htlc_key, required),
@@ -622,7 +622,7 @@ pub struct ChannelPublicKeys {
 	pub htlc_basepoint: HtlcBasepoint,
 }
 
-impl_writeable_tlv_based!(ChannelPublicKeys, {
+impl_ser_tlv_based!(ChannelPublicKeys, {
 	(0, funding_pubkey, required),
 	(2, revocation_basepoint, required),
 	(4, payment_point, required),
@@ -738,7 +738,7 @@ impl HTLCOutputInCommitment {
 	}
 }
 
-impl_writeable_tlv_based!(HTLCOutputInCommitment, {
+impl_ser_tlv_based!(HTLCOutputInCommitment, {
 	(0, offered, required),
 	(2, amount_msat, required),
 	(4, cltv_expiry, required),
@@ -1164,7 +1164,7 @@ impl ChannelTransactionParameters {
 	}
 }
 
-impl_writeable_tlv_based!(CounterpartyChannelTransactionParameters, {
+impl_ser_tlv_based!(CounterpartyChannelTransactionParameters, {
 	(0, pubkeys, required),
 	(2, selected_contest_delay, required),
 });
@@ -1336,7 +1336,7 @@ impl PartialEq for HolderCommitmentTransaction {
 	}
 }
 
-impl_writeable_tlv_based!(HolderCommitmentTransaction, {
+impl_ser_tlv_based!(HolderCommitmentTransaction, {
 	(0, inner, required),
 	(2, counterparty_sig, required),
 	(4, holder_sig_first, required),
@@ -1424,7 +1424,7 @@ pub struct BuiltCommitmentTransaction {
 	pub txid: Txid,
 }
 
-impl_writeable_tlv_based!(BuiltCommitmentTransaction, {
+impl_ser_tlv_based!(BuiltCommitmentTransaction, {
 	(0, transaction, required),
 	(2, txid, required),
 });

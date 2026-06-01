@@ -1083,7 +1083,7 @@ impl Readable for PaymentConstraints {
 	}
 }
 
-impl_writeable_tlv_based_enum_legacy!(PaymentContext,
+impl_ser_tlv_based_enum_legacy!(PaymentContext,
 	;
 	// 0 for Unknown removed in version 0.1.
 	(1, Bolt12Offer),
@@ -1108,18 +1108,18 @@ impl<'a> Writeable for PaymentContextRef<'a> {
 	}
 }
 
-impl_writeable_tlv_based!(Bolt12OfferContext, {
+impl_ser_tlv_based!(Bolt12OfferContext, {
 	(0, offer_id, required),
 	(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
 	(2, invoice_request, required),
 });
 
-impl_writeable_tlv_based!(AsyncBolt12OfferContext, {
+impl_ser_tlv_based!(AsyncBolt12OfferContext, {
 	(0, offer_nonce, required),
 	(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
 });
 
-impl_writeable_tlv_based!(Bolt12RefundContext, {
+impl_ser_tlv_based!(Bolt12RefundContext, {
 	(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
 });
 

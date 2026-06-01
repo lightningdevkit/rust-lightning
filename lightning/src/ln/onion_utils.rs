@@ -1960,7 +1960,7 @@ impl Readable for HTLCFailReason {
 	}
 }
 
-impl_writeable_tlv_based_enum!(HTLCFailReasonRepr,
+impl_ser_tlv_based_enum!(HTLCFailReasonRepr,
 	(0, LightningError) => {
 		(0, data, (legacy, Vec<u8>, |_| Ok(()), |us|
 			if let &HTLCFailReasonRepr::LightningError { err: msgs::OnionErrorPacket { ref data, .. }, .. } = us {

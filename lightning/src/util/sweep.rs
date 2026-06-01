@@ -97,7 +97,7 @@ impl TrackedSpendableOutput {
 	}
 }
 
-impl_writeable_tlv_based!(TrackedSpendableOutput, {
+impl_ser_tlv_based!(TrackedSpendableOutput, {
 	(0, descriptor, required),
 	(2, channel_id, option),
 	(3, counterparty_node_id, option),
@@ -309,7 +309,7 @@ impl OutputSpendStatus {
 	}
 }
 
-impl_writeable_tlv_based_enum!(OutputSpendStatus,
+impl_ser_tlv_based_enum!(OutputSpendStatus,
 	(0, PendingInitialBroadcast) => {
 		(0, delayed_until_height, option),
 	},
@@ -864,7 +864,7 @@ struct SweeperState {
 	dirty: bool,
 }
 
-impl_writeable_tlv_based!(SweeperState, {
+impl_ser_tlv_based!(SweeperState, {
 	(0, outputs, required_vec),
 	(2, best_block, required),
 	(_unused, dirty, (static_value, false)),

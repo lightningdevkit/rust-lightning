@@ -1059,7 +1059,7 @@ macro_rules! _decode_and_build {
 ///
 /// For example,
 /// ```
-/// # use lightning::impl_writeable_tlv_based;
+/// # use lightning::impl_ser_tlv_based;
 /// struct LightningMessage {
 /// 	tlv_integer: u32,
 /// 	tlv_default_integer: u32,
@@ -1068,7 +1068,7 @@ macro_rules! _decode_and_build {
 ///		tlv_upgraded_integer: u32,
 /// }
 ///
-/// impl_writeable_tlv_based!(LightningMessage, {
+/// impl_ser_tlv_based!(LightningMessage, {
 /// 	(0, tlv_integer, required),
 /// 	(1, tlv_default_integer, (default_value, 7)),
 /// 	(2, tlv_optional_integer, option),
@@ -1083,7 +1083,7 @@ macro_rules! _decode_and_build {
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`Vec`]: crate::prelude::Vec
 #[macro_export]
-macro_rules! impl_writeable_tlv_based {
+macro_rules! impl_ser_tlv_based {
 	($st: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
@@ -1206,9 +1206,9 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	),* $(,)?;
-	// $tuple_variant_* are only passed from `impl_writeable_tlv_based_enum_*_legacy`
+	// $tuple_variant_* are only passed from legacy enum macros.
 	$(($tuple_variant_id: expr, $tuple_variant_name: ident)),* $(,)?;
-	// $length_prefixed_* are only passed from `impl_writeable_tlv_based_enum_*` non-`legacy`
+	// $length_prefixed_* are only passed from non-legacy enum macros.
 	$(($length_prefixed_tuple_variant_id: expr, $length_prefixed_tuple_variant_name: ident)),* $(,)?) => {
 		impl $crate::util::ser::Writeable for $st {
 			fn write<W: $crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), $crate::io::Error> {
@@ -1256,8 +1256,8 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 ///   TupleVariantA(),
 ///   TupleVariantB(Vec<u8>),
 /// }
-/// # use lightning::impl_writeable_tlv_based_enum;
-/// impl_writeable_tlv_based_enum!(EnumName,
+/// # use lightning::impl_ser_tlv_based_enum;
+/// impl_ser_tlv_based_enum!(EnumName,
 ///   (0, StructVariantA) => {(0, required_variant_field, required), (1, optional_variant_field, option)},
 ///   (1, StructVariantB) => {(0, variant_field_a, required), (1, variant_field_b, required), (2, variant_vec_field, optional_vec)},
 ///   (2, TupleVariantA) => {}, // Note that empty tuple variants have to use the struct syntax due to rust limitations
@@ -1276,7 +1276,7 @@ macro_rules! _impl_writeable_tlv_based_enum_common {
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`DecodeError::UnknownRequiredFeature`]: crate::ln::msgs::DecodeError::UnknownRequiredFeature
 #[macro_export]
-macro_rules! impl_writeable_tlv_based_enum {
+macro_rules! impl_ser_tlv_based_enum {
 	($st: ident,
 		$(($variant_id: expr, $variant_name: ident) =>
 			{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
@@ -1321,9 +1321,9 @@ macro_rules! impl_writeable_tlv_based_enum {
 	}
 }
 
-/// See [`impl_writeable_tlv_based_enum`] and use that unless backwards-compatibility with tuple
+/// See [`impl_ser_tlv_based_enum`] and use that unless backwards-compatibility with tuple
 /// variants is required.
-macro_rules! impl_writeable_tlv_based_enum_legacy {
+macro_rules! impl_ser_tlv_based_enum_legacy {
 	($st: ident, $(($variant_id: expr, $variant_name: ident) =>
 		{$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	),* $(,)*;
@@ -1359,7 +1359,7 @@ macro_rules! impl_writeable_tlv_based_enum_legacy {
 /// Implement [`MaybeReadable`] and [`Writeable`] for an enum, with struct variants stored as TLVs and
 /// tuple variants stored directly.
 ///
-/// This is largely identical to [`impl_writeable_tlv_based_enum`], except that odd variants will
+/// This is largely identical to [`impl_ser_tlv_based_enum`], except that odd variants will
 /// return `Ok(None)` instead of `Err(`[`DecodeError::UnknownRequiredFeature`]`)`. It should generally be preferred
 /// when [`MaybeReadable`] is practical instead of just [`Readable`] as it provides an upgrade path for
 /// new variants to be added which are simply ignored by existing clients.
@@ -1620,7 +1620,7 @@ mod tests {
 		other_field: u32,
 	}
 
-	impl_writeable_tlv_based!(OuterStructOptionalEnumV1, {
+	impl_ser_tlv_based!(OuterStructOptionalEnumV1, {
 		(0, inner_enum, upgradable_option),
 		(2, other_field, required),
 	});
@@ -1645,7 +1645,7 @@ mod tests {
 		other_field: u32,
 	}
 
-	impl_writeable_tlv_based!(OuterStructOptionalEnumV2, {
+	impl_ser_tlv_based!(OuterStructOptionalEnumV2, {
 		(0, inner_enum, upgradable_option),
 		(2, other_field, required),
 	});
@@ -1696,7 +1696,7 @@ mod tests {
 		other_field: u32,
 	}
 
-	impl_writeable_tlv_based!(OuterOuterStruct, {
+	impl_ser_tlv_based!(OuterOuterStruct, {
 		(0, outer_struct, upgradable_option),
 		(2, other_field, required),
 	});
@@ -1964,7 +1964,7 @@ mod tests {
 		// old_field: u8,
 		new_field: (u8, u8),
 	}
-	impl_writeable_tlv_based!(ExpandedField, {
+	impl_ser_tlv_based!(ExpandedField, {
 		(0, old_field, (legacy, u8, |_| Ok(()), |us: &ExpandedField| Some(us.new_field.0))),
 		(1, new_field, (default_value, (old_field.ok_or(DecodeError::InvalidValue)?, 0))),
 	});
@@ -1990,7 +1990,7 @@ mod tests {
 	struct DefaultValueVecStruct {
 		items: Vec<u32>,
 	}
-	impl_writeable_tlv_based!(DefaultValueVecStruct, {
+	impl_ser_tlv_based!(DefaultValueVecStruct, {
 		(1, items, (default_value_vec, vec![4, 5, 6])),
 	});
 
@@ -2018,7 +2018,7 @@ mod tests {
 	struct LegacyToVecStruct {
 		new_items: Vec<u32>,
 	}
-	impl_writeable_tlv_based!(LegacyToVecStruct, {
+	impl_ser_tlv_based!(LegacyToVecStruct, {
 		(0, old_item, (legacy, u32, |_| Ok(()),
 			|us: &LegacyToVecStruct| us.new_items.first().copied())),
 		(1, new_items, (default_value_vec,
@@ -2047,7 +2047,7 @@ mod tests {
 		struct MyCustomStruct {
 			tlv_field: Vec<u8>,
 		}
-		impl_writeable_tlv_based!(MyCustomStruct, {
+		impl_ser_tlv_based!(MyCustomStruct, {
 			(0, tlv_field, (required_vec, encoding: (Vec<u8>, WithoutLength))),
 		});
 

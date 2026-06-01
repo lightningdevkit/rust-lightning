@@ -87,7 +87,7 @@ pub enum FundingInfo {
 	},
 }
 
-impl_writeable_tlv_based_enum!(FundingInfo,
+impl_ser_tlv_based_enum!(FundingInfo,
 	(0, Tx) => {
 		(0, transaction, required)
 	},
@@ -341,7 +341,7 @@ impl PaymentPurpose {
 	}
 }
 
-impl_writeable_tlv_based_enum_legacy!(PaymentPurpose,
+impl_ser_tlv_based_enum_legacy!(PaymentPurpose,
 	(0, Bolt11InvoicePayment) => {
 		(0, payment_preimage, option),
 		(2, payment_secret, required),
@@ -391,7 +391,7 @@ pub struct ClaimedHTLC {
 	/// 0.0.119.
 	pub counterparty_skimmed_fee_msat: u64,
 }
-impl_writeable_tlv_based!(ClaimedHTLC, {
+impl_ser_tlv_based!(ClaimedHTLC, {
 	(0, channel_id, required),
 	(1, counterparty_skimmed_fee_msat, (default_value, 0u64)),
 	(2, user_channel_id, required),
@@ -736,7 +736,7 @@ pub enum HTLCHandlingFailureReason {
 	},
 }
 
-impl_writeable_tlv_based_enum!(HTLCHandlingFailureReason,
+impl_ser_tlv_based_enum!(HTLCHandlingFailureReason,
 	(1, Downstream) => {},
 	(3, Local) => {
 		(0, reason, required),
@@ -757,7 +757,7 @@ enum InterceptNextHop {
 	FakeScid { requested_next_hop_scid: u64 },
 }
 
-impl_writeable_tlv_based_enum!(InterceptNextHop,
+impl_ser_tlv_based_enum!(InterceptNextHop,
 	(0, FakeScid) => {
 		(0, requested_next_hop_scid, required),
 	},
@@ -878,7 +878,7 @@ pub struct HTLCLocator {
 	pub node_id: Option<PublicKey>,
 }
 
-impl_writeable_tlv_based!(HTLCLocator, {
+impl_ser_tlv_based!(HTLCLocator, {
 	(1, channel_id, required),
 	(3, user_channel_id, option),
 	(5, node_id, option),
@@ -3290,7 +3290,7 @@ pub enum PaidBolt12Invoice {
 	StaticInvoice(StaticInvoice),
 }
 
-impl_writeable_tlv_based_enum!(PaidBolt12Invoice,
+impl_ser_tlv_based_enum!(PaidBolt12Invoice,
 	{0, Bolt12Invoice} => (),
 	{2, StaticInvoice} => (),
 );

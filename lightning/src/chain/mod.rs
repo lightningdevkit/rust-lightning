@@ -143,7 +143,7 @@ impl BlockLocator {
 	}
 }
 
-impl_writeable_tlv_based!(BlockLocator, {
+impl_ser_tlv_based!(BlockLocator, {
 	(0, block_hash, required),
 	// Note that any change to the previous_blocks array length will change the serialization
 	// format and thus it is specified without constants here.

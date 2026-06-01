@@ -598,7 +598,7 @@ enum FundingInputMode {
 	ManuallySelected,
 }
 
-impl_writeable_tlv_based_enum!(FundingInputMode,
+impl_ser_tlv_based_enum!(FundingInputMode,
 	(1, CoinSelected) => {},
 	(3, ManuallySelected) => {}
 );
@@ -640,7 +640,7 @@ pub struct FundingContribution {
 	input_mode: Option<FundingInputMode>,
 }
 
-impl_writeable_tlv_based!(FundingContribution, {
+impl_ser_tlv_based!(FundingContribution, {
 	(1, estimated_fee, required),
 	(3, inputs, optional_vec),
 	(5, outputs, optional_vec),

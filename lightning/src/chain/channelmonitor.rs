@@ -256,7 +256,7 @@ pub struct HTLCUpdate {
 	pub(crate) source: HTLCSource,
 	pub(crate) htlc_value_satoshis: Option<u64>,
 }
-impl_writeable_tlv_based!(HTLCUpdate, {
+impl_ser_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, htlc_value_satoshis, option),
 	(2, source, required),
@@ -345,7 +345,7 @@ struct HolderSignedTx {
 }
 
 // Any changes made here must also reflect in `write_legacy_holder_commitment_data`.
-impl_writeable_tlv_based!(HolderSignedTx, {
+impl_ser_tlv_based!(HolderSignedTx, {
 	(0, txid, required),
 	(1, to_self_value_sat, required), // Added in 0.0.100, required in 0.2.
 	(2, revocation_key, required),
@@ -1104,7 +1104,7 @@ impl CommitmentHTLCData {
 	}
 }
 
-impl_writeable_tlv_based!(CommitmentHTLCData, {
+impl_ser_tlv_based!(CommitmentHTLCData, {
 	(1, nondust_htlc_sources, required_vec),
 	(3, dust_htlcs, required_vec),
 });
@@ -1201,7 +1201,7 @@ impl FundingScope {
 	}
 }
 
-impl_writeable_tlv_based!(FundingScope, {
+impl_ser_tlv_based!(FundingScope, {
 	(1, channel_parameters, (required: ReadableArgs, None)),
 	(3, current_counterparty_commitment_txid, required),
 	(5, prev_counterparty_commitment_txid, option),

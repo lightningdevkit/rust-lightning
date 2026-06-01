@@ -21,7 +21,7 @@ use crate::lsps0::ser::{
 use bitcoin::{Address, FeeRate, OutPoint};
 use lightning::offers::offer::Offer;
 use lightning::util::ser::{Readable, Writeable};
-use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
+use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
 use lightning_invoice::Bolt11Invoice;
 
 use serde::{Deserialize, Serialize};
@@ -145,7 +145,7 @@ pub struct LSPS1OrderParams {
 	pub announce_channel: bool,
 }
 
-impl_writeable_tlv_based!(LSPS1OrderParams, {
+impl_ser_tlv_based!(LSPS1OrderParams, {
 	(0, lsp_balance_sat, required),
 	(2, client_balance_sat, required),
 	(4, required_channel_confirmations, required),
@@ -185,7 +185,7 @@ pub enum LSPS1OrderState {
 	Failed,
 }
 
-impl_writeable_tlv_based_enum!(LSPS1OrderState,
+impl_ser_tlv_based_enum!(LSPS1OrderState,
 	(0, Created) => {},
 	(2, Completed) => {},
 	(4, Failed) => {}
@@ -202,7 +202,7 @@ pub struct LSPS1PaymentInfo {
 	pub onchain: Option<LSPS1OnchainPaymentInfo>,
 }
 
-impl_writeable_tlv_based!(LSPS1PaymentInfo, {
+impl_ser_tlv_based!(LSPS1PaymentInfo, {
 	(0, bolt11, option),
 	(2, bolt12, option),
 	(4, onchain, option),
@@ -225,7 +225,7 @@ pub struct LSPS1Bolt11PaymentInfo {
 	pub invoice: Bolt11Invoice,
 }
 
-impl_writeable_tlv_based!(LSPS1Bolt11PaymentInfo, {
+impl_ser_tlv_based!(LSPS1Bolt11PaymentInfo, {
 	(0, state, required),
 	(2, expires_at, required),
 	(4, fee_total_sat, required),
@@ -251,7 +251,7 @@ pub struct LSPS1Bolt12PaymentInfo {
 	pub offer: Offer,
 }
 
-impl_writeable_tlv_based!(LSPS1Bolt12PaymentInfo, {
+impl_ser_tlv_based!(LSPS1Bolt12PaymentInfo, {
 	(0, state, required),
 	(2, expires_at, required),
 	(4, fee_total_sat, required),
@@ -290,7 +290,7 @@ pub struct LSPS1OnchainPaymentInfo {
 	pub refund_onchain_address: Option<Address>,
 }
 
-impl_writeable_tlv_based!(LSPS1OnchainPaymentInfo, {
+impl_ser_tlv_based!(LSPS1OnchainPaymentInfo, {
 	(0, state, required),
 	(2, expires_at, required),
 	(4, fee_total_sat, required),
@@ -322,7 +322,7 @@ pub enum LSPS1PaymentState {
 	Refunded,
 }
 
-impl_writeable_tlv_based_enum!(LSPS1PaymentState,
+impl_ser_tlv_based_enum!(LSPS1PaymentState,
 	(0, ExpectPayment) => {},
 	(2, Hold) => {},
 	(4, Paid) => {},
@@ -340,7 +340,7 @@ pub struct LSPS1ChannelInfo {
 	pub expires_at: LSPSDateTime,
 }
 
-impl_writeable_tlv_based!(LSPS1ChannelInfo, {
+impl_ser_tlv_based!(LSPS1ChannelInfo, {
 	(0, funded_at, required),
 	(2, funding_outpoint, required),
 	(4, expires_at, required),

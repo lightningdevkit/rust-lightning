@@ -545,7 +545,7 @@ pub struct RouteHop {
 	pub maybe_announced_channel: bool,
 }
 
-impl_writeable_tlv_based!(RouteHop, {
+impl_ser_tlv_based!(RouteHop, {
 	(0, pubkey, required),
 	(1, maybe_announced_channel, (default_value, true)),
 	(2, node_features, required),
@@ -574,7 +574,7 @@ pub struct TrampolineHop {
 	pub cltv_expiry_delta: u32,
 }
 
-impl_writeable_tlv_based!(TrampolineHop, {
+impl_ser_tlv_based!(TrampolineHop, {
 	(0, pubkey, required),
 	(2, node_features, required),
 	(4, fee_msat, required),
@@ -604,7 +604,7 @@ pub struct BlindedTail {
 	pub final_value_msat: u64,
 }
 
-impl_writeable_tlv_based!(BlindedTail, {
+impl_ser_tlv_based!(BlindedTail, {
 	(0, hops, required_vec),
 	(2, blinding_point, required),
 	(4, excess_final_cltv_expiry_delta, required),
@@ -666,7 +666,7 @@ impl Path {
 	}
 }
 
-impl_writeable_tlv_based!(Path,{
+impl_ser_tlv_based!(Path,{
 	(1, hops, required_vec),
 	(3, blinded_tail, option),
 });
@@ -1373,7 +1373,7 @@ pub struct RouteParametersConfig {
 	pub max_channel_saturation_power_of_half: u8,
 }
 
-impl_writeable_tlv_based!(RouteParametersConfig, {
+impl_ser_tlv_based!(RouteParametersConfig, {
 	(1, max_total_routing_fee_msat, option),
 	(3, max_total_cltv_expiry_delta, required),
 	(5, max_path_count, required),
@@ -1578,7 +1578,7 @@ impl Readable for RouteHint {
 	}
 }
 
-impl_writeable_tlv_based!(RouteHintHop, {
+impl_ser_tlv_based!(RouteHintHop, {
 	(0, src_node_id, required),
 	(1, htlc_minimum_msat, option),
 	(2, short_channel_id, required),

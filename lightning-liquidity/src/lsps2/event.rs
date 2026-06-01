@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 
 use bitcoin::secp256k1::PublicKey;
 
-use lightning::impl_writeable_tlv_based_enum;
+use lightning::impl_ser_tlv_based_enum;
 
 /// An event which an LSPS2 client should take some action in response to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,7 +181,7 @@ pub enum LSPS2ServiceEvent {
 	},
 }
 
-impl_writeable_tlv_based_enum!(LSPS2ServiceEvent,
+impl_ser_tlv_based_enum!(LSPS2ServiceEvent,
 	(0, GetInfo) => {
 		(0, request_id, required),
 		(2, counterparty_node_id, required),

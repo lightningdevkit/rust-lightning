@@ -170,7 +170,7 @@ pub(crate) struct PeerStorageMonitorHolder {
 	pub(crate) monitor_bytes: Vec<u8>,
 }
 
-impl_writeable_tlv_based!(PeerStorageMonitorHolder, {
+impl_ser_tlv_based!(PeerStorageMonitorHolder, {
 	(0, channel_id, required),
 	(2, counterparty_node_id, required),
 	(4, min_seen_secret, required),

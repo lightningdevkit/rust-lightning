@@ -18,7 +18,7 @@ use super::url_utils::LSPSUrl;
 
 use lightning::ln::msgs::DecodeError;
 use lightning::util::ser::{Readable, Writeable};
-use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
+use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
 use lightning_types::string::UntrustedString;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -527,7 +527,7 @@ pub enum WebhookNotificationMethod {
 	LSPS5OnionMessageIncoming,
 }
 
-impl_writeable_tlv_based_enum!(WebhookNotificationMethod,
+impl_ser_tlv_based_enum!(WebhookNotificationMethod,
 	(0, LSPS5WebhookRegistered) => {},
 	(2, LSPS5PaymentIncoming) => {},
 	(4, LSPS5ExpirySoon) => {
@@ -688,7 +688,7 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 	}
 }
 
-impl_writeable_tlv_based!(WebhookNotification, {
+impl_ser_tlv_based!(WebhookNotification, {
 	(0, method, required),
 });
 

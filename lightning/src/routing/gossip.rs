@@ -1350,7 +1350,7 @@ impl EffectiveCapacity {
 	}
 }
 
-impl_writeable_tlv_based!(RoutingFees, {
+impl_ser_tlv_based!(RoutingFees, {
 	(0, base_msat, required),
 	(2, proportional_millionths, required)
 });
