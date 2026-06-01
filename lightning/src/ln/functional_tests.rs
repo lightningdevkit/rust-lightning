@@ -10281,7 +10281,7 @@ fn test_inconsistent_mpp_params() {
 	do_claim_payment_along_route(
 		ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]], our_payment_preimage)
 	);
-	expect_payment_sent(&nodes[0], our_payment_preimage, Some(None), true, true);
+	expect_payment_sent(&nodes[0], our_payment_preimage, Some(Some(2000)), true, true);
 }
 
 #[test]
