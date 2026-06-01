@@ -102,6 +102,7 @@ use std::sync::atomic;
 use std::sync::{Arc, Mutex};
 
 const MAX_FEE: u32 = 10_000;
+const MAX_SETTLE_ITERATIONS: usize = 256;
 struct FuzzEstimator {
 	ret_val: atomic::AtomicU32,
 }
@@ -2810,9 +2811,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	fn process_all_events(&mut self) {
 		let mut last_pass_no_updates = false;
 		for i in 0..std::usize::MAX {
-			if i == 100 {
+			if i == MAX_SETTLE_ITERATIONS {
 				panic!(
-					"It may take may iterations to settle the state, but it should not take forever"
+					"It may take many iterations to settle the state, but it should not take forever"
 				);
 			}
 			let mut made_progress = self.checkpoint_manager_persistences();
