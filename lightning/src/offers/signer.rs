@@ -321,6 +321,34 @@ pub(super) fn derive_keys(nonce: Nonce, expanded_key: &ExpandedKey) -> Keypair {
 	Keypair::from_secret_key(&secp_ctx, &privkey)
 }
 
+/// Re-derives the payer signing keypair from the given components.
+///
+/// Performs the same derivation as keys created by [`Metadata::derive_from`] when using
+/// [`Metadata::DerivedSigningPubkey`] with a [`MetadataMaterial`] built from a `payment_id`.
+///
+/// The `tlv_stream` must contain the records matching what was used during the original
+/// key derivation.
+pub(super) fn derive_payer_keys<'a, T: secp256k1::Signing>(
+	payment_id: PaymentId, nonce: Nonce, expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
+	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
+	secp_ctx: &Secp256k1<T>,
+) -> Result<Keypair, ()> {
+	let metadata = Metadata::payer_data(payment_id, nonce, expanded_key);
+	let metadata_ref = metadata.as_ref();
+
+	match verify_payer_metadata_inner(
+		metadata_ref,
+		expanded_key,
+		iv_bytes,
+		signing_pubkey,
+		tlv_stream,
+		secp_ctx,
+	)? {
+		Some(keys) => Ok(keys),
+		None => Err(()),
+	}
+}
+
 /// Verifies data given in a TLV stream was used to produce the given metadata, consisting of:
 /// - a 256-bit [`PaymentId`],
 /// - a 128-bit [`Nonce`], and possibly
@@ -339,6 +367,34 @@ pub(super) fn verify_payer_metadata<'a, T: secp256k1::Signing>(
 		return Err(());
 	}
 
+	verify_payer_metadata_inner(
+		metadata,
+		expanded_key,
+		iv_bytes,
+		signing_pubkey,
+		tlv_stream,
+		secp_ctx,
+	)?;
+
+	let mut encrypted_payment_id = [0u8; PaymentId::LENGTH];
+	encrypted_payment_id.copy_from_slice(&metadata[..PaymentId::LENGTH]);
+	let nonce = Nonce::try_from(&metadata[PaymentId::LENGTH..][..Nonce::LENGTH]).unwrap();
+	let payment_id = expanded_key.crypt_for_offer(encrypted_payment_id, nonce);
+
+	Ok(PaymentId(payment_id))
+}
+
+/// Shared core of [`verify_payer_metadata`] and [`derive_payer_keys`].
+///
+/// Builds the payer HMAC from the given metadata and TLV stream, then verifies it against the
+/// `signing_pubkey`. The `metadata` must be at least `PaymentId::LENGTH` bytes, with the first
+/// `PaymentId::LENGTH` bytes being the encrypted payment ID and the remainder being the nonce
+/// (and possibly an HMAC).
+fn verify_payer_metadata_inner<'a, T: secp256k1::Signing>(
+	metadata: &[u8], expanded_key: &ExpandedKey, iv_bytes: &[u8; IV_LEN],
+	signing_pubkey: PublicKey, tlv_stream: impl core::iter::Iterator<Item = TlvRecord<'a>>,
+	secp_ctx: &Secp256k1<T>,
+) -> Result<Option<Keypair>, ()> {
 	let mut encrypted_payment_id = [0u8; PaymentId::LENGTH];
 	encrypted_payment_id.copy_from_slice(&metadata[..PaymentId::LENGTH]);
 
@@ -352,12 +408,7 @@ pub(super) fn verify_payer_metadata<'a, T: secp256k1::Signing>(
 		Hmac::from_engine(hmac),
 		signing_pubkey,
 		secp_ctx,
-	)?;
-
-	let nonce = Nonce::try_from(&metadata[PaymentId::LENGTH..][..Nonce::LENGTH]).unwrap();
-	let payment_id = expanded_key.crypt_for_offer(encrypted_payment_id, nonce);
-
-	Ok(PaymentId(payment_id))
+	)
 }
 
 /// Verifies data given in a TLV stream was used to produce the given metadata, consisting of:
