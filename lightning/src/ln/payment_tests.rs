@@ -2026,6 +2026,36 @@ fn abandoned_send_payment_idempotent() {
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
 }
 
+#[test]
+fn abandoned_payment_fulfilled_preserves_fee_paid_msat() {
+	// Previously, if we abandoned a payment with HTLCs in-flight and the payment eventually
+	// succeeded, we would set the `Event::PaymentSent::fee_paid_msat` to None, even though we had
+	// docs guaranteeing that it would always be Some after 0.0.103.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let amt_msat = 5_000_000;
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], nodes[2], amt_msat);
+	let payment_id = PaymentId(payment_hash.0);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let path: &[&Node] = &[&nodes[1], &nodes[2]];
+	pass_along_route(&nodes[0], &[path], amt_msat, payment_hash, payment_secret);
+
+	nodes[0].node.abandon_payment(payment_id);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path], payment_preimage));
+}
+
 #[derive(PartialEq)]
 enum InterceptTest {
 	Forward,
