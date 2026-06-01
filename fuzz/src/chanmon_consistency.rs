@@ -2814,9 +2814,20 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					..
 				} => {
 					let signed_tx = nodes[node_idx].wallet.sign_tx(unsigned_transaction).unwrap();
-					nodes[node_idx]
-						.funding_transaction_signed(&channel_id, &counterparty_node_id, signed_tx)
-						.unwrap();
+					match nodes[node_idx].funding_transaction_signed(
+						&channel_id,
+						&counterparty_node_id,
+						signed_tx,
+					) {
+						Ok(()) => {},
+						Err(APIError::APIMisuseError { ref err })
+							if err.contains("not expecting funding signatures") =>
+						{
+							// A queued signing event can be invalidated by a later `tx_abort`
+							// before the application handles it.
+						},
+						Err(e) => panic!("{e:?}"),
+					}
 				},
 				events::Event::SpliceNegotiated { new_funding_txo, .. } => {
 					let mut txs = nodes[node_idx].broadcaster.txn_broadcasted.borrow_mut();
