@@ -34,6 +34,7 @@ GEN_FAKE_HASHES_TEST onion_message
 GEN_FAKE_HASHES_TEST peer_crypt
 GEN_FAKE_HASHES_TEST process_network_graph
 GEN_FAKE_HASHES_TEST process_onion_failure
+GEN_FAKE_HASHES_TEST payer_proof_deser
 GEN_FAKE_HASHES_TEST refund_deser
 GEN_FAKE_HASHES_TEST router
 GEN_FAKE_HASHES_TEST zbase32
