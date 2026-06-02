@@ -256,6 +256,7 @@ where
 /// - [`Event::ChannelReady`] to [`LSPS2ServiceHandler::channel_ready`]
 /// - [`Event::HTLCHandlingFailed`] to [`LSPS2ServiceHandler::htlc_handling_failed`]
 /// - [`Event::PaymentForwarded`] to [`LSPS2ServiceHandler::payment_forwarded`]
+/// - [`Event::ChannelClosed`] to [`LSPS2ServiceHandler::channel_closed`]
 ///
 /// [`PeerManager`]: lightning::ln::peer_handler::PeerManager
 /// [`MessageHandler`]: lightning::ln::peer_handler::MessageHandler
@@ -263,6 +264,7 @@ where
 /// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
 /// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
 /// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
+/// [`Event::ChannelClosed`]: lightning::events::Event::ChannelClosed
 pub struct LiquidityManager<
 	ES: EntropySource + Clone,
 	NS: NodeSigner + Clone,
