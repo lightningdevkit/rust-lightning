@@ -125,15 +125,10 @@ pub(crate) enum PendingOutboundPayment {
 		payment_metadata: Option<Vec<u8>>,
 		keysend_preimage: Option<PaymentPreimage>,
 		invoice_request: Option<InvoiceRequest>,
-		// Storing the BOLT 12 invoice here to allow Proof of Payment after
-		// the payment is made.
+		// Storing the BOLT 12 invoice here to allow Proof of Payment after the payment is made.
+		// The invoice also carries the `Nonce` used when its `InvoiceRequest` was created, so
+		// retried paths can build payer proofs after payment success.
 		bolt12_invoice: Option<Bolt12InvoiceType>,
-		/// The [`Nonce`] used when the BOLT 12 [`InvoiceRequest`] was created. Stored here so
-		/// retried paths can include the nonce in [`HTLCSource::OutboundRoute`] for payer proof
-		/// construction after payment success.
-		///
-		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-		payment_nonce: Option<Nonce>,
 		custom_tlvs: Vec<(u64, Vec<u8>)>,
 		pending_amt_msat: u64,
 		/// Used to track the fee paid. Present iff the payment was serialized on 0.0.103+.
@@ -191,13 +186,6 @@ impl PendingOutboundPayment {
 	fn bolt12_invoice(&self) -> Option<&Bolt12InvoiceType> {
 		match self {
 			PendingOutboundPayment::Retryable { bolt12_invoice, .. } => bolt12_invoice.as_ref(),
-			_ => None,
-		}
-	}
-
-	fn payment_nonce(&self) -> Option<&Nonce> {
-		match self {
-			PendingOutboundPayment::Retryable { payment_nonce, .. } => payment_nonce.as_ref(),
 			_ => None,
 		}
 	}
@@ -949,7 +937,6 @@ pub(super) struct SendAlongPathArgs<'a> {
 	pub keysend_preimage: &'a Option<PaymentPreimage>,
 	pub invoice_request: Option<&'a InvoiceRequest>,
 	pub bolt12_invoice: Option<&'a Bolt12InvoiceType>,
-	pub payment_nonce: Option<Nonce>,
 	pub session_priv_bytes: [u8; 32],
 	pub hold_htlc_at_next_hop: bool,
 }
@@ -1137,9 +1124,9 @@ impl OutboundPayments {
 		if let Some(max_fee_msat) = params_config.max_total_routing_fee_msat {
 			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
 		}
-		let invoice = Bolt12InvoiceType::Bolt12Invoice(invoice.clone());
+		let invoice = Bolt12InvoiceType::Bolt12Invoice { invoice: invoice.clone(), nonce: payment_nonce };
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, None, None, invoice, payment_nonce, route_params, retry_strategy, false, router,
+			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy, false, router,
 			first_hops, inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx,
 			best_block_height, pending_events, send_payment_along_path, logger,
 		)
@@ -1151,7 +1138,7 @@ impl OutboundPayments {
 	>(
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
-		bolt12_invoice: Bolt12InvoiceType, payment_nonce: Option<Nonce>,
+		bolt12_invoice: Bolt12InvoiceType,
 		mut route_params: RouteParameters, retry_strategy: Retry, hold_htlcs_at_next_hop: bool, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
@@ -1211,7 +1198,7 @@ impl OutboundPayments {
 				PendingOutboundPayment::InvoiceReceived { .. } => {
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 						payment_hash, recipient_onion.clone(), keysend_preimage, None, Some(bolt12_invoice.clone()),
-						payment_nonce, &route,
+						&route,
 						Some(retry_strategy), payment_params, entropy_source, best_block_height,
 					);
 					*entry.into_mut() = retryable_payment;
@@ -1223,7 +1210,7 @@ impl OutboundPayments {
 					} else { unreachable!() };
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 						payment_hash, recipient_onion.clone(), keysend_preimage, Some(invreq), Some(bolt12_invoice.clone()),
-						payment_nonce, &route,
+						&route,
 						Some(retry_strategy), payment_params, entropy_source, best_block_height
 					);
 					outbounds.insert(payment_id, retryable_payment);
@@ -1237,7 +1224,7 @@ impl OutboundPayments {
 
 		let result = self.pay_route_internal(
 			&route, payment_hash, &recipient_onion, keysend_preimage, invoice_request, Some(&bolt12_invoice),
-			payment_nonce, payment_id,
+			payment_id,
 			&onion_session_privs, hold_htlcs_at_next_hop, node_signer,
 			best_block_height, &send_payment_along_path
 		);
@@ -1420,7 +1407,6 @@ impl OutboundPayments {
 			Some(keysend_preimage),
 			Some(&invoice_request),
 			invoice,
-			None,
 			route_params,
 			retry_strategy,
 			hold_htlcs_at_next_hop,
@@ -1630,7 +1616,7 @@ impl OutboundPayments {
 			})?;
 
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion,
-			keysend_preimage, None, None, None, payment_id, &onion_session_privs, false, node_signer,
+			keysend_preimage, None, None, payment_id, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path);
 		log_info!(logger, "Sending payment with id {} and hash {} returned {:?}",
 			payment_id, payment_hash, res);
@@ -1697,7 +1683,7 @@ impl OutboundPayments {
 				}
 			}
 		}
-		let (recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice, payment_nonce) = {
+		let (recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice) = {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
@@ -1740,9 +1726,8 @@ impl OutboundPayments {
 
 							payment.get_mut().increment_attempts();
 							let bolt12_invoice = payment.get().bolt12_invoice();
-							let payment_nonce = payment.get().payment_nonce().copied();
 
-							(recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice.cloned(), payment_nonce)
+							(recipient_onion, keysend_preimage, onion_session_privs, invoice_request, bolt12_invoice.cloned())
 						},
 						PendingOutboundPayment::Legacy { .. } => {
 							log_error!(logger, "Unable to retry payments that were initially sent on LDK versions prior to 0.0.102");
@@ -1782,7 +1767,7 @@ impl OutboundPayments {
 			}
 		};
 		let res = self.pay_route_internal(&route, payment_hash, &recipient_onion, keysend_preimage,
-			invoice_request.as_ref(), bolt12_invoice.as_ref(), payment_nonce,
+			invoice_request.as_ref(), bolt12_invoice.as_ref(),
 			payment_id,
 			&onion_session_privs, false, node_signer, best_block_height, &send_payment_along_path);
 		log_info!(logger, "Result retrying payment id {}: {:?}", &payment_id, res);
@@ -1942,7 +1927,7 @@ impl OutboundPayments {
 		})?;
 
 		match self.pay_route_internal(&route, payment_hash, &recipient_onion_fields,
-			None, None, None, None, payment_id, &onion_session_privs, false, node_signer,
+			None, None, None, payment_id, &onion_session_privs, false, node_signer,
 			best_block_height, &send_payment_along_path
 		) {
 			Ok(()) => Ok((payment_hash, payment_id)),
@@ -2005,7 +1990,7 @@ impl OutboundPayments {
 			hash_map::Entry::Occupied(_) => Err(PaymentSendFailure::DuplicatePayment),
 			hash_map::Entry::Vacant(entry) => {
 				let (payment, onion_session_privs) = Self::create_pending_payment(
-					payment_hash, recipient_onion, keysend_preimage, None, bolt12_invoice, None, route, retry_strategy,
+					payment_hash, recipient_onion, keysend_preimage, None, bolt12_invoice, route, retry_strategy,
 					payment_params, entropy_source, best_block_height
 				);
 				entry.insert(payment);
@@ -2018,7 +2003,7 @@ impl OutboundPayments {
 	fn create_pending_payment<ES: EntropySource>(
 		payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<InvoiceRequest>,
-		bolt12_invoice: Option<Bolt12InvoiceType>, payment_nonce: Option<Nonce>,
+		bolt12_invoice: Option<Bolt12InvoiceType>,
 		route: &Route, retry_strategy: Option<Retry>,
 		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32
 	) -> (PendingOutboundPayment, Vec<[u8; 32]>) {
@@ -2040,7 +2025,6 @@ impl OutboundPayments {
 			keysend_preimage,
 			invoice_request,
 			bolt12_invoice,
-			payment_nonce,
 			custom_tlvs: recipient_onion.custom_tlvs,
 			starting_block_height: best_block_height,
 			total_msat: route.get_total_amount(),
@@ -2131,7 +2115,6 @@ impl OutboundPayments {
 	fn pay_route_internal<NS: NodeSigner, F>(
 		&self, route: &Route, payment_hash: PaymentHash, recipient_onion: &RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>, bolt12_invoice: Option<&Bolt12InvoiceType>,
-		payment_nonce: Option<Nonce>,
 		payment_id: PaymentId, onion_session_privs: &Vec<[u8; 32]>,
 		hold_htlcs_at_next_hop: bool, node_signer: &NS, best_block_height: u32, send_payment_along_path: &F
 	) -> Result<(), PaymentSendFailure>
@@ -2181,7 +2164,7 @@ impl OutboundPayments {
 			let path_res = send_payment_along_path(SendAlongPathArgs {
 				path: &path, payment_hash: &payment_hash, recipient_onion,
 				cur_height, payment_id, keysend_preimage: &keysend_preimage, invoice_request,
-				bolt12_invoice, payment_nonce, hold_htlc_at_next_hop: hold_htlcs_at_next_hop,
+				bolt12_invoice, hold_htlc_at_next_hop: hold_htlcs_at_next_hop,
 				session_priv_bytes: *session_priv_bytes
 			});
 			results.push(path_res);
@@ -2248,7 +2231,7 @@ impl OutboundPayments {
 		F: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
 		self.pay_route_internal(route, payment_hash, &recipient_onion,
-			keysend_preimage, None, None, None, payment_id, &onion_session_privs,
+			keysend_preimage, None, None, payment_id, &onion_session_privs,
 			false, node_signer, best_block_height, &send_payment_along_path)
 			.map_err(|e| { self.remove_outbound_if_all_failed(payment_id, &e); e })
 	}
@@ -2272,7 +2255,6 @@ impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn claim_htlc<L: Logger>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, bolt12_invoice: Option<Bolt12InvoiceType>,
-		payment_nonce: Option<Nonce>,
 		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
@@ -2295,9 +2277,8 @@ impl OutboundPayments {
 					payment_hash,
 					amount_msat,
 					fee_paid_msat,
-					bolt12_invoice: bolt12_invoice.map(|invoice| {
-						PaidBolt12Invoice::new(invoice, payment_preimage, payment_nonce)
-					}),
+					bolt12_invoice: bolt12_invoice
+						.map(|invoice| PaidBolt12Invoice::new(invoice, payment_preimage)),
 				}, ev_completion_action.take()));
 				payment.get_mut().mark_fulfilled();
 			}
@@ -2693,7 +2674,6 @@ impl OutboundPayments {
 					keysend_preimage: None, // only used for retries, and we'll never retry on startup
 					invoice_request: None, // only used for retries, and we'll never retry on startup
 					bolt12_invoice: None, // only used for retries, and we'll never retry on startup!
-					payment_nonce: None, // only used for retries, and we'll never retry on startup
 					custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
 					pending_amt_msat: path_amt,
 					pending_fee_msat: Some(path_fee),
@@ -2798,7 +2778,20 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 			})),
 		(13, invoice_request, option),
 		(15, bolt12_invoice, option),
-		(17, payment_nonce, option),
+		// The nonce is serialized separately (as it has been since it was a parallel field) and
+		// re-bundled into `bolt12_invoice` on read so payer proofs can be built on retried paths.
+		(17, payment_nonce, (legacy, Nonce,
+			|payment_nonce: Option<&Nonce>| {
+				if let Some(Bolt12InvoiceType::Bolt12Invoice { nonce, .. }) = &mut bolt12_invoice {
+					*nonce = payment_nonce.copied();
+				}
+				Ok(())
+			},
+			|us: &PendingOutboundPayment| match us {
+				PendingOutboundPayment::Retryable { bolt12_invoice, .. } =>
+					bolt12_invoice.as_ref().and_then(|invoice| invoice.nonce()),
+				_ => None,
+			})),
 		(not_written, retry_strategy, (static_value, None)),
 		(not_written, attempts, (static_value, PaymentAttempts::new())),
 	},

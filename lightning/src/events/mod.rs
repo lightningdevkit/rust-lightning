@@ -2623,8 +2623,13 @@ impl MaybeReadable for Event {
 							Sha256::hash(&payment_preimage.0[..]).to_byte_array(),
 						));
 					}
-					let bolt12_invoice = invoice_type.map(|invoice| {
-						PaidBolt12Invoice::new(invoice, payment_preimage, payment_nonce)
+					let bolt12_invoice = invoice_type.map(|mut invoice| {
+						// The nonce is serialized separately for backwards compatibility; re-bundle
+						// it into the invoice so payer proofs can be built from this event.
+						if let Bolt12InvoiceType::Bolt12Invoice { nonce, .. } = &mut invoice {
+							*nonce = payment_nonce;
+						}
+						PaidBolt12Invoice::new(invoice, payment_preimage)
 					});
 					Ok(Some(Event::PaymentSent {
 						payment_id,

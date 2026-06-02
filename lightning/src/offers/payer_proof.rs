@@ -46,7 +46,8 @@ use crate::offers::payer::PAYER_METADATA_TYPE;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::ser::{
-	BigSize, CursorReadable, HighZeroBytesDroppedBigSize, WithoutLength, Writeable,
+	BigSize, CursorReadable, FixedLengthReader, HighZeroBytesDroppedBigSize, LengthReadable,
+	Readable, WithoutLength, Writeable, Writer,
 };
 use lightning_types::string::PrintableString;
 
@@ -65,15 +66,81 @@ use crate::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Bolt12InvoiceType {
 	/// A standard BOLT 12 invoice, allowing proof of payment.
-	Bolt12Invoice(Bolt12Invoice),
+	Bolt12Invoice {
+		/// The BOLT 12 invoice that was paid.
+		invoice: Bolt12Invoice,
+		/// The [`Nonce`] used when the BOLT 12 [`InvoiceRequest`] was created, needed to
+		/// re-derive the payer signing key when building a payer proof. `None` when the nonce is
+		/// not known (e.g. an invoice that was not paid through the outbound payment flow).
+		///
+		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+		nonce: Option<Nonce>,
+	},
 	/// A static invoice used in async payments, where proof of payment is not possible.
 	StaticInvoice(StaticInvoice),
 }
 
-impl_writeable_tlv_based_enum!(Bolt12InvoiceType,
-	{0, Bolt12Invoice} => (),
-	{2, StaticInvoice} => (),
-);
+impl Bolt12InvoiceType {
+	/// The [`Nonce`] bundled with the invoice, if any. Always `None` for a [`StaticInvoice`],
+	/// which does not support payer proofs.
+	pub(crate) fn nonce(&self) -> Option<Nonce> {
+		match self {
+			Bolt12InvoiceType::Bolt12Invoice { nonce, .. } => *nonce,
+			Bolt12InvoiceType::StaticInvoice(_) => None,
+		}
+	}
+}
+
+// `Bolt12InvoiceType` serializes only the invoice itself; the bundled `nonce` is written
+// separately by the containers that store it (`HTLCSource`, `PendingOutboundPayment` and
+// `Event::PaymentSent`) so the on-wire layout is unchanged from when the nonce was a parallel
+// field. On read the nonce comes back as `None` here and is re-bundled by those containers.
+impl Writeable for Bolt12InvoiceType {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		match self {
+			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: _ } => {
+				0u8.write(writer)?;
+				BigSize(invoice.serialized_length() as u64).write(writer)?;
+				invoice.write(writer)?;
+			},
+			Bolt12InvoiceType::StaticInvoice(invoice) => {
+				2u8.write(writer)?;
+				BigSize(invoice.serialized_length() as u64).write(writer)?;
+				invoice.write(writer)?;
+			},
+		}
+		Ok(())
+	}
+}
+
+impl Readable for Bolt12InvoiceType {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		let id: u8 = Readable::read(reader)?;
+		match id {
+			0 => {
+				let length: BigSize = Readable::read(reader)?;
+				let mut s = FixedLengthReader::new(reader, length.0);
+				let invoice = LengthReadable::read_from_fixed_length_buffer(&mut s)?;
+				if s.bytes_remain() {
+					s.eat_remaining()?;
+					return Err(DecodeError::InvalidValue);
+				}
+				Ok(Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: None })
+			},
+			2 => {
+				let length: BigSize = Readable::read(reader)?;
+				let mut s = FixedLengthReader::new(reader, length.0);
+				let invoice = LengthReadable::read_from_fixed_length_buffer(&mut s)?;
+				if s.bytes_remain() {
+					s.eat_remaining()?;
+					return Err(DecodeError::InvalidValue);
+				}
+				Ok(Bolt12InvoiceType::StaticInvoice(invoice))
+			},
+			_ => Err(DecodeError::UnknownRequiredFeature),
+		}
+	}
+}
 
 /// A paid BOLT 12 invoice with the data needed to construct payer proofs.
 ///
@@ -91,14 +158,11 @@ impl_writeable_tlv_based_enum!(Bolt12InvoiceType,
 pub struct PaidBolt12Invoice {
 	invoice: Bolt12InvoiceType,
 	preimage: PaymentPreimage,
-	nonce: Option<Nonce>,
 }
 
 impl PaidBolt12Invoice {
-	pub(crate) fn new(
-		invoice: Bolt12InvoiceType, preimage: PaymentPreimage, nonce: Option<Nonce>,
-	) -> Self {
-		Self { invoice, preimage, nonce }
+	pub(crate) fn new(invoice: Bolt12InvoiceType, preimage: PaymentPreimage) -> Self {
+		Self { invoice, preimage }
 	}
 
 	/// The payment preimage proving the invoice was paid.
@@ -111,13 +175,13 @@ impl PaidBolt12Invoice {
 	}
 
 	pub(crate) fn nonce(&self) -> Option<Nonce> {
-		self.nonce
+		self.invoice.nonce()
 	}
 
 	/// Returns the [`Bolt12Invoice`] if the payment was for a standard BOLT 12 invoice.
 	pub fn bolt12_invoice(&self) -> Option<&Bolt12Invoice> {
 		match &self.invoice {
-			Bolt12InvoiceType::Bolt12Invoice(invoice) => Some(invoice),
+			Bolt12InvoiceType::Bolt12Invoice { invoice, .. } => Some(invoice),
 			_ => None,
 		}
 	}
@@ -148,7 +212,7 @@ impl PaidBolt12Invoice {
 		// `nonce` before the invoice type would surface a misleading `KeyDerivationFailed`
 		// error instead of `IncompatibleInvoice`.
 		let invoice = self.bolt12_invoice().ok_or(PayerProofError::IncompatibleInvoice)?;
-		let nonce = self.nonce.ok_or(PayerProofError::KeyDerivationFailed)?;
+		let nonce = self.nonce().ok_or(PayerProofError::KeyDerivationFailed)?;
 		PayerProofBuilder::new_derived(
 			invoice,
 			self.preimage,
@@ -1195,8 +1259,10 @@ mod tests {
 			.sign(recipient_sign)
 			.unwrap();
 
-		let paid_invoice =
-			PaidBolt12Invoice::new(Bolt12InvoiceType::Bolt12Invoice(invoice), preimage, None);
+		let paid_invoice = PaidBolt12Invoice::new(
+			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: None },
+			preimage,
+		);
 		paid_invoice
 			.prove_payer()
 			.unwrap()
@@ -2134,8 +2200,10 @@ mod tests {
 
 		let secp_ctx = Secp256k1::signing_only();
 		let payer_keys = payer_keys();
-		let paid_invoice =
-			PaidBolt12Invoice::new(Bolt12InvoiceType::Bolt12Invoice(invoice), preimage, None);
+		let paid_invoice = PaidBolt12Invoice::new(
+			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: None },
+			preimage,
+		);
 		let payer_proof = paid_invoice
 			.prove_payer()
 			.unwrap()
@@ -2187,9 +2255,8 @@ mod tests {
 		.unwrap();
 
 		let paid_invoice = PaidBolt12Invoice::new(
-			Bolt12InvoiceType::Bolt12Invoice(invoice),
+			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: Some(nonce) },
 			preimage,
-			Some(nonce),
 		);
 		let payer_proof = paid_invoice
 			.prove_payer_derived(&expanded_key, payment_id, &secp_ctx)
@@ -2223,8 +2290,10 @@ mod tests {
 			.unwrap();
 
 		let wrong_preimage = PaymentPreimage([0xDE; 32]);
-		let paid_invoice =
-			PaidBolt12Invoice::new(Bolt12InvoiceType::Bolt12Invoice(invoice), wrong_preimage, None);
+		let paid_invoice = PaidBolt12Invoice::new(
+			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: None },
+			wrong_preimage,
+		);
 		assert!(matches!(paid_invoice.prove_payer(), Err(PayerProofError::PreimageMismatch)));
 	}
 
@@ -2260,9 +2329,8 @@ mod tests {
 		.unwrap();
 
 		let paid_invoice = PaidBolt12Invoice::new(
-			Bolt12InvoiceType::Bolt12Invoice(invoice),
+			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: Some(nonce) },
 			preimage,
-			Some(nonce),
 		);
 
 		let wrong_payment_id = PaymentId([0xFF; 32]);
@@ -2306,9 +2374,8 @@ mod tests {
 		// match the invoice's `invreq_payer_id`.
 		let wrong_nonce = Nonce::try_from(&[0xAA; Nonce::LENGTH][..]).unwrap();
 		let paid_invoice = PaidBolt12Invoice::new(
-			Bolt12InvoiceType::Bolt12Invoice(invoice),
+			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: Some(wrong_nonce) },
 			preimage,
-			Some(wrong_nonce),
 		);
 
 		let result = paid_invoice.prove_payer_derived(&expanded_key, payment_id, &secp_ctx);

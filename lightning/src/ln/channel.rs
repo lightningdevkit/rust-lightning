@@ -17512,7 +17512,6 @@ mod tests {
 				first_hop_htlc_msat: 548,
 				payment_id: PaymentId([42; 32]),
 				bolt12_invoice: None,
-			payment_nonce: None,
 			},
 			skimmed_fee_msat: None,
 			blinding_point: None,
@@ -18022,7 +18021,6 @@ mod tests {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([42; 32]),
 			bolt12_invoice: None,
-			payment_nonce: None,
 		};
 		let dummy_outbound_output = OutboundHTLCOutput {
 			htlc_id: 0,

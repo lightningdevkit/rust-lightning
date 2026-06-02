@@ -870,20 +870,16 @@ mod fuzzy_channelmanager {
 			/// doing a double-pass on route when we get a failure back
 			first_hop_htlc_msat: u64,
 			payment_id: PaymentId,
-			/// The BOLT 12 invoice associated with this payment, if any. Stored here so it can
-			/// be bundled into [`PaidBolt12Invoice`] in [`Event::PaymentSent`] even after a
-			/// restart with a stale `ChannelManager` state.
+			/// The BOLT 12 invoice associated with this payment, if any, together with the
+			/// [`Nonce`] used when its [`InvoiceRequest`] was created. Stored here so it can be
+			/// bundled into [`PaidBolt12Invoice`] in [`Event::PaymentSent`] for building payer
+			/// proofs, even after a restart with a stale `ChannelManager` state.
 			///
+			/// [`Nonce`]: crate::offers::nonce::Nonce
+			/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 			/// [`PaidBolt12Invoice`]: crate::offers::payer_proof::PaidBolt12Invoice
 			/// [`Event::PaymentSent`]: crate::events::Event::PaymentSent
 			bolt12_invoice: Option<Bolt12InvoiceType>,
-			/// The [`Nonce`] used when the BOLT 12 [`InvoiceRequest`] was created. Stored here so
-			/// it can be bundled into [`PaidBolt12Invoice`] for building payer proofs, even after
-			/// a restart with a stale `ChannelManager` state.
-			///
-			/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-			/// [`PaidBolt12Invoice`]: crate::offers::payer_proof::PaidBolt12Invoice
-			payment_nonce: Option<Nonce>,
 		},
 	}
 
@@ -1000,7 +996,6 @@ impl HTLCSource {
 			first_hop_htlc_msat: 0,
 			payment_id: PaymentId([2; 32]),
 			bolt12_invoice: None,
-			payment_nonce: None,
 		}
 	}
 
@@ -5446,7 +5441,6 @@ impl<
 			keysend_preimage,
 			invoice_request: None,
 			bolt12_invoice: None,
-			payment_nonce: None,
 			session_priv_bytes,
 			hold_htlc_at_next_hop: false,
 		})
@@ -5462,7 +5456,6 @@ impl<
 			keysend_preimage,
 			invoice_request,
 			bolt12_invoice,
-			payment_nonce,
 			session_priv_bytes,
 			hold_htlc_at_next_hop,
 		} = args;
@@ -5539,7 +5532,6 @@ impl<
 							first_hop_htlc_msat: htlc_msat,
 							payment_id,
 							bolt12_invoice: bolt12_invoice.cloned(),
-							payment_nonce,
 						};
 						let send_res = chan.send_htlc_and_commit(
 							htlc_msat,
@@ -10155,12 +10147,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let htlc_id = SentHTLCId::from_source(&source);
 		match source {
 			HTLCSource::OutboundRoute {
-				session_priv,
-				payment_id,
-				path,
-				bolt12_invoice,
-				payment_nonce,
-				..
+				session_priv, payment_id, path, bolt12_invoice, ..
 			} => {
 				debug_assert!(!startup_replay,
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
@@ -10192,7 +10179,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					payment_id,
 					payment_preimage,
 					bolt12_invoice,
-					payment_nonce,
 					session_priv,
 					path,
 					from_onchain,
@@ -18020,6 +18006,11 @@ impl Readable for HTLCSource {
 					(7, bolt12_invoice, option),
 					(9, payment_nonce, option),
 				});
+				// The nonce is serialized separately for backwards compatibility; re-bundle it
+				// into the invoice so it can be used to build payer proofs after payment success.
+				if let Some(Bolt12InvoiceType::Bolt12Invoice { nonce, .. }) = &mut bolt12_invoice {
+					*nonce = payment_nonce;
+				}
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
 					// instead.
@@ -18042,7 +18033,6 @@ impl Readable for HTLCSource {
 					path,
 					payment_id: payment_id.unwrap(),
 					bolt12_invoice,
-					payment_nonce,
 				})
 			}
 			1 => Ok(HTLCSource::PreviousHopData(Readable::read(reader)?)),
@@ -18062,10 +18052,12 @@ impl Writeable for HTLCSource {
 				ref path,
 				payment_id,
 				bolt12_invoice,
-				payment_nonce,
 			} => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
+				// The nonce bundled into the invoice is written separately for backwards
+				// compatibility with the parallel `payment_nonce` field it replaced.
+				let payment_nonce = bolt12_invoice.as_ref().and_then(|invoice| invoice.nonce());
 				write_tlv_fields!(writer, {
 				   (0, session_priv, required),
 				   (1, payment_id_opt, option),
@@ -19949,7 +19941,6 @@ impl<
 								session_priv,
 								path,
 								bolt12_invoice,
-								payment_nonce,
 								..
 							} => {
 								if let Some(preimage) = preimage_opt {
@@ -19967,7 +19958,6 @@ impl<
 										payment_id,
 										preimage,
 										bolt12_invoice,
-										payment_nonce,
 										session_priv,
 										path,
 										true,
