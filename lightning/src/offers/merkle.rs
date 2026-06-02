@@ -353,8 +353,8 @@ struct TlvMerkleData {
 pub(super) fn compute_selective_disclosure<'a>(
 	records: impl Iterator<Item = TlvRecord<'a>>, included_types: &BTreeSet<u64>,
 ) -> Result<SelectiveDisclosure, SelectiveDisclosureError> {
-	let mut records = records.peekable();
-	let first_record = records.peek().ok_or(SelectiveDisclosureError::EmptyTlvStream)?;
+	let records: Vec<TlvRecord<'a>> = records.collect();
+	let first_record = records.first().ok_or(SelectiveDisclosureError::EmptyTlvStream)?;
 	let nonce_tag_hash = sha256::Hash::from_engine({
 		let mut engine = sha256::Hash::engine();
 		engine.input("LnNonce".as_bytes());
@@ -366,8 +366,9 @@ pub(super) fn compute_selective_disclosure<'a>(
 	let nonce_tag = tagged_hash_engine(nonce_tag_hash);
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
 
-	let mut tlv_data: Vec<TlvMerkleData> = Vec::new();
-	let mut leaf_hashes: Vec<sha256::Hash> = Vec::new();
+	// One `TlvMerkleData` per record, and at most one leaf hash per included type.
+	let mut tlv_data: Vec<TlvMerkleData> = Vec::with_capacity(records.len());
+	let mut leaf_hashes: Vec<sha256::Hash> = Vec::with_capacity(included_types.len());
 	for record in records {
 		let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
 		let nonce_hash = tagged_hash_from_engine(nonce_tag.clone(), record.type_bytes);
