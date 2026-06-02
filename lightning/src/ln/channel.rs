@@ -10343,6 +10343,7 @@ where
 				}
 
 				self.context.signer_pending_revoke_and_ack = false;
+				self.context.monitor_pending_revoke_and_ack = false;
 				return Some(msgs::RevokeAndACK {
 					channel_id: self.context.channel_id,
 					per_commitment_secret,
