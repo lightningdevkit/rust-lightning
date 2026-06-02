@@ -2361,6 +2361,8 @@ mod tests {
 
 	use bitcoin::{absolute::LockTime, transaction::Version};
 	use core::str::FromStr;
+	use lightning::io::Cursor;
+	use lightning::util::ser::{Readable, Writeable};
 
 	const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
@@ -2762,6 +2764,52 @@ mod tests {
 				matches!(action, Some(HTLCInterceptedAction::ForwardHTLC(channel_id)) if channel_id == ChannelId([200; 32]))
 			);
 		}
+	}
+
+	#[test]
+	fn replayed_intercepted_htlc_after_persist_is_idempotent() {
+		let payment_size_msat = Some(500_000_000);
+		let opening_fee_params = LSPS2OpeningFeeParams {
+			min_fee_msat: 10_000_000,
+			proportional: 10_000,
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+			min_lifetime: 4032,
+			max_client_to_self_delay: 2016,
+			min_payment_size_msat: 10_000_000,
+			max_payment_size_msat: 1_000_000_000,
+			promise: "ignore".to_string(),
+		};
+		let intercept_scid = 42;
+		let user_channel_id = 43;
+		let htlc = InterceptedHTLC {
+			intercept_id: InterceptId([1; 32]),
+			expected_outbound_amount_msat: 500_000_000,
+			payment_hash: PaymentHash([2; 32]),
+		};
+
+		let mut jit_channel =
+			OutboundJITChannel::new(payment_size_msat, opening_fee_params, user_channel_id, false);
+		assert!(matches!(
+			jit_channel.htlc_intercepted(htlc).unwrap(),
+			Some(HTLCInterceptedAction::OpenChannel(_))
+		));
+
+		let mut peer_state = PeerState::new();
+		peer_state.intercept_scid_by_user_channel_id.insert(user_channel_id, intercept_scid);
+		peer_state.insert_outbound_channel(intercept_scid, jit_channel);
+
+		let encoded_peer_state = peer_state.encode();
+		let mut decoded_peer_state = PeerState::read(&mut Cursor::new(encoded_peer_state)).unwrap();
+		let decoded_jit_channel = decoded_peer_state
+			.outbound_channels_by_intercept_scid
+			.get_mut(&intercept_scid)
+			.unwrap();
+
+		assert!(decoded_jit_channel.htlc_intercepted(htlc).unwrap().is_none());
+
+		let ForwardPaymentAction(_, fee_payment) =
+			decoded_jit_channel.channel_ready(ChannelId([3; 32])).unwrap();
+		assert_eq!(fee_payment.htlcs, vec![htlc]);
 	}
 
 	#[test]
