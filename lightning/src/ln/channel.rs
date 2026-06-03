@@ -12786,6 +12786,17 @@ where
 			));
 		}
 
+		if pending_splice
+			.negotiated_candidates
+			.iter()
+			.any(|funding| funding.funding_tx_confirmation_height != 0)
+		{
+			return Err(format!(
+				"Channel {} has a confirmed pending splice, cannot RBF",
+				self.context.channel_id(),
+			));
+		}
+
 		if pending_splice.negotiated_candidates.is_empty() {
 			return Err(format!(
 				"Channel {} has no negotiated splice candidates to RBF",
@@ -13434,6 +13445,17 @@ where
 		if pending_splice.sent_funding_txid.is_some() {
 			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} already sent splice_locked, cannot RBF",
+				self.context.channel_id(),
+			)));
+		}
+
+		if pending_splice
+			.negotiated_candidates
+			.iter()
+			.any(|funding| funding.funding_tx_confirmation_height != 0)
+		{
+			return Err(ChannelError::WarnAndDisconnect(format!(
+				"Channel {} has a confirmed pending splice, cannot RBF",
 				self.context.channel_id(),
 			)));
 		}
