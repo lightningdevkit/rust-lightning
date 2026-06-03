@@ -321,6 +321,16 @@ impl MigratableKVStoreSync for FilesystemStoreV2 {
 	}
 }
 
+#[cfg(feature = "tokio")]
+impl lightning::util::persist::MigratableKVStore for FilesystemStoreV2 {
+	fn list_all_keys(
+		&self,
+	) -> impl Future<Output = Result<Vec<(String, String, String)>, lightning::io::Error>> + 'static + Send
+	{
+		self.inner.list_all_keys_async(true)
+	}
+}
+
 /// Formats a page token from mtime (millis since epoch) and key.
 pub(crate) fn format_page_token(mtime_millis: u64, key: &str) -> String {
 	format!("{mtime_millis:016}:{key}")
@@ -351,6 +361,8 @@ pub(crate) fn parse_page_token(token: &str) -> lightning::io::Result<(u64, Strin
 mod tests {
 	use super::*;
 	use crate::fs_store::common::EMPTY_NAMESPACE_DIR;
+	#[cfg(feature = "tokio")]
+	use crate::test_utils::do_test_data_migration_async;
 	use crate::test_utils::{
 		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
 	};
@@ -443,6 +455,20 @@ mod tests {
 		let mut target_store = FilesystemStoreV2::new(target_temp_path).unwrap();
 
 		do_test_data_migration(&mut source_store, &mut target_store);
+	}
+
+	#[cfg(feature = "tokio")]
+	#[tokio::test]
+	async fn test_data_migration_async() {
+		let mut source_temp_path = std::env::temp_dir();
+		source_temp_path.push("test_data_migration_source_async_v2");
+		let source_store = FilesystemStoreV2::new(source_temp_path).unwrap();
+
+		let mut target_temp_path = std::env::temp_dir();
+		target_temp_path.push("test_data_migration_target_async_v2");
+		let target_store = FilesystemStoreV2::new(target_temp_path).unwrap();
+
+		do_test_data_migration_async(&source_store, &target_store).await;
 	}
 
 	#[test]
