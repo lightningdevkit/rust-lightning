@@ -554,9 +554,9 @@ pub trait PaginatedKVStore: KVStore {
 	) -> impl Future<Output = Result<PaginatedListResponse, io::Error>> + 'static + MaybeSend;
 }
 
-/// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
+/// Provides additional interface methods that are required for [`KVStoreSync`]-to-[`KVStoreSync`]
 /// data migration.
-pub trait MigratableKVStore: KVStoreSync {
+pub trait MigratableKVStoreSync: KVStoreSync {
 	/// Returns *all* known keys as a list of `primary_namespace`, `secondary_namespace`, `key` tuples.
 	///
 	/// This is useful for migrating data from [`KVStoreSync`] implementation to [`KVStoreSync`]
@@ -575,7 +575,7 @@ pub trait MigratableKVStore: KVStoreSync {
 ///
 /// Will abort and return an error if any IO operation fails. Note that in this case the
 /// `target_store` might get left in an intermediate state.
-pub fn migrate_kv_store_data<S: MigratableKVStore, T: MigratableKVStore>(
+pub fn migrate_kv_store_data<S: MigratableKVStoreSync, T: MigratableKVStoreSync>(
 	source_store: &mut S, target_store: &mut T,
 ) -> Result<(), io::Error> {
 	let keys_to_migrate = source_store.list_all_keys()?;
