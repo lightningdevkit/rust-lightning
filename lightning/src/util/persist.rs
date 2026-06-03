@@ -567,6 +567,128 @@ pub trait MigratableKVStoreSync: KVStoreSync {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, io::Error>;
 }
 
+/// Provides additional interface methods that are required for [`KVStore`]-to-[`KVStore`]
+/// data migration.
+///
+/// This is not exported to bindings users as async is only supported in Rust.
+pub trait MigratableKVStore: KVStore {
+	/// Returns *all* known keys as a list of `primary_namespace`, `secondary_namespace`, `key` tuples.
+	///
+	/// This is useful for migrating data from [`KVStore`] implementation to [`KVStore`]
+	/// implementation.
+	///
+	/// Must exhaustively return all entries known to the store to ensure no data is missed, but
+	/// may return the items in arbitrary order.
+	fn list_all_keys(
+		&self,
+	) -> impl Future<Output = Result<Vec<(String, String, String)>, io::Error>> + 'static + MaybeSend;
+}
+
+impl<K> MigratableKVStore for K
+where
+	K: Deref,
+	K::Target: MigratableKVStore,
+{
+	fn list_all_keys(
+		&self,
+	) -> impl Future<Output = Result<Vec<(String, String, String)>, io::Error>> + 'static + MaybeSend
+	{
+		self.deref().list_all_keys()
+	}
+}
+
+/// This is not exported to bindings users as async is only supported in Rust.
+impl<K: Deref> MigratableKVStore for KVStoreSyncWrapper<K>
+where
+	K::Target: MigratableKVStoreSync,
+{
+	fn list_all_keys(
+		&self,
+	) -> impl Future<Output = Result<Vec<(String, String, String)>, io::Error>> + 'static + MaybeSend
+	{
+		let res = self.0.list_all_keys();
+
+		async move { res }
+	}
+}
+
+type MigrationKey = (String, String, String);
+
+trait MigrationKVStore {
+	fn list_all_keys(
+		&self,
+	) -> impl Future<Output = Result<Vec<MigrationKey>, io::Error>> + MaybeSend;
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + MaybeSend;
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> impl Future<Output = Result<(), io::Error>> + MaybeSend;
+}
+
+struct MigrationKVStoreSyncAdapter<'a, K: ?Sized>(&'a K);
+
+impl<K: MigratableKVStoreSync + ?Sized> MigrationKVStore for MigrationKVStoreSyncAdapter<'_, K> {
+	fn list_all_keys(
+		&self,
+	) -> impl Future<Output = Result<Vec<MigrationKey>, io::Error>> + MaybeSend {
+		let res = MigratableKVStoreSync::list_all_keys(self.0);
+
+		async move { res }
+	}
+
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + MaybeSend {
+		let res = KVStoreSync::read(self.0, primary_namespace, secondary_namespace, key);
+
+		async move { res }
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> impl Future<Output = Result<(), io::Error>> + MaybeSend {
+		let res = KVStoreSync::write(self.0, primary_namespace, secondary_namespace, key, buf);
+
+		async move { res }
+	}
+}
+
+struct MigrationKVStoreAsyncAdapter<'a, K: ?Sized>(&'a K);
+
+impl<K: MigratableKVStore + ?Sized> MigrationKVStore for MigrationKVStoreAsyncAdapter<'_, K> {
+	fn list_all_keys(
+		&self,
+	) -> impl Future<Output = Result<Vec<MigrationKey>, io::Error>> + MaybeSend {
+		MigratableKVStore::list_all_keys(self.0)
+	}
+
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> impl Future<Output = Result<Vec<u8>, io::Error>> + MaybeSend {
+		KVStore::read(self.0, primary_namespace, secondary_namespace, key)
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> impl Future<Output = Result<(), io::Error>> + MaybeSend {
+		KVStore::write(self.0, primary_namespace, secondary_namespace, key, buf)
+	}
+}
+
+async fn migrate_kv_store_data_inner<S: MigrationKVStore, T: MigrationKVStore>(
+	source_store: S, target_store: T,
+) -> Result<(), io::Error> {
+	let keys_to_migrate = source_store.list_all_keys().await?;
+
+	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
+		let data = source_store.read(primary_namespace, secondary_namespace, key).await?;
+		target_store.write(primary_namespace, secondary_namespace, key, data).await?;
+	}
+
+	Ok(())
+}
+
 /// Migrates all data from one store to another.
 ///
 /// This operation assumes that `target_store` is empty, i.e., any data present under copied keys
@@ -578,14 +700,28 @@ pub trait MigratableKVStoreSync: KVStoreSync {
 pub fn migrate_kv_store_data<S: MigratableKVStoreSync, T: MigratableKVStoreSync>(
 	source_store: &mut S, target_store: &mut T,
 ) -> Result<(), io::Error> {
-	let keys_to_migrate = source_store.list_all_keys()?;
+	poll_sync_future(migrate_kv_store_data_inner(
+		MigrationKVStoreSyncAdapter(source_store),
+		MigrationKVStoreSyncAdapter(target_store),
+	))
+}
 
-	for (primary_namespace, secondary_namespace, key) in &keys_to_migrate {
-		let data = source_store.read(primary_namespace, secondary_namespace, key)?;
-		target_store.write(primary_namespace, secondary_namespace, key, data)?;
-	}
-
-	Ok(())
+/// Migrates all data from one asynchronous store to another.
+///
+/// This operation assumes that `target_store` is empty, i.e., any data present under copied keys
+/// might get overriden. User must ensure `source_store` is not modified during operation,
+/// otherwise no consistency guarantees can be given.
+///
+/// Will abort and return an error if any IO operation fails. Note that in this case the
+/// `target_store` might get left in an intermediate state.
+pub async fn migrate_kv_store_data_async<S: MigratableKVStore, T: MigratableKVStore>(
+	source_store: &S, target_store: &T,
+) -> Result<(), io::Error> {
+	migrate_kv_store_data_inner(
+		MigrationKVStoreAsyncAdapter(source_store),
+		MigrationKVStoreAsyncAdapter(target_store),
+	)
+	.await
 }
 
 impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<ChannelSigner> for K {
