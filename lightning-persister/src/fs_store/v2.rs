@@ -4,7 +4,7 @@ use crate::fs_store::common::{
 };
 
 use lightning::util::persist::{
-	KVStoreSync, MigratableKVStore, PageToken, PaginatedKVStoreSync, PaginatedListResponse,
+	KVStoreSync, MigratableKVStoreSync, PageToken, PaginatedKVStoreSync, PaginatedListResponse,
 };
 
 use std::fs;
@@ -315,7 +315,7 @@ impl PaginatedKVStore for FilesystemStoreV2 {
 	}
 }
 
-impl MigratableKVStore for FilesystemStoreV2 {
+impl MigratableKVStoreSync for FilesystemStoreV2 {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
 		self.inner.list_all_keys_impl(true)
 	}

@@ -1,7 +1,7 @@
 use lightning::events::ClosureReason;
 use lightning::ln::functional_test_utils::*;
 use lightning::util::persist::{
-	migrate_kv_store_data, read_channel_monitors, KVStoreSync, MigratableKVStore,
+	migrate_kv_store_data, read_channel_monitors, KVStoreSync, MigratableKVStoreSync,
 	KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
 use lightning::util::test_utils;
@@ -59,7 +59,7 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStoreSync + RefUnwindSafe>(
 	assert_eq!(listed_keys.len(), 0);
 }
 
-pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>(
+pub(crate) fn do_test_data_migration<S: MigratableKVStoreSync, T: MigratableKVStoreSync>(
 	source_store: &mut S, target_store: &mut T,
 ) {
 	// We fill the source with some bogus keys.

@@ -1,7 +1,7 @@
 //! Objects related to [`FilesystemStore`] live here.
 use crate::fs_store::common::FilesystemStoreState;
 
-use lightning::util::persist::{KVStoreSync, MigratableKVStore};
+use lightning::util::persist::{KVStoreSync, MigratableKVStoreSync};
 
 use std::path::PathBuf;
 
@@ -88,7 +88,7 @@ impl KVStore for FilesystemStore {
 	}
 }
 
-impl MigratableKVStore for FilesystemStore {
+impl MigratableKVStoreSync for FilesystemStore {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
 		self.state.list_all_keys_impl(false)
 	}
