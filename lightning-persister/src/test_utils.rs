@@ -1,7 +1,7 @@
 use lightning::events::ClosureReason;
 use lightning::ln::functional_test_utils::*;
 use lightning::util::persist::{
-	migrate_kv_store_data, read_channel_monitors, KVStoreSync, MigratableKVStore,
+	migrate_kv_store_data, read_channel_monitors, KVStoreSync, MigratableKVStoreSync,
 	KVSTORE_NAMESPACE_KEY_ALPHABET, KVSTORE_NAMESPACE_KEY_MAX_LEN,
 };
 use lightning::util::test_utils;
@@ -59,15 +59,11 @@ pub(crate) fn do_read_write_remove_list_persist<K: KVStoreSync + RefUnwindSafe>(
 	assert_eq!(listed_keys.len(), 0);
 }
 
-pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>(
-	source_store: &mut S, target_store: &mut T,
-) {
-	// We fill the source with some bogus keys.
-	let dummy_data = vec![42u8; 32];
+fn data_migration_test_keys() -> Vec<(String, String, String)> {
 	let num_primary_namespaces = 3;
 	let num_secondary_namespaces = 3;
 	let num_keys = 3;
-	let mut expected_keys = Vec::new();
+	let mut keys = Vec::new();
 	for i in 0..num_primary_namespaces {
 		let primary_namespace = if i == 0 {
 			String::new()
@@ -83,12 +79,24 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 			for k in 0..num_keys {
 				let key =
 					format!("testkey{}", KVSTORE_NAMESPACE_KEY_ALPHABET.chars().nth(k).unwrap());
-				source_store
-					.write(&primary_namespace, &secondary_namespace, &key, dummy_data.clone())
-					.unwrap();
-				expected_keys.push((primary_namespace.clone(), secondary_namespace.clone(), key));
+				keys.push((primary_namespace.clone(), secondary_namespace.clone(), key));
 			}
 		}
+	}
+
+	keys
+}
+
+pub(crate) fn do_test_data_migration<S: MigratableKVStoreSync, T: MigratableKVStoreSync>(
+	source_store: &mut S, target_store: &mut T,
+) {
+	// We fill the source with some bogus keys.
+	let dummy_data = vec![42u8; 32];
+	let mut expected_keys = data_migration_test_keys();
+	for (primary_namespace, secondary_namespace, key) in &expected_keys {
+		source_store
+			.write(primary_namespace, secondary_namespace, key, dummy_data.clone())
+			.unwrap();
 	}
 	expected_keys.sort();
 	expected_keys.dedup();
@@ -105,6 +113,47 @@ pub(crate) fn do_test_data_migration<S: MigratableKVStore, T: MigratableKVStore>
 
 	for (p, s, k) in expected_keys.iter() {
 		assert_eq!(target_store.read(p, s, k).unwrap(), dummy_data.clone());
+	}
+}
+
+#[cfg(feature = "tokio")]
+pub(crate) async fn do_test_data_migration_async<
+	S: lightning::util::persist::MigratableKVStore,
+	T: lightning::util::persist::MigratableKVStore,
+>(
+	source_store: &S, target_store: &T,
+) {
+	use lightning::util::persist::{migrate_kv_store_data_async, KVStore, MigratableKVStore};
+
+	// We fill the source with some bogus keys.
+	let dummy_data = vec![42u8; 32];
+	let mut expected_keys = data_migration_test_keys();
+	for (primary_namespace, secondary_namespace, key) in &expected_keys {
+		KVStore::write(
+			source_store,
+			primary_namespace,
+			secondary_namespace,
+			key,
+			dummy_data.clone(),
+		)
+		.await
+		.unwrap();
+	}
+	expected_keys.sort();
+	expected_keys.dedup();
+
+	let mut source_list = MigratableKVStore::list_all_keys(source_store).await.unwrap();
+	source_list.sort();
+	assert_eq!(source_list, expected_keys);
+
+	migrate_kv_store_data_async(source_store, target_store).await.unwrap();
+
+	let mut target_list = MigratableKVStore::list_all_keys(target_store).await.unwrap();
+	target_list.sort();
+	assert_eq!(target_list, expected_keys);
+
+	for (p, s, k) in expected_keys.iter() {
+		assert_eq!(KVStore::read(target_store, p, s, k).await.unwrap(), dummy_data.clone());
 	}
 }
 
