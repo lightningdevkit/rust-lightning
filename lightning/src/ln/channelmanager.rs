@@ -101,7 +101,7 @@ use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromO
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
-use crate::offers::payer_proof::Bolt12InvoiceType;
+use crate::offers::payer_proof::{Bolt12InvoiceType, Bolt12InvoiceTypeWire};
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::async_payments::{
@@ -17994,7 +17994,7 @@ impl Readable for HTLCSource {
 				let mut payment_id = None;
 				let mut payment_params: Option<PaymentParameters> = None;
 				let mut blinded_tail: Option<BlindedTail> = None;
-				let mut bolt12_invoice: Option<Bolt12InvoiceType> = None;
+				let mut bolt12_invoice: Option<Bolt12InvoiceTypeWire> = None;
 				let mut payment_nonce: Option<Nonce> = None;
 				read_tlv_fields!(reader, {
 					(0, session_priv, required),
@@ -18008,9 +18008,8 @@ impl Readable for HTLCSource {
 				});
 				// The nonce is serialized separately for backwards compatibility; re-bundle it
 				// into the invoice so it can be used to build payer proofs after payment success.
-				if let Some(Bolt12InvoiceType::Bolt12Invoice { nonce, .. }) = &mut bolt12_invoice {
-					*nonce = payment_nonce;
-				}
+				let bolt12_invoice =
+					bolt12_invoice.map(|invoice| invoice.into_invoice_type(payment_nonce));
 				if payment_id.is_none() {
 					// For backwards compat, if there was no payment_id written, use the session_priv bytes
 					// instead.
@@ -18055,9 +18054,11 @@ impl Writeable for HTLCSource {
 			} => {
 				0u8.write(writer)?;
 				let payment_id_opt = Some(payment_id);
-				// The nonce bundled into the invoice is written separately for backwards
-				// compatibility with the parallel `payment_nonce` field it replaced.
+				// The invoice is written via its nonce-less wire form; the bundled nonce is written
+				// separately for backwards compatibility with the parallel `payment_nonce` field it
+				// replaced.
 				let payment_nonce = bolt12_invoice.as_ref().and_then(|invoice| invoice.nonce());
+				let bolt12_invoice = bolt12_invoice.as_ref().map(|invoice| invoice.as_wire());
 				write_tlv_fields!(writer, {
 				   (0, session_priv, required),
 				   (1, payment_id_opt, option),

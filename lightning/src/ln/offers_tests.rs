@@ -70,7 +70,7 @@ use crate::onion_message::offers::OffersMessage;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::{NodeSigner, Recipient};
-use crate::util::ser::Writeable;
+use crate::util::ser::{MaybeReadable, Writeable};
 
 /// This used to determine whether we built a compact path or not, but now its just a random
 /// constant we apply to blinded path expiry in these tests.
@@ -2920,6 +2920,32 @@ fn creates_and_verifies_payer_proof_after_offer_payment() {
 
 	let paid_invoice = claim_payment(bob, &[alice], payment_preimage).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+
+	// The paid invoice carries the `Nonce` from the original `InvoiceRequest`, which is required
+	// to re-derive the payer signing key when building a payer proof.
+	let invoice_nonce = paid_invoice.nonce();
+	assert!(invoice_nonce.is_some());
+
+	// Regression guard: the `Event::PaymentSent` container persists the invoice via its nonce-less
+	// wire form with the nonce as a sibling field, then re-bundles them on read. Round-tripping the
+	// event must preserve the bundled nonce (and the rest of the invoice).
+	let payment_sent = Event::PaymentSent {
+		payment_id: Some(payment_id),
+		payment_preimage,
+		payment_hash: invoice.payment_hash(),
+		amount_msat: Some(10_000_000),
+		fee_paid_msat: None,
+		bolt12_invoice: Some(paid_invoice.clone()),
+	};
+	let encoded = payment_sent.encode();
+	let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+	assert_eq!(decoded, payment_sent);
+	match decoded {
+		Event::PaymentSent { bolt12_invoice: Some(decoded_invoice), .. } => {
+			assert_eq!(decoded_invoice.nonce(), invoice_nonce);
+		},
+		_ => panic!("expected a PaymentSent event carrying a paid invoice"),
+	}
 
 	// --- Payer Proof Creation ---
 	// Bob (the payer) creates a proof-of-payment with selective disclosure.

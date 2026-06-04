@@ -33,7 +33,7 @@ use crate::ln::types::ChannelId;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::nonce::Nonce;
-use crate::offers::payer_proof::Bolt12InvoiceType;
+use crate::offers::payer_proof::Bolt12InvoiceTypeWire;
 pub use crate::offers::payer_proof::PaidBolt12Invoice;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::Responder;
@@ -2106,7 +2106,8 @@ impl Writeable for Event {
 				ref bolt12_invoice,
 			} => {
 				2u8.write(writer)?;
-				let invoice_type = bolt12_invoice.as_ref().map(|paid| paid.invoice_type());
+				let invoice_type =
+					bolt12_invoice.as_ref().map(|paid| paid.invoice_type().as_wire());
 				let payment_nonce = bolt12_invoice.as_ref().and_then(|paid| paid.nonce());
 				write_tlv_fields!(writer, {
 					(0, payment_preimage, required),
@@ -2607,7 +2608,7 @@ impl MaybeReadable for Event {
 					let mut payment_id = None;
 					let mut amount_msat = None;
 					let mut fee_paid_msat = None;
-					let mut invoice_type: Option<Bolt12InvoiceType> = None;
+					let mut invoice_type: Option<Bolt12InvoiceTypeWire> = None;
 					let mut payment_nonce: Option<Nonce> = None;
 					read_tlv_fields!(reader, {
 						(0, payment_preimage, required),
@@ -2623,13 +2624,13 @@ impl MaybeReadable for Event {
 							Sha256::hash(&payment_preimage.0[..]).to_byte_array(),
 						));
 					}
-					let bolt12_invoice = invoice_type.map(|mut invoice| {
+					let bolt12_invoice = invoice_type.map(|invoice| {
 						// The nonce is serialized separately for backwards compatibility; re-bundle
 						// it into the invoice so payer proofs can be built from this event.
-						if let Bolt12InvoiceType::Bolt12Invoice { nonce, .. } = &mut invoice {
-							*nonce = payment_nonce;
-						}
-						PaidBolt12Invoice::new(invoice, payment_preimage)
+						PaidBolt12Invoice::new(
+							invoice.into_invoice_type(payment_nonce),
+							payment_preimage,
+						)
 					});
 					Ok(Some(Event::PaymentSent {
 						payment_id,

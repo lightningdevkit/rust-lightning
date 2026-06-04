@@ -89,21 +89,58 @@ impl Bolt12InvoiceType {
 			Bolt12InvoiceType::StaticInvoice(_) => None,
 		}
 	}
+
+	/// The nonce-less wire form used to serialize this invoice, borrowing the invoice. The bundled
+	/// `nonce` is persisted separately by the container holding the invoice and re-bundled on read.
+	pub(crate) fn as_wire(&self) -> Bolt12InvoiceTypeWireRef {
+		match self {
+			Bolt12InvoiceType::Bolt12Invoice { invoice, .. } => {
+				Bolt12InvoiceTypeWireRef::Bolt12Invoice(invoice)
+			},
+			Bolt12InvoiceType::StaticInvoice(invoice) => {
+				Bolt12InvoiceTypeWireRef::StaticInvoice(invoice)
+			},
+		}
+	}
+
+	/// An owned [`Bolt12InvoiceTypeWire`], for serialization contexts that cannot hold the borrow
+	/// produced by [`Self::as_wire`] (e.g. TLV write closures). The bundled `nonce` is omitted and
+	/// persisted separately.
+	pub(crate) fn to_wire(&self) -> Bolt12InvoiceTypeWire {
+		match self {
+			Bolt12InvoiceType::Bolt12Invoice { invoice, .. } => {
+				Bolt12InvoiceTypeWire::Bolt12Invoice(invoice.clone())
+			},
+			Bolt12InvoiceType::StaticInvoice(invoice) => {
+				Bolt12InvoiceTypeWire::StaticInvoice(invoice.clone())
+			},
+		}
+	}
 }
 
-// `Bolt12InvoiceType` serializes only the invoice itself; the bundled `nonce` is written
-// separately by the containers that store it (`HTLCSource`, `PendingOutboundPayment` and
-// `Event::PaymentSent`) so the on-wire layout is unchanged from when the nonce was a parallel
-// field. On read the nonce comes back as `None` here and is re-bundled by those containers.
-impl Writeable for Bolt12InvoiceType {
+// `Bolt12InvoiceType` deliberately does not implement `Writeable`/`Readable`: doing so would
+// silently drop the bundled `nonce`, since the nonce is persisted as a separate field by the
+// containers that store the invoice (`HTLCSource`, `PendingOutboundPayment` and
+// `Event::PaymentSent`). That separate layout matches when the nonce was a parallel field.
+// Serialization instead goes through the nonce-less wire types below, and the nonce is
+// re-bundled into a `Bolt12InvoiceType` once it has been read.
+
+/// On-wire form of a [`Bolt12InvoiceType`] used for writing, borrowing the invoice and omitting
+/// the bundled [`Nonce`] (which is persisted separately by the containing type).
+pub(crate) enum Bolt12InvoiceTypeWireRef<'a> {
+	Bolt12Invoice(&'a Bolt12Invoice),
+	StaticInvoice(&'a StaticInvoice),
+}
+
+impl<'a> Writeable for Bolt12InvoiceTypeWireRef<'a> {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: _ } => {
+			Bolt12InvoiceTypeWireRef::Bolt12Invoice(invoice) => {
 				0u8.write(writer)?;
 				BigSize(invoice.serialized_length() as u64).write(writer)?;
 				invoice.write(writer)?;
 			},
-			Bolt12InvoiceType::StaticInvoice(invoice) => {
+			Bolt12InvoiceTypeWireRef::StaticInvoice(invoice) => {
 				2u8.write(writer)?;
 				BigSize(invoice.serialized_length() as u64).write(writer)?;
 				invoice.write(writer)?;
@@ -113,7 +150,29 @@ impl Writeable for Bolt12InvoiceType {
 	}
 }
 
-impl Readable for Bolt12InvoiceType {
+/// On-wire form of a [`Bolt12InvoiceType`] used for reading (and for writing where a borrowed
+/// [`Bolt12InvoiceTypeWireRef`] cannot be used), owning the invoice and omitting the bundled
+/// [`Nonce`] (which is read separately and re-bundled via [`Self::into_invoice_type`]).
+pub(crate) enum Bolt12InvoiceTypeWire {
+	Bolt12Invoice(Bolt12Invoice),
+	StaticInvoice(StaticInvoice),
+}
+
+impl Writeable for Bolt12InvoiceTypeWire {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		// Delegate to the borrowing writer so the wire layout lives in a single place.
+		match self {
+			Bolt12InvoiceTypeWire::Bolt12Invoice(invoice) => {
+				Bolt12InvoiceTypeWireRef::Bolt12Invoice(invoice).write(writer)
+			},
+			Bolt12InvoiceTypeWire::StaticInvoice(invoice) => {
+				Bolt12InvoiceTypeWireRef::StaticInvoice(invoice).write(writer)
+			},
+		}
+	}
+}
+
+impl Readable for Bolt12InvoiceTypeWire {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let id: u8 = Readable::read(reader)?;
 		match id {
@@ -125,7 +184,7 @@ impl Readable for Bolt12InvoiceType {
 					s.eat_remaining()?;
 					return Err(DecodeError::InvalidValue);
 				}
-				Ok(Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: None })
+				Ok(Bolt12InvoiceTypeWire::Bolt12Invoice(invoice))
 			},
 			2 => {
 				let length: BigSize = Readable::read(reader)?;
@@ -135,9 +194,25 @@ impl Readable for Bolt12InvoiceType {
 					s.eat_remaining()?;
 					return Err(DecodeError::InvalidValue);
 				}
-				Ok(Bolt12InvoiceType::StaticInvoice(invoice))
+				Ok(Bolt12InvoiceTypeWire::StaticInvoice(invoice))
 			},
 			_ => Err(DecodeError::UnknownRequiredFeature),
+		}
+	}
+}
+
+impl Bolt12InvoiceTypeWire {
+	/// Re-bundles a separately-persisted `nonce` to reconstruct the in-memory
+	/// [`Bolt12InvoiceType`]. The `nonce` is ignored for a [`StaticInvoice`], which never carries
+	/// one.
+	pub(crate) fn into_invoice_type(self, nonce: Option<Nonce>) -> Bolt12InvoiceType {
+		match self {
+			Bolt12InvoiceTypeWire::Bolt12Invoice(invoice) => {
+				Bolt12InvoiceType::Bolt12Invoice { invoice, nonce }
+			},
+			Bolt12InvoiceTypeWire::StaticInvoice(invoice) => {
+				Bolt12InvoiceType::StaticInvoice(invoice)
+			},
 		}
 	}
 }
@@ -2269,6 +2344,50 @@ mod tests {
 		assert_eq!(parsed.payment_preimage(), preimage);
 		assert_eq!(parsed.payment_hash(), payment_hash);
 		assert_eq!(parsed.proof_note().map(|note| note.to_string()), Some("refund".to_string()));
+	}
+
+	/// The nonce-less wire form round-trips, and re-bundling a separately-persisted nonce
+	/// reconstructs the original [`Bolt12InvoiceType`]. This is the contract the containers
+	/// (`HTLCSource`, `PendingOutboundPayment`, `Event::PaymentSent`) rely on: they serialize
+	/// the invoice via the wire type and the nonce as a sibling field, then re-bundle on read.
+	#[test]
+	fn test_bolt12_invoice_type_wire_round_trips_with_separate_nonce() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let preimage = PaymentPreimage([2; 32]);
+		let payment_hash = PaymentHash(*sha256::Hash::hash(&preimage.0).as_byte_array());
+
+		let invoice = RefundBuilder::deriving_signing_pubkey(
+			payer_pubkey(),
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+			1000,
+			payment_id,
+		)
+		.unwrap()
+		.path(blinded_path())
+		.build()
+		.unwrap()
+		.respond_with_no_std(payment_paths(), payment_hash, recipient_pubkey(), now())
+		.unwrap()
+		.build()
+		.unwrap()
+		.sign(recipient_sign)
+		.unwrap();
+
+		let original = Bolt12InvoiceType::Bolt12Invoice { invoice, nonce: Some(nonce) };
+		assert_eq!(original.nonce(), Some(nonce));
+
+		// Serialize via the wire type (which omits the nonce) and read it back.
+		let bytes = original.as_wire().encode();
+		let wire = <Bolt12InvoiceTypeWire as Readable>::read(&mut io::Cursor::new(&bytes)).unwrap();
+
+		// Re-bundling the separately-persisted nonce reconstructs the original.
+		assert_eq!(wire.into_invoice_type(Some(nonce)), original);
 	}
 
 	/// Per BOLT 12 PR 1295: building a payer proof with a preimage whose SHA256
