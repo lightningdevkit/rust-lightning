@@ -695,17 +695,16 @@ impl UnsignedPayerProof {
 		invoice_bytes: &[u8], included_types: &BTreeSet<u64>, contents: PayerProofContents,
 		disclosure: SelectiveDisclosure,
 	) -> Self {
-		// Pre-`proof_signature` bytes hold the included invoice records plus the
-		// `invoice_signature` TLV; post-`proof_signature` bytes hold the
-		// payer-proof data TLVs plus any disclosed experimental invoice TLVs.
-		// Data TLVs always carry the preimage and the merkle proof, so the
-		// post-signature buffer is typically the larger of the two.
-		const BYTES_BEFORE_PROOF_SIGNATURE_ALLOCATION_SIZE: usize = 256;
-		const BYTES_AFTER_PROOF_SIGNATURE_ALLOCATION_SIZE: usize = 512;
-		let mut bytes_before_proof_signature =
-			Vec::with_capacity(BYTES_BEFORE_PROOF_SIGNATURE_ALLOCATION_SIZE);
-		let mut bytes_after_proof_signature =
-			Vec::with_capacity(BYTES_AFTER_PROOF_SIGNATURE_ALLOCATION_SIZE);
+		// Pre-`proof_signature` bytes hold the included invoice records below the signature range
+		// plus the `invoice_signature` TLV; post-`proof_signature` bytes hold the payer-proof data
+		// TLVs (preimage, omitted markers, missing/leaf hashes, note) plus any disclosed
+		// experimental invoice records. The pre-signature buffer is sized to hold its own records
+		// (a subset of `invoice_bytes`); the post-signature buffer starts at a fixed allowance for
+		// the data TLVs. Once both halves are built, the pre-signature buffer is grown to also hold
+		// the bytes `sign()` appends to it (see below).
+		const PROOF_DATA_TLVS_ALLOCATION_SIZE: usize = 256;
+		let mut bytes_before_proof_signature = Vec::with_capacity(invoice_bytes.len());
+		let mut bytes_after_proof_signature = Vec::with_capacity(PROOF_DATA_TLVS_ALLOCATION_SIZE);
 
 		// Emit included invoice records below the signature range, then the
 		// `invoice_signature` TLV. The `proof_signature` TLV is inserted at
@@ -744,6 +743,17 @@ impl UnsignedPayerProof {
 		{
 			bytes_after_proof_signature.extend_from_slice(record.record_bytes);
 		}
+
+		// `sign()` reuses `bytes_before_proof_signature` as the final proof buffer: it appends the
+		// `proof_signature` TLV and then all of `bytes_after_proof_signature`. Reserve that exact
+		// size now so signing never has to resize the buffer. The `proof_signature` TLV is a
+		// fixed-size record: a `BigSize` type and length prefix around a 64-byte Schnorr signature.
+		const SIGNATURE_LEN: usize = 64;
+		let proof_signature_tlv_len = BigSize(PAYER_PROOF_PROOF_SIGNATURE_TYPE).serialized_length()
+			+ BigSize(SIGNATURE_LEN as u64).serialized_length()
+			+ SIGNATURE_LEN;
+		bytes_before_proof_signature
+			.reserve(proof_signature_tlv_len + bytes_after_proof_signature.len());
 
 		// The tagged hash for `proof_signature` is the merkle root over the
 		// full proof TLV stream excluding the `proof_signature` TLV itself.
