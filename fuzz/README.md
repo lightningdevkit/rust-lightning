@@ -10,6 +10,11 @@ configured for. Fuzzing is further only effective with a lot of CPU time, indica
 scenarios are discovered on CI with its low runtime constraints, the crash is caused relatively
 easily.
 
+The `fuzz/` directory now contains three crates:
+- `fuzz/`, the shared fuzz target logic and corpus directories
+- `fuzz/fuzz-fake-hashes`, the fuzz targets that require `--cfg=hashes_fuzz`
+- `fuzz/fuzz-real-hashes`, the real-hashes fuzz targets, currently `chanmon_consistency_target`
+
 ## How do I run fuzz tests locally?
 
 We support multiple fuzzing engines such as `honggfuzz`, `libFuzzer` and `AFL`. You typically won't
@@ -47,26 +52,35 @@ cargo install --force cargo-fuzz
 To run fuzzing using `honggfuzz`, do
 
 ```shell
+cd fuzz
 export CPU_COUNT=1 # replace as needed
 export HFUZZ_BUILD_ARGS="--features honggfuzz_fuzz"
 export HFUZZ_RUN_ARGS="-n $CPU_COUNT --exit_upon_crash"
 
 export TARGET="msg_ping_target" # replace with the target to be fuzzed
-cargo hfuzz run $TARGET
+export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
+cargo hfuzz run --manifest-path fuzz-fake-hashes/Cargo.toml $TARGET
 ```
 
-(Or, for a prettier output, replace the last line with `cargo --color always hfuzz run $TARGET`.)
+(For `fuzz-real-hashes`, use
+`RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz" cargo hfuzz run --manifest-path fuzz-real-hashes/Cargo.toml chanmon_consistency_target`.)
+For a prettier output, replace the last line with
+`cargo --color always hfuzz run --manifest-path fuzz-fake-hashes/Cargo.toml $TARGET`.
 
 #### cargo-fuzz / libFuzzer
 To run fuzzing using `cargo-fuzz / libFuzzer`, run
 
 ```shell
 rustup install nightly # Note: libFuzzer requires a nightly version of rust.
+cd fuzz
 export RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
-cargo +nightly fuzz run --features "libfuzzer_fuzz" msg_ping_target
+cargo +nightly fuzz run --fuzz-dir fuzz-fake-hashes --features "libfuzzer_fuzz" msg_ping_target
 ```
 Note: If you encounter a `SIGKILL` during run/build check for OOM in kernel logs and consider
 increasing RAM size for VM.
+
+For `fuzz-real-hashes`, use
+`RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz" cargo +nightly fuzz run --fuzz-dir fuzz-real-hashes --features "libfuzzer_fuzz" chanmon_consistency_target`.
 
 ##### Fast builds for development
 
@@ -74,7 +88,9 @@ The default build uses LTO and single codegen unit, which is slow. For faster it
 development, use the `-D` (dev) flag:
 
 ```shell
-cargo +nightly fuzz run --features "libfuzzer_fuzz" -D msg_ping_target
+cd fuzz
+RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" \
+	cargo +nightly fuzz run --fuzz-dir fuzz-fake-hashes --features "libfuzzer_fuzz" -D msg_ping_target
 ```
 
 The `-D` flag builds in development mode with faster compilation (still has optimizations via
@@ -83,7 +99,9 @@ sanitizer instrumentation, but subsequent builds will be fast.
 
 If you wish to just generate fuzzing binary executables for `libFuzzer` and not run them:
 ```shell
-cargo +nightly fuzz build --features "libfuzzer_fuzz" msg_ping_target
+cd fuzz
+RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" \
+	cargo +nightly fuzz build --fuzz-dir fuzz-fake-hashes --features "libfuzzer_fuzz" msg_ping_target
 # Generates binary artifact in path ./target/aarch64-unknown-linux-gnu/release/msg_ping_target
 # Exact path depends on your system architecture.
 ```
@@ -93,7 +111,8 @@ You can upload the build artifact generated above to `ClusterFuzz` for distribut
 To see a list of available fuzzing targets, run:
 
 ```shell
-ls ./src/bin/
+ls ./fuzz-fake-hashes/src/bin/
+ls ./fuzz-real-hashes/src/bin/
 ```
 
 ## A fuzz test failed, what do I do?
@@ -134,7 +153,8 @@ mkdir -p ./test_cases/$TARGET
 echo $HEX | xxd -r -p > ./test_cases/$TARGET/any_filename_works
 
 export RUST_BACKTRACE=1
-cargo test
+RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" \
+	cargo test --manifest-path fuzz-fake-hashes/Cargo.toml --bin "${TARGET}_target"
 ```
 
 Note that if the fuzz test failed locally, moving the offending run's trace
@@ -151,7 +171,10 @@ Alternatively, you can use the `stdin_fuzz` feature to pipe the crash input dire
 creating test case files on disk:
 
 ```shell
-echo -ne '\x2d\x31\x36\x38\x37\x34\x09\x01...' | cargo run --features stdin_fuzz --bin full_stack_target
+cd fuzz
+echo -ne '\x2d\x31\x36\x38\x37\x34\x09\x01...' | \
+	RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" \
+	cargo run --manifest-path fuzz-fake-hashes/Cargo.toml --features stdin_fuzz --bin full_stack_target
 ```
 
 Panics will abort the process directly (the crate uses `panic = "abort"`), resulting in a
@@ -171,10 +194,13 @@ file are `do_test`, `my_fuzzy_experiment_test`, and `my_fuzzy_experiment_run`.
 
 3. Adjust the body (not the signature!) of `do_test` as necessary for the new fuzz test.
 
-4. In `fuzz/src/bin/gen_target.sh`, add a line reading `GEN_TEST my_fuzzy_experiment` to the
-first group of `GEN_TEST` lines (starting in line 9).
+4. In `fuzz/src/bin/gen_target.sh`, add a line reading `GEN_FAKE_HASHES_TEST my_fuzzy_experiment`
+to the appropriate target list. Use `GEN_REAL_HASHES_TEST` only for targets that must run without
+`hashes_fuzz`.
 
 5. If your test relies on a new local crate, add that crate as a dependency to `fuzz/Cargo.toml`.
+If the dependency is only needed by a specific runner crate or fuzz engine setup, add it to the
+matching target crate under `fuzz/fuzz-fake-hashes/Cargo.toml` or `fuzz/fuzz-real-hashes/Cargo.toml` instead.
 
 6. In `fuzz/src/lib.rs`, add the line `pub mod my_fuzzy_experiment`. Additionally, if
 you added a new crate dependency, add the `extern crate […]` import line.

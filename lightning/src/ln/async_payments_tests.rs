@@ -7,6 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
+use alloc::collections::BTreeMap;
+
 use crate::blinded_path::message::{
 	BlindedMessagePath, MessageContext, NextMessageHop, OffersContext,
 };
@@ -299,6 +301,7 @@ fn create_static_invoice_builder<'a>(
 			relative_expiry_secs,
 			recipient.node.list_usable_channels(),
 			recipient.node.test_get_peers_for_blinded_path(),
+			None,
 		)
 		.unwrap()
 }
@@ -314,7 +317,10 @@ fn create_static_invoice<T: secp256k1::Signing + secp256k1::Verification>(
 		.create_blinded_paths(
 			always_online_counterparty.node.get_our_node_id(),
 			always_online_counterparty.keys_manager.get_receive_auth_key(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			MessageContext::Offers(OffersContext::InvoiceRequest {
+				nonce: Nonce([42; 16]),
+				payment_metadata: None,
+			}),
 			Vec::new(),
 			&secp_ctx,
 		)
@@ -685,7 +691,10 @@ fn static_invoice_unknown_required_features() {
 		.create_blinded_paths(
 			nodes[1].node.get_our_node_id(),
 			nodes[1].keys_manager.get_receive_auth_key(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			MessageContext::Offers(OffersContext::InvoiceRequest {
+				nonce: Nonce([42; 16]),
+				payment_metadata: None,
+			}),
 			Vec::new(),
 			&secp_ctx,
 		)
@@ -1150,6 +1159,88 @@ fn async_receive_flow_success() {
 	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
 }
 
+#[test]
+fn async_payment_delivers_payment_metadata() {
+	// Test that `payment_metadata` set in the `AsyncBolt12OfferContext` of a static invoice's
+	// blinded payment paths is surfaced via `Event::PaymentClaimable` when the async recipient
+	// receives the keysend payment.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
+
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
+
+	// Configure the recipient's router to inject `payment_metadata` into the
+	// `AsyncBolt12OfferContext` of the static invoice's blinded payment paths. The
+	// `pass_static_invoice_server_messages` flow below builds the static invoice via this router,
+	// at which point the override is consumed.
+	let mut expected_metadata = BTreeMap::new();
+	expected_metadata.insert(0u64, vec![1, 2, 3, 4]);
+	expected_metadata.insert(7u64, vec![0xab, 0xcd]);
+	nodes[2].router.set_next_payment_context_metadata(expected_metadata.clone());
+
+	let invoice_flow_res =
+		pass_static_invoice_server_messages(&nodes[1], &nodes[2], recipient_id.clone());
+	let static_invoice = invoice_flow_res.invoice;
+	let offer = nodes[2].node.get_async_receive_offer().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
+	let release_held_htlc_om = pass_async_payments_oms(
+		static_invoice.clone(),
+		&nodes[0],
+		&nodes[1],
+		&nodes[2],
+		recipient_id,
+		invoice_flow_res.invoice_request_path,
+	)
+	.1;
+	nodes[0]
+		.onion_messenger
+		.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
+	let payment_hash = extract_payment_hash(&ev);
+	check_added_monitors(&nodes[0], 1);
+
+	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2]]];
+	let args = PassAlongPathArgs::new(&nodes[0], route[0], amt_msat, payment_hash, ev)
+		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+	let claimable_ev = do_pass_along_path(args).unwrap();
+
+	// Verify the `payment_metadata` we injected is surfaced via the `Bolt12OfferContext` of
+	// the `PaymentPurpose`. The recipient converts `AsyncBolt12OfferContext` to
+	// `Bolt12OfferContext` when constructing the `PaymentPurpose` for keysend payments.
+	match &claimable_ev {
+		Event::PaymentClaimable {
+			purpose: PaymentPurpose::Bolt12OfferPayment { payment_context, .. },
+			..
+		} => {
+			assert_eq!(payment_context.payment_metadata.as_ref(), Some(&expected_metadata));
+		},
+		_ => panic!("Unexpected event: {:?}", claimable_ev),
+	}
+
+	let keysend_preimage = extract_payment_preimage(&claimable_ev);
+	let (res, _) =
+		claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, keysend_preimage));
+	assert_eq!(res, Some(PaidBolt12Invoice::StaticInvoice(static_invoice)));
+}
+
 #[cfg_attr(feature = "std", ignore)]
 #[test]
 fn expired_static_invoice_fail() {
@@ -1591,6 +1682,7 @@ fn reject_bad_payment_secret() {
 						PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext {
 							// We don't reach the point of checking the invreq nonce due to the invalid payment secret
 							offer_nonce: Nonce([i; Nonce::LENGTH]),
+							payment_metadata: None,
 						}),
 						u32::MAX,
 					)
@@ -1669,7 +1761,10 @@ fn invalid_async_receive_with_retry<F1, F2>(
 		.create_blinded_paths(
 			nodes[1].node.get_our_node_id(),
 			nodes[1].keys_manager.get_receive_auth_key(),
-			MessageContext::Offers(OffersContext::InvoiceRequest { nonce: Nonce([42; 16]) }),
+			MessageContext::Offers(OffersContext::InvoiceRequest {
+				nonce: Nonce([42; 16]),
+				payment_metadata: None,
+			}),
 			Vec::new(),
 			&secp_ctx,
 		)
@@ -3123,7 +3218,10 @@ fn intercepted_hold_htlc() {
 	.unwrap();
 	let mut offer_nonce = Nonce([0; Nonce::LENGTH]);
 	offer_nonce.0.copy_from_slice(&hardcoded_random_bytes[..Nonce::LENGTH]);
-	let payment_context = PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext { offer_nonce });
+	let payment_context = PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext {
+		offer_nonce,
+		payment_metadata: None,
+	});
 	let blinded_payment_path_with_jit_channel_scid = recipient
 		.node
 		.flow

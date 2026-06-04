@@ -39,7 +39,7 @@ use lightning::chain::chaininterface::{
 };
 use lightning::chain::chainmonitor;
 use lightning::chain::transaction::OutPoint;
-use lightning::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen};
+use lightning::chain::{BlockLocator, ChannelMonitorUpdateStatus, Confirm, Listen};
 use lightning::events::Event;
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{ChainParameters, ChannelManager, InterceptId, PaymentId};
@@ -354,7 +354,7 @@ impl<'a> MoneyLossDetector<'a> {
 				self.header_hashes[self.height - 1].0,
 				self.header_hashes[self.height].1,
 			);
-			let best_block = BestBlock::new(header.prev_blockhash, self.height as u32 - 1);
+			let best_block = BlockLocator::new(header.prev_blockhash, self.height as u32 - 1);
 			self.manager.blocks_disconnected(best_block);
 			self.monitor.blocks_disconnected(best_block);
 			self.height -= 1;
@@ -606,7 +606,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 
 	let network = Network::Bitcoin;
 	let best_block_timestamp = genesis_block(network).header.time;
-	let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
+	let params = ChainParameters { network, best_block: BlockLocator::from_network(network) };
 	let channelmanager = Arc::new(ChannelManager::new(
 		fee_est.clone(),
 		monitor.clone(),
@@ -837,11 +837,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 			},
 			16 => {
 				let payment_preimage = PaymentPreimage(keys_manager.get_secure_random_bytes());
-				let payment_hash =
-					PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
+				let hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
 				// Note that this may fail - our hashes may collide and we'll end up trying to
 				// double-register the same payment_hash.
-				let _ = channelmanager.create_inbound_payment_for_hash(payment_hash, None, 1, None);
+				let _ = channelmanager.create_inbound_payment_for_hash(hash, None, 1, None, None);
 			},
 			9 => {
 				for payment in payments_received.drain(..) {
@@ -1083,13 +1082,9 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 						value: Amount::from_sat(splice_out_sats),
 						script_pubkey: wallet.get_change_script().unwrap(),
 					}];
-					let wallet_sync = WalletSync::new(&wallet, Arc::clone(&logger));
-					if let Ok(contribution) = funding_template.splice_out_sync(
-						outputs,
-						feerate,
-						FeeRate::MAX,
-						&wallet_sync,
-					) {
+					if let Ok(contribution) =
+						funding_template.splice_out(outputs, feerate, FeeRate::MAX)
+					{
 						let _ = channelmanager.funding_contributed(
 							&chan_id,
 							&counterparty,
@@ -1141,10 +1136,10 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 						signed_tx,
 					);
 				},
-				Event::SplicePending { .. } => {
+				Event::SpliceNegotiated { .. } => {
 					// Splice negotiation completed, waiting for confirmation
 				},
-				Event::SpliceFailed { .. } => {
+				Event::SpliceNegotiationFailed { .. } => {
 					// Splice failed, inputs can be re-spent
 				},
 				Event::OpenChannelRequest {
@@ -1890,8 +1885,8 @@ fn splice_seed() -> Vec<u8> {
 	// CommitmentSigned message with proper signature (r=f7, s=01...) and funding_txid TLV
 	// signature r encodes sighash first byte f7, s follows the pattern from funding_created
 	// TLV type 1 (odd/optional) for funding_txid as per impl_writeable_msg!(CommitmentSigned, ...)
-	// Note: txid is encoded in reverse byte order (Bitcoin standard), so to get display 0000...0033, encode 3300...0000
-	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000f7 0100000000000000000000000000000000000000000000000000000000000000 0000 01 20 3300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	// Note: txid is encoded in reverse byte order (Bitcoin standard), so to get display 0000...0032, encode 3200...0000
+	ext_from_hex("0084 c000000000000000000000000000000000000000000000000000000000000000 00000000000000000000000000000000000000000000000000000000000000f7 0100000000000000000000000000000000000000000000000000000000000000 0000 01 20 3200000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// After commitment_signed exchange, we need to exchange tx_signatures.
 	// Message type IDs: TxSignatures = 71 (0x0047)
@@ -1904,19 +1899,19 @@ fn splice_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 150 (134 message + 16 MAC)
 	ext_from_hex("030096", &mut test);
 	// TxSignatures message with shared_input_signature TLV (type 0)
-	// txid must match the splice funding txid (0x33 in reverse byte order)
+	// txid must match the splice funding txid (0x32 in reverse byte order)
 	// shared_input_signature: 64-byte fuzz signature for the shared input
-	ext_from_hex("0047 c000000000000000000000000000000000000000000000000000000000000000 3300000000000000000000000000000000000000000000000000000000000000 0000 00 40 00000000000000000000000000000000000000000000000000000000000000dc 0100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	ext_from_hex("0047 c000000000000000000000000000000000000000000000000000000000000000 3200000000000000000000000000000000000000000000000000000000000000 0000 00 40 00000000000000000000000000000000000000000000000000000000000000dc 0100000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	// Connect a block with the splice funding transaction to confirm it
 	// The splice funding tx: version(4) + input_count(1) + txid(32) + vout(4) + script_len(1) + sequence(4)
 	//                       + output_count(1) + value(8) + script_len(1) + script(34) + locktime(4) = 94 bytes = 0x5e
 	// Transaction structure from FundingTransactionReadyForSigning:
 	// - Input: spending c000...00:0 with sequence 0xfffffffd
-	// - Output: 115536 sats to OP_0 PUSH32 6e00...00
+	// - Output: 115537 sats to OP_0 PUSH32 6e00...00
 	// - Locktime: 13
 	ext_from_hex("0c005e", &mut test);
-	ext_from_hex("02000000 01 c000000000000000000000000000000000000000000000000000000000000000 00000000 00 fdffffff 01 50c3010000000000 22 00206e00000000000000000000000000000000000000000000000000000000000000 0d000000", &mut test);
+	ext_from_hex("02000000 01 c000000000000000000000000000000000000000000000000000000000000000 00000000 00 fdffffff 01 51c3010000000000 22 00206e00000000000000000000000000000000000000000000000000000000000000 0d000000", &mut test);
 
 	// Connect additional blocks to reach minimum_depth confirmations
 	for _ in 0..5 {
@@ -1933,8 +1928,8 @@ fn splice_seed() -> Vec<u8> {
 	// inbound read from peer id 0 of len 82 (66 message + 16 MAC)
 	ext_from_hex("030052", &mut test);
 	// SpliceLocked message (type 77 = 0x004d): channel_id + splice_txid + mac
-	// splice_txid must match the splice funding txid (0x33 in reverse byte order)
-	ext_from_hex("004d c000000000000000000000000000000000000000000000000000000000000000 3300000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
+	// splice_txid must match the splice funding txid (0x32 in reverse byte order)
+	ext_from_hex("004d c000000000000000000000000000000000000000000000000000000000000000 3200000000000000000000000000000000000000000000000000000000000000 03000000000000000000000000000000", &mut test);
 
 	test
 }
@@ -2064,6 +2059,6 @@ mod tests {
 
 		// Splice locked
 		assert_eq!(log_entries.get(&("lightning::ln::peer_handler".to_string(), "Handling SendSpliceLocked event in peer_handler for node 030000000000000000000000000000000000000000000000000000000000000002 for channel c000000000000000000000000000000000000000000000000000000000000000".to_string())), Some(&1));
-		assert_eq!(log_entries.get(&("lightning::ln::channel".to_string(), "Promoting splice funding txid 0000000000000000000000000000000000000000000000000000000000000033".to_string())), Some(&1));
+		assert_eq!(log_entries.get(&("lightning::ln::channel".to_string(), "Promoting splice funding txid 0000000000000000000000000000000000000000000000000000000000000032".to_string())), Some(&1));
 	}
 }

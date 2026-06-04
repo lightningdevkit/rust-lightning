@@ -540,11 +540,10 @@ fn upgrade_mid_htlc_intercept_forward() {
 }
 
 fn do_upgrade_mid_htlc_forward(test: MidHtlcForwardCase) {
-	// In 0.3, we started reconstructing the `ChannelManager`'s HTLC forwards maps from the HTLCs
-	// contained in `Channel`s, as part of removing the requirement to regularly persist the
-	// `ChannelManager`. However, HTLC forwards can only be reconstructed this way if they were
-	// received on 0.3 or higher. Test that HTLC forwards that were serialized on <=0.2 will still
-	// succeed when read on 0.3+.
+	// In an upcoming version, we plan to start reconstructing the `ChannelManager`'s HTLC forwards
+	// maps from the HTLCs contained in `Channel`s, as part of removing the requirement to regularly
+	// persist the `ChannelManager`. Preemptively test that HTLC forwards that were serialized on
+	// <=0.2 will still succeed when read on this upcoming version.
 	let (node_a_ser, node_b_ser, node_c_ser, mon_a_1_ser, mon_b_1_ser, mon_b_2_ser, mon_c_1_ser);
 	let (node_a_id, node_b_id, node_c_id);
 	let (payment_secret_bytes, payment_hash_bytes, payment_preimage_bytes);

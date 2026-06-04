@@ -100,7 +100,13 @@ impl<L: Logger> EsploraSyncClient<L> {
 
 		let mut tip_hash = maybe_await!(self.client.get_tip_hash())?;
 
-		loop {
+		for i in 0..100 {
+			if i >= 10 {
+				log_debug!(self.logger, "Giving up trying to sync transactions after 10 attempts.");
+				sync_state.pending_sync = true;
+				return Err(TxSyncError::Failed);
+			}
+
 			let pending_registrations = self.queue.lock().unwrap().process_queues(&mut sync_state);
 			let tip_is_new = Some(tip_hash) != sync_state.last_sync_hash;
 
@@ -361,8 +367,13 @@ impl<L: Logger> EsploraSyncClient<L> {
 
 			let mut matches = Vec::new();
 			let mut indexes = Vec::new();
-			let _ = merkle_block.txn.extract_matches(&mut matches, &mut indexes);
-			if indexes.len() != 1 || matches.len() != 1 || matches[0] != txid {
+			let computed_merkle_root =
+				merkle_block.txn.extract_matches(&mut matches, &mut indexes).ok();
+			if computed_merkle_root != Some(block_header.merkle_root)
+				|| indexes.len() != 1
+				|| matches.len() != 1
+				|| matches[0] != txid
+			{
 				log_error!(self.logger, "Retrieved Merkle block for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
 				return Err(InternalError::Failed);
 			}

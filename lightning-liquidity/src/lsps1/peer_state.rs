@@ -18,7 +18,7 @@ use crate::lsps0::ser::{LSPSDateTime, LSPSRequestId};
 use crate::prelude::HashMap;
 
 use lightning::util::hash_tables::new_hash_map;
-use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
+use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
 
 use core::fmt;
 
@@ -251,7 +251,7 @@ impl ChannelOrderState {
 	}
 }
 
-impl_writeable_tlv_based_enum!(ChannelOrderState,
+impl_ser_tlv_based_enum!(ChannelOrderState,
 	(0, ExpectingPayment) => {
 		(0, payment_details, required),
 	},
@@ -415,7 +415,7 @@ impl PeerState {
 	}
 }
 
-impl_writeable_tlv_based!(PeerState, {
+impl_ser_tlv_based!(PeerState, {
 	(0, outbound_channels_by_order_id, required),
 	(_unused, pending_requests, (static_value, new_hash_map())),
 	(_unused, needs_persist, (static_value, false)),
@@ -491,7 +491,7 @@ impl ChannelOrder {
 	}
 }
 
-impl_writeable_tlv_based!(ChannelOrder, {
+impl_ser_tlv_based!(ChannelOrder, {
 	(0, order_params, required),
 	(2, state, required),
 	(4, created_at, required),

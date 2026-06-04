@@ -653,6 +653,9 @@ impl FilesystemStoreState {
 		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
 			let primary_entry = primary_entry?;
 			let primary_path = primary_entry.path();
+			if dir_entry_is_store_artifact(&primary_path) {
+				continue 'primary_loop;
+			}
 
 			if dir_entry_is_key(&primary_entry)? {
 				let primary_namespace = String::new();
@@ -666,6 +669,9 @@ impl FilesystemStoreState {
 			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
 				let secondary_entry = secondary_entry?;
 				let secondary_path = secondary_entry.path();
+				if dir_entry_is_store_artifact(&secondary_path) {
+					continue 'secondary_loop;
+				}
 
 				if dir_entry_is_key(&secondary_entry)? {
 					let primary_namespace = get_key_from_dir_entry_path(
@@ -683,6 +689,9 @@ impl FilesystemStoreState {
 				for tertiary_entry in fs::read_dir(&secondary_path)? {
 					let tertiary_entry = tertiary_entry?;
 					let tertiary_path = tertiary_entry.path();
+					if dir_entry_is_store_artifact(&tertiary_path) {
+						continue;
+					}
 
 					if dir_entry_is_key(&tertiary_entry)? {
 						let primary_namespace = get_key_from_dir_entry_path(
@@ -720,20 +729,25 @@ impl FilesystemStoreState {
 	}
 }
 
+fn dir_entry_is_store_artifact(path: &Path) -> bool {
+	match path.extension().and_then(|ext| ext.to_str()) {
+		Some("tmp") => true,
+		Some("trash") => {
+			#[cfg(target_os = "windows")]
+			{
+				// Clean up any trash files lying around.
+				fs::remove_file(path).ok();
+			}
+			true
+		},
+		_ => false,
+	}
+}
+
 pub(crate) fn dir_entry_is_key(dir_entry: &fs::DirEntry) -> Result<bool, lightning::io::Error> {
 	let p = dir_entry.path();
-	if let Some(ext) = p.extension() {
-		#[cfg(target_os = "windows")]
-		{
-			// Clean up any trash files lying around.
-			if ext == "trash" {
-				fs::remove_file(p).ok();
-				return Ok(false);
-			}
-		}
-		if ext == "tmp" {
-			return Ok(false);
-		}
+	if dir_entry_is_store_artifact(&p) {
+		return Ok(false);
 	}
 
 	let file_type = dir_entry.file_type()?;

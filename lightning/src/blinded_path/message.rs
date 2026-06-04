@@ -9,6 +9,8 @@
 
 //! Data structures and methods for constructing [`BlindedMessagePath`]s to send a message over.
 
+use alloc::collections::BTreeMap;
+
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 
 #[allow(unused_imports)]
@@ -29,7 +31,9 @@ use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
 use crate::sign::{EntropySource, NodeSigner, ReceiveAuthKey, Recipient};
 use crate::types::payment::PaymentHash;
 use crate::util::scid_utils;
-use crate::util::ser::{FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer};
+use crate::util::ser::{
+	BigSizeKeyedMap, FixedLengthReader, LengthReadableArgs, Readable, Writeable, Writer,
+};
 
 use core::time::Duration;
 use core::{cmp, mem};
@@ -391,6 +395,28 @@ pub enum OffersContext {
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 		/// [`Offer`]: crate::offers::offer::Offer
 		nonce: Nonce,
+
+		/// Additional data about this payment which is not used in LDK and can be used for any
+		/// purpose.
+		///
+		/// This is analogous to the BOLT 11 [`RecipientOnionFields::payment_metadata`] (which is
+		/// provided to payers via [`Bolt11Invoice::payment_metadata`]) and can be used any time data
+		/// needs to be "stored" by a payment recipient for their own internal use, provided back to
+		/// them with the payment.
+		///
+		/// Payment metadata is stored as a map from a numeric key to an arbitrary byte array value.
+		/// This allows for several types of metadata to be stored attached to a single payment. In the
+		/// future some optional features of LDK may use some keys. For the sake of conflict
+		/// reduction, those features will attempt to use keys in the range 128-256.
+		///
+		/// Note that because this is included in the payment onion, its size must be tightly
+		/// constrained. More than a few hundred bytes and the payment will be entirely unpayable (with
+		/// limited routing options as size increases). Further, any data placed here will increase
+		/// the size of the offer which may make it difficult to fit in QR codes.
+		///
+		/// [`RecipientOnionFields::payment_metadata`]: crate::ln::outbound_payment::RecipientOnionFields::payment_metadata
+		/// [`Bolt11Invoice::payment_metadata`]: lightning_invoice::Bolt11Invoice::payment_metadata
+		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	},
 	/// Context used by a [`BlindedMessagePath`] within the [`Offer`] of an async recipient.
 	///
@@ -634,7 +660,7 @@ pub enum AsyncPaymentsContext {
 	},
 }
 
-impl_writeable_tlv_based_enum!(MessageContext,
+impl_ser_tlv_based_enum!(MessageContext,
 	{0, Offers} => (),
 	{1, Custom} => (),
 	{2, AsyncPayments} => (),
@@ -645,9 +671,10 @@ impl_writeable_tlv_based_enum!(MessageContext,
 // introduction of `ReceiveAuthKey`-based authentication for inbound `BlindedMessagePath`s. Because
 // we do not support receiving to those contexts anymore (they will fail the `ReceiveAuthKey`-based
 // authentication checks), we can reuse those fields here.
-impl_writeable_tlv_based_enum!(OffersContext,
+impl_ser_tlv_based_enum!(OffersContext,
 	(0, InvoiceRequest) => {
 		(0, nonce, required),
+		(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
 	},
 	(1, OutboundPaymentForRefund) => {
 		(0, payment_id, required),
@@ -667,7 +694,7 @@ impl_writeable_tlv_based_enum!(OffersContext,
 	},
 );
 
-impl_writeable_tlv_based_enum!(AsyncPaymentsContext,
+impl_ser_tlv_based_enum!(AsyncPaymentsContext,
 	(0, OutboundPayment) => {
 		(0, payment_id, required),
 	},
@@ -710,7 +737,7 @@ pub struct DNSResolverContext {
 	pub nonce: [u8; 16],
 }
 
-impl_writeable_tlv_based!(DNSResolverContext, {
+impl_ser_tlv_based!(DNSResolverContext, {
 	(0, nonce, required),
 });
 

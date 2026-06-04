@@ -125,8 +125,8 @@ impl<PH: DNSResolverMessageHandler> DNSResolverMessageHandler for OMDomainResolv
 				let contents = DNSResolverMessage::DNSSECProof(DNSSECProof { name: q.0, proof });
 				let instructions = responder.respond().into_instructions();
 				us.pending_replies.lock().unwrap().push((contents, instructions));
-				us.pending_query_count.fetch_sub(1, Ordering::Relaxed);
 			}
+			us.pending_query_count.fetch_sub(1, Ordering::Relaxed);
 		});
 		None
 	}
@@ -336,5 +336,96 @@ mod test {
 		assert_eq!(resolution.0, name);
 		assert_eq!(resolution.1, payment_id);
 		assert!(resolution.2[.."bitcoin:".len()].eq_ignore_ascii_case("bitcoin:"));
+	}
+
+	#[tokio::test]
+	async fn failed_query_does_not_leak_pending_counter() {
+		use std::sync::atomic::Ordering;
+
+		let secp_ctx = Secp256k1::new();
+
+		// Resolver points at a port that should refuse TCP, so build_txt_proof_async
+		// returns Err quickly.
+		let resolver_keys = Arc::new(KeysManager::new(&[99; 32], 42, 43, true));
+		let resolver_logger = TestLogger { node: "resolver" };
+		let resolver =
+			Arc::new(OMDomainResolver::<IgnoringMessageHandler>::ignoring_incoming_proofs(
+				"127.0.0.1:1".parse().unwrap(),
+			));
+		let resolver_state = Arc::clone(&resolver.state);
+		let resolver_messenger = OnionMessenger::new(
+			Arc::clone(&resolver_keys),
+			Arc::clone(&resolver_keys),
+			resolver_logger,
+			DummyNodeLookup {},
+			DirectlyConnectedRouter {},
+			IgnoringMessageHandler {},
+			IgnoringMessageHandler {},
+			Arc::clone(&resolver),
+			IgnoringMessageHandler {},
+		);
+		let resolver_id = resolver_keys.get_node_id(Recipient::Node).unwrap();
+
+		let resolver_dest = Destination::Node(resolver_id);
+		let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+
+		let payment_id = PaymentId([42; 32]);
+		let name = HumanReadableName::from_encoded("matt@mattcorallo.com").unwrap();
+
+		let payer_keys = Arc::new(KeysManager::new(&[2; 32], 42, 43, true));
+		let payer_logger = TestLogger { node: "payer" };
+		let payer_id = payer_keys.get_node_id(Recipient::Node).unwrap();
+		let payer = Arc::new(URIResolver {
+			resolved_uri: Mutex::new(None),
+			resolver: OMNameResolver::new(now as u32, 1),
+			pending_messages: Mutex::new(Vec::new()),
+		});
+		let payer_messenger = Arc::new(OnionMessenger::new(
+			Arc::clone(&payer_keys),
+			Arc::clone(&payer_keys),
+			payer_logger,
+			DummyNodeLookup {},
+			DirectlyConnectedRouter {},
+			IgnoringMessageHandler {},
+			IgnoringMessageHandler {},
+			Arc::clone(&payer),
+			IgnoringMessageHandler {},
+		));
+
+		let init_msg = get_om_init();
+		payer_messenger.peer_connected(resolver_id, &init_msg, true).unwrap();
+		resolver_messenger.peer_connected(payer_id, &init_msg, false).unwrap();
+
+		let (msg, context) =
+			payer.resolver.resolve_name(payment_id, name.clone(), &*payer_keys).unwrap();
+		let query_context = MessageContext::DNSResolver(context);
+		let receive_key = payer_keys.get_receive_auth_key();
+		let reply_path = BlindedMessagePath::one_hop(
+			payer_id,
+			receive_key,
+			query_context,
+			false,
+			&*payer_keys,
+			&secp_ctx,
+		);
+		payer.pending_messages.lock().unwrap().push((
+			DNSResolverMessage::DNSSECQuery(msg),
+			MessageSendInstructions::WithSpecifiedReplyPath {
+				destination: resolver_dest,
+				reply_path,
+			},
+		));
+
+		let query = payer_messenger.next_onion_message_for_peer(resolver_id).unwrap();
+		resolver_messenger.handle_onion_message(payer_id, &query);
+
+		let start = Instant::now();
+		while resolver_state.pending_query_count.load(Ordering::Relaxed) != 0 {
+			tokio::time::sleep(Duration::from_millis(50)).await;
+			assert!(
+				start.elapsed() < Duration::from_secs(10),
+				"pending_query_count not decremented after failed proof: counter leaks"
+			);
+		}
 	}
 }

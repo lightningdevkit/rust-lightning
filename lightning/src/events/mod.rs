@@ -25,6 +25,7 @@ use crate::blinded_path::payment::{
 use crate::chain::transaction;
 use crate::ln::channel::FUNDING_CONF_DEADLINE_BLOCKS;
 use crate::ln::channelmanager::{InterceptId, PaymentId};
+use crate::ln::funding::FundingContribution;
 use crate::ln::msgs;
 use crate::ln::onion_utils::LocalHTLCFailureReason;
 use crate::ln::outbound_payment::RecipientOnionFields;
@@ -51,7 +52,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{OutPoint, Transaction, TxOut};
+use bitcoin::{OutPoint, Transaction};
 use core::ops::Deref;
 
 #[allow(unused_imports)]
@@ -81,12 +82,12 @@ pub enum FundingInfo {
 	Contribution {
 		/// UTXOs spent as inputs contributed to the funding transaction.
 		inputs: Vec<OutPoint>,
-		/// Outputs contributed to the funding transaction.
-		outputs: Vec<TxOut>,
+		/// Output scripts contributed to the funding transaction.
+		outputs: Vec<ScriptBuf>,
 	},
 }
 
-impl_writeable_tlv_based_enum!(FundingInfo,
+impl_ser_tlv_based_enum!(FundingInfo,
 	(0, Tx) => {
 		(0, transaction, required)
 	},
@@ -97,6 +98,121 @@ impl_writeable_tlv_based_enum!(FundingInfo,
 		(1, inputs, optional_vec),
 		(3, outputs, optional_vec),
 	}
+);
+
+/// The reason a funding negotiation round failed.
+///
+/// Each negotiation attempt (initial or RBF) resolves to either success or failure. This enum
+/// indicates what caused the failure. Use [`is_retriable`] to determine whether the splice can
+/// be reattempted on this channel by calling [`ChannelManager::splice_channel`].
+///
+/// [`is_retriable`]: Self::is_retriable
+/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NegotiationFailureReason {
+	/// The reason was not available (e.g., from an older serialization).
+	Unknown,
+	/// The peer disconnected during negotiation. Wait for the peer to reconnect, then retry.
+	PeerDisconnected,
+	/// The counterparty explicitly aborted the negotiation by sending `tx_abort`. Retrying with
+	/// the same parameters is unlikely to succeed — consider adjusting the contribution or
+	/// waiting for the counterparty to initiate.
+	CounterpartyAborted {
+		/// The counterparty's abort message.
+		///
+		/// This is counterparty-provided data. Use `Display` on [`UntrustedString`] for safe
+		/// logging.
+		msg: UntrustedString,
+	},
+	/// An error occurred during interactive transaction negotiation (e.g., the counterparty sent
+	/// an invalid message). The negotiation was aborted.
+	NegotiationError {
+		/// A developer-readable error message.
+		msg: String,
+	},
+	/// The funding contribution was invalid (e.g., insufficient balance for the splice amount).
+	/// Call [`ChannelManager::splice_channel`] for a fresh [`FundingTemplate`] and build a new
+	/// contribution with adjusted parameters.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
+	ContributionInvalid,
+	/// The negotiation was locally canceled via [`ChannelManager::cancel_funding_contributed`].
+	///
+	/// [`ChannelManager::cancel_funding_contributed`]: crate::ln::channelmanager::ChannelManager::cancel_funding_contributed
+	LocallyCanceled,
+	/// The channel is closing, so the negotiation cannot continue. See [`Event::ChannelClosed`]
+	/// for the closure reason.
+	ChannelClosing,
+	/// The contribution's feerate was too low for RBF. Call [`ChannelManager::splice_channel`]
+	/// for a fresh [`FundingTemplate`] (which includes the updated minimum feerate) and build a
+	/// new contribution with a higher feerate.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
+	FeeRateTooLow,
+	/// An RBF attempt could not be initiated (e.g., a prior splice transaction already
+	/// confirmed). The channel remains operational — start a new splice with
+	/// [`ChannelManager::splice_channel`] if further changes are needed.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	CannotInitiateRbf,
+}
+
+impl NegotiationFailureReason {
+	/// Whether the splice negotiation is likely to succeed if retried on this channel. When `true`,
+	/// call [`ChannelManager::splice_channel`] to obtain a fresh [`FundingTemplate`] and retry.
+	///
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
+	pub fn is_retriable(&self) -> bool {
+		match self {
+			Self::Unknown
+			| Self::PeerDisconnected
+			| Self::ContributionInvalid
+			| Self::FeeRateTooLow => true,
+			Self::CounterpartyAborted { .. }
+			| Self::NegotiationError { .. }
+			| Self::LocallyCanceled
+			| Self::ChannelClosing
+			| Self::CannotInitiateRbf => false,
+		}
+	}
+}
+
+impl core::fmt::Display for NegotiationFailureReason {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self {
+			Self::Unknown => f.write_str("unknown reason"),
+			Self::PeerDisconnected => f.write_str("peer disconnected during negotiation"),
+			Self::CounterpartyAborted { msg } => {
+				write!(f, "counterparty aborted: {}", msg)
+			},
+			Self::NegotiationError { msg } => write!(f, "negotiation error: {}", msg),
+			Self::ContributionInvalid => f.write_str("funding contribution was invalid"),
+			Self::LocallyCanceled => f.write_str("splice locally canceled"),
+
+			Self::ChannelClosing => f.write_str("channel is closing"),
+			Self::FeeRateTooLow => f.write_str("feerate too low for RBF"),
+			Self::CannotInitiateRbf => f.write_str("cannot initiate RBF"),
+		}
+	}
+}
+
+impl_writeable_tlv_based_enum_upgradable!(NegotiationFailureReason,
+	(1, Unknown) => {},
+	(3, PeerDisconnected) => {},
+	(5, CounterpartyAborted) => {
+		(1, msg, required),
+	},
+	(7, NegotiationError) => {
+		(1, msg, required),
+	},
+	(9, ContributionInvalid) => {},
+	(11, LocallyCanceled) => {},
+	(13, ChannelClosing) => {},
+	(15, FeeRateTooLow) => {},
+	(17, CannotInitiateRbf) => {},
 );
 
 /// Some information provided on receipt of payment depends on whether the payment received is a
@@ -225,7 +341,7 @@ impl PaymentPurpose {
 	}
 }
 
-impl_writeable_tlv_based_enum_legacy!(PaymentPurpose,
+impl_ser_tlv_based_enum_legacy!(PaymentPurpose,
 	(0, Bolt11InvoicePayment) => {
 		(0, payment_preimage, option),
 		(2, payment_secret, required),
@@ -275,7 +391,7 @@ pub struct ClaimedHTLC {
 	/// 0.0.119.
 	pub counterparty_skimmed_fee_msat: u64,
 }
-impl_writeable_tlv_based!(ClaimedHTLC, {
+impl_ser_tlv_based!(ClaimedHTLC, {
 	(0, channel_id, required),
 	(1, counterparty_skimmed_fee_msat, (default_value, 0u64)),
 	(2, user_channel_id, required),
@@ -620,7 +736,7 @@ pub enum HTLCHandlingFailureReason {
 	},
 }
 
-impl_writeable_tlv_based_enum!(HTLCHandlingFailureReason,
+impl_ser_tlv_based_enum!(HTLCHandlingFailureReason,
 	(1, Downstream) => {},
 	(3, Local) => {
 		(0, reason, required),
@@ -641,7 +757,7 @@ enum InterceptNextHop {
 	FakeScid { requested_next_hop_scid: u64 },
 }
 
-impl_writeable_tlv_based_enum!(InterceptNextHop,
+impl_ser_tlv_based_enum!(InterceptNextHop,
 	(0, FakeScid) => {
 		(0, requested_next_hop_scid, required),
 	},
@@ -762,7 +878,7 @@ pub struct HTLCLocator {
 	pub node_id: Option<PublicKey>,
 }
 
-impl_writeable_tlv_based!(HTLCLocator, {
+impl_ser_tlv_based!(HTLCLocator, {
 	(1, channel_id, required),
 	(3, user_channel_id, option),
 	(5, node_id, option),
@@ -1541,8 +1657,8 @@ pub enum Event {
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	SplicePending {
-		/// The `channel_id` of the channel that has a pending splice funding transaction.
+	SpliceNegotiated {
+		/// The `channel_id` of the channel with the negotiated splice funding transaction.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
@@ -1560,19 +1676,20 @@ pub enum Event {
 		/// The witness script that is used to lock the channel's funding output to commitment transactions.
 		new_funding_redeem_script: ScriptBuf,
 	},
-	/// Used to indicate that a splice for the given `channel_id` has failed.
+	/// Used to indicate that a splice negotiation round for the given `channel_id` has failed.
 	///
-	/// This event may be emitted if a splice fails after it has been initiated but prior to signing
-	/// any negotiated funding transaction.
+	/// Each splice attempt (initial or RBF) resolves to either [`Event::SpliceNegotiated`] on
+	/// success or this event on failure. Prior successfully negotiated splice transactions are
+	/// unaffected.
 	///
-	/// Any UTXOs contributed to be spent by the funding transaction may be reused and will be
-	/// given in `contributed_inputs`.
+	/// Any UTXOs contributed to the failed round that are not committed to a prior negotiated
+	/// splice transaction will be returned via a preceding [`Event::DiscardFunding`].
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
-	SpliceFailed {
-		/// The `channel_id` of the channel for which the splice failed.
+	SpliceNegotiationFailed {
+		/// The `channel_id` of the channel for which the splice negotiation round failed.
 		channel_id: ChannelId,
 		/// The `user_channel_id` value passed in to [`ChannelManager::create_channel`] for outbound
 		/// channels, or to [`ChannelManager::accept_inbound_channel`] for inbound channels.
@@ -1582,10 +1699,23 @@ pub enum Event {
 		user_channel_id: u128,
 		/// The `node_id` of the channel counterparty.
 		counterparty_node_id: PublicKey,
-		/// The outpoint of the channel's splice funding transaction, if one was created.
-		abandoned_funding_txo: Option<OutPoint>,
-		/// The features that this channel will operate with, if available.
-		channel_type: Option<ChannelTypeFeatures>,
+		/// The reason the splice negotiation failed.
+		reason: NegotiationFailureReason,
+		/// The funding contribution from the failed negotiation round, if available. This can be
+		/// fed back to [`ChannelManager::funding_contributed`] to retry with the same parameters.
+		/// Alternatively, call [`ChannelManager::splice_channel`] to obtain a fresh
+		/// [`FundingTemplate`] and build a new contribution.
+		///
+		/// The contribution preserves the full set of inputs and outputs from the failed round,
+		/// including any that were also committed to a prior negotiated (but not yet locked)
+		/// splice transaction. Those overlapping inputs and outputs are intentionally omitted
+		/// from the preceding [`Event::DiscardFunding`], since they remain committed to that
+		/// prior splice.
+		///
+		/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+		/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+		/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
+		contribution: Option<FundingContribution>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -1833,7 +1963,7 @@ pub enum Event {
 		invoice_request: InvoiceRequest,
 	},
 	/// Indicates that a channel funding transaction constructed interactively is ready to be
-	/// signed. This event will only be triggered if at least one input was contributed.
+	/// signed. This event will only be triggered if a contribution was made to the transaction.
 	///
 	/// The transaction contains all inputs and outputs provided by both parties including the
 	/// channel's funding output and a change output if applicable.
@@ -1844,8 +1974,9 @@ pub enum Event {
 	/// Each signature MUST use the `SIGHASH_ALL` flag to avoid invalidation of the initial commitment and
 	/// hence possible loss of funds.
 	///
-	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially) signed
-	/// funding transaction.
+	/// After signing, call [`ChannelManager::funding_transaction_signed`] with the (partially)
+	/// signed funding transaction. For splices where you contributed inputs or outputs, call
+	/// [`ChannelManager::cancel_funding_contributed`] instead if you no longer wish to proceed.
 	///
 	/// Generated in [`ChannelManager`] message handling.
 	///
@@ -1854,6 +1985,7 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`), but will only be regenerated as needed after restarts.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`ChannelManager::cancel_funding_contributed`]: crate::ln::channelmanager::ChannelManager::cancel_funding_contributed
 	/// [`ChannelManager::funding_transaction_signed`]: crate::ln::channelmanager::ChannelManager::funding_transaction_signed
 	FundingTransactionReadyForSigning {
 		/// The `channel_id` of the channel which you'll need to pass back into
@@ -2355,7 +2487,7 @@ impl Writeable for Event {
 				// We never write out FundingTransactionReadyForSigning events as they will be regenerated when
 				// necessary.
 			},
-			&Event::SplicePending {
+			&Event::SpliceNegotiated {
 				ref channel_id,
 				ref user_channel_id,
 				ref counterparty_node_id,
@@ -2373,20 +2505,20 @@ impl Writeable for Event {
 					(11, new_funding_redeem_script, required),
 				});
 			},
-			&Event::SpliceFailed {
+			&Event::SpliceNegotiationFailed {
 				ref channel_id,
 				ref user_channel_id,
 				ref counterparty_node_id,
-				ref abandoned_funding_txo,
-				ref channel_type,
+				ref reason,
+				ref contribution,
 			} => {
 				52u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, channel_id, required),
-					(3, channel_type, option),
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
-					(9, abandoned_funding_txo, option),
+					(11, reason, required),
+					(13, contribution, option),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -3012,7 +3144,7 @@ impl MaybeReadable for Event {
 						(11, new_funding_redeem_script, required),
 					});
 
-					Ok(Some(Event::SplicePending {
+					Ok(Some(Event::SpliceNegotiated {
 						channel_id: channel_id.0.unwrap(),
 						user_channel_id: user_channel_id.0.unwrap(),
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
@@ -3027,18 +3159,18 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(1, channel_id, required),
-						(3, channel_type, option),
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
-						(9, abandoned_funding_txo, option),
+						(11, reason, upgradable_option),
+						(13, contribution, option),
 					});
 
-					Ok(Some(Event::SpliceFailed {
+					Ok(Some(Event::SpliceNegotiationFailed {
 						channel_id: channel_id.0.unwrap(),
 						user_channel_id: user_channel_id.0.unwrap(),
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
-						abandoned_funding_txo,
-						channel_type,
+						reason: reason.unwrap_or(NegotiationFailureReason::Unknown),
+						contribution,
 					}))
 				};
 				f()
@@ -3158,7 +3290,7 @@ pub enum PaidBolt12Invoice {
 	StaticInvoice(StaticInvoice),
 }
 
-impl_writeable_tlv_based_enum!(PaidBolt12Invoice,
+impl_ser_tlv_based_enum!(PaidBolt12Invoice,
 	{0, Bolt12Invoice} => (),
 	{2, StaticInvoice} => (),
 );

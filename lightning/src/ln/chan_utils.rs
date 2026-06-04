@@ -590,7 +590,7 @@ pub struct TxCreationKeys {
 	pub broadcaster_delayed_payment_key: DelayedPaymentKey,
 }
 
-impl_writeable_tlv_based!(TxCreationKeys, {
+impl_ser_tlv_based!(TxCreationKeys, {
 	(0, per_commitment_point, required),
 	(2, revocation_key, required),
 	(4, broadcaster_htlc_key, required),
@@ -622,7 +622,7 @@ pub struct ChannelPublicKeys {
 	pub htlc_basepoint: HtlcBasepoint,
 }
 
-impl_writeable_tlv_based!(ChannelPublicKeys, {
+impl_ser_tlv_based!(ChannelPublicKeys, {
 	(0, funding_pubkey, required),
 	(2, revocation_basepoint, required),
 	(4, payment_point, required),
@@ -738,7 +738,7 @@ impl HTLCOutputInCommitment {
 	}
 }
 
-impl_writeable_tlv_based!(HTLCOutputInCommitment, {
+impl_ser_tlv_based!(HTLCOutputInCommitment, {
 	(0, offered, required),
 	(2, amount_msat, required),
 	(4, cltv_expiry, required),
@@ -1164,29 +1164,26 @@ impl ChannelTransactionParameters {
 	}
 }
 
-impl_writeable_tlv_based!(CounterpartyChannelTransactionParameters, {
+impl_ser_tlv_based!(CounterpartyChannelTransactionParameters, {
 	(0, pubkeys, required),
 	(2, selected_contest_delay, required),
 });
 
-impl Writeable for ChannelTransactionParameters {
-	#[rustfmt::skip]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let legacy_deserialization_prevention_marker = legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
-		write_tlv_fields!(writer, {
-			(0, self.holder_pubkeys, required),
-			(2, self.holder_selected_contest_delay, required),
-			(4, self.is_outbound_from_holder, required),
-			(6, self.counterparty_parameters, option),
-			(8, self.funding_outpoint, option),
-			(10, legacy_deserialization_prevention_marker, option),
-			(11, self.channel_type_features, required),
-			(12, self.splice_parent_funding_txid, option),
-			(13, self.channel_value_satoshis, required),
-		});
-		Ok(())
-	}
-}
+impl_writeable_tlv_based!(ChannelTransactionParameters, self, {
+	(0, self.holder_pubkeys, required),
+	(2, self.holder_selected_contest_delay, required),
+	(4, self.is_outbound_from_holder, required),
+	(6, self.counterparty_parameters, option),
+	(8, self.funding_outpoint, option),
+	(
+		10,
+		legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features),
+		option
+	),
+	(11, self.channel_type_features, required),
+	(12, self.splice_parent_funding_txid, option),
+	(13, self.channel_value_satoshis, required),
+});
 
 impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
 	#[rustfmt::skip]
@@ -1336,7 +1333,7 @@ impl PartialEq for HolderCommitmentTransaction {
 	}
 }
 
-impl_writeable_tlv_based!(HolderCommitmentTransaction, {
+impl_ser_tlv_based!(HolderCommitmentTransaction, {
 	(0, inner, required),
 	(2, counterparty_sig, required),
 	(4, holder_sig_first, required),
@@ -1424,7 +1421,7 @@ pub struct BuiltCommitmentTransaction {
 	pub txid: Txid,
 }
 
-impl_writeable_tlv_based!(BuiltCommitmentTransaction, {
+impl_ser_tlv_based!(BuiltCommitmentTransaction, {
 	(0, transaction, required),
 	(2, txid, required),
 });
@@ -1634,25 +1631,22 @@ impl PartialEq for CommitmentTransaction {
 	}
 }
 
-impl Writeable for CommitmentTransaction {
-	#[rustfmt::skip]
-	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let legacy_deserialization_prevention_marker = legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features);
-		write_tlv_fields!(writer, {
-			(0, self.commitment_number, required),
-			(1, self.to_broadcaster_delay, option),
-			(2, self.to_broadcaster_value_sat, required),
-			(4, self.to_countersignatory_value_sat, required),
-			(6, self.feerate_per_kw, required),
-			(8, self.keys, required),
-			(10, self.built, required),
-			(12, self.nondust_htlcs, required_vec),
-			(14, legacy_deserialization_prevention_marker, option),
-			(15, self.channel_type_features, required),
-		});
-		Ok(())
-	}
-}
+impl_writeable_tlv_based!(CommitmentTransaction, self, {
+	(0, self.commitment_number, required),
+	(1, self.to_broadcaster_delay, option),
+	(2, self.to_broadcaster_value_sat, required),
+	(4, self.to_countersignatory_value_sat, required),
+	(6, self.feerate_per_kw, required),
+	(8, self.keys, required),
+	(10, self.built, required),
+	(12, self.nondust_htlcs, required_vec),
+	(
+		14,
+		legacy_deserialization_prevention_marker_for_channel_type_features(&self.channel_type_features),
+		option
+	),
+	(15, self.channel_type_features, required),
+});
 
 impl Readable for CommitmentTransaction {
 	#[rustfmt::skip]

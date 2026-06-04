@@ -38,7 +38,7 @@ use bitcoin::{secp256k1, Psbt, Sequence, Txid, WPubkeyHash, Witness};
 use lightning_invoice::RawBolt11Invoice;
 
 use crate::chain::transaction::OutPoint;
-use crate::crypto::utils::{hkdf_extract_expand_twice, sign, sign_with_aux_rand};
+use crate::crypto::utils::{apply_chacha20, hkdf_extract_expand_twice, sign, sign_with_aux_rand};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	get_countersigner_payment_script, get_revokeable_redeemscript, make_funding_redeemscript,
@@ -60,7 +60,6 @@ use crate::util::native_async::MaybeSend;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::transaction_utils;
 
-use crate::crypto::chacha20::ChaCha20;
 use crate::prelude::*;
 use crate::sign::ecdsa::EcdsaChannelSigner;
 use crate::util::atomic_counter::AtomicCounter;
@@ -120,7 +119,7 @@ impl DelayedPaymentOutputDescriptor {
 		+ chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH) as u64;
 }
 
-impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
+impl_ser_tlv_based!(DelayedPaymentOutputDescriptor, {
 	(0, outpoint, required),
 	(2, per_commitment_point, required),
 	(4, to_self_delay, required),
@@ -218,7 +217,7 @@ impl StaticPaymentOutputDescriptor {
 		chan_params.is_some_and(|p| p.channel_type_features.supports_anchors_zero_fee_htlc_tx())
 	}
 }
-impl_writeable_tlv_based!(StaticPaymentOutputDescriptor, {
+impl_ser_tlv_based!(StaticPaymentOutputDescriptor, {
 	(0, outpoint, required),
 	(2, output, required),
 	(4, channel_keys_id, required),
@@ -321,7 +320,7 @@ pub enum SpendableOutputDescriptor {
 	StaticPaymentOutput(StaticPaymentOutputDescriptor),
 }
 
-impl_writeable_tlv_based_enum_legacy!(SpendableOutputDescriptor,
+impl_ser_tlv_based_enum_legacy!(SpendableOutputDescriptor,
 	(0, StaticOutput) => {
 		(0, outpoint, required),
 		(1, channel_keys_id, option),
@@ -583,7 +582,7 @@ pub struct ChannelDerivationParameters {
 	pub transaction_parameters: ChannelTransactionParameters,
 }
 
-impl_writeable_tlv_based!(ChannelDerivationParameters, {
+impl_ser_tlv_based!(ChannelDerivationParameters, {
 	(0, value_satoshis, required),
 	(2, keys_id, required),
 	(4, transaction_parameters, (required: ReadableArgs, Some(value_satoshis.0.unwrap()))),
@@ -617,7 +616,7 @@ pub struct HTLCDescriptor {
 	pub counterparty_sig: Signature,
 }
 
-impl_writeable_tlv_based!(HTLCDescriptor, {
+impl_ser_tlv_based!(HTLCDescriptor, {
 	(0, channel_derivation_parameters, required),
 	(1, feerate_per_kw, (default_value, 0)),
 	(2, commitment_txid, required),
@@ -1928,7 +1927,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 	fn sign_splice_shared_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Signature {
+	) -> Result<Signature, ()> {
 		assert!(channel_parameters.is_populated(), "Channel parameters must be fully populated");
 		assert_eq!(
 			tx.input[input_index].previous_output,
@@ -1954,7 +1953,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 			)
 			.unwrap()[..];
 		let msg = hash_to_message!(sighash);
-		sign(secp_ctx, &msg, &funding_key)
+		Ok(sign(secp_ctx, &msg, &funding_key))
 	}
 }
 
@@ -2703,7 +2702,9 @@ impl EntropySource for RandomBytes {
 		let index = self.index.next();
 		let mut nonce = [0u8; 16];
 		nonce[..8].copy_from_slice(&index.to_be_bytes());
-		ChaCha20::get_single_block(&self.seed, &nonce)
+		let mut chacha_bytes = [0; 32];
+		apply_chacha20(self.seed, nonce, &mut chacha_bytes);
+		chacha_bytes
 	}
 }
 

@@ -187,6 +187,28 @@ mod tests {
 	}
 
 	#[test]
+	fn list_all_keys_skips_leftover_store_artifacts() {
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_list_all_keys_skips_leftover_store_artifacts");
+		let fs_store = FilesystemStore::new(temp_path.clone());
+		KVStoreSync::write(&fs_store, "primary", "secondary", "key", vec![1]).unwrap();
+
+		fs::write(temp_path.join("top_level.0.tmp"), b"stale").unwrap();
+		fs::write(temp_path.join("top_level.0.trash"), b"stale").unwrap();
+
+		let primary_path = temp_path.join("primary");
+		fs::write(primary_path.join("primary_level.0.tmp"), b"stale").unwrap();
+		fs::write(primary_path.join("primary_level.0.trash"), b"stale").unwrap();
+
+		let secondary_path = primary_path.join("secondary");
+		fs::write(secondary_path.join("secondary_level.0.tmp"), b"stale").unwrap();
+		fs::write(secondary_path.join("secondary_level.0.trash"), b"stale").unwrap();
+
+		let keys = fs_store.list_all_keys().unwrap();
+		assert_eq!(keys, vec![("primary".to_string(), "secondary".to_string(), "key".to_string())]);
+	}
+
+	#[test]
 	fn test_data_migration() {
 		let mut source_temp_path = std::env::temp_dir();
 		source_temp_path.push("test_data_migration_source");

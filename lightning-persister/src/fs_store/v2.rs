@@ -10,12 +10,55 @@ use lightning::util::persist::{
 use std::fs;
 use std::path::PathBuf;
 use std::time::UNIX_EPOCH;
+use std::{error, fmt, io};
 
 #[cfg(feature = "tokio")]
 use core::future::Future;
 #[cfg(feature = "tokio")]
 use lightning::util::persist::{KVStore, PaginatedKVStore};
 use std::sync::Arc;
+
+/// An error returned when constructing a [`FilesystemStoreV2`].
+#[derive(Debug)]
+pub enum FilesystemStoreV2Error {
+	/// The data directory contains a file where v2 expects a namespace directory, indicating it
+	/// was previously used by [`FilesystemStore`] (v1). Contains the path of the offending file.
+	///
+	/// [`FilesystemStore`]: crate::fs_store::v1::FilesystemStore
+	V1DataDetected(PathBuf),
+	/// An I/O error occurred while inspecting the data directory.
+	Io(io::Error),
+}
+
+impl fmt::Display for FilesystemStoreV2Error {
+	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+		match self {
+			Self::V1DataDetected(path) => write!(
+				f,
+				"Found file `{}` where FilesystemStoreV2 expects a namespace directory. \
+				 This indicates the directory was previously used by FilesystemStore (v1). \
+				 Please migrate your data or use a different directory.",
+				path.display()
+			),
+			Self::Io(err) => write!(f, "{}", err),
+		}
+	}
+}
+
+impl error::Error for FilesystemStoreV2Error {
+	fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+		match self {
+			Self::V1DataDetected(_) => None,
+			Self::Io(err) => Some(err),
+		}
+	}
+}
+
+impl From<io::Error> for FilesystemStoreV2Error {
+	fn from(err: io::Error) -> Self {
+		Self::Io(err)
+	}
+}
 
 /// A [`KVStore`] and [`KVStoreSync`] implementation that writes to and reads from the file system.
 ///
@@ -53,25 +96,28 @@ pub struct FilesystemStoreV2 {
 impl FilesystemStoreV2 {
 	/// Constructs a new [`FilesystemStoreV2`].
 	///
-	/// Returns an error if the data directory already exists and contains files at the top level,
-	/// which would indicate it was previously used by a [`FilesystemStore`] (v1). The v2 store
-	/// expects only directories (namespaces) at the top level.
+	/// Returns [`FilesystemStoreV2Error::V1DataDetected`] if the data directory already exists
+	/// and contains files where v2 expects namespace directories, which would indicate it was
+	/// previously used by a [`FilesystemStore`] (v1). The v2 store expects only directories at
+	/// the top level and one level down.
 	///
 	/// [`FilesystemStore`]: crate::fs_store::v1::FilesystemStore
-	pub fn new(data_dir: PathBuf) -> std::io::Result<Self> {
+	pub fn new(data_dir: PathBuf) -> Result<Self, FilesystemStoreV2Error> {
 		if data_dir.exists() {
 			for entry in fs::read_dir(&data_dir)? {
 				let entry = entry?;
-				if entry.file_type()?.is_file() {
-					return Err(std::io::Error::new(
-						std::io::ErrorKind::InvalidData,
-						format!(
-							"Found file `{}` in the top-level data directory. \
-							This indicates the directory was previously used by FilesystemStore (v1). \
-							Please migrate your data or use a different directory.",
-							entry.path().display()
-						),
-					));
+				let file_type = entry.file_type()?;
+				if file_type.is_file() {
+					return Err(FilesystemStoreV2Error::V1DataDetected(entry.path()));
+				}
+
+				if file_type.is_dir() {
+					for child_entry in fs::read_dir(entry.path())? {
+						let child_entry = child_entry?;
+						if child_entry.file_type()?.is_file() {
+							return Err(FilesystemStoreV2Error::V1DataDetected(child_entry.path()));
+						}
+					}
 				}
 			}
 		}
@@ -663,18 +709,50 @@ mod tests {
 		fs::create_dir_all(&temp_path).unwrap();
 
 		// Create a file at the top level, as v1 would for an empty primary namespace
+		// and an empty secondary namespace.
 		fs::write(temp_path.join("some_key"), b"data").unwrap();
 
 		// V2 construction should fail
 		match FilesystemStoreV2::new(temp_path.clone()) {
-			Err(err) => {
-				assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
-				assert!(err.to_string().contains("FilesystemStore (v1)"));
+			Err(FilesystemStoreV2Error::V1DataDetected(path)) => {
+				assert_eq!(path, temp_path.join("some_key"));
 			},
+			Err(err) => panic!("Expected V1DataDetected, got {:?}", err),
 			Ok(_) => panic!("Expected error for directory with top-level files"),
 		}
 
 		// Clean up
+		let _ = fs::remove_dir_all(&temp_path);
+
+		// Create a file one level down, as v1 would for a non-empty primary namespace
+		// and an empty secondary namespace.
+		fs::create_dir_all(temp_path.join("some_namespace")).unwrap();
+		fs::write(temp_path.join("some_namespace").join("some_key"), b"data").unwrap();
+
+		match FilesystemStoreV2::new(temp_path.clone()) {
+			Err(FilesystemStoreV2Error::V1DataDetected(path)) => {
+				assert_eq!(path, temp_path.join("some_namespace").join("some_key"));
+			},
+			Err(err) => panic!("Expected V1DataDetected, got {:?}", err),
+			Ok(_) => panic!("Expected error for directory with files one level down"),
+		}
+
+		let _ = fs::remove_dir_all(&temp_path);
+
+		// A v1 write with an empty primary namespace and non-empty secondary namespace
+		// is rejected by the KVStore API, but its filesystem layout would be the same
+		// one-level shape.
+		fs::create_dir_all(temp_path.join("some_secondary_namespace")).unwrap();
+		fs::write(temp_path.join("some_secondary_namespace").join("some_key"), b"data").unwrap();
+
+		match FilesystemStoreV2::new(temp_path.clone()) {
+			Err(FilesystemStoreV2Error::V1DataDetected(path)) => {
+				assert_eq!(path, temp_path.join("some_secondary_namespace").join("some_key"));
+			},
+			Err(err) => panic!("Expected V1DataDetected, got {:?}", err),
+			Ok(_) => panic!("Expected error for directory with files one level down"),
+		}
+
 		let _ = fs::remove_dir_all(&temp_path);
 
 		// An empty directory should succeed
@@ -682,8 +760,23 @@ mod tests {
 		let result = FilesystemStoreV2::new(temp_path.clone());
 		assert!(result.is_ok());
 
-		// A directory with only subdirectories should succeed
-		fs::create_dir_all(temp_path.join("some_namespace")).unwrap();
+		// A directory with only namespace subdirectories should succeed
+		fs::create_dir_all(temp_path.join("some_namespace").join("some_sub_namespace")).unwrap();
+		let result = FilesystemStoreV2::new(temp_path.clone());
+		assert!(result.is_ok());
+
+		// V1 data with non-empty primary and secondary namespaces has the same filesystem
+		// layout as valid v2 data, so construction must not reject this shape.
+		let fs_store = result.unwrap();
+		KVStoreSync::write(
+			&fs_store,
+			"some_namespace",
+			"some_sub_namespace",
+			"some_key",
+			b"data".to_vec(),
+		)
+		.unwrap();
+
 		let result = FilesystemStoreV2::new(temp_path);
 		assert!(result.is_ok());
 	}

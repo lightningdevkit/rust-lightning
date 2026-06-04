@@ -38,7 +38,7 @@ use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
 use crate::util::logger::{Logger, WithContext};
 use crate::util::ser::ReadableArgs;
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(fuzzing)))]
 use crate::util::time::Instant;
 
 use core::fmt::{self, Display, Formatter};
@@ -174,7 +174,7 @@ pub(crate) struct RetryableInvoiceRequest {
 	pub(super) needs_retry: bool,
 }
 
-impl_writeable_tlv_based!(RetryableInvoiceRequest, {
+impl_ser_tlv_based!(RetryableInvoiceRequest, {
 	(0, invoice_request, required),
 	(1, needs_retry, (default_value, true)),
 	(2, nonce, required),
@@ -427,13 +427,13 @@ pub enum Retry {
 }
 
 #[cfg(not(feature = "std"))]
-impl_writeable_tlv_based_enum_legacy!(Retry,
+impl_ser_tlv_based_enum_legacy!(Retry,
 	;
 	(0, Attempts)
 );
 
 #[cfg(feature = "std")]
-impl_writeable_tlv_based_enum_legacy!(Retry,
+impl_ser_tlv_based_enum_legacy!(Retry,
 	;
 	(0, Attempts),
 	(2, Timeout)
@@ -517,7 +517,7 @@ pub(crate) enum StaleExpiration {
 	AbsoluteTimeout(core::time::Duration),
 }
 
-impl_writeable_tlv_based_enum_legacy!(StaleExpiration,
+impl_ser_tlv_based_enum_legacy!(StaleExpiration,
 	;
 	(0, TimerTicks),
 	(2, AbsoluteTimeout)

@@ -323,10 +323,12 @@ impl Readable for ChannelHandshakeConfig {
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelHandshakeLimits {
 	/// Minimum allowed satoshis when a channel is funded. This is supplied by the sender and so
-	/// only applies to inbound channels.
+	/// only applies to inbound channels. It is also enforced for inbound channels on splices in
+	/// which the counterparty's contribution is negative.
 	///
 	/// Default value: `1000`
-	/// (Minimum of [`ChannelHandshakeConfig::their_channel_reserve_proportional_millionths`])
+	///
+	/// Minimum value: `1000` (Any values less will be treated as `1000` instead.)
 	pub min_funding_satoshis: u64,
 	/// The remote node sets a limit on the minimum size of HTLCs we can send to them. This allows
 	/// you to limit the maximum minimum-size they can require.
@@ -479,7 +481,7 @@ pub enum MaxDustHTLCExposure {
 	FeeRateMultiplier(u64),
 }
 
-impl_writeable_tlv_based_enum_legacy!(MaxDustHTLCExposure, ;
+impl_ser_tlv_based_enum_legacy!(MaxDustHTLCExposure, ;
 	(1, FixedLimitMsat),
 	(3, FeeRateMultiplier),
 );

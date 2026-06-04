@@ -43,6 +43,9 @@
 #[cfg(all(fuzzing, test))]
 compile_error!("Tests will always fail with cfg=fuzzing");
 
+#[cfg(all(fuzzing, feature = "grind_signatures"))]
+compile_error!("Fuzz builds must not enable grind_signatures");
+
 #[macro_use]
 extern crate alloc;
 

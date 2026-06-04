@@ -79,7 +79,7 @@ pub struct Utxo {
 	pub sequence: Sequence,
 }
 
-impl_writeable_tlv_based!(Utxo, {
+impl_ser_tlv_based!(Utxo, {
 	(1, outpoint, required),
 	(3, output, required),
 	(5, satisfaction_weight, required),
@@ -149,7 +149,7 @@ impl Utxo {
 ///
 /// Can be used as an input to contribute to a channel's funding transaction either when using the
 /// v2 channel establishment protocol or when splicing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct ConfirmedUtxo {
 	/// The unspent [`TxOut`] found in [`prevtx`].
 	///
@@ -164,7 +164,7 @@ pub struct ConfirmedUtxo {
 	pub(crate) prevtx: Transaction,
 }
 
-impl_writeable_tlv_based!(ConfirmedUtxo, {
+impl_ser_tlv_based!(ConfirmedUtxo, {
 	(1, utxo, required),
 	(3, _sequence, (legacy, Sequence,
 		|read_val: Option<&Sequence>| {

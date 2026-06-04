@@ -4,7 +4,7 @@ use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceError, BlockSour
 
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
-use lightning::chain::BestBlock;
+use lightning::chain::BlockLocator;
 
 use std::future::Future;
 use std::ops::Deref;
@@ -160,7 +160,7 @@ impl ValidatedBlockHeader {
 		Ok(())
 	}
 
-	/// Returns the [`BestBlock`] corresponding to this validated block header, which can be passed
+	/// Returns the [`BlockLocator`] corresponding to this validated block header, which can be passed
 	/// into [`ChannelManager::new`] as part of its [`ChainParameters`]. Useful for ensuring that
 	/// the [`SpvClient`] and [`ChannelManager`] are initialized to the same block during a fresh
 	/// start.
@@ -169,8 +169,8 @@ impl ValidatedBlockHeader {
 	/// [`ChainParameters`]: lightning::ln::channelmanager::ChainParameters
 	/// [`ChannelManager`]: lightning::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::new`]: lightning::ln::channelmanager::ChannelManager::new
-	pub fn to_best_block(&self) -> BestBlock {
-		BestBlock::new(self.block_hash, self.inner.height)
+	pub fn to_block_locator(&self) -> BlockLocator {
+		BlockLocator::new(self.block_hash, self.inner.height)
 	}
 }
 

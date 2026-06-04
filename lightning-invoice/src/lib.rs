@@ -880,11 +880,10 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool>
 {
 	/// Sets the payment metadata.
 	///
-	/// By default features are set to *optionally* allow the sender to include the payment metadata.
-	/// If you wish to require that the sender include the metadata (and fail to parse the invoice if
-	/// they don't support payment metadata fields), you need to call
-	/// [`InvoiceBuilder::require_payment_metadata`] after this.
-	pub fn payment_metadata(
+	/// This marks the payment metadata as optional, allowing a legacy sender that doesn't
+	/// understand payment metadata to ignore it. Note that LDK by default commits to the payment
+	/// metadata in its payment secret, implicitly making it required.
+	pub fn optional_payment_metadata(
 		mut self, payment_metadata: Vec<u8>,
 	) -> InvoiceBuilder<D, H, T, C, S, tb::True> {
 		self.tagged_fields.push(TaggedField::PaymentMetadata(payment_metadata));
@@ -902,20 +901,23 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool>
 		}
 		self.set_flags()
 	}
-}
 
-impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool>
-	InvoiceBuilder<D, H, T, C, S, tb::True>
-{
-	/// Sets forwarding of payment metadata as required. A reader of the invoice which does not
-	/// support sending payment metadata will fail to read the invoice.
-	pub fn require_payment_metadata(mut self) -> InvoiceBuilder<D, H, T, C, S, tb::True> {
-		for field in self.tagged_fields.iter_mut() {
+	/// Sets the payment metadata.
+	///
+	/// By default features are set to *require* the sender to include the payment metadata.
+	/// If you wish to support legacy senders that ignore the metadata, you can call
+	/// [`InvoiceBuilder::optional_payment_metadata`] instead. Note that LDK by default commits to
+	/// the payment metadata in its payment secret, implicitly making it required.
+	pub fn payment_metadata(
+		self, payment_metadata: Vec<u8>,
+	) -> InvoiceBuilder<D, H, T, C, S, tb::True> {
+		let mut res = self.optional_payment_metadata(payment_metadata);
+		for field in res.tagged_fields.iter_mut() {
 			if let TaggedField::Features(f) = field {
 				f.set_payment_metadata_required();
 			}
 		}
-		self
+		res
 	}
 }
 

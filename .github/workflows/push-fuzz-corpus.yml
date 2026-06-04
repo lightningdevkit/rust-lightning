@@ -1,0 +1,92 @@
+name: Push fuzz corpus
+
+# Triggered after the main CI workflow finishes. Because `workflow_run` always
+# runs in the *base* repo's context (its workflow file as of `main`, with
+# full secrets access) it's safe to handle the corpus push here even for fork
+# PRs — none of the PR's modified code or scripts execute in this job.
+#
+# Caveat: GitHub only fires `workflow_run` for workflow files that live on
+# the default branch, so this workflow does nothing until it's merged to
+# `master`.
+on:
+  # zizmor flags `workflow_run` as a dangerous trigger because it runs with
+  # repo secrets in base-branch context. That's exactly why we use it here:
+  # this workflow never touches any PR-supplied code (no checkout, no script
+  # execution from the artifact — just cp/git on opaque corpus blobs), so
+  # the warning is a false positive.
+  workflow_run: # zizmor: ignore[dangerous-triggers]
+    workflows: ["Continuous Integration Checks"]
+    types: [completed]
+
+permissions:
+  # download-artifact across runs requires `actions: read`.
+  actions: read
+
+jobs:
+  push-corpus:
+    # Run on either success or fuzzer crash; skip on cancellation.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' ||
+      github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download fuzz corpus artifact
+        id: download
+        # The artifact only exists when the fuzz job got far enough to upload
+        # it. Don't fail this workflow if the upload was skipped.
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: hfuzz-corpus
+          path: hfuzz-corpus
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clone fuzzing corpus
+        if: steps.download.outcome == 'success'
+        run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git
+
+      - name: Copy new corpus entries into the corpus checkout
+        if: steps.download.outcome == 'success'
+        run: |
+          set -eu
+          if [ -d hfuzz-corpus/rust-lightning ]; then
+            cp -rn hfuzz-corpus/rust-lightning/. ldk-fuzzing-corpus/rust-lightning/
+          fi
+
+      - name: Open PR with new corpus entries
+        if: steps.download.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.CORPUS_PUSH_TOKEN }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_URL:    ${{ github.event.workflow_run.html_url }}
+          RUN_ID:     ${{ github.event.workflow_run.id }}
+        run: |
+          set -eu
+          cd ldk-fuzzing-corpus
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No new corpus entries to contribute."
+            exit 0
+          fi
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "Found new corpus entries but CORPUS_PUSH_TOKEN is unset; skipping PR."
+            git status --short
+            exit 0
+          fi
+          BRANCH="ci/new-corpus-${RUN_ID}"
+          git config user.email "ldk-ci@users.noreply.github.com"
+          git config user.name  "LDK CI"
+          git checkout -b "$BRANCH"
+          git add rust-lightning
+          git commit \
+            -m "Add corpus entries from rust-lightning CI" \
+            -m "Source commit: ${SOURCE_SHA}" \
+            -m "Run: ${RUN_URL}"
+          REMOTE=$(git config --get remote.origin.url)
+          PUSH_URL="https://x-access-token:${GH_TOKEN}@${REMOTE#https://}"
+          git push "$PUSH_URL" "HEAD:$BRANCH"
+          gh pr create \
+            --title "New corpus entries from rust-lightning CI run ${RUN_ID}" \
+            --body "Discovered while running fuzz CI against \`${SOURCE_SHA}\`. Source: ${RUN_URL}" \
+            --head "$BRANCH" \
+            --base master

@@ -1,0 +1,31 @@
+[package]
+name = "lightning-fuzz-real-hashes"
+version = "0.0.1"
+authors = ["Automatically generated"]
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[features]
+afl_fuzz = ["afl"]
+honggfuzz_fuzz = ["honggfuzz"]
+libfuzzer_fuzz = ["libfuzzer-sys"]
+stdin_fuzz = []
+
+[dependencies]
+lightning-fuzz = { path = ".." }
+
+afl = { version = "0.12", optional = true }
+honggfuzz = { version = "0.5", optional = true, default-features = false }
+libfuzzer-sys = { version = "0.4", optional = true }
+
+[lints.rust.unexpected_cfgs]
+level = "forbid"
+# When adding a new cfg attribute, ensure that it is added to this list.
+check-cfg = [
+	"cfg(fuzzing)",
+	"cfg(secp256k1_fuzz)",
+	"cfg(hashes_fuzz)",
+]

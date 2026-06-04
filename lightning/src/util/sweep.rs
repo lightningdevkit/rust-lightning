@@ -12,7 +12,7 @@ use crate::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS};
-use crate::chain::{self, BestBlock, Confirm, Filter, Listen, WatchedOutput};
+use crate::chain::{self, BlockLocator, Confirm, Filter, Listen, WatchedOutput};
 use crate::io;
 use crate::ln::msgs::DecodeError;
 use crate::ln::types::ChannelId;
@@ -97,7 +97,7 @@ impl TrackedSpendableOutput {
 	}
 }
 
-impl_writeable_tlv_based!(TrackedSpendableOutput, {
+impl_ser_tlv_based!(TrackedSpendableOutput, {
 	(0, descriptor, required),
 	(2, channel_id, option),
 	(3, counterparty_node_id, option),
@@ -309,7 +309,7 @@ impl OutputSpendStatus {
 	}
 }
 
-impl_writeable_tlv_based_enum!(OutputSpendStatus,
+impl_ser_tlv_based_enum!(OutputSpendStatus,
 	(0, PendingInitialBroadcast) => {
 		(0, delayed_until_height, option),
 	},
@@ -386,7 +386,7 @@ where
 	/// If chain data is provided via the [`Confirm`] interface or via filtered blocks, users also
 	/// need to register their [`Filter`] implementation via the given `chain_data_source`.
 	pub fn new(
-		best_block: BestBlock, broadcaster: B, fee_estimator: E, chain_data_source: Option<F>,
+		best_block: BlockLocator, broadcaster: B, fee_estimator: E, chain_data_source: Option<F>,
 		output_spender: O, change_destination_source: D, kv_store: K, logger: L,
 	) -> Self {
 		let outputs = Vec::new();
@@ -472,7 +472,7 @@ where
 
 	/// Gets the latest best block which was connected either via the [`Listen`] or
 	/// [`Confirm`] interfaces.
-	pub fn current_best_block(&self) -> BestBlock {
+	pub fn current_best_block(&self) -> BlockLocator {
 		self.sweeper_state.lock().unwrap().best_block
 	}
 
@@ -488,12 +488,18 @@ where
 			return Ok(());
 		}
 
-		let result = self.regenerate_and_broadcast_spend_if_necessary_internal().await;
+		// Use an RAII guard so the flag is released even if this future is dropped mid-await
+		// (e.g. cancelled by `tokio::time::timeout` or `select!`). A bare `store(false)` after
+		// the await would never run on cancellation, leaving the sweeper permanently disabled.
+		struct PendingSweepGuard<'a>(&'a AtomicBool);
+		impl<'a> Drop for PendingSweepGuard<'a> {
+			fn drop(&mut self) {
+				self.0.store(false, Ordering::Release);
+			}
+		}
+		let _guard = PendingSweepGuard(&self.pending_sweep);
 
-		// Release the pending sweep flag again, regardless of result.
-		self.pending_sweep.store(false, Ordering::Release);
-
-		result
+		self.regenerate_and_broadcast_spend_if_necessary_internal().await
 	}
 
 	/// Regenerates and broadcasts the spending transaction for any outputs that are pending
@@ -766,7 +772,7 @@ where
 		self.best_block_updated_internal(&mut state_lock, header, height);
 	}
 
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
 
 		assert!(state_lock.best_block.height > fork_point.height,
@@ -854,11 +860,11 @@ where
 #[derive(Debug, Clone)]
 struct SweeperState {
 	outputs: Vec<TrackedSpendableOutput>,
-	best_block: BestBlock,
+	best_block: BlockLocator,
 	dirty: bool,
 }
 
-impl_writeable_tlv_based!(SweeperState, {
+impl_ser_tlv_based!(SweeperState, {
 	(0, outputs, required_vec),
 	(2, best_block, required),
 	(_unused, dirty, (static_value, false)),
@@ -889,7 +895,7 @@ impl<
 		K: KVStore,
 		L: Logger,
 		O: OutputSpender,
-	> ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BestBlock, OutputSweeper<B, D, E, F, K, L, O>)
+	> ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BlockLocator, OutputSweeper<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSource,
 {
@@ -986,7 +992,7 @@ where
 	/// If chain data is provided via the [`Confirm`] interface or via filtered blocks, users also
 	/// need to register their [`Filter`] implementation via the given `chain_data_source`.
 	pub fn new(
-		best_block: BestBlock, broadcaster: B, fee_estimator: E, chain_data_source: Option<F>,
+		best_block: BlockLocator, broadcaster: B, fee_estimator: E, chain_data_source: Option<F>,
 		output_spender: O, change_destination_source: D, kv_store: K, logger: L,
 	) -> Self {
 		let change_destination_source =
@@ -1054,7 +1060,7 @@ where
 
 	/// Gets the latest best block which was connected either via [`Listen`] or [`Confirm`]
 	/// interfaces.
-	pub fn current_best_block(&self) -> BestBlock {
+	pub fn current_best_block(&self) -> BlockLocator {
 		self.sweeper.current_best_block()
 	}
 
@@ -1111,7 +1117,7 @@ where
 		self.sweeper.filtered_block_connected(header, txdata, height);
 	}
 
-	fn blocks_disconnected(&self, fork_point: BestBlock) {
+	fn blocks_disconnected(&self, fork_point: BlockLocator) {
 		self.sweeper.blocks_disconnected(fork_point);
 	}
 }
@@ -1157,7 +1163,7 @@ impl<
 		L: Logger,
 		O: OutputSpender,
 	> ReadableArgs<(B, E, Option<F>, O, D, K, L)>
-	for (BestBlock, OutputSweeperSync<B, D, E, F, K, L, O>)
+	for (BlockLocator, OutputSweeperSync<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSourceSync,
 	K::Target: KVStoreSync,
@@ -1172,7 +1178,155 @@ where
 		let kv_store = KVStoreSyncWrapper(kv_store);
 		let args = (a, b, c, d, change_destination_source, kv_store, e);
 		let (best_block, sweeper) =
-			<(BestBlock, OutputSweeper<_, _, _, _, _, _, _>)>::read(reader, args)?;
+			<(BlockLocator, OutputSweeper<_, _, _, _, _, _, _>)>::read(reader, args)?;
 		Ok((best_block, OutputSweeperSync { sweeper }))
+	}
+}
+
+#[cfg(all(test, feature = "std"))]
+mod tests {
+	use super::*;
+	use crate::chain::transaction::OutPoint;
+	use crate::sign::{ChangeDestinationSource, OutputSpender};
+	use crate::util::async_poll::dummy_waker;
+	use crate::util::logger::Record;
+	use crate::util::native_async::MaybeSend;
+
+	use bitcoin::hashes::Hash as _;
+	use bitcoin::secp256k1::All;
+	use bitcoin::transaction::Version;
+	use bitcoin::{Amount, BlockHash, ScriptBuf, Transaction, TxOut, Txid};
+
+	use core::future as core_future;
+	use core::pin::pin;
+	use core::sync::atomic::Ordering;
+	use core::task::Poll;
+
+	struct DummyBroadcaster;
+	impl BroadcasterInterface for DummyBroadcaster {
+		fn broadcast_transactions(&self, _: &[(&Transaction, TransactionType)]) {}
+	}
+
+	struct DummyFeeEstimator;
+	impl FeeEstimator for DummyFeeEstimator {
+		fn get_est_sat_per_1000_weight(&self, _: ConfirmationTarget) -> u32 {
+			1000
+		}
+	}
+
+	struct DummyFilter;
+	impl Filter for DummyFilter {
+		fn register_tx(&self, _: &Txid, _: &bitcoin::Script) {}
+		fn register_output(&self, _: WatchedOutput) {}
+	}
+
+	struct DummyLogger;
+	impl Logger for DummyLogger {
+		fn log(&self, _: Record) {}
+	}
+
+	struct DummyOutputSpender;
+	impl OutputSpender for DummyOutputSpender {
+		fn spend_spendable_outputs(
+			&self, _: &[&SpendableOutputDescriptor], _: Vec<TxOut>, _: ScriptBuf, _: u32,
+			_: Option<LockTime>, _: &Secp256k1<All>,
+		) -> Result<Transaction, ()> {
+			Ok(Transaction {
+				version: Version::TWO,
+				lock_time: LockTime::ZERO,
+				input: Vec::new(),
+				output: Vec::new(),
+			})
+		}
+	}
+
+	struct DummyChangeDestSource;
+	impl ChangeDestinationSource for DummyChangeDestSource {
+		fn get_change_destination_script<'a>(
+			&'a self,
+		) -> impl Future<Output = Result<ScriptBuf, ()>> + MaybeSend + 'a {
+			core_future::ready(Ok(ScriptBuf::new()))
+		}
+	}
+
+	struct PendingKVStore;
+	impl KVStore for PendingKVStore {
+		fn read(
+			&self, _: &str, _: &str, _: &str,
+		) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
+			core_future::ready(Err(io::Error::new(io::ErrorKind::NotFound, "")))
+		}
+		fn write(
+			&self, _: &str, _: &str, _: &str, _: Vec<u8>,
+		) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+			core_future::pending()
+		}
+		fn remove(
+			&self, _: &str, _: &str, _: &str, _: bool,
+		) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+			core_future::ready(Ok(()))
+		}
+		fn list(
+			&self, _: &str, _: &str,
+		) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
+			core_future::ready(Ok(Vec::new()))
+		}
+	}
+
+	#[test]
+	fn pending_sweep_flag_resets_after_future_drop() {
+		let best_block = BlockLocator::new(BlockHash::all_zeros(), 1_000);
+
+		let sweeper: OutputSweeper<
+			DummyBroadcaster,
+			Box<DummyChangeDestSource>,
+			DummyFeeEstimator,
+			DummyFilter,
+			PendingKVStore,
+			DummyLogger,
+			DummyOutputSpender,
+		> = OutputSweeper::new(
+			best_block,
+			DummyBroadcaster,
+			DummyFeeEstimator,
+			None,
+			DummyOutputSpender,
+			Box::new(DummyChangeDestSource),
+			PendingKVStore,
+			DummyLogger,
+		);
+
+		// Inject a tracked output directly so the sweep loop has work to do.
+		let descriptor = SpendableOutputDescriptor::StaticOutput {
+			outpoint: OutPoint { txid: Txid::all_zeros(), index: 0 },
+			output: TxOut { value: Amount::from_sat(100_000), script_pubkey: ScriptBuf::new() },
+			channel_keys_id: None,
+		};
+		sweeper.sweeper_state.lock().unwrap().outputs.push(TrackedSpendableOutput {
+			descriptor,
+			channel_id: None,
+			counterparty_node_id: None,
+			status: OutputSpendStatus::PendingInitialBroadcast { delayed_until_height: None },
+		});
+
+		// Start a sweep, poll once (the persist step stays Pending because our KVStore's
+		// `write` future is `future::pending()`), then drop the future to mimic
+		// cancellation - the sort of thing a `tokio::time::timeout` wrapper produces.
+		{
+			let mut fut = pin!(sweeper.regenerate_and_broadcast_spend_if_necessary());
+			let waker = dummy_waker();
+			let mut ctx = task::Context::from_waker(&waker);
+			assert!(matches!(fut.as_mut().poll(&mut ctx), Poll::Pending));
+		}
+
+		// Once the future has been dropped, `pending_sweep` must be cleared. The bug
+		// is that the flag is only ever cleared after the inner future returns, so a
+		// dropped future leaves it stuck `true` and every subsequent call to
+		// `regenerate_and_broadcast_spend_if_necessary` short-circuits with `Ok(())`,
+		// permanently disabling the sweeper.
+		assert!(
+			!sweeper.pending_sweep.load(Ordering::Acquire),
+			"pending_sweep flag was not reset when the future was dropped",
+		);
 	}
 }

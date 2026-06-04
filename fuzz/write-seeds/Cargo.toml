@@ -9,7 +9,3 @@ edition = "2021"
 
 [dependencies]
 lightning-fuzz = { path = "../" }
-
-# Prevent this from interfering with workspaces
-[workspace]
-members = ["."]

@@ -104,6 +104,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
 		offer_id: OfferId([42; 32]),
 		invoice_request: invoice_request_fields,
+		payment_metadata: None,
 	});
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret: PaymentSecret([42; 32]),

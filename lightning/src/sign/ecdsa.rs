@@ -254,8 +254,14 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	///
 	/// `input_index`: The index of the input within the new funding transaction `tx`,
 	///    spending the previous funding transaction's output
+	///
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
+	/// signature and should be retried later. Once the signer is ready to provide a signature after
+	/// previously returning an `Err`, [`ChannelManager::signer_unblocked`] must be called.
+	///
+	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn sign_splice_shared_input(
 		&self, channel_parameters: &ChannelTransactionParameters, tx: &Transaction,
 		input_index: usize, secp_ctx: &Secp256k1<secp256k1::All>,
-	) -> Signature;
+	) -> Result<Signature, ()>;
 }

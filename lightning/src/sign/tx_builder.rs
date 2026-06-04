@@ -9,7 +9,10 @@ use crate::ln::chan_utils::{
 	second_stage_tx_fees_sat, ChannelTransactionParameters, CommitmentTransaction,
 	HTLCOutputInCommitment,
 };
-use crate::ln::channel::{CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI};
+use crate::ln::channel::{
+	get_v2_channel_reserve_satoshis, CommitmentStats, ANCHOR_OUTPUT_VALUE_SATOSHI,
+	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_CHANNEL_VALUE_SATOSHIS,
+};
 use crate::prelude::*;
 use crate::types::features::ChannelTypeFeatures;
 use crate::util::logger::Logger;
@@ -216,7 +219,7 @@ fn has_output(
 fn get_next_commitment_stats(
 	local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 	value_to_holder_msat: u64, next_commitment_htlcs: &[HTLCAmountDirection],
-	addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+	addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 	dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 	channel_type: &ChannelTypeFeatures,
 ) -> Result<NextCommitmentStats, ()> {
@@ -267,22 +270,36 @@ fn get_next_commitment_stats(
 		channel_type,
 	);
 
-	// Calculate fees on commitment transaction
-	let nondust_htlc_count = next_commitment_htlcs
+	let spiked_feerate = if assume_fee_spike && !channel_type.supports_anchors_zero_fee_htlc_tx() {
+		feerate_per_kw.saturating_mul(FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32)
+	} else {
+		feerate_per_kw
+	};
+
+	let spiked_nondust_htlc_count = next_commitment_htlcs
 		.iter()
 		.filter(|htlc| {
-			!htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_satoshis, channel_type)
+			!htlc.is_dust(local, spiked_feerate, broadcaster_dust_limit_satoshis, channel_type)
 		})
 		.count();
 
 	// For zero-reserve channels, we check two things independently:
 	// 1) Given the current set of HTLCs and feerate, does the commitment have at least one output ?
+	//
+	// We only assume fee spikes in legacy channels, and we do not allow
+	// `holder_selected_channel_reserve_satoshis` to be set to zero in such channels. It is
+	// nonetheless still possible to reach the no-outputs case in a fee spike with solely the
+	// counterparty selected reserve set to zero, so we still guard against this case here.
+	//
+	// We don't guard against no-outputs under fee spikes further below in
+	// `get_available_balances`; in the worst case, the receiver of the HTLC we just sent fails
+	// it back.
 	if !has_output(
 		is_outbound_from_holder,
 		holder_balance_before_fee_msat,
 		counterparty_balance_before_fee_msat,
-		feerate_per_kw,
-		nondust_htlc_count,
+		spiked_feerate,
+		spiked_nondust_htlc_count,
 		broadcaster_dust_limit_satoshis,
 		channel_type,
 	) {
@@ -292,8 +309,17 @@ fn get_next_commitment_stats(
 	// 2) Now including any additional non-dust HTLCs (usually the fee spike buffer HTLC), does the funder cover
 	// this bigger transaction fee ? The funder can dip below their dust limit to cover this case, as the
 	// commitment will have at least one output: the non-dust fee spike buffer HTLC offered by the counterparty.
+	let nondust_htlc_count = next_commitment_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(local, feerate_per_kw, broadcaster_dust_limit_satoshis, channel_type)
+		})
+		.count();
+	// Note here we use the htlc count at the current feerate together with the spiked feerate;
+	// this makes sure that the holder can afford any fee bump between 1x to 2x from the current
+	// feerate if the fee spike multiple is included.
 	let commit_tx_fee_sat = commit_tx_fee_sat(
-		feerate_per_kw,
+		spiked_feerate,
 		nondust_htlc_count + addl_nondust_htlc_count,
 		channel_type,
 	);
@@ -315,110 +341,161 @@ fn get_next_commitment_stats(
 	})
 }
 
-fn get_available_balances(
-	is_outbound_from_holder: bool, channel_value_satoshis: u64, value_to_holder_msat: u64,
-	pending_htlcs: &[HTLCAmountDirection], feerate_per_kw: u32,
-	dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
-	channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
-) -> crate::ln::channel::AvailableBalances {
-	// When sizing the next HTLC add, we take the remote's view of the set of pending HTLCs in
-	// `ChannelContext::get_next_commitment_htlcs`, set this view to `pending_htlcs` here, and use this set of
-	// pending HTLCs to calculate stats on our own commitment below.
-	//
-	// This means we do *not* include `LocalRemoved` HTLCs. `LocalRemoved` and `LocalAnnounced` HTLCs are applied
-	// atomically to our own commitment upon the counterparty's next ack.
-	//
-	// `RemoteRemoved` HTLCs *are* included. While we don't expect these HTLCs to be present in our next
-	// commitment, we have not ack'ed these removals yet, so we expect the counterparty to count them when
-	// validating our own HTLC add. These HTLCs would also revert to `Committed` upon a disconnection.
-
-	let fee_spike_buffer_htlc =
-		if channel_type.supports_anchor_zero_fee_commitments() { 0 } else { 1 };
-
-	// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
-	let spiked_feerate = feerate_per_kw.saturating_mul(
-		if is_outbound_from_holder && !channel_type.supports_anchors_zero_fee_htlc_tx() {
-			crate::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
-		} else {
-			1
-		},
-	);
-
-	let local_nondust_htlc_count = pending_htlcs
-		.iter()
-		.filter(|htlc| {
-			!htlc.is_dust(
-				true,
-				spiked_feerate,
+/// Determines the maximum value that the holder can splice out of the channel, accounting
+/// for the updated reserves after said splice. This maximum also makes sure the local commitment
+/// retains at least one output after the splice, which is particularly relevant for
+/// zero-reserve channels.
+//
+// The equation to determine `max_splice_percentage_constraint_sat` is:
+// 1) floor((c - s) / 100) == h - s - d
+// We want the maximum value of s that will satisfy equation 1, therefore, we solve:
+// 2) (c - s) / 100 < h - s - d + 1
+// where c: `channel_value_satoshis`
+//       s: `max_splice_percentage_constraint_sat`
+//       h: `local_balance_before_fee_sat`
+//       d: `post_splice_delta_above_reserve_sat`
+// This results in:
+// 3) s < (100h + 100 - 100d - c) / 99
+fn get_next_splice_out_maximum_sat(
+	is_outbound_from_holder: bool, channel_value_satoshis: u64, local_balance_before_fee_msat: u64,
+	remote_balance_before_fee_msat: u64, local_nondust_htlc_count: usize,
+	remote_nondust_htlc_count: usize, feerate_per_kw: u32, spiked_feerate: u32,
+	channel_constraints: &ChannelConstraints, channel_type: &ChannelTypeFeatures,
+) -> u64 {
+	let post_splice_delta_above_reserve_sat = if is_outbound_from_holder {
+		let nondust_htlc_count = cmp::max(local_nondust_htlc_count, remote_nondust_htlc_count);
+		let commit_tx_fee_sat =
+			commit_tx_fee_sat(spiked_feerate, nondust_htlc_count + 1, channel_type);
+		commit_tx_fee_sat
+	} else {
+		0
+	};
+	let local_balance_before_fee_sat = local_balance_before_fee_msat / 1000;
+	let mut next_splice_out_maximum_sat = if channel_constraints
+		.counterparty_selected_channel_reserve_satoshis
+		!= 0
+	{
+		let dividend_sat = local_balance_before_fee_sat
+			.saturating_mul(100)
+			.saturating_add(100)
+			.saturating_sub(post_splice_delta_above_reserve_sat.saturating_mul(100))
+			.saturating_sub(channel_value_satoshis);
+		// Calculate the greatest integer that is strictly less than the RHS of inequality 3 above
+		let max_splice_percentage_constraint_sat = dividend_sat.saturating_sub(1) / 99;
+		let max_splice_dust_limit_constraint_sat = local_balance_before_fee_sat
+			.saturating_sub(channel_constraints.holder_dust_limit_satoshis)
+			.saturating_sub(post_splice_delta_above_reserve_sat);
+		// Both constraints must be satisfied, so take the minimum of the two maximums
+		let max_splice_out_sat =
+			cmp::min(max_splice_percentage_constraint_sat, max_splice_dust_limit_constraint_sat);
+		#[cfg(debug_assertions)]
+		if max_splice_out_sat == 0 {
+			let current_balance_sat =
+				local_balance_before_fee_sat.saturating_sub(post_splice_delta_above_reserve_sat);
+			let v2_reserve_sat = get_v2_channel_reserve_satoshis(
+				channel_value_satoshis,
 				channel_constraints.holder_dust_limit_satoshis,
-				channel_type,
-			)
-		})
-		.count();
-	let local_max_commit_tx_fee_sat = commit_tx_fee_sat(
-		spiked_feerate,
-		local_nondust_htlc_count + fee_spike_buffer_htlc + 1,
-		channel_type,
-	);
-	let local_min_commit_tx_fee_sat = commit_tx_fee_sat(
-		spiked_feerate,
-		local_nondust_htlc_count + fee_spike_buffer_htlc,
-		channel_type,
-	);
-	let (local_dust_exposure_msat, _) = get_dust_exposure_stats(
-		true,
-		pending_htlcs,
-		feerate_per_kw,
-		dust_exposure_limiting_feerate,
-		channel_constraints.holder_dust_limit_satoshis,
-		channel_type,
-	);
-	let remote_nondust_htlc_count = pending_htlcs
-		.iter()
-		.filter(|htlc| {
-			!htlc.is_dust(
 				false,
-				feerate_per_kw,
-				channel_constraints.counterparty_dust_limit_satoshis,
-				channel_type,
 			)
-		})
-		.count();
-	let remote_commit_tx_fee_sat =
-		commit_tx_fee_sat(feerate_per_kw, remote_nondust_htlc_count + 1, channel_type);
-	let (remote_dust_exposure_msat, extra_htlc_remote_dust_exposure_msat) = get_dust_exposure_stats(
-		false,
-		pending_htlcs,
-		feerate_per_kw,
-		dust_exposure_limiting_feerate,
+			.unwrap();
+			// If the holder cannot splice out anything, they must be at or
+			// below the v2 reserve
+			debug_assert!(current_balance_sat <= v2_reserve_sat);
+		} else {
+			let post_splice_reserve_sat = get_v2_channel_reserve_satoshis(
+				channel_value_satoshis.saturating_sub(max_splice_out_sat),
+				channel_constraints.holder_dust_limit_satoshis,
+				false,
+			)
+			.unwrap();
+			// If the holder can splice out some maximum, splicing out that
+			// maximum lands them at exactly the new v2 reserve + the
+			// `post_splice_delta_above_reserve_sat`
+			debug_assert_eq!(
+				local_balance_before_fee_sat.saturating_sub(max_splice_out_sat),
+				post_splice_reserve_sat.saturating_add(post_splice_delta_above_reserve_sat)
+			);
+			// Splice out an additional satoshi, and check that we are offside
+			let offside_splice_out_sat = max_splice_out_sat + 1;
+			let post_splice_reserve_sat_result = get_v2_channel_reserve_satoshis(
+				channel_value_satoshis.saturating_sub(offside_splice_out_sat),
+				channel_constraints.holder_dust_limit_satoshis,
+				false,
+			);
+			match post_splice_reserve_sat_result {
+				Ok(reserve) => debug_assert!(
+					local_balance_before_fee_sat.saturating_sub(offside_splice_out_sat)
+						< reserve.saturating_add(post_splice_delta_above_reserve_sat)
+				),
+				Err(()) => (),
+			}
+		}
+		max_splice_out_sat
+	} else {
+		// In a zero-reserve channel, the holder is free to withdraw up to its `post_splice_delta_above_reserve_sat`.
+		local_balance_before_fee_sat.saturating_sub(post_splice_delta_above_reserve_sat)
+	};
+
+	// If the current `next_splice_out_maximum_sat` would produce a local commitment with no
+	// outputs, bump this maximum such that, after the splice, the holder's balance covers at
+	// least `dust_limit_satoshis` and, if they are the funder, `current_tx_fee_sat`.
+	// We don't include an additional non-dust inbound HTLC in the `current_tx_fee_sat`,
+	// because we don't mind if the holder dips below their dust limit to cover the fee for that
+	// inbound non-dust HTLC.
+	//
+	// We use the regular feerate instead of the spiked feerate here as zero-reserve is not
+	// allowed on legacy channels.
+	let current_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, 0, channel_type);
+	let mut trim_splice_out_max_if_no_outputs = |nondust_htlc_count, dust_limit_satoshis| {
+		if !has_output(
+			is_outbound_from_holder,
+			local_balance_before_fee_msat.saturating_sub(next_splice_out_maximum_sat * 1000),
+			remote_balance_before_fee_msat,
+			feerate_per_kw,
+			nondust_htlc_count,
+			dust_limit_satoshis,
+			channel_type,
+		) {
+			let min_balance_sat = if is_outbound_from_holder {
+				dust_limit_satoshis.saturating_add(current_tx_fee_sat)
+			} else {
+				dust_limit_satoshis
+			};
+			next_splice_out_maximum_sat =
+				(local_balance_before_fee_msat / 1000).saturating_sub(min_balance_sat);
+		}
+	};
+	trim_splice_out_max_if_no_outputs(
+		local_nondust_htlc_count,
+		channel_constraints.holder_dust_limit_satoshis,
+	);
+	trim_splice_out_max_if_no_outputs(
+		remote_nondust_htlc_count,
 		channel_constraints.counterparty_dust_limit_satoshis,
-		channel_type,
 	);
 
-	let outbound_htlcs_value_msat: u64 =
-		pending_htlcs.iter().filter_map(|htlc| htlc.outbound.then_some(htlc.amount_msat)).sum();
-	let inbound_htlcs_value_msat: u64 =
-		pending_htlcs.iter().filter_map(|htlc| (!htlc.outbound).then_some(htlc.amount_msat)).sum();
-	let total_anchors_sat = total_anchors_sat(channel_type);
-	let (local_balance_before_fee_msat, remote_balance_before_fee_msat) =
-		saturating_sub_from_funder(
-			is_outbound_from_holder,
-			value_to_holder_msat.saturating_sub(outbound_htlcs_value_msat),
-			(channel_value_satoshis * 1000)
-				.checked_sub(value_to_holder_msat)
-				.unwrap()
-				.saturating_sub(inbound_htlcs_value_msat),
-			total_anchors_sat.saturating_mul(1000),
-		);
+	if channel_value_satoshis < next_splice_out_maximum_sat + MIN_CHANNEL_VALUE_SATOSHIS {
+		next_splice_out_maximum_sat =
+			channel_value_satoshis.saturating_sub(MIN_CHANNEL_VALUE_SATOSHIS);
+	}
 
-	let outbound_capacity_msat = local_balance_before_fee_msat
-		.saturating_sub(channel_constraints.counterparty_selected_channel_reserve_satoshis * 1000);
+	next_splice_out_maximum_sat
+}
 
-	let mut available_capacity_msat = outbound_capacity_msat;
-	let (real_htlc_success_tx_fee_sat, real_htlc_timeout_tx_fee_sat) =
-		second_stage_tx_fees_sat(channel_type, feerate_per_kw);
+fn adjust_capacity_for_holder_reserved_fee(
+	outbound_capacity_msat: u64, local_nondust_htlc_count: usize, remote_nondust_htlc_count: usize,
+	feerate_per_kw: u32, spiked_feerate: u32, channel_constraints: &ChannelConstraints,
+	channel_type: &ChannelTypeFeatures,
+) -> u64 {
+	let read_available_capacity = |nondust_htlc_count, htlc_dust_limit_sat| {
+		// Note here we use the htlc count at the current feerate together with the spiked feerate;
+		// this makes sure that the holder can afford any fee bump between 1x to 2x from the current
+		// feerate.
+		let max_commit_tx_fee_sat =
+			commit_tx_fee_sat(spiked_feerate, nondust_htlc_count + 2, channel_type);
+		let min_commit_tx_fee_sat =
+			commit_tx_fee_sat(spiked_feerate, nondust_htlc_count + 1, channel_type);
 
-	if is_outbound_from_holder {
 		// We should mind channel commit tx fee when computing how much of the available capacity
 		// can be used in the next htlc. Mirrors the logic in send_htlc.
 		//
@@ -427,46 +504,91 @@ fn get_available_balances(
 		// dependency.
 		// This complicates the computation around dust-values, up to the one-htlc-value.
 
-		let real_dust_limit_timeout_sat =
-			real_htlc_timeout_tx_fee_sat + channel_constraints.holder_dust_limit_satoshis;
-		let max_reserved_commit_tx_fee_msat = local_max_commit_tx_fee_sat * 1000;
-		let min_reserved_commit_tx_fee_msat = local_min_commit_tx_fee_sat * 1000;
-
 		// We will first subtract the fee as if we were above-dust. Then, if the resulting
 		// value ends up being below dust, we have this fee available again. In that case,
 		// match the value to right-below-dust.
 		let capacity_minus_max_commitment_fee_msat =
-			available_capacity_msat.saturating_sub(max_reserved_commit_tx_fee_msat);
-		if capacity_minus_max_commitment_fee_msat < real_dust_limit_timeout_sat * 1000 {
+			outbound_capacity_msat.saturating_sub(max_commit_tx_fee_sat * 1000);
+		if capacity_minus_max_commitment_fee_msat < htlc_dust_limit_sat * 1000 {
 			let capacity_minus_min_commitment_fee_msat =
-				available_capacity_msat.saturating_sub(min_reserved_commit_tx_fee_msat);
-			available_capacity_msat = cmp::min(
-				real_dust_limit_timeout_sat * 1000 - 1,
-				capacity_minus_min_commitment_fee_msat,
-			);
+				outbound_capacity_msat.saturating_sub(min_commit_tx_fee_sat * 1000);
+			cmp::min(htlc_dust_limit_sat * 1000 - 1, capacity_minus_min_commitment_fee_msat)
 		} else {
-			available_capacity_msat = capacity_minus_max_commitment_fee_msat;
+			capacity_minus_max_commitment_fee_msat
 		}
-	} else {
+	};
+
+	let (real_htlc_success_tx_fee_sat, real_htlc_timeout_tx_fee_sat) =
+		second_stage_tx_fees_sat(channel_type, feerate_per_kw);
+	let available_capacity_on_local_commitment = read_available_capacity(
+		local_nondust_htlc_count,
+		channel_constraints.holder_dust_limit_satoshis + real_htlc_timeout_tx_fee_sat,
+	);
+	let available_capacity_on_remote_commitment = read_available_capacity(
+		remote_nondust_htlc_count,
+		channel_constraints.counterparty_dust_limit_satoshis + real_htlc_success_tx_fee_sat,
+	);
+	cmp::min(available_capacity_on_local_commitment, available_capacity_on_remote_commitment)
+}
+
+fn adjust_capacity_for_counterparty_reserved_fee(
+	outbound_capacity_msat: u64, remote_balance_before_fee_msat: u64,
+	local_nondust_htlc_count: usize, remote_nondust_htlc_count: usize, feerate_per_kw: u32,
+	channel_constraints: &ChannelConstraints, channel_type: &ChannelTypeFeatures,
+) -> u64 {
+	let read_available_capacity = |nondust_htlc_count, htlc_dust_limit_sat| {
+		let commit_tx_fee_sat =
+			commit_tx_fee_sat(feerate_per_kw, nondust_htlc_count + 1, channel_type);
 		// If the channel is inbound (i.e. counterparty pays the fee), we need to make sure
 		// sending a new HTLC won't reduce their balance below our reserve threshold.
-		let real_dust_limit_success_sat =
-			real_htlc_success_tx_fee_sat + channel_constraints.counterparty_dust_limit_satoshis;
-		let max_reserved_commit_tx_fee_msat = remote_commit_tx_fee_sat * 1000;
-
-		let holder_selected_chan_reserve_msat =
-			channel_constraints.holder_selected_channel_reserve_satoshis * 1000;
 		if remote_balance_before_fee_msat
-			< max_reserved_commit_tx_fee_msat + holder_selected_chan_reserve_msat
+			< commit_tx_fee_sat * 1000
+				+ channel_constraints.holder_selected_channel_reserve_satoshis * 1000
 		{
 			// If another HTLC's fee would reduce the remote's balance below the reserve limit
 			// we've selected for them, we can only send dust HTLCs.
-			available_capacity_msat =
-				cmp::min(available_capacity_msat, real_dust_limit_success_sat * 1000 - 1);
+			cmp::min(outbound_capacity_msat, htlc_dust_limit_sat * 1000 - 1)
+		} else {
+			outbound_capacity_msat
 		}
-	}
+	};
+	let (real_htlc_success_tx_fee_sat, real_htlc_timeout_tx_fee_sat) =
+		second_stage_tx_fees_sat(channel_type, feerate_per_kw);
+	let available_capacity_on_local_commitment = read_available_capacity(
+		local_nondust_htlc_count,
+		channel_constraints.holder_dust_limit_satoshis + real_htlc_timeout_tx_fee_sat,
+	);
+	let available_capacity_on_remote_commitment = read_available_capacity(
+		remote_nondust_htlc_count,
+		channel_constraints.counterparty_dust_limit_satoshis + real_htlc_success_tx_fee_sat,
+	);
+	cmp::min(available_capacity_on_local_commitment, available_capacity_on_remote_commitment)
+}
 
+fn adjust_min_max_htlc_for_dust_exposure(
+	pending_htlcs: &[HTLCAmountDirection], feerate_per_kw: u32,
+	dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
+	channel_constraints: &ChannelConstraints, channel_type: &ChannelTypeFeatures,
+	mut available_capacity_msat: u64,
+) -> (u64, u64, u64) {
 	let mut next_outbound_htlc_minimum_msat = channel_constraints.counterparty_htlc_minimum_msat;
+
+	let (local_dust_exposure_msat, _) = get_dust_exposure_stats(
+		true,
+		pending_htlcs,
+		feerate_per_kw,
+		dust_exposure_limiting_feerate,
+		channel_constraints.holder_dust_limit_satoshis,
+		channel_type,
+	);
+	let (remote_dust_exposure_msat, extra_htlc_remote_dust_exposure_msat) = get_dust_exposure_stats(
+		false,
+		pending_htlcs,
+		feerate_per_kw,
+		dust_exposure_limiting_feerate,
+		channel_constraints.counterparty_dust_limit_satoshis,
+		channel_type,
+	);
 
 	// If we get close to our maximum dust exposure, we end up in a situation where we can send
 	// between zero and the remaining dust exposure limit remaining OR above the dust limit.
@@ -523,9 +645,130 @@ fn get_available_balances(
 		}
 	}
 
+	let dust_exposure_msat = cmp::max(local_dust_exposure_msat, remote_dust_exposure_msat);
+
+	(next_outbound_htlc_minimum_msat, available_capacity_msat, dust_exposure_msat)
+}
+
+fn get_available_balances(
+	is_outbound_from_holder: bool, channel_value_satoshis: u64, value_to_holder_msat: u64,
+	pending_htlcs: &[HTLCAmountDirection], feerate_per_kw: u32,
+	dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
+	channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
+) -> crate::ln::channel::AvailableBalances {
+	// When sizing the next HTLC add, we take the remote's view of the set of pending HTLCs in
+	// `ChannelContext::get_next_commitment_htlcs`, set this view to `pending_htlcs` here, and use this set of
+	// pending HTLCs to calculate stats on our own commitment below.
+	//
+	// This means we do *not* include `LocalRemoved` HTLCs. `LocalRemoved` and `LocalAnnounced` HTLCs are applied
+	// atomically to our own commitment upon the counterparty's next ack.
+	//
+	// `RemoteRemoved` HTLCs *are* included. While we don't expect these HTLCs to be present in our next
+	// commitment, we have not ack'ed these removals yet, so we expect the counterparty to count them when
+	// validating our own HTLC add. These HTLCs would also revert to `Committed` upon a disconnection.
+
+	// Note that the feerate is 0 in zero-fee commitment channels, so this statement is a noop
+	let spiked_feerate =
+		feerate_per_kw.saturating_mul(if !channel_type.supports_anchors_zero_fee_htlc_tx() {
+			crate::ln::channel::FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
+		} else {
+			1
+		});
+
+	let local_nondust_htlc_count = pending_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(
+				true,
+				feerate_per_kw,
+				channel_constraints.holder_dust_limit_satoshis,
+				channel_type,
+			)
+		})
+		.count();
+
+	let remote_nondust_htlc_count = pending_htlcs
+		.iter()
+		.filter(|htlc| {
+			!htlc.is_dust(
+				false,
+				feerate_per_kw,
+				channel_constraints.counterparty_dust_limit_satoshis,
+				channel_type,
+			)
+		})
+		.count();
+
+	let outbound_htlcs_value_msat: u64 =
+		pending_htlcs.iter().filter_map(|htlc| htlc.outbound.then_some(htlc.amount_msat)).sum();
+	let inbound_htlcs_value_msat: u64 =
+		pending_htlcs.iter().filter_map(|htlc| (!htlc.outbound).then_some(htlc.amount_msat)).sum();
+	let total_anchors_sat = total_anchors_sat(channel_type);
+	let (local_balance_before_fee_msat, remote_balance_before_fee_msat) =
+		saturating_sub_from_funder(
+			is_outbound_from_holder,
+			value_to_holder_msat.saturating_sub(outbound_htlcs_value_msat),
+			(channel_value_satoshis * 1000)
+				.checked_sub(value_to_holder_msat)
+				.unwrap()
+				.saturating_sub(inbound_htlcs_value_msat),
+			total_anchors_sat.saturating_mul(1000),
+		);
+
+	let next_splice_out_maximum_sat = get_next_splice_out_maximum_sat(
+		is_outbound_from_holder,
+		channel_value_satoshis,
+		local_balance_before_fee_msat,
+		remote_balance_before_fee_msat,
+		local_nondust_htlc_count,
+		remote_nondust_htlc_count,
+		feerate_per_kw,
+		spiked_feerate,
+		&channel_constraints,
+		channel_type,
+	);
+
+	let outbound_capacity_msat = local_balance_before_fee_msat
+		.saturating_sub(channel_constraints.counterparty_selected_channel_reserve_satoshis * 1000);
+
+	let available_capacity_msat = if is_outbound_from_holder {
+		adjust_capacity_for_holder_reserved_fee(
+			outbound_capacity_msat,
+			local_nondust_htlc_count,
+			remote_nondust_htlc_count,
+			feerate_per_kw,
+			spiked_feerate,
+			&channel_constraints,
+			channel_type,
+		)
+	} else {
+		adjust_capacity_for_counterparty_reserved_fee(
+			outbound_capacity_msat,
+			remote_balance_before_fee_msat,
+			local_nondust_htlc_count,
+			remote_nondust_htlc_count,
+			feerate_per_kw,
+			&channel_constraints,
+			channel_type,
+		)
+	};
+
+	let (next_outbound_htlc_minimum_msat, mut available_capacity_msat, dust_exposure_msat) =
+		adjust_min_max_htlc_for_dust_exposure(
+			pending_htlcs,
+			feerate_per_kw,
+			dust_exposure_limiting_feerate,
+			max_dust_htlc_exposure_msat,
+			&channel_constraints,
+			channel_type,
+			available_capacity_msat,
+		);
+
 	available_capacity_msat = cmp::min(
 		available_capacity_msat,
-		channel_constraints.counterparty_max_htlc_value_in_flight_msat - outbound_htlcs_value_msat,
+		channel_constraints
+			.counterparty_max_htlc_value_in_flight_msat
+			.saturating_sub(outbound_htlcs_value_msat),
 	);
 
 	if pending_htlcs.iter().filter(|htlc| htlc.outbound).count() + 1
@@ -535,28 +778,47 @@ fn get_available_balances(
 	}
 
 	// Now adjust our min and max size HTLC to make sure both the local and the remote commitments still have
-	// at least one output at the spiked feerate.
+	// at least one output at the current feerate.
+	let (next_outbound_htlc_minimum_msat, available_capacity_msat) =
+		adjust_min_max_htlc_if_max_dust_htlc_produces_no_output(
+			is_outbound_from_holder,
+			local_balance_before_fee_msat,
+			remote_balance_before_fee_msat,
+			local_nondust_htlc_count,
+			remote_nondust_htlc_count,
+			feerate_per_kw,
+			&channel_constraints,
+			channel_type,
+			next_outbound_htlc_minimum_msat,
+			available_capacity_msat,
+		);
 
-	let remote_nondust_htlc_count = pending_htlcs
-		.iter()
-		.filter(|htlc| {
-			!htlc.is_dust(
-				false,
-				spiked_feerate,
-				channel_constraints.counterparty_dust_limit_satoshis,
-				channel_type,
-			)
-		})
-		.count();
+	crate::ln::channel::AvailableBalances {
+		inbound_capacity_msat: remote_balance_before_fee_msat
+			.saturating_sub(channel_constraints.holder_selected_channel_reserve_satoshis * 1000),
+		outbound_capacity_msat,
+		next_outbound_htlc_limit_msat: available_capacity_msat,
+		next_outbound_htlc_minimum_msat,
+		dust_exposure_msat,
+		next_splice_out_maximum_sat,
+	}
+}
 
+fn adjust_min_max_htlc_if_max_dust_htlc_produces_no_output(
+	is_outbound_from_holder: bool, local_balance_before_fee_msat: u64,
+	remote_balance_before_fee_msat: u64, local_nondust_htlc_count: usize,
+	remote_nondust_htlc_count: usize, feerate_per_kw: u32,
+	channel_constraints: &ChannelConstraints, channel_type: &ChannelTypeFeatures,
+	next_outbound_htlc_minimum_msat: u64, available_capacity_msat: u64,
+) -> (u64, u64) {
 	let (next_outbound_htlc_minimum_msat, available_capacity_msat) =
 		adjust_boundaries_if_max_dust_htlc_produces_no_output(
 			true,
 			is_outbound_from_holder,
 			local_balance_before_fee_msat,
 			remote_balance_before_fee_msat,
+			feerate_per_kw,
 			local_nondust_htlc_count,
-			spiked_feerate,
 			channel_constraints.holder_dust_limit_satoshis,
 			channel_type,
 			next_outbound_htlc_minimum_msat,
@@ -569,32 +831,25 @@ fn get_available_balances(
 			is_outbound_from_holder,
 			local_balance_before_fee_msat,
 			remote_balance_before_fee_msat,
+			feerate_per_kw,
 			remote_nondust_htlc_count,
-			spiked_feerate,
 			channel_constraints.counterparty_dust_limit_satoshis,
 			channel_type,
 			next_outbound_htlc_minimum_msat,
 			available_capacity_msat,
 		);
-
-	crate::ln::channel::AvailableBalances {
-		inbound_capacity_msat: remote_balance_before_fee_msat
-			.saturating_sub(channel_constraints.holder_selected_channel_reserve_satoshis * 1000),
-		outbound_capacity_msat,
-		next_outbound_htlc_limit_msat: available_capacity_msat,
-		next_outbound_htlc_minimum_msat,
-	}
+	(next_outbound_htlc_minimum_msat, available_capacity_msat)
 }
 
 fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
 	local: bool, is_outbound_from_holder: bool, holder_balance_before_fee_msat: u64,
-	counterparty_balance_before_fee_msat: u64, nondust_htlc_count: usize, spiked_feerate: u32,
+	counterparty_balance_before_fee_msat: u64, feerate_per_kw: u32, nondust_htlc_count: usize,
 	dust_limit_satoshis: u64, channel_type: &ChannelTypeFeatures,
 	next_outbound_htlc_minimum_msat: u64, available_capacity_msat: u64,
 ) -> (u64, u64) {
 	// First, determine the biggest dust HTLC we could send
 	let (htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
-		second_stage_tx_fees_sat(channel_type, spiked_feerate);
+		second_stage_tx_fees_sat(channel_type, feerate_per_kw);
 	let min_nondust_htlc_sat =
 		dust_limit_satoshis + if local { htlc_timeout_tx_fee_sat } else { htlc_success_tx_fee_sat };
 	let max_dust_htlc_msat = (min_nondust_htlc_sat.saturating_mul(1000)).saturating_sub(1);
@@ -605,7 +860,7 @@ fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
 		is_outbound_from_holder,
 		holder_balance_before_fee_msat.saturating_sub(max_dust_htlc_msat),
 		counterparty_balance_before_fee_msat,
-		spiked_feerate,
+		feerate_per_kw,
 		nondust_htlc_count,
 		dust_limit_satoshis,
 		channel_type,
@@ -623,16 +878,15 @@ fn adjust_boundaries_if_max_dust_htlc_produces_no_output(
 		// Note that this will be a dust HTLC.
 		} else {
 			// Remember we've got no non-dust HTLCs on the commitment here
-			let current_spiked_tx_fee_sat = commit_tx_fee_sat(spiked_feerate, 0, channel_type);
-			let spike_buffer_tx_fee_sat = commit_tx_fee_sat(spiked_feerate, 1, channel_type);
+			let current_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, 0, channel_type);
+			let spike_buffer_tx_fee_sat = commit_tx_fee_sat(feerate_per_kw, 1, channel_type);
 			// In case we are the funder, we must cover the greater of
-			// 1) The dust_limit_satoshis plus the fee of the existing commitment at the spiked feerate.
+			// 1) The dust_limit_satoshis plus the fee of the existing commitment at the current feerate.
 			// 2) The fee of the commitment with an additional non-dust HTLC, aka the fee spike buffer HTLC.
 			//    In this case we don't mind the holder balance output dropping below the dust limit, as
 			//    this additional non-dust HTLC will create the single remaining output on the commitment.
 			let min_balance_msat = if is_outbound_from_holder {
-				cmp::max(dust_limit_satoshis + current_spiked_tx_fee_sat, spike_buffer_tx_fee_sat)
-					* 1000
+				cmp::max(dust_limit_satoshis + current_tx_fee_sat, spike_buffer_tx_fee_sat) * 1000
 			// In case we are the fundee, we can send dust HTLCs as long as our own balance output
 			// remains above the dust limit.
 			} else {
@@ -659,7 +913,7 @@ pub(crate) trait TxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
-		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
 		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()>;
@@ -677,7 +931,7 @@ impl TxBuilder for SpecTxBuilder {
 	fn get_channel_stats(
 		&self, local: bool, is_outbound_from_holder: bool, channel_value_satoshis: u64,
 		value_to_holder_msat: u64, pending_htlcs: &[HTLCAmountDirection],
-		addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		addl_nondust_htlc_count: usize, feerate_per_kw: u32, assume_fee_spike: bool,
 		dust_exposure_limiting_feerate: Option<u32>, max_dust_htlc_exposure_msat: u64,
 		channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 	) -> Result<ChannelStats, ()> {
@@ -690,6 +944,7 @@ impl TxBuilder for SpecTxBuilder {
 				pending_htlcs,
 				addl_nondust_htlc_count,
 				feerate_per_kw,
+				assume_fee_spike,
 				dust_exposure_limiting_feerate,
 				channel_constraints.holder_dust_limit_satoshis,
 				channel_type,
@@ -703,6 +958,7 @@ impl TxBuilder for SpecTxBuilder {
 				pending_htlcs,
 				addl_nondust_htlc_count,
 				feerate_per_kw,
+				assume_fee_spike,
 				dust_exposure_limiting_feerate,
 				channel_constraints.counterparty_dust_limit_satoshis,
 				channel_type,

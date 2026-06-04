@@ -18,6 +18,7 @@ use bitcoin::constants::WITNESS_SCALE_FACTOR;
 use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::key::Secp256k1;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
+use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{Message, PublicKey};
 use bitcoin::sighash::SighashCache;
 use bitcoin::transaction::Version;
@@ -32,11 +33,11 @@ use crate::ln::chan_utils::{
 	SEGWIT_MARKER_FLAG_WEIGHT,
 };
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
-use crate::ln::funding::FundingTxInput;
 use crate::ln::msgs;
 use crate::ln::msgs::{MessageSendEvent, SerialId, TxSignatures};
 use crate::ln::types::ChannelId;
 use crate::sign::{EntropySource, P2TR_KEY_PATH_WITNESS_WEIGHT, P2WPKH_WITNESS_WEIGHT};
+use crate::util::wallet_utils::ConfirmedUtxo;
 
 use core::fmt::Display;
 
@@ -90,13 +91,6 @@ impl SerialIdExt for SerialId {
 	}
 }
 
-#[derive(Clone, Debug)]
-pub(crate) struct NegotiationError {
-	pub reason: AbortReason,
-	pub contributed_inputs: Vec<BitcoinOutPoint>,
-	pub contributed_outputs: Vec<TxOut>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) enum AbortReason {
 	InvalidStateTransition,
@@ -143,6 +137,11 @@ pub(crate) enum AbortReason {
 	NegotiationInProgress,
 	/// The initiator's feerate exceeds our maximum.
 	FeeRateTooHigh,
+	/// The user manually intervened to abort the funding negotiation via
+	/// [`ChannelManager::cancel_funding_contributed`].
+	///
+	/// [`ChannelManager::cancel_funding_contributed`]: crate::ln::channelmanager::ChannelManager::cancel_funding_contributed
+	ManualIntervention,
 	/// Internal error
 	InternalError(&'static str),
 }
@@ -209,6 +208,7 @@ impl Display for AbortReason {
 			AbortReason::FeeRateTooHigh => {
 				f.write_str("The initiator's feerate exceeds our maximum")
 			},
+			AbortReason::ManualIntervention => f.write_str("Manually aborted funding negotiation"),
 			AbortReason::InternalError(text) => {
 				f.write_fmt(format_args!("Internal error: {}", text))
 			},
@@ -253,16 +253,16 @@ impl TxOutMetadata {
 	}
 }
 
-impl_writeable_tlv_based!(TxInMetadata, {
+impl_ser_tlv_based!(TxInMetadata, {
 	(1, serial_id, required),
 	(3, prev_output, required),
 });
 
-impl_writeable_tlv_based!(TxOutMetadata, {
+impl_ser_tlv_based!(TxOutMetadata, {
 	(1, serial_id, required),
 });
 
-impl_writeable_tlv_based!(ConstructedTransaction, {
+impl_ser_tlv_based!(ConstructedTransaction, {
 	(1, holder_is_initiator, required),
 	(3, input_metadata, required),
 	(5, output_metadata, required),
@@ -370,11 +370,6 @@ impl ConstructedTransaction {
 		Ok(tx)
 	}
 
-	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
-		let (contributed_inputs, contributed_outputs) = self.into_contributed_inputs_and_outputs();
-		NegotiationError { reason, contributed_inputs, contributed_outputs }
-	}
-
 	fn contributed_inputs(&self) -> impl Iterator<Item = BitcoinOutPoint> + '_ {
 		self.tx
 			.input
@@ -390,7 +385,7 @@ impl ConstructedTransaction {
 			.map(|(_, (txin, _))| txin.previous_output)
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.tx
 			.output
 			.iter()
@@ -398,41 +393,7 @@ impl ConstructedTransaction {
 			.enumerate()
 			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
 			.filter(|(index, _)| *index != self.shared_output_index as usize)
-			.map(|(_, (txout, _))| txout)
-	}
-
-	fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
-	}
-
-	fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		let contributed_inputs = self
-			.tx
-			.input
-			.into_iter()
-			.zip(self.input_metadata.iter())
-			.enumerate()
-			.filter(|(_, (_, input))| input.is_local(self.holder_is_initiator))
-			.filter(|(index, _)| {
-				self.shared_input_index
-					.map(|shared_index| *index != shared_index as usize)
-					.unwrap_or(true)
-			})
-			.map(|(_, (txin, _))| txin.previous_output)
-			.collect();
-
-		let contributed_outputs = self
-			.tx
-			.output
-			.into_iter()
-			.zip(self.output_metadata.iter())
-			.enumerate()
-			.filter(|(_, (_, output))| output.is_local(self.holder_is_initiator))
-			.filter(|(index, _)| *index != self.shared_output_index as usize)
-			.map(|(_, (txout, _))| txout)
-			.collect();
-
-		(contributed_inputs, contributed_outputs)
+			.map(|(_, (txout, _))| txout.script_pubkey.as_script())
 	}
 
 	pub fn tx(&self) -> &Transaction {
@@ -472,12 +433,12 @@ impl ConstructedTransaction {
 	}
 
 	fn finalize(
-		&self, holder_tx_signatures: &TxSignatures, counterparty_tx_signatures: &TxSignatures,
-		shared_input_sig: Option<&SharedInputSignature>,
+		&self, holder_tx_signatures: TxSignatures, counterparty_tx_signatures: TxSignatures,
+		shared_input_sig: Option<SharedInputSignature>,
 	) -> Option<Transaction> {
 		let mut tx = self.tx.clone();
-		self.add_local_witnesses(&mut tx, holder_tx_signatures.witnesses.clone());
-		self.add_remote_witnesses(&mut tx, counterparty_tx_signatures.witnesses.clone());
+		self.add_local_witnesses(&mut tx, holder_tx_signatures.witnesses);
+		self.add_remote_witnesses(&mut tx, counterparty_tx_signatures.witnesses);
 
 		if let Some(shared_input_index) = self.shared_input_index {
 			let holder_shared_input_sig =
@@ -569,7 +530,7 @@ pub(crate) struct SharedInputSignature {
 	witness_script: ScriptBuf,
 }
 
-impl_writeable_tlv_based!(SharedInputSignature, {
+impl_ser_tlv_based!(SharedInputSignature, {
 	(1, holder_signature_first, required),
 	(3, witness_script, required),
 });
@@ -608,13 +569,25 @@ impl InteractiveTxSigningSession {
 		self.counterparty_tx_signatures.is_some()
 	}
 
-	pub fn has_holder_tx_signatures(&self) -> bool {
+	pub fn has_holder_witnesses(&self) -> bool {
 		self.holder_tx_signatures.is_some()
+	}
+
+	pub fn awaiting_holder_shared_input_signature(&self) -> bool {
+		self.holder_tx_signatures
+			.as_ref()
+			.map(|tx_signatures| {
+				self.shared_input().is_some() && tx_signatures.shared_input_signature.is_none()
+			})
+			.unwrap_or(false)
 	}
 
 	pub fn holder_tx_signatures(&self) -> Option<TxSignatures> {
 		self.holder_tx_signatures
 			.as_ref()
+			.filter(|tx_signatures| {
+				self.shared_input().is_none() || tx_signatures.shared_input_signature.is_some()
+			})
 			.filter(|_| {
 				(self.has_received_commitment_signed && self.holder_sends_tx_signatures_first)
 					|| self.has_received_tx_signatures()
@@ -655,48 +628,75 @@ impl InteractiveTxSigningSession {
 
 		self.counterparty_tx_signatures = Some(tx_signatures.clone());
 
-		let holder_tx_signatures = if !self.holder_sends_tx_signatures_first {
-			self.holder_tx_signatures.clone()
-		} else {
-			None
-		};
+		let holder_tx_signatures =
+			if !self.holder_sends_tx_signatures_first { self.holder_tx_signatures() } else { None };
 
 		let funding_tx_opt = self.signed_tx();
 
 		Ok((holder_tx_signatures, funding_tx_opt))
 	}
 
-	/// Provides the holder witnesses for the unsigned transaction.
+	/// Provides the holder witnesses for the unsigned transaction's non-shared inputs.
+	///
+	/// For splices, call [`Self::provide_holder_shared_input_signature`] separately after the
+	/// shared input signature is available.
 	///
 	/// Returns an error if the witness count does not equal the holder's input count in the
 	/// unsigned transaction.
 	pub fn provide_holder_witnesses<C: bitcoin::secp256k1::Verification>(
-		&mut self, tx_signatures: TxSignatures, secp_ctx: &Secp256k1<C>,
+		&mut self, channel_id: ChannelId, funding_txid_signed: Txid, witnesses: Vec<Witness>,
+		secp_ctx: &Secp256k1<C>,
 	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
 		if self.holder_tx_signatures.is_some() {
 			return Err("Holder witnesses were already provided".to_string());
 		}
 
+		if funding_txid_signed != self.unsigned_tx().compute_txid() {
+			return Err("Transaction was malleated prior to signing".to_string());
+		}
+
 		let local_inputs_count = self.local_inputs_count();
-		if tx_signatures.witnesses.len() != local_inputs_count {
+		if witnesses.len() != local_inputs_count {
 			return Err(format!(
 				"Provided witness count of {} does not match required count for {} non-shared inputs",
-				tx_signatures.witnesses.len(),
+				witnesses.len(),
 				local_inputs_count
 			));
 		}
 
-		self.verify_interactive_tx_signatures(secp_ctx, &tx_signatures.witnesses)?;
+		self.verify_interactive_tx_signatures(secp_ctx, &witnesses)?;
 
-		self.holder_tx_signatures = Some(tx_signatures);
-
-		let funding_tx_opt = self.signed_tx();
-		let holder_tx_signatures = (self.has_received_commitment_signed
-			&& (self.holder_sends_tx_signatures_first || self.has_received_tx_signatures()))
-		.then(|| {
-			self.holder_tx_signatures.clone().expect("Holder tx_signatures were just provided")
+		self.holder_tx_signatures = Some(TxSignatures {
+			channel_id,
+			tx_hash: funding_txid_signed,
+			witnesses,
+			shared_input_signature: None,
 		});
 
+		let holder_tx_signatures = self.holder_tx_signatures();
+		let funding_tx_opt = self.signed_tx();
+
+		Ok((holder_tx_signatures, funding_tx_opt))
+	}
+
+	pub fn provide_holder_shared_input_signature(
+		&mut self, shared_input_signature: Signature,
+	) -> Result<(Option<TxSignatures>, Option<Transaction>), String> {
+		if self.shared_input().is_none() {
+			return Err("No shared input exists for this transaction".to_string());
+		}
+
+		let holder_tx_signatures = self.holder_tx_signatures.as_mut().ok_or_else(|| {
+			"Holder witnesses must be provided before the shared input signature".to_string()
+		})?;
+		if holder_tx_signatures.shared_input_signature.is_some() {
+			return Err("The shared input signature was already provided".to_string());
+		}
+
+		holder_tx_signatures.shared_input_signature = Some(shared_input_signature);
+
+		let funding_tx_opt = self.signed_tx();
+		let holder_tx_signatures = self.holder_tx_signatures();
 		Ok((holder_tx_signatures, funding_tx_opt))
 	}
 
@@ -750,9 +750,9 @@ impl InteractiveTxSigningSession {
 	/// Returns `Some` with the fully signed transaction if both holder and counterparty signatures
 	/// are available.
 	pub fn signed_tx(&self) -> Option<Transaction> {
-		let holder_tx_signatures = self.holder_tx_signatures.as_ref()?;
-		let counterparty_tx_signatures = self.counterparty_tx_signatures.as_ref()?;
-		let shared_input_signature = self.shared_input_signature.as_ref();
+		let holder_tx_signatures = self.holder_tx_signatures()?;
+		let counterparty_tx_signatures = self.counterparty_tx_signatures.clone()?;
+		let shared_input_signature = self.shared_input_signature.clone();
 		self.unsigned_tx.finalize(
 			holder_tx_signatures,
 			counterparty_tx_signatures,
@@ -921,28 +921,16 @@ impl InteractiveTxSigningSession {
 		Ok(())
 	}
 
-	pub(crate) fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
-		self.unsigned_tx.into_negotiation_error(reason)
-	}
-
 	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = BitcoinOutPoint> + '_ {
 		self.unsigned_tx.contributed_inputs()
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.unsigned_tx.contributed_outputs()
-	}
-
-	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
-	}
-
-	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		self.unsigned_tx.into_contributed_inputs_and_outputs()
 	}
 }
 
-impl_writeable_tlv_based!(InteractiveTxSigningSession, {
+impl_ser_tlv_based!(InteractiveTxSigningSession, {
 	(1, unsigned_tx, required),
 	(3, has_received_commitment_signed, required),
 	(5, holder_tx_signatures, required),
@@ -1668,7 +1656,7 @@ enum AddingRole {
 	Remote,
 }
 
-impl_writeable_tlv_based_enum!(AddingRole,
+impl_ser_tlv_based_enum!(AddingRole,
 	(1, Local) => {},
 	(3, Remote) => {},
 );
@@ -1818,7 +1806,7 @@ pub(super) struct SharedOwnedOutput {
 	local_owned: u64,
 }
 
-impl_writeable_tlv_based!(SharedOwnedOutput, {
+impl_ser_tlv_based!(SharedOwnedOutput, {
 	(1, tx_out, required),
 	(3, local_owned, required),
 });
@@ -1848,7 +1836,7 @@ enum OutputOwned {
 	Shared(SharedOwnedOutput),
 }
 
-impl_writeable_tlv_based_enum!(OutputOwned,
+impl_ser_tlv_based_enum!(OutputOwned,
 	{1, Single} => (),
 	{3, Shared} => (),
 );
@@ -2046,7 +2034,7 @@ pub(super) struct InteractiveTxConstructorArgs<'a, ES: EntropySource> {
 	pub channel_id: ChannelId,
 	pub feerate_sat_per_kw: u32,
 	pub funding_tx_locktime: AbsoluteLockTime,
-	pub inputs_to_contribute: Vec<FundingTxInput>,
+	pub inputs_to_contribute: Vec<ConfirmedUtxo>,
 	pub shared_funding_input: Option<SharedOwnedInput>,
 	pub shared_funding_output: SharedOwnedOutput,
 	pub outputs_to_contribute: Vec<TxOut>,
@@ -2083,7 +2071,7 @@ impl InteractiveTxConstructor {
 
 		let mut inputs_to_contribute: Vec<(SerialId, InputOwned)> = inputs_to_contribute
 			.into_iter()
-			.map(|FundingTxInput { utxo, prevtx: prev_tx }| {
+			.map(|ConfirmedUtxo { utxo, prevtx: prev_tx }| {
 				let serial_id = generate_holder_serial_id(entropy_source, is_initiator);
 				let txin = TxIn {
 					previous_output: utxo.outpoint,
@@ -2172,27 +2160,6 @@ impl InteractiveTxConstructor {
 		Self::new(args, false)
 	}
 
-	fn into_negotiation_error(self, reason: AbortReason) -> NegotiationError {
-		let (contributed_inputs, contributed_outputs) = self.into_contributed_inputs_and_outputs();
-		NegotiationError { reason, contributed_inputs, contributed_outputs }
-	}
-
-	pub(super) fn into_contributed_inputs_and_outputs(self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		let contributed_inputs = self
-			.inputs_to_contribute
-			.into_iter()
-			.filter(|(_, input)| !input.is_shared())
-			.map(|(_, input)| input.into_tx_in().previous_output)
-			.collect();
-		let contributed_outputs = self
-			.outputs_to_contribute
-			.into_iter()
-			.filter(|(_, output)| !output.is_shared())
-			.map(|(_, output)| output.into_tx_out())
-			.collect();
-		(contributed_inputs, contributed_outputs)
-	}
-
 	pub(super) fn contributed_inputs(&self) -> impl Iterator<Item = BitcoinOutPoint> + '_ {
 		self.inputs_to_contribute
 			.iter()
@@ -2200,15 +2167,11 @@ impl InteractiveTxConstructor {
 			.map(|(_, input)| input.tx_in().previous_output)
 	}
 
-	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+	pub(super) fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
 		self.outputs_to_contribute
 			.iter()
 			.filter(|(_, output)| !output.is_shared())
-			.map(|(_, output)| output.tx_out())
-	}
-
-	pub(super) fn to_contributed_inputs_and_outputs(&self) -> (Vec<BitcoinOutPoint>, Vec<TxOut>) {
-		(self.contributed_inputs().collect(), self.contributed_outputs().cloned().collect())
+			.map(|(_, output)| output.tx_out().script_pubkey.as_script())
 	}
 
 	pub fn is_initiator(&self) -> bool {
@@ -2359,7 +2322,6 @@ impl InteractiveTxConstructor {
 mod tests {
 	use crate::chain::chaininterface::{fee_for_weight, FEERATE_FLOOR_SATS_PER_KW};
 	use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
-	use crate::ln::funding::FundingTxInput;
 	use crate::ln::interactivetxs::{
 		generate_holder_serial_id, AbortReason, HandleTxCompleteValue, InteractiveTxConstructor,
 		InteractiveTxConstructorArgs, InteractiveTxMessageSend, SharedOwnedInput,
@@ -2369,6 +2331,7 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::sign::EntropySource;
 	use crate::util::atomic_counter::AtomicCounter;
+	use crate::util::wallet_utils::ConfirmedUtxo;
 	use bitcoin::absolute::LockTime as AbsoluteLockTime;
 	use bitcoin::amount::Amount;
 	use bitcoin::hashes::Hash;
@@ -2432,12 +2395,12 @@ mod tests {
 
 	struct TestSession {
 		description: &'static str,
-		inputs_a: Vec<FundingTxInput>,
+		inputs_a: Vec<ConfirmedUtxo>,
 		a_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_a: (TxOut, u64),
 		outputs_a: Vec<TxOut>,
-		inputs_b: Vec<FundingTxInput>,
+		inputs_b: Vec<ConfirmedUtxo>,
 		b_shared_input: Option<(OutPoint, TxOut, u64)>,
 		/// The funding output, with the value contributed
 		shared_output_b: (TxOut, u64),
@@ -2679,22 +2642,20 @@ mod tests {
 		}
 	}
 
-	fn generate_inputs(outputs: &[TestOutput]) -> Vec<FundingTxInput> {
+	fn generate_inputs(outputs: &[TestOutput]) -> Vec<ConfirmedUtxo> {
 		let tx = generate_tx(outputs);
 		outputs
 			.iter()
 			.enumerate()
 			.map(|(idx, output)| match output {
-				TestOutput::P2WPKH(_) => {
-					FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap()
-				},
+				TestOutput::P2WPKH(_) => ConfirmedUtxo::new_p2wpkh(tx.clone(), idx as u32).unwrap(),
 				TestOutput::P2WSH(_) => {
-					FundingTxInput::new_p2wsh(tx.clone(), idx as u32, Weight::from_wu(42)).unwrap()
+					ConfirmedUtxo::new_p2wsh(tx.clone(), idx as u32, Weight::from_wu(42)).unwrap()
 				},
 				TestOutput::P2TR(_) => {
-					FundingTxInput::new_p2tr_key_spend(tx.clone(), idx as u32).unwrap()
+					ConfirmedUtxo::new_p2tr_key_spend(tx.clone(), idx as u32).unwrap()
 				},
-				TestOutput::P2PKH(_) => FundingTxInput::new_p2pkh(tx.clone(), idx as u32).unwrap(),
+				TestOutput::P2PKH(_) => ConfirmedUtxo::new_p2pkh(tx.clone(), idx as u32).unwrap(),
 			})
 			.collect()
 	}
@@ -2742,12 +2703,12 @@ mod tests {
 		(generate_txout(&TestOutput::P2WSH(value)), local_value)
 	}
 
-	fn generate_fixed_number_of_inputs(count: u16) -> Vec<FundingTxInput> {
+	fn generate_fixed_number_of_inputs(count: u16) -> Vec<ConfirmedUtxo> {
 		// Generate transactions with a total `count` number of outputs such that no transaction has a
 		// serialized length greater than u16::MAX.
 		let max_outputs_per_prevtx = 1_500;
 		let mut remaining = count;
-		let mut inputs: Vec<FundingTxInput> = Vec::with_capacity(count as usize);
+		let mut inputs: Vec<ConfirmedUtxo> = Vec::with_capacity(count as usize);
 
 		while remaining > 0 {
 			let tx_output_count = remaining.min(max_outputs_per_prevtx);
@@ -2758,10 +2719,10 @@ mod tests {
 			// Use unique locktime for each tx so outpoints are different across transactions
 			let tx = generate_tx_with_locktime(&outputs, (1337 + remaining).into());
 
-			let mut temp: Vec<FundingTxInput> = outputs
+			let mut temp: Vec<ConfirmedUtxo> = outputs
 				.iter()
 				.enumerate()
-				.map(|(idx, _)| FundingTxInput::new_p2wpkh(tx.clone(), idx as u32).unwrap())
+				.map(|(idx, _)| ConfirmedUtxo::new_p2wpkh(tx.clone(), idx as u32).unwrap())
 				.collect();
 
 			inputs.append(&mut temp);
@@ -2972,7 +2933,7 @@ mod tests {
 		});
 
 		let tx = generate_tx(&[TestOutput::P2WPKH(1_000_000)]);
-		let mut invalid_sequence_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let mut invalid_sequence_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		invalid_sequence_input.set_sequence(Default::default());
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Invalid input sequence from initiator",
@@ -2986,7 +2947,7 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::IncorrectInputSequenceValue, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let duplicate_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Duplicate prevout from initiator",
 			inputs_a: vec![duplicate_input.clone(), duplicate_input],
@@ -3000,7 +2961,7 @@ mod tests {
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeB)),
 		});
 		// Non-initiator uses same prevout as initiator.
-		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let duplicate_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
 			inputs_a: vec![duplicate_input.clone()],
@@ -3013,7 +2974,7 @@ mod tests {
 			outputs_b: vec![],
 			expect_error: Some((AbortReason::PrevTxOutInvalid, ErrorCulprit::NodeA)),
 		});
-		let duplicate_input = FundingTxInput::new_p2wpkh(tx.clone(), 0).unwrap();
+		let duplicate_input = ConfirmedUtxo::new_p2wpkh(tx.clone(), 0).unwrap();
 		do_test_interactive_tx_constructor(TestSession {
 			description: "Non-initiator uses same prevout as initiator",
 			inputs_a: vec![duplicate_input.clone()],

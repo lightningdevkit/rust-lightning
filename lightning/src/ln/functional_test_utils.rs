@@ -15,12 +15,12 @@ use crate::blinded_path::payment::{
 };
 use crate::chain::channelmonitor::{ChannelMonitor, HTLC_FAIL_BACK_BUFFER};
 use crate::chain::transaction::OutPoint;
-use crate::chain::{BestBlock, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
+use crate::chain::{BlockLocator, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
 use crate::events::bump_transaction::BumpTransactionEvent;
 use crate::events::{
-	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, PaidBolt12Invoice,
-	PathFailure, PaymentFailureReason, PaymentPurpose,
+	ClaimedHTLC, ClosureReason, Event, FundingInfo, HTLCHandlingFailureType,
+	NegotiationFailureReason, PaidBolt12Invoice, PathFailure, PaymentFailureReason, PaymentPurpose,
 };
 use crate::ln::chan_utils::{
 	commitment_tx_base_weight, COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_MAX_WEIGHT,
@@ -29,7 +29,7 @@ use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
 	RAACommitmentOrder, TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA,
 };
-use crate::ln::funding::{FundingContribution, FundingTxInput};
+use crate::ln::funding::FundingContribution;
 use crate::ln::msgs::{self, OpenChannel};
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
@@ -55,7 +55,7 @@ use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::{self, TestLogger};
 use crate::util::test_utils::{TestChainMonitor, TestKeysInterface, TestScorer};
-use crate::util::wallet_utils::{WalletSourceSync, WalletSync};
+use crate::util::wallet_utils::{ConfirmedUtxo, WalletSourceSync, WalletSync};
 
 use bitcoin::amount::Amount;
 use bitcoin::block::{Block, Header, Version as BlockVersion};
@@ -447,13 +447,13 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 
 		match *node.connect_style.borrow() {
 			ConnectStyle::FullBlockViaListen => {
-				let best_block = BestBlock::new(orig.0.header.prev_blockhash, orig.1 - 1);
+				let best_block = BlockLocator::new(orig.0.header.prev_blockhash, orig.1 - 1);
 				node.chain_monitor.chain_monitor.blocks_disconnected(best_block);
 				Listen::blocks_disconnected(node.node, best_block);
 			},
 			ConnectStyle::FullBlockDisconnectionsSkippingViaListen => {
 				if i == count - 1 {
-					let best_block = BestBlock::new(orig.0.header.prev_blockhash, orig.1 - 1);
+					let best_block = BlockLocator::new(orig.0.header.prev_blockhash, orig.1 - 1);
 					node.chain_monitor.chain_monitor.blocks_disconnected(best_block);
 					Listen::blocks_disconnected(node.node, best_block);
 				}
@@ -848,7 +848,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 					let mon = self.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap();
 					mon.write(&mut w).unwrap();
 					let (_, deserialized_monitor) =
-						<(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
+						<(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
 							&mut io::Cursor::new(&w.0),
 							(self.keys_manager, self.keys_manager),
 						)
@@ -877,7 +877,7 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				let mut w = test_utils::TestVecWriter(Vec::new());
 				self.node.write(&mut w).unwrap();
 				<(
-					BestBlock,
+					BlockLocator,
 					ChannelManager<
 						&test_utils::TestChainMonitor,
 						&test_utils::TestBroadcaster,
@@ -1312,7 +1312,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 	let mut monitors_read = Vec::with_capacity(monitors_encoded.len());
 	for encoded in monitors_encoded {
 		let mut monitor_read = &encoded[..];
-		let (_, monitor) = <(BestBlock, ChannelMonitor<TestChannelSigner>)>::read(
+		let (_, monitor) = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
 			&mut monitor_read,
 			(node.keys_manager, node.keys_manager),
 		)
@@ -1327,7 +1327,7 @@ pub fn _reload_node<'a, 'b, 'c>(
 		for monitor in monitors_read.iter() {
 			assert!(channel_monitors.insert(monitor.channel_id(), monitor).is_none());
 		}
-		<(BestBlock, TestChannelManager<'b, 'c>)>::read(
+		<(BlockLocator, TestChannelManager<'b, 'c>)>::read(
 			&mut node_read,
 			ChannelManagerReadArgs {
 				config,
@@ -1512,7 +1512,7 @@ fn internal_create_funding_transaction<'a, 'b, 'c>(
 /// Return the inputs (with prev tx), and the total witness weight for these inputs
 pub fn create_dual_funding_utxos_with_prev_txs(
 	node: &Node<'_, '_, '_>, utxo_values_in_satoshis: &[u64],
-) -> Vec<FundingTxInput> {
+) -> Vec<ConfirmedUtxo> {
 	// Ensure we have unique transactions per node by using the locktime.
 	let tx = Transaction {
 		version: TxVersion::TWO,
@@ -1536,7 +1536,7 @@ pub fn create_dual_funding_utxos_with_prev_txs(
 		.iter()
 		.enumerate()
 		.map(|(index, _)| index as u32)
-		.map(|vout| FundingTxInput::new_p2wpkh(tx.clone(), vout).unwrap())
+		.map(|vout| ConfirmedUtxo::new_p2wpkh(tx.clone(), vout).unwrap())
 		.collect()
 }
 
@@ -2378,7 +2378,7 @@ pub fn check_closed_events(node: &Node, expected_close_events: &[ExpectedCloseEv
 		discard_events_count
 	);
 	assert_eq!(
-		events.iter().filter(|e| matches!(e, Event::SpliceFailed { .. },)).count(),
+		events.iter().filter(|e| matches!(e, Event::SpliceNegotiationFailed { .. },)).count(),
 		splice_events_count
 	);
 }
@@ -2800,13 +2800,14 @@ pub fn get_payment_preimage_hash(
 	let payment_preimage = PaymentPreimage([*payment_count; 32]);
 	*payment_count += 1;
 	let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0[..]).to_byte_array());
-	let payment_secret = recipient
+	let (payment_secret, _) = recipient
 		.node
 		.create_inbound_payment_for_hash(
 			payment_hash,
 			min_value_msat,
 			7200,
 			min_final_cltv_expiry_delta,
+			None,
 		)
 		.unwrap();
 	(payment_preimage, payment_hash, payment_secret)
@@ -3221,7 +3222,7 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
-		crate::events::Event::SplicePending { channel_id, counterparty_node_id, .. } => {
+		crate::events::Event::SpliceNegotiated { channel_id, counterparty_node_id, .. } => {
 			assert_eq!(*expected_counterparty_node_id, *counterparty_node_id);
 			*channel_id
 		},
@@ -3232,26 +3233,28 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
 	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
-	funding_contribution: FundingContribution,
+	funding_contribution: FundingContribution, expected_reason: NegotiationFailureReason,
 ) {
 	let events = node.node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 2);
 	match &events[0] {
-		Event::SpliceFailed { channel_id, .. } => {
-			assert_eq!(*expected_channel_id, *channel_id);
-		},
-		_ => panic!("Unexpected event"),
-	}
-	match &events[1] {
 		Event::DiscardFunding { funding_info, .. } => {
 			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
 				let (expected_inputs, expected_outputs) =
-					funding_contribution.into_contributed_inputs_and_outputs();
+					funding_contribution.clone().into_contributed_inputs_and_outputs();
 				assert_eq!(*inputs, expected_inputs);
 				assert_eq!(*outputs, expected_outputs);
 			} else {
 				panic!("Expected FundingInfo::Contribution");
 			}
+		},
+		_ => panic!("Unexpected event"),
+	}
+	match &events[1] {
+		Event::SpliceNegotiationFailed { channel_id, reason, contribution, .. } => {
+			assert_eq!(*expected_channel_id, *channel_id);
+			assert_eq!(expected_reason, *reason);
+			assert_eq!(contribution.as_ref(), Some(&funding_contribution));
 		},
 		_ => panic!("Unexpected event"),
 	}
@@ -4716,7 +4719,7 @@ pub fn create_node_chanmgrs<'a, 'b>(
 	for i in 0..node_count {
 		let network = Network::Testnet;
 		let genesis_block = bitcoin::constants::genesis_block(network);
-		let params = ChainParameters { network, best_block: BestBlock::from_network(network) };
+		let params = ChainParameters { network, best_block: BlockLocator::from_network(network) };
 		let node = ChannelManager::new(
 			cfgs[i].fee_estimator,
 			&cfgs[i].chain_monitor,

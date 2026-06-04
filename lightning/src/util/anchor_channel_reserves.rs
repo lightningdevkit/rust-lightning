@@ -260,6 +260,13 @@ pub fn get_supportable_anchor_channels(
 	num_whole_utxos + total_fractional_amount.to_sat() / reserve_per_channel.to_sat() / 2
 }
 
+/// Returns whether a channel of the given type requires an on-chain anchor reserve, i.e. uses
+/// either the `anchors_zero_fee_htlc_tx` or `anchor_zero_fee_commitments` (TRUC / 0FC) variant.
+fn is_anchor_channel_type(channel_type: &ChannelTypeFeatures) -> bool {
+	channel_type.supports_anchors_zero_fee_htlc_tx()
+		|| channel_type.supports_anchor_zero_fee_commitments()
+}
+
 /// Verifies whether the anchor channel reserve provided by `utxos` is sufficient to support
 /// an additional anchor channel.
 ///
@@ -296,7 +303,7 @@ where
 		} else {
 			continue;
 		};
-		if channel_monitor.channel_type_features().supports_anchors_zero_fee_htlc_tx()
+		if is_anchor_channel_type(&channel_monitor.channel_type_features())
 			&& !channel_monitor.get_claimable_balances().is_empty()
 		{
 			anchor_channels.insert(channel_id);
@@ -305,7 +312,7 @@ where
 	// Also include channels that are in the middle of negotiation or anchor channels that don't have
 	// a ChannelMonitor yet.
 	for channel in a_channel_manager.get_cm().list_channels() {
-		if channel.channel_type.map_or(true, |ct| ct.supports_anchors_zero_fee_htlc_tx()) {
+		if channel.channel_type.map_or(true, |ct| is_anchor_channel_type(&ct)) {
 			anchor_channels.insert(channel.channel_id);
 		}
 	}
@@ -315,6 +322,7 @@ where
 #[cfg(test)]
 mod test {
 	use super::*;
+	use crate::ln::functional_test_utils::*;
 	use bitcoin::{OutPoint, ScriptBuf, Sequence, TxOut, Txid};
 	use std::str::FromStr;
 
@@ -424,5 +432,49 @@ mod test {
 			}),
 			1068
 		);
+	}
+
+	#[test]
+	fn test_can_support_additional_anchor_channel_zero_fee_commitments() {
+		// Regression test: a channel that uses the `anchor_zero_fee_commitments`
+		// (option 41) variant is just as much an anchor channel — and requires
+		// the same on-chain reserve — as one using `anchors_zero_fee_htlc_tx`.
+		// The reserve check must therefore count it as an existing anchor
+		// channel when deciding whether the wallet can safely support an
+		// additional one. Currently `can_support_additional_anchor_channel`
+		// only counts channels whose features set `anchors_zero_fee_htlc_tx`,
+		// so a node whose reserves are exhausted by zero-fee-commitment
+		// channels is incorrectly told it can open another anchor channel.
+		let mut cfg = test_default_channel_config();
+		cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(cfg.clone()), Some(cfg)]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+		let channels = nodes[0].node.list_channels();
+		assert_eq!(channels.len(), 1);
+		let channel_type = channels[0].channel_type.as_ref().unwrap();
+		assert!(channel_type.supports_anchor_zero_fee_commitments());
+		// Sanity check: a zero-fee-commitments channel does not also set the
+		// older anchors_zero_fee_htlc_tx feature.
+		assert!(!channel_type.supports_anchors_zero_fee_htlc_tx());
+
+		let context = AnchorChannelReserveContext::default();
+		let reserve = get_reserve_per_channel(&context);
+		// Provide a single UTXO with enough value to cover one channel reserve.
+		let utxos = vec![make_p2wpkh_utxo(reserve * 2)];
+
+		// We already have one TRUC anchor channel and only enough reserve for
+		// a single channel; we must not authorize an additional one.
+		assert!(!can_support_additional_anchor_channel(
+			&context,
+			&utxos,
+			nodes[0].node,
+			&nodes[0].chain_monitor.chain_monitor,
+		));
 	}
 }

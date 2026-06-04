@@ -48,7 +48,7 @@ use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
 use lightning::util::ser::Writeable;
-use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
+use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
 
 use lightning_types::payment::PaymentHash;
 
@@ -181,7 +181,7 @@ impl TrustModel {
 	}
 }
 
-impl_writeable_tlv_based_enum!(TrustModel,
+impl_ser_tlv_based_enum!(TrustModel,
 	(0, ClientTrustsLsp) => {
 		(0, funding_tx_broadcast_safe, required),
 		(2, funding_tx, option),
@@ -468,7 +468,7 @@ impl OutboundJITChannelState {
 	}
 }
 
-impl_writeable_tlv_based_enum!(OutboundJITChannelState,
+impl_ser_tlv_based_enum!(OutboundJITChannelState,
 	(0, PendingInitialPayment) => {
 		(0, payment_queue, required),
 	},
@@ -499,7 +499,7 @@ struct OutboundJITChannel {
 	trust_model: TrustModel,
 }
 
-impl_writeable_tlv_based!(OutboundJITChannel, {
+impl_ser_tlv_based!(OutboundJITChannel, {
 	(0, state, required),
 	(2, user_channel_id, required),
 	(4, opening_fee_params, required),
@@ -660,7 +660,7 @@ impl PeerState {
 	}
 }
 
-impl_writeable_tlv_based!(PeerState, {
+impl_ser_tlv_based!(PeerState, {
 	(0, outbound_channels_by_intercept_scid, required),
 	(2, intercept_scid_by_user_channel_id, required),
 	(4, intercept_scid_by_channel_id, required),

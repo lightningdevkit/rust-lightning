@@ -25,8 +25,9 @@ use crate::ln::channel::{
 	EXPIRE_PREV_CONFIG_TICKS,
 };
 use crate::ln::channelmanager::{
-	HTLCForwardInfo, PaymentId, PendingAddHTLCInfo, PendingHTLCRouting, RecentPaymentDetails,
-	BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA, MPP_TIMEOUT_TICKS,
+	Bolt11InvoiceParameters, HTLCForwardInfo, OptionalBolt11PaymentParams, PaymentId,
+	PendingAddHTLCInfo, PendingHTLCRouting, RecentPaymentDetails, BREAKDOWN_TIMEOUT,
+	MIN_CLTV_EXPIRY_DELTA, MPP_TIMEOUT_TICKS,
 };
 use crate::ln::msgs;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -51,6 +52,8 @@ use crate::util::ser::Writeable;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Secp256k1, SecretKey};
+
+use lightning_invoice::{Bolt11InvoiceDescription, Description};
 
 use crate::prelude::*;
 
@@ -1547,8 +1550,8 @@ fn get_ldk_payment_preimage() {
 
 	let amt_msat = 60_000;
 	let expiry_secs = 60 * 60;
-	let (payment_hash, payment_secret) =
-		nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None).unwrap();
+	let (payment_hash, payment_secret, _) =
+		nodes[1].node.create_inbound_payment(Some(amt_msat), expiry_secs, None, None).unwrap();
 
 	let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
@@ -1560,8 +1563,12 @@ fn get_ldk_payment_preimage() {
 	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
 	check_added_monitors(&nodes[0], 1);
 
-	// Make sure to use `get_payment_preimage`
-	let preimage = Some(nodes[1].node.get_payment_preimage(payment_hash, payment_secret).unwrap());
+	let preimage = Some(
+		nodes[1]
+			.node
+			.get_payment_preimage_decrypt_metadata(payment_hash, payment_secret, None)
+			.unwrap(),
+	);
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let event = events.pop().unwrap();
@@ -1569,6 +1576,182 @@ fn get_ldk_payment_preimage() {
 	let path = &[&nodes[1]];
 	pass_along_path(&nodes[0], path, amt_msat, payment_hash, payment_secret, event, true, preimage);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path], preimage.unwrap()));
+}
+
+#[derive(Clone, Copy)]
+enum PaymentMetadataSource {
+	Bolt11Invoice,
+	CreateInboundPayment,
+	CreateInboundPaymentForHash,
+}
+
+fn do_payment_metadata_end_to_end(source: PaymentMetadataSource) {
+	// Generate a payment under each source, send a payment for it from another node, and verify
+	// that the `PaymentClaimable` event sees the (decrypted) payment_metadata that was originally
+	// provided. For sources which generate the preimage on our behalf, also check that
+	// `get_payment_preimage_decrypt_metadata` recovers the preimage and decrypts the metadata.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let amt_msat = 50_000;
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let plaintext_metadata = vec![0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04, 0x05];
+
+	// Whenever LDK is computing the preimage itself (the `Bolt11Invoice` and
+	// `CreateInboundPayment` cases), `encrypted_metadata` holds the encrypted bytes so we can feed
+	// them back into `get_payment_preimage_decrypt_metadata` below. For the user-hash case we know
+	// the preimage up front so we stash it in `provided_preimage` instead.
+	let (payment_hash, payment_secret, encrypted_metadata, provided_preimage) = match source {
+		PaymentMetadataSource::Bolt11Invoice => {
+			let description =
+				Bolt11InvoiceDescription::Direct(Description::new("test".to_string()).unwrap());
+			let invoice_params = Bolt11InvoiceParameters {
+				amount_msats: Some(amt_msat),
+				description,
+				payment_metadata: Some(plaintext_metadata.clone()),
+				..Default::default()
+			};
+			let invoice = nodes[1].node.create_bolt11_invoice(invoice_params).unwrap();
+			let payment_hash = invoice.payment_hash();
+			let payment_secret = *invoice.payment_secret();
+			let encrypted_metadata = invoice.payment_metadata().unwrap().clone();
+			// The encryption must produce different bytes than the plaintext for this test to be
+			// meaningful (otherwise the decryption could be a no-op and we wouldn't notice).
+			assert_ne!(encrypted_metadata, plaintext_metadata);
+
+			nodes[0]
+				.node
+				.pay_for_bolt11_invoice(
+					&invoice,
+					PaymentId(payment_hash.0),
+					None,
+					OptionalBolt11PaymentParams::default(),
+				)
+				.unwrap();
+			(payment_hash, payment_secret, encrypted_metadata, None)
+		},
+		PaymentMetadataSource::CreateInboundPayment => {
+			let (payment_hash, payment_secret, encrypted_metadata) = nodes[1]
+				.node
+				.create_inbound_payment(
+					Some(amt_msat),
+					7200,
+					None,
+					Some(plaintext_metadata.clone()),
+				)
+				.unwrap();
+			let encrypted_metadata = encrypted_metadata.unwrap();
+			assert_ne!(encrypted_metadata, plaintext_metadata);
+
+			let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
+				.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
+				.unwrap();
+			let route_params =
+				RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+			let route = get_route(&nodes[0], &route_params).unwrap();
+			let onion = RecipientOnionFields {
+				payment_secret: Some(payment_secret),
+				payment_metadata: Some(encrypted_metadata.clone()),
+				custom_tlvs: vec![],
+				total_mpp_amount_msat: amt_msat,
+			};
+			nodes[0]
+				.node
+				.send_payment_with_route(route, payment_hash, onion, PaymentId(payment_hash.0))
+				.unwrap();
+			(payment_hash, payment_secret, encrypted_metadata, None)
+		},
+		PaymentMetadataSource::CreateInboundPaymentForHash => {
+			let payment_preimage = PaymentPreimage([0x77; 32]);
+			let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
+			let (payment_secret, encrypted_metadata) = nodes[1]
+				.node
+				.create_inbound_payment_for_hash(
+					payment_hash,
+					Some(amt_msat),
+					7200,
+					None,
+					Some(plaintext_metadata.clone()),
+				)
+				.unwrap();
+			let encrypted_metadata = encrypted_metadata.unwrap();
+			assert_ne!(encrypted_metadata, plaintext_metadata);
+
+			let payment_params = PaymentParameters::from_node_id(node_b_id, TEST_FINAL_CLTV)
+				.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
+				.unwrap();
+			let route_params =
+				RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
+			let route = get_route(&nodes[0], &route_params).unwrap();
+			let onion = RecipientOnionFields {
+				payment_secret: Some(payment_secret),
+				payment_metadata: Some(encrypted_metadata.clone()),
+				custom_tlvs: vec![],
+				total_mpp_amount_msat: amt_msat,
+			};
+			nodes[0]
+				.node
+				.send_payment_with_route(route, payment_hash, onion, PaymentId(payment_hash.0))
+				.unwrap();
+			(payment_hash, payment_secret, encrypted_metadata, Some(payment_preimage))
+		},
+	};
+
+	check_added_monitors(&nodes[0], 1);
+
+	// For sources where LDK derived the preimage, exercise
+	// `get_payment_preimage_decrypt_metadata`: it must recover the preimage *and* decrypt the
+	// metadata buffer in place. For the user-hash source we just use the preimage we picked.
+	let preimage = if let Some(preimage) = provided_preimage {
+		preimage
+	} else {
+		let mut decrypted_metadata = encrypted_metadata.clone();
+		let preimage = nodes[1]
+			.node
+			.get_payment_preimage_decrypt_metadata(
+				payment_hash,
+				payment_secret,
+				Some(decrypted_metadata.as_mut_slice()),
+			)
+			.unwrap();
+		assert_eq!(decrypted_metadata, plaintext_metadata);
+		preimage
+	};
+	assert_eq!(PaymentHash(Sha256::hash(&preimage.0).to_byte_array()), payment_hash);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = events.pop().unwrap();
+	let path = &[&nodes[1]];
+	let mut args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, ev)
+		.with_payment_secret(payment_secret)
+		.with_payment_metadata(plaintext_metadata.clone());
+	// Only set the expected preimage when LDK is responsible for surfacing it on the receiver
+	// side (i.e. LDK-derived hashes). For user-supplied hashes, `PaymentClaimable` carries
+	// `payment_preimage: None`.
+	if provided_preimage.is_none() {
+		args = args.with_payment_preimage(preimage);
+	}
+	do_pass_along_path(args);
+	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path], preimage));
+}
+
+#[test]
+fn payment_metadata_end_to_end_bolt11_invoice() {
+	do_payment_metadata_end_to_end(PaymentMetadataSource::Bolt11Invoice);
+}
+
+#[test]
+fn payment_metadata_end_to_end_create_inbound_payment() {
+	do_payment_metadata_end_to_end(PaymentMetadataSource::CreateInboundPayment);
+}
+
+#[test]
+fn payment_metadata_end_to_end_create_inbound_payment_for_hash() {
+	do_payment_metadata_end_to_end(PaymentMetadataSource::CreateInboundPaymentForHash);
 }
 
 #[test]
@@ -1591,17 +1774,32 @@ fn sent_probe_is_probe_of_sending_node() {
 	// Then build an actual two-hop probing path
 	let (route, _, _, _) = get_route_and_payment_hash!(&nodes[0], nodes[2], 100_000);
 
-	match nodes[0].node.send_probe(route.paths[0].clone()) {
-		Ok((payment_hash, payment_id)) => {
-			assert!(nodes[0].node.payment_is_probe(&payment_hash, &payment_id));
-			assert!(!nodes[1].node.payment_is_probe(&payment_hash, &payment_id));
-			assert!(!nodes[2].node.payment_is_probe(&payment_hash, &payment_id));
-		},
-		_ => panic!(),
-	}
+	let (payment_hash, payment_id) = nodes[0].node.send_probe(route.paths[0].clone()).unwrap();
+	assert!(nodes[0].node.payment_is_probe(&payment_hash, &payment_id));
+	assert!(!nodes[1].node.payment_is_probe(&payment_hash, &payment_id));
+	assert!(!nodes[2].node.payment_is_probe(&payment_hash, &payment_id));
+	assert!(matches!(
+		nodes[0].node.list_recent_payments().as_slice(),
+		[RecentPaymentDetails::Pending {
+			payment_id: listed_payment_id,
+			payment_hash: listed_payment_hash,
+			is_probe: true,
+			..
+		}] if *listed_payment_id == payment_id && *listed_payment_hash == payment_hash
+	));
 
 	get_htlc_update_msgs(&nodes[0], &node_b_id);
 	check_added_monitors(&nodes[0], 1);
+
+	nodes[0].node.abandon_payment(payment_id);
+	assert!(matches!(
+		nodes[0].node.list_recent_payments().as_slice(),
+		[RecentPaymentDetails::Abandoned {
+			payment_id: listed_payment_id,
+			payment_hash: listed_payment_hash,
+			is_probe: true,
+		}] if *listed_payment_id == payment_id && *listed_payment_hash == payment_hash
+	));
 }
 
 #[test]
@@ -2142,7 +2340,12 @@ fn test_trivial_inflight_htlc_tracking() {
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 1);
-	let details = RecentPaymentDetails::Pending { payment_id, payment_hash, total_msat: 500000 };
+	let details = RecentPaymentDetails::Pending {
+		payment_id,
+		payment_hash,
+		total_msat: 500000,
+		is_probe: false,
+	};
 	assert_eq!(pending_payments[0], details);
 
 	// Now, let's claim the payment. This should result in the used liquidity to return `None`.
@@ -2284,8 +2487,8 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
 	let route = get_route(&nodes[0], &route_params).unwrap();
 
-	let (hash, payment_secret) =
-		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
+	let (hash, payment_secret, _) =
+		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None, None).unwrap();
 	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(hash.0);
 	nodes[0].node.send_payment_with_route(route.clone(), hash, onion, id).unwrap();
@@ -2394,7 +2597,12 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		do_commitment_signed_dance(&nodes[2], &nodes[1], commitment, false, true);
 		expect_and_process_pending_htlcs(&nodes[2], false);
 
-		let preimage = Some(nodes[2].node.get_payment_preimage(hash, payment_secret).unwrap());
+		let preimage = Some(
+			nodes[2]
+				.node
+				.get_payment_preimage_decrypt_metadata(hash, payment_secret, None)
+				.unwrap(),
+		);
 		expect_payment_claimable!(&nodes[2], hash, payment_secret, amt_msat, preimage, node_c_id);
 
 		let path: &[&[_]] = &[&[&nodes[1], &nodes[2]]];
@@ -2520,8 +2728,8 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
 		.unwrap();
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amt_msat);
-	let (payment_hash, payment_secret) =
-		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None).unwrap();
+	let (payment_hash, payment_secret, _) =
+		nodes[2].node.create_inbound_payment(Some(amt_msat), 60 * 60, None, None).unwrap();
 
 	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
 	let id = PaymentId(payment_hash.0);
@@ -2576,8 +2784,10 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	}
 
 	// Claim the payment and check that the skimmed fee is as expected.
-	let payment_preimage =
-		nodes[2].node.get_payment_preimage(payment_hash, payment_secret).unwrap();
+	let payment_preimage = nodes[2]
+		.node
+		.get_payment_preimage_decrypt_metadata(payment_hash, payment_secret, None)
+		.unwrap();
 	let events = nodes[2].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -4865,10 +5075,20 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 
 	// Pay more than half of each channel's max, requiring MPP
 	let amt_msat = 750_000_000;
-	let (payment_preimage, payment_hash, payment_secret) =
-		get_payment_preimage_hash(&nodes[3], Some(amt_msat), None);
-	let payment_id = PaymentId(payment_hash.0);
 	let payment_metadata = vec![44, 49, 52, 142];
+	let payment_preimage = PaymentPreimage([42; 32]);
+	let payment_hash: PaymentHash = payment_preimage.into();
+	let (payment_secret, encrypted_metadata) = nodes[3]
+		.node
+		.create_inbound_payment_for_hash(
+			payment_hash,
+			Some(amt_msat),
+			7200,
+			None,
+			Some(payment_metadata.clone()),
+		)
+		.unwrap();
+	let payment_id = PaymentId(payment_hash.0);
 
 	let payment_params = PaymentParameters::from_node_id(node_d_id, TEST_FINAL_CLTV)
 		.with_bolt11_features(nodes[1].node.bolt11_invoice_features())
@@ -4878,7 +5098,7 @@ fn do_test_payment_metadata_consistency(do_reload: bool, do_modify: bool) {
 	// Send the MPP payment, delivering the updated commitment state to nodes[1].
 	let onion = RecipientOnionFields {
 		payment_secret: Some(payment_secret),
-		payment_metadata: Some(payment_metadata),
+		payment_metadata: encrypted_metadata,
 		custom_tlvs: vec![],
 		total_mpp_amount_msat: amt_msat,
 	};
@@ -5043,7 +5263,7 @@ fn test_htlc_forward_considers_anchor_outputs_value() {
 		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, CHAN_AMT, PUSH_MSAT);
 
 	let channel_reserve_msat =
-		get_holder_selected_channel_reserve_satoshis(CHAN_AMT, 0, &config, false) * 1000;
+		get_holder_selected_channel_reserve_satoshis(CHAN_AMT, 0, &config, false).unwrap() * 1000;
 	let commitment_fee_msat = chan_utils::commit_tx_fee_sat(
 		*nodes[1].fee_estimator.sat_per_kw.lock().unwrap(),
 		2,

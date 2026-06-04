@@ -1,2 +1,0 @@
-[build]
-rustflags = ["--cfg=fuzzing", "--cfg=secp256k1_fuzz", "--cfg=hashes_fuzz"]

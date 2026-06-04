@@ -763,10 +763,10 @@ pub struct UpdateAddHTLC {
 
 struct AccountableBool<T>(T);
 
-impl Writeable for AccountableBool<bool> {
+impl Writeable for AccountableBool<&bool> {
 	#[inline]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		let wire_value = if self.0 { 7u8 } else { 0u8 };
+		let wire_value = if *self.0 { 7u8 } else { 0u8 };
 		writer.write_all(&[wire_value])
 	}
 }

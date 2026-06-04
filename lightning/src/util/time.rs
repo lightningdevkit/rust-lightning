@@ -7,7 +7,7 @@
 //! A simple module which either re-exports [`std::time::Instant`] or a mocked version of it for
 //! tests.
 
-#[cfg(not(test))]
+#[cfg(all(not(test), not(fuzzing)))]
 pub use std::time::Instant;
 #[cfg(test)]
 pub use test::Instant;

@@ -317,6 +317,11 @@ impl<'a, T: Writeable> Writeable for &'a T {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		(*self).write(writer)
 	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		(*self).serialized_length()
+	}
 }
 
 /// A trait that various LDK types implement allowing them to be read in from a [`Read`].
@@ -610,6 +615,13 @@ macro_rules! impl_writeable_primitive {
 				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros() / 8) as usize..$len])
 			}
 		}
+		impl Writeable for HighZeroBytesDroppedBigSize<&$val_type> {
+			#[inline]
+			fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+				// Skip any full leading 0 bytes when writing (in BE):
+				writer.write_all(&self.0.to_be_bytes()[(self.0.leading_zeros() / 8) as usize..$len])
+			}
+		}
 		impl Readable for $val_type {
 			#[inline]
 			fn read<R: Read>(reader: &mut R) -> Result<$val_type, DecodeError> {
@@ -751,12 +763,20 @@ impl_array!(HMAC_LEN * HMAC_COUNT, u8);
 /// This is not exported to bindings users as manual TLV building is not currently supported in bindings
 pub struct WithoutLength<T>(pub T);
 
+impl Writeable for WithoutLength<&&String> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(self.0.as_bytes())
+	}
+}
+
 impl Writeable for WithoutLength<&String> {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.write_all(self.0.as_bytes())
 	}
 }
+
 impl LengthReadable for WithoutLength<String> {
 	#[inline]
 	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
@@ -808,6 +828,14 @@ impl<T: Writeable> AsWriteableSlice for &Vec<T> {
 		&self
 	}
 }
+
+impl<T: Writeable> AsWriteableSlice for &&Vec<T> {
+	type Inner = T;
+	fn as_slice(&self) -> &[T] {
+		&self
+	}
+}
+
 impl<T: Writeable> AsWriteableSlice for &[T] {
 	type Inner = T;
 	fn as_slice(&self) -> &[T] {
@@ -822,6 +850,11 @@ impl<S: AsWriteableSlice> Writeable for WithoutLength<S> {
 			v.write(writer)?;
 		}
 		Ok(())
+	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		self.0.as_slice().iter().map(|v| v.serialized_length()).sum()
 	}
 }
 
@@ -945,6 +978,37 @@ macro_rules! impl_for_map {
 
 impl_for_map!(BTreeMap, Ord, |_| BTreeMap::new());
 impl_for_map!(HashMap, Hash, |len| hash_map_with_capacity(len));
+
+/// A wrapper used to serialize a `BTreeMap<u64, Vec<u8>>` with a few less bytes.
+pub(crate) struct BigSizeKeyedMap<T>(pub T);
+
+impl Writeable for BigSizeKeyedMap<&BTreeMap<u64, Vec<u8>>> {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		BigSize(self.0.len() as u64).write(w)?;
+		for (key, value) in self.0.iter() {
+			BigSize(*key).write(w)?;
+			value.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+impl LengthReadable for BigSizeKeyedMap<BTreeMap<u64, Vec<u8>>> {
+	#[inline]
+	fn read_from_fixed_length_buffer<R: LengthLimitedRead>(r: &mut R) -> Result<Self, DecodeError> {
+		let len: BigSize = Readable::read(r)?;
+		let mut ret = BTreeMap::new();
+		for _ in 0..len.0 {
+			let key: BigSize = Readable::read(r)?;
+			let value: Vec<u8> = Readable::read(r)?;
+			if ret.insert(key.0, value).is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		Ok(BigSizeKeyedMap(ret))
+	}
+}
 
 // HashSet
 impl<T> Writeable for HashSet<T>
@@ -1099,6 +1163,8 @@ impl_for_vec!(crate::ln::channelmanager::MonitorUpdateCompletionAction);
 impl_for_vec!(crate::ln::channelmanager::PaymentClaimDetails);
 impl_for_vec!(crate::ln::msgs::SocketAddress);
 impl_for_vec!((A, B), A, B);
+impl_for_vec!(OutPoint);
+impl_for_vec!(ScriptBuf);
 impl_for_vec!(SerialId);
 impl_for_vec!(TxInMetadata);
 impl_for_vec!(TxOutMetadata);
@@ -1310,6 +1376,11 @@ impl<T: Writeable> Writeable for Box<T> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		T::write(&**self, w)
 	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		T::serialized_length(&**self)
+	}
 }
 
 impl<T: Readable> Readable for Box<T> {
@@ -1328,6 +1399,17 @@ impl<T: Writeable> Writeable for Option<T> {
 			},
 		}
 		Ok(())
+	}
+
+	#[inline]
+	fn serialized_length(&self) -> usize {
+		match *self {
+			None => 1,
+			Some(ref data) => {
+				let data_len = data.serialized_length();
+				BigSize(data_len as u64 + 1).serialized_length() + data_len
+			},
+		}
 	}
 }
 
@@ -1633,6 +1715,13 @@ impl Readable for () {
 impl Writeable for String {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.as_str().write(w)
+	}
+}
+
+impl Writeable for &str {
+	#[inline]
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		CollectionLength(self.len() as u64).write(w)?;
 		w.write_all(self.as_bytes())
 	}
@@ -1795,6 +1884,12 @@ mod tests {
 		let mut buf: Vec<u8> = Vec::new();
 		hostname.write(&mut buf).unwrap();
 		assert_eq!(Hostname::read(&mut buf.as_slice()).unwrap().as_str(), "test");
+	}
+
+	#[test]
+	fn str_serialization_matches_string() {
+		let s = "test";
+		assert_eq!(s.encode(), s.to_string().encode());
 	}
 
 	#[test]

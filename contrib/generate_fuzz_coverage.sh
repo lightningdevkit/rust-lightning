@@ -55,18 +55,37 @@ fi
 # Create output directory if it doesn't exist
 mkdir -p "$OUTPUT_DIR"
 
-# dont run this command when running in CI
-if [ "$OUTPUT_CODECOV_JSON" = "0" ]; then
-    cargo llvm-cov --html \
+generate_coverage_report() {
+    local manifest_path="$1"
+    local output_path="$2"
+    local rustflags="$3"
+
+    cargo llvm-cov clean --workspace
+    RUSTFLAGS="$rustflags" cargo llvm-cov -j8 --manifest-path "$manifest_path" --codecov \
         --dep-coverage lightning,lightning-invoice,lightning-liquidity,lightning-rapid-gossip-sync,lightning-persister \
         --no-default-ignore-filename-regex \
         --ignore-filename-regex "(\.cargo/registry|\.rustup/toolchains|/fuzz/)" \
-        --output-dir "$OUTPUT_DIR"
-    echo "Coverage report generated in $OUTPUT_DIR/html/index.html"
-else
-    # Clean previous coverage artifacts to ensure a fresh run.
-    cargo llvm-cov clean --workspace
+        --output-path "$output_path" --tests
+}
 
+# dont run this command when running in CI
+if [ "$OUTPUT_CODECOV_JSON" = "0" ]; then
+    cargo llvm-cov clean --workspace
+    RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz" \
+        cargo llvm-cov --manifest-path fuzz-fake-hashes/Cargo.toml --html \
+        --dep-coverage lightning,lightning-invoice,lightning-liquidity,lightning-rapid-gossip-sync,lightning-persister \
+        --no-default-ignore-filename-regex \
+        --ignore-filename-regex "(\.cargo/registry|\.rustup/toolchains|/fuzz/)" \
+        --output-dir "$OUTPUT_DIR/fake-hashes" --tests
+    cargo llvm-cov clean --workspace
+    RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz" \
+        cargo llvm-cov --manifest-path fuzz-real-hashes/Cargo.toml --html \
+        --dep-coverage lightning,lightning-invoice,lightning-liquidity,lightning-rapid-gossip-sync,lightning-persister \
+        --no-default-ignore-filename-regex \
+        --ignore-filename-regex "(\.cargo/registry|\.rustup/toolchains|/fuzz/)" \
+        --output-dir "$OUTPUT_DIR/real-hashes" --tests
+    echo "Coverage reports generated in $OUTPUT_DIR/fake-hashes and $OUTPUT_DIR/real-hashes"
+else
     # Import honggfuzz corpus if the artifact was downloaded.
     if [ -d "hfuzz_workspace" ]; then
         echo "Importing corpus from hfuzz_workspace..."
@@ -82,11 +101,14 @@ else
     fi
 
     echo "Replaying imported corpus (if found) via tests to generate coverage..."
-    cargo llvm-cov -j8 --codecov \
-        --dep-coverage lightning,lightning-invoice,lightning-liquidity,lightning-rapid-gossip-sync,lightning-persister \
-        --no-default-ignore-filename-regex \
-        --ignore-filename-regex "(\.cargo/registry|\.rustup/toolchains|/fuzz/)" \
-        --output-path "$OUTPUT_DIR/fuzz-codecov.json" --tests
+    generate_coverage_report \
+        "fuzz-fake-hashes/Cargo.toml" \
+        "$OUTPUT_DIR/fuzz-fake-hashes-codecov.json" \
+        "--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz"
+    generate_coverage_report \
+        "fuzz-real-hashes/Cargo.toml" \
+        "$OUTPUT_DIR/fuzz-real-hashes-codecov.json" \
+        "--cfg=fuzzing --cfg=secp256k1_fuzz"
 
-    echo "Fuzz codecov report available at $OUTPUT_DIR/fuzz-codecov.json"
+    echo "Fuzz codecov reports available at $OUTPUT_DIR/fuzz-fake-hashes-codecov.json and $OUTPUT_DIR/fuzz-real-hashes-codecov.json"
 fi

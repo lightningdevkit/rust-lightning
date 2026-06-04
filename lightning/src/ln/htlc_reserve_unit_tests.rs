@@ -3,14 +3,15 @@
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::chan_utils::{
 	self, commit_tx_fee_sat, commitment_tx_base_weight, second_stage_tx_fees_sat,
-	shared_anchor_script_pubkey, CommitmentTransaction, COMMITMENT_TX_WEIGHT_PER_HTLC,
-	TRUC_CHILD_MAX_WEIGHT,
+	shared_anchor_script_pubkey, CommitmentTransaction, HTLCOutputInCommitment,
+	COMMITMENT_TX_WEIGHT_PER_HTLC, TRUC_CHILD_MAX_WEIGHT,
 };
 use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, Channel, ANCHOR_OUTPUT_VALUE_SATOSHI,
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MIN_AFFORDABLE_HTLC_COUNT,
 	MIN_CHAN_DUST_LIMIT_SATOSHIS,
 };
+use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, TrustedChannelFeatures};
 use crate::ln::functional_test_utils::*;
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -38,9 +39,7 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	// in normal testing, we test it explicitly here.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let legacy_cfg = test_legacy_channel_config();
-	let node_chanmgrs =
-		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -51,12 +50,14 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	// Have node0 initiate a channel to node1 with aforementioned parameters
 	let mut push_amt = 100_000_000;
 	let feerate_per_kw = 253;
-	let channel_type_features = ChannelTypeFeatures::only_static_remote_key();
+	let channel_type_features = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
 	push_amt -= feerate_per_kw as u64
 		* (commitment_tx_base_weight(&channel_type_features) + 4 * COMMITMENT_TX_WEIGHT_PER_HTLC)
 		/ 1000 * 1000;
-	push_amt -=
-		get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config, false) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config, false)
+		.unwrap()
+		* 1000;
+	push_amt -= 2 * 330_000;
 
 	let push = if send_from_initiator { 0 } else { push_amt };
 	let temp_channel_id =
@@ -107,10 +108,8 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 			&nodes[0],
 			&[&nodes[1]],
 			100_000_000
-			// Note that for outbound channels we have to consider the commitment tx fee and the
-			// "fee spike buffer", which is currently a multiple of the total commitment tx fee as
-			// well as an additional HTLC.
-			- FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE * commit_tx_fee_msat(feerate_per_kw, 2, &channel_type_features),
+				- commit_tx_fee_msat(feerate_per_kw, 2, &channel_type_features)
+				- 2 * 330_000,
 		);
 	} else {
 		send_payment(&nodes[1], &[&nodes[0]], push_amt);
@@ -887,7 +886,7 @@ pub fn do_test_fee_spike_buffer(cfg: Option<UserConfig>, htlc_fails: bool) {
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
-	let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
+	let accepted_htlc_info = HTLCOutputInCommitment {
 		offered: false,
 		amount_msat: payment_amt_msat,
 		cltv_expiry: htlc_cltv,
@@ -1002,8 +1001,9 @@ pub fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 		&channel_type_features,
 	);
 
-	push_amt -=
-		get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config, false) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config, false)
+		.unwrap()
+		* 1000;
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt);
 
@@ -1048,14 +1048,15 @@ pub fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 		MIN_AFFORDABLE_HTLC_COUNT as u64,
 		&channel_type_features,
 	);
-	push_amt -=
-		get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config, false) * 1000;
+	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, 0, &default_config, false)
+		.unwrap()
+		* 1000;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt);
 
-	let (htlc_success_tx_fee_sat, _) =
+	let (_htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
 		second_stage_tx_fees_sat(&channel_type_features, feerate_per_kw);
 	let dust_amt = crate::ln::channel::MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
-		+ htlc_success_tx_fee_sat * 1000
+		+ htlc_timeout_tx_fee_sat * 1000
 		- 1;
 	// In the previous code, routing this dust payment would cause nodes[0] to perceive a channel
 	// reserve violation even though it's a dust HTLC and therefore shouldn't count towards the
@@ -2142,7 +2143,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 		let (_payment_preimage, payment_hash, ..) =
 			route_payment(&nodes[0], &[&nodes[1]], HTLC_AMT_SAT * 1000);
 		// Grab a snapshot of these HTLCs to manually build the commitment transaction later...
-		let accepted_htlc = chan_utils::HTLCOutputInCommitment {
+		let accepted_htlc = HTLCOutputInCommitment {
 			offered: false,
 			amount_msat: HTLC_AMT_SAT * 1000,
 			// Hard-coded to match the expected value
@@ -2256,7 +2257,7 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 				&channel_type,
 			);
 
-		let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
+		let accepted_htlc_info = HTLCOutputInCommitment {
 			offered: false,
 			amount_msat: HTLC_AMT_SAT * 1000,
 			cltv_expiry,
@@ -2354,12 +2355,6 @@ pub fn do_test_dust_limit_fee_accounting(can_afford: bool) {
 fn test_create_channel_to_trusted_peer_0reserve() {
 	let mut config = test_default_channel_config();
 
-	// Legacy channels
-	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-	let channel_type = do_test_create_channel_to_trusted_peer_0reserve(config.clone());
-	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
-
 	// Anchor channels
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
@@ -2412,14 +2407,8 @@ fn do_test_create_channel_to_trusted_peer_0reserve(mut config: UserConfig) -> Ch
 		} else {
 			0
 		};
-	let spike_multiple = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
-		FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
-	} else {
-		1
-	};
-	let spiked_feerate = spike_multiple * feerate_per_kw;
 	let reserved_commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(
-		spiked_feerate,
+		feerate_per_kw,
 		2, // We reserve space for two HTLCs, the next outbound non-dust HTLC, and the fee spike buffer HTLC
 		&channel_type,
 	);
@@ -2441,12 +2430,6 @@ fn do_test_create_channel_to_trusted_peer_0reserve(mut config: UserConfig) -> Ch
 #[xtest(feature = "_externalize_tests")]
 fn test_accept_inbound_channel_from_trusted_peer_0reserve() {
 	let mut config = test_default_channel_config();
-
-	// Legacy channels
-	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-	let channel_type = do_test_accept_inbound_channel_from_trusted_peer_0reserve(config.clone());
-	assert_eq!(channel_type, ChannelTypeFeatures::only_static_remote_key());
 
 	// Anchor channels
 	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
@@ -2535,14 +2518,8 @@ fn do_test_accept_inbound_channel_from_trusted_peer_0reserve(
 		} else {
 			0
 		};
-	let spike_multiple = if channel_type == ChannelTypeFeatures::only_static_remote_key() {
-		FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32
-	} else {
-		1
-	};
-	let spiked_feerate = spike_multiple * feerate_per_kw;
 	let reserved_commit_tx_fee_sat = chan_utils::commit_tx_fee_sat(
-		spiked_feerate,
+		feerate_per_kw,
 		2, // We reserve space for two HTLCs, the next outbound non-dust HTLC, and the fee spike buffer HTLC
 		&channel_type,
 	);
@@ -2561,27 +2538,15 @@ fn do_test_accept_inbound_channel_from_trusted_peer_0reserve(
 	channel_type
 }
 
-enum LegacyChannelsNoOutputs {
-	PaymentSucceeds,
-	FailsReceiverUpdateAddHTLC,
-	FailsReceiverCanAcceptHTLCA,
-	FailsReceiverCanAcceptHTLCB,
-}
-
 #[xtest(feature = "_externalize_tests")]
 fn test_0reserve_no_outputs() {
-	do_test_0reserve_no_outputs_legacy(LegacyChannelsNoOutputs::PaymentSucceeds);
-	do_test_0reserve_no_outputs_legacy(LegacyChannelsNoOutputs::FailsReceiverCanAcceptHTLCA);
-	do_test_0reserve_no_outputs_legacy(LegacyChannelsNoOutputs::FailsReceiverCanAcceptHTLCB);
-	do_test_0reserve_no_outputs_legacy(LegacyChannelsNoOutputs::FailsReceiverUpdateAddHTLC);
-
 	do_test_0reserve_no_outputs_keyed_anchors(true);
 	do_test_0reserve_no_outputs_keyed_anchors(false);
 
 	do_test_0reserve_no_outputs_p2a_anchor();
 }
 
-fn setup_0reserve_no_outputs_channels<'a, 'b, 'c, 'd>(
+pub(crate) fn setup_0reserve_no_outputs_channels<'a, 'b, 'c, 'd>(
 	nodes: &'a Vec<Node<'b, 'c, 'd>>, channel_value_sat: u64, dust_limit_satoshis: u64,
 ) -> (ChannelId, Transaction) {
 	let node_a_id = nodes[0].node.get_our_node_id();
@@ -2674,184 +2639,10 @@ fn setup_0reserve_no_outputs_channels<'a, 'b, 'c, 'd>(
 	(channel_id, tx)
 }
 
-fn do_test_0reserve_no_outputs_legacy(no_outputs_case: LegacyChannelsNoOutputs) {
-	let mut config = test_default_channel_config();
-	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
-
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
-		100;
-
-	let channel_type = ChannelTypeFeatures::only_static_remote_key();
-
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-
-	let node_a_id = nodes[0].node.get_our_node_id();
-	let _node_b_id = nodes[1].node.get_our_node_id();
-
-	let feerate_per_kw = 253;
-	let spike_multiple = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
-	let dust_limit_satoshis: u64 = 546;
-	let channel_value_sat = 1000;
-
-	let (channel_id, _funding_tx) =
-		setup_0reserve_no_outputs_channels(&nodes, channel_value_sat, dust_limit_satoshis);
-	assert_eq!(nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap(), &channel_type);
-
-	// Sending the biggest dust HTLC possible trims our balance output!
-	let (timeout_tx_fee_sat, success_tx_fee_sat) =
-		second_stage_tx_fees_sat(&channel_type, spike_multiple * feerate_per_kw);
-	let max_dust_htlc_sat = dust_limit_satoshis + success_tx_fee_sat - 1;
-	assert!(
-		channel_value_sat
-			.saturating_sub(commit_tx_fee_sat(feerate_per_kw, 0, &channel_type))
-			.saturating_sub(max_dust_htlc_sat)
-			< dust_limit_satoshis
-	);
-
-	// We can't afford the fee for an additional non-dust HTLC + the fee spike HTLC, so we can only send
-	// dust HTLCs...
-	let min_local_nondust_htlc_sat = dust_limit_satoshis + timeout_tx_fee_sat;
-	assert!(
-		channel_value_sat - commit_tx_fee_sat(spike_multiple * feerate_per_kw, 2, &channel_type)
-			< min_local_nondust_htlc_sat
-	);
-
-	// We cannot trim our own balance output, otherwise we'd have no outputs on the commitment. We must
-	// also reserve enough fees to pay for an incoming non-dust HTLC, aka the fee spike buffer HTLC.
-	let min_value_sat = core::cmp::max(
-		commit_tx_fee_sat(spike_multiple * feerate_per_kw, 0, &channel_type) + dust_limit_satoshis,
-		commit_tx_fee_sat(spike_multiple * feerate_per_kw, 1, &channel_type),
-	);
-	// At this point the tighter requirement is "must have an output"
-	assert!(
-		commit_tx_fee_sat(spike_multiple * feerate_per_kw, 0, &channel_type) + dust_limit_satoshis
-			> commit_tx_fee_sat(spike_multiple * feerate_per_kw, 1, &channel_type)
-	);
-	// But say at 9sat/vb with default dust limit,
-	// the tighter requirement is actually "must have funds for an inbound HTLC" !
-	assert!(
-		commit_tx_fee_sat(9 * 250, 0, &channel_type) + 354
-			< commit_tx_fee_sat(9 * 250, 1, &channel_type)
-	);
-	let sender_amount_msat = (channel_value_sat - min_value_sat) * 1000;
-	let details_0 = &nodes[0].node.list_channels()[0];
-	assert_eq!(details_0.next_outbound_htlc_minimum_msat, 1000);
-	assert_eq!(details_0.next_outbound_htlc_limit_msat, sender_amount_msat);
-	assert!(details_0.next_outbound_htlc_limit_msat > details_0.next_outbound_htlc_minimum_msat);
-
-	let (sender_amount_msat, receiver_amount_msat) = match no_outputs_case {
-		LegacyChannelsNoOutputs::PaymentSucceeds => (sender_amount_msat, sender_amount_msat),
-		LegacyChannelsNoOutputs::FailsReceiverCanAcceptHTLCA => {
-			// A dust HTLC with 1msat added to it will break counterparty `can_accept_incoming_htlc`
-			// validation, as this dust HTLC would push the holder's balance output below the
-			// dust limit at the spike multiple feerate.
-			(sender_amount_msat, sender_amount_msat + 1)
-		},
-		LegacyChannelsNoOutputs::FailsReceiverCanAcceptHTLCB => {
-			// In `validate_update_add_htlc`, we check that there is still some output present on
-			// the commitment given the *current* set of HTLCs, and the *current* feerate. So this
-			// HTLC will pass at `validate_update_add_htlc`, but will fail in
-			// `can_accept_incoming_htlc` due to failed fee spike buffer checks.
-			let receiver_amount_msat = (channel_value_sat
-				- commit_tx_fee_sat(feerate_per_kw, 0, &channel_type)
-				- dust_limit_satoshis)
-				* 1000;
-			(sender_amount_msat, receiver_amount_msat)
-		},
-		LegacyChannelsNoOutputs::FailsReceiverUpdateAddHTLC => {
-			// Same value as above, just add 1msat, and this fails at `validate_update_add_htlc`
-			let receiver_amount_msat = (channel_value_sat
-				- commit_tx_fee_sat(feerate_per_kw, 0, &channel_type)
-				- dust_limit_satoshis)
-				* 1000;
-			(sender_amount_msat, receiver_amount_msat + 1)
-		},
-	};
-
-	if let LegacyChannelsNoOutputs::PaymentSucceeds = no_outputs_case {
-		send_payment(&nodes[0], &[&nodes[1]], sender_amount_msat);
-		// Node 1 the fundee has 0-reserve too, so whatever they receive, they can send right back!
-		// Node 0 should *always* have the funds to cover the fee of a single non-dust HTLC from node 1.
-		assert_eq!(
-			nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat,
-			sender_amount_msat
-		);
-		send_payment(&nodes[1], &[&nodes[0]], sender_amount_msat);
-	} else {
-		let (route, payment_hash, _, payment_secret) =
-			get_route_and_payment_hash!(nodes[0], nodes[1], sender_amount_msat);
-		let secp_ctx = Secp256k1::new();
-		let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
-		let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
-		let onion_keys =
-			onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
-		let recipient_onion_fields =
-			RecipientOnionFields::secret_only(payment_secret, sender_amount_msat);
-		let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::test_build_onion_payloads(
-			&route.paths[0],
-			&recipient_onion_fields,
-			cur_height,
-			&None,
-			None,
-			None,
-		)
-		.unwrap();
-		assert_eq!(htlc_msat, sender_amount_msat);
-		let onion_packet =
-			onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash)
-				.unwrap();
-		let msg = msgs::UpdateAddHTLC {
-			channel_id,
-			htlc_id: 0,
-			amount_msat: receiver_amount_msat,
-			payment_hash,
-			cltv_expiry: htlc_cltv,
-			onion_routing_packet: onion_packet,
-			skimmed_fee_msat: None,
-			blinding_point: None,
-			hold_htlc: None,
-			accountable: None,
-		};
-
-		nodes[1].node.handle_update_add_htlc(node_a_id, &msg);
-
-		if let LegacyChannelsNoOutputs::FailsReceiverUpdateAddHTLC = no_outputs_case {
-			nodes[1].logger.assert_log_contains(
-				"lightning::ln::channelmanager",
-				"Remote HTLC add would overdraw remaining funds",
-				3,
-			);
-			assert_eq!(nodes[1].node.list_channels().len(), 0);
-			let err_msg = check_closed_broadcast(&nodes[1], 1, true).pop().unwrap();
-			assert_eq!(err_msg.data, "Remote HTLC add would overdraw remaining funds");
-			let reason = ClosureReason::ProcessingError {
-				err: "Remote HTLC add would overdraw remaining funds".to_string(),
-			};
-			check_added_monitors(&nodes[1], 1);
-			check_closed_event(&nodes[1], 1, reason, &[node_a_id], channel_value_sat);
-
-			return;
-		}
-
-		manually_trigger_update_fail_htlc(
-			&nodes,
-			channel_id,
-			channel_value_sat,
-			dust_limit_satoshis,
-			receiver_amount_msat,
-			htlc_cltv,
-			payment_hash,
-		);
-	}
-}
-
 fn manually_trigger_update_fail_htlc<'a, 'b, 'c, 'd>(
-	nodes: &'a Vec<Node<'b, 'c, 'd>>, channel_id: ChannelId, channel_value_sat: u64,
-	dust_limit_satoshis: u64, receiver_amount_msat: u64, htlc_cltv: u32, payment_hash: PaymentHash,
+	nodes: &'a Vec<Node<'b, 'c, 'd>>, channel_id: ChannelId, value_to_self_msat: u64,
+	dust_limit_satoshis: u64, payment_hash: PaymentHash,
+	htlcs_in_commitment: Vec<HTLCOutputInCommitment>, can_afford_but_reserve_is_breached: bool,
 ) {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
@@ -2863,8 +2654,6 @@ fn manually_trigger_update_fail_htlc<'a, 'b, 'c, 'd>(
 
 	let feerate_per_kw = get_feerate!(nodes[0], nodes[1], channel_id);
 
-	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
-
 	let (local_secret, next_local_point) = {
 		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
 		let chan_lock = per_peer_state.get(&node_b_id).unwrap().lock().unwrap();
@@ -2872,36 +2661,29 @@ fn manually_trigger_update_fail_htlc<'a, 'b, 'c, 'd>(
 			chan_lock.channel_by_id.get(&channel_id).and_then(Channel::as_funded).unwrap();
 		let chan_signer = local_chan.get_signer();
 		// Make the signer believe we validated another commitment, so we can release the secret
+		let commit_number = chan_signer.get_enforcement_state().last_holder_commitment;
 		chan_signer.get_enforcement_state().last_holder_commitment -= 1;
 
 		(
-			chan_signer.release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap(),
-			chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 2, &secp_ctx).unwrap(),
+			chan_signer.release_commitment_secret(commit_number).unwrap(),
+			chan_signer.get_per_commitment_point(commit_number - 2, &secp_ctx).unwrap(),
 		)
 	};
-	let remote_point = {
+	let (remote_commit_number, remote_point) = {
 		let per_peer_lock;
 		let mut peer_state_lock;
 
 		let channel =
 			get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id);
 		let chan_signer = channel.as_funded().unwrap().get_signer();
-		chan_signer.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &secp_ctx).unwrap()
+		let commit_number = chan_signer.get_enforcement_state().last_holder_commitment;
+		let remote_point =
+			chan_signer.get_per_commitment_point(commit_number - 1, &secp_ctx).unwrap();
+		(commit_number - 1, remote_point)
 	};
 
 	// Build the remote commitment transaction so we can sign it, and then later use the
 	// signature for the commitment_signed message.
-	let accepted_htlc_info = chan_utils::HTLCOutputInCommitment {
-		offered: false,
-		amount_msat: receiver_amount_msat,
-		cltv_expiry: htlc_cltv,
-		payment_hash,
-		transaction_output_index: Some(1),
-	};
-
-	let local_chan_balance_msat = channel_value_sat * 1000;
-	let commitment_number = INITIAL_COMMITMENT_NUMBER - 1;
-
 	let res = {
 		let per_peer_lock;
 		let mut peer_state_lock;
@@ -2912,12 +2694,12 @@ fn manually_trigger_update_fail_htlc<'a, 'b, 'c, 'd>(
 
 		let (commitment_tx, _stats) = SpecTxBuilder {}.build_commitment_transaction(
 			false,
-			commitment_number,
+			remote_commit_number,
 			&remote_point,
 			&channel.funding().channel_transaction_parameters,
 			&secp_ctx,
-			local_chan_balance_msat,
-			vec![accepted_htlc_info],
+			value_to_self_msat,
+			htlcs_in_commitment,
 			feerate_per_kw,
 			dust_limit_satoshis,
 			&nodes[0].logger,
@@ -2968,11 +2750,13 @@ fn manually_trigger_update_fail_htlc<'a, 'b, 'c, 'd>(
 		},
 		_ => panic!("Unexpected event"),
 	};
-	nodes[1].logger.assert_log(
-		"lightning::ln::channel",
-		"Attempting to fail HTLC due to balance exhausted on remote commitment".to_string(),
-		1,
-	);
+	let log_string =
+		if can_afford_but_reserve_is_breached {
+			String::from("Attempting to fail HTLC due to fee spike buffer violation. Rebalancing is required.")
+		} else {
+			String::from("Attempting to fail HTLC due to balance exhausted on remote commitment")
+		};
+	nodes[1].logger.assert_log("lightning::ln::channel", log_string, 1);
 
 	check_added_monitors(&nodes[1], 3);
 }
@@ -3405,4 +3189,607 @@ fn test_0reserve_zero_conf_combined() {
 	assert_eq!(node_1_reserve, 1000);
 	assert_eq!(node_1_max_htlc, node_0_max_htlc - node_1_reserve * 1000);
 	send_payment(&nodes[1], &[&nodes[0]], node_1_max_htlc);
+}
+
+#[xtest(feature = "_externalize_tests")]
+fn test_outbound_vs_available_capacity_outbound_htlc_limit_spiked_feerate() {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+
+	let channel_type = ChannelTypeFeatures::only_static_remote_key();
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let _node_a_id = nodes[0].node.get_our_node_id();
+	let _node_b_id = nodes[1].node.get_our_node_id();
+
+	const FEERATE: u32 = 253;
+	const MULTIPLE: u32 = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+	const SPIKED_FEERATE: u32 = FEERATE * MULTIPLE;
+	const DUST_LIMIT_MSAT: u64 = 354 * 1000;
+	const CHANNEL_VALUE_MSAT: u64 = 10_000 * 1000;
+	const NODE_0_VALUE_TO_SELF_MSAT: u64 = 5000 * 1000;
+	const NODE_1_VALUE_TO_SELF_MSAT: u64 = 5000 * 1000;
+	const CHANNEL_RESERVE_MSAT: u64 = 1000 * 1000;
+
+	// Find the HTLC amount that will be non-dust at the current feerate, but dust at the spiked feerate
+	const SPIKED_DUST_HTLC_MSAT: u64 = 688 * 1000;
+	const HTLC_SPIKE_DUST_LIMIT_MSAT: u64 = 689 * 1000;
+	let htlc_timeout_spike_tx_fee_msat =
+		second_stage_tx_fees_sat(&channel_type, SPIKED_FEERATE).1 * 1000;
+	assert_eq!(HTLC_SPIKE_DUST_LIMIT_MSAT, DUST_LIMIT_MSAT + htlc_timeout_spike_tx_fee_msat);
+
+	let channel_id =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, CHANNEL_VALUE_MSAT / 1000, 0)
+			.2;
+	assert_eq!(nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap(), &channel_type);
+	{
+		// Quick double-check on the dust limit to make sure HTLCs would be dust at 2x the
+		// feerate...
+		let mut per_peer_lock;
+		let mut peer_state_lock;
+
+		let channel =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id);
+		assert_eq!(channel.context().holder_dust_limit_satoshis * 1000, DUST_LIMIT_MSAT);
+	}
+
+	// Balance the channel so each side has 5_000 sats
+	send_payment(&nodes[0], &[&nodes[1]], NODE_1_VALUE_TO_SELF_MSAT);
+
+	let count_total_htlcs = |details: &ChannelDetails| {
+		details.pending_outbound_htlcs.len() + details.pending_inbound_htlcs.len()
+	};
+	let count_node_0_nondust_htlcs = || {
+		let mut txs = get_local_commitment_txn!(nodes[0], channel_id);
+		let commitment_tx = &txs[0];
+		commitment_tx
+			.output
+			.iter()
+			.filter(|output| output.value.to_sat() * 1000 == SPIKED_DUST_HTLC_MSAT)
+			.count()
+	};
+	let count_node_1_nondust_htlcs = || {
+		let mut txs = get_local_commitment_txn!(nodes[1], channel_id);
+		let commitment_tx = &txs[0];
+		commitment_tx
+			.output
+			.iter()
+			.filter(|output| output.value.to_sat() * 1000 == SPIKED_DUST_HTLC_MSAT)
+			.count()
+	};
+
+	// Sanity check
+	{
+		let reserved_fee_sat = commit_tx_fee_sat(SPIKED_FEERATE, 2, &channel_type);
+		let node_0_outbound_capacity_msat = NODE_0_VALUE_TO_SELF_MSAT - CHANNEL_RESERVE_MSAT;
+		let node_0_available_capacity_msat =
+			node_0_outbound_capacity_msat - reserved_fee_sat * 1000;
+		let node_0_details = &nodes[0].node.list_channels()[0];
+		assert_eq!(node_0_details.outbound_capacity_msat, node_0_outbound_capacity_msat);
+		assert_eq!(node_0_details.next_outbound_htlc_limit_msat, node_0_available_capacity_msat);
+		assert_eq!(count_total_htlcs(&node_0_details), 0);
+		assert_eq!(count_node_0_nondust_htlcs(), 0);
+	}
+
+	// Route 2 688sat HTLCs from node 0 to node 1
+	for i in 1..3 {
+		route_payment(&nodes[0], &[&nodes[1]], SPIKED_DUST_HTLC_MSAT);
+
+		let max_reserved_fee_msat = commit_tx_fee_sat(SPIKED_FEERATE, 2 + i, &channel_type) * 1000;
+		let node_0_outbound_capacity_msat =
+			NODE_0_VALUE_TO_SELF_MSAT - SPIKED_DUST_HTLC_MSAT * i as u64 - CHANNEL_RESERVE_MSAT;
+		let node_0_available_capacity_msat = node_0_outbound_capacity_msat - max_reserved_fee_msat;
+		// Node 0 can send non-dust HTLCs throughout
+		assert!(node_0_available_capacity_msat >= HTLC_SPIKE_DUST_LIMIT_MSAT);
+		let node_0_details = &nodes[0].node.list_channels()[0];
+		assert_eq!(node_0_details.outbound_capacity_msat, node_0_outbound_capacity_msat);
+		assert_eq!(node_0_details.next_outbound_htlc_limit_msat, node_0_available_capacity_msat);
+		assert_eq!(count_total_htlcs(&node_0_details), i);
+		assert_eq!(count_node_0_nondust_htlcs(), i);
+	}
+
+	let node_0_details = &nodes[0].node.list_channels()[0];
+	let local_nondust_htlc_count = 2;
+	assert_eq!(count_total_htlcs(&node_0_details), local_nondust_htlc_count);
+	assert_eq!(count_node_0_nondust_htlcs(), local_nondust_htlc_count);
+	assert_eq!(count_node_1_nondust_htlcs(), local_nondust_htlc_count);
+
+	let node_0_outbound_capacity_msat = node_0_details.outbound_capacity_msat;
+
+	// Route 2 688sat HTLCs from node 1 to node 0
+	for i in 1..3 {
+		route_payment(&nodes[1], &[&nodes[0]], SPIKED_DUST_HTLC_MSAT);
+
+		let node_1_outbound_capacity_msat =
+			NODE_1_VALUE_TO_SELF_MSAT - SPIKED_DUST_HTLC_MSAT * i as u64 - CHANNEL_RESERVE_MSAT;
+		assert!(node_1_outbound_capacity_msat >= HTLC_SPIKE_DUST_LIMIT_MSAT);
+		let node_1_details = &nodes[1].node.list_channels()[0];
+		assert_eq!(node_1_details.outbound_capacity_msat, node_1_outbound_capacity_msat);
+		assert_eq!(node_1_details.next_outbound_htlc_limit_msat, node_1_outbound_capacity_msat);
+
+		let nondust_htlc_count = 2 + i;
+		// At the current feerate, 688sat HTLCs are present on both commitments
+		assert_eq!(count_node_0_nondust_htlcs(), nondust_htlc_count);
+		assert_eq!(count_node_1_nondust_htlcs(), nondust_htlc_count);
+
+		assert_eq!(
+			nodes[0].node.list_channels()[0].outbound_capacity_msat,
+			node_0_outbound_capacity_msat
+		);
+		let max_reserved_fee_msat =
+			commit_tx_fee_sat(SPIKED_FEERATE, nondust_htlc_count + 2, &channel_type) * 1000;
+		assert_eq!(
+			nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat,
+			node_0_outbound_capacity_msat - max_reserved_fee_msat
+		);
+	}
+}
+
+/// Make sure that we do not account for HTLCs going from non-dust to dust at the spiked feerate
+/// when checking the fee spike buffer in `can_accept_incoming_htlc`. This is required to make sure
+/// that we can afford *any* increase in the feerate between 1x to 2x, instead of checking whether
+/// we can afford only the 2x increase in the feerate.
+#[xtest(feature = "_externalize_tests")]
+fn test_fail_cannot_afford_dust_htlcs_at_spike_multiple_if_nondust_at_base_feerate() {
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+
+	let channel_type = ChannelTypeFeatures::only_static_remote_key();
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let _node_b_id = nodes[1].node.get_our_node_id();
+
+	const FEERATE: u32 = 253;
+	const MULTIPLE: u32 = FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE as u32;
+	const SPIKED_FEERATE: u32 = FEERATE * MULTIPLE;
+	const DUST_LIMIT_MSAT: u64 = 354 * 1000;
+	const CHANNEL_VALUE_MSAT: u64 = 10_000 * 1000;
+	const NODE_0_VALUE_TO_SELF_MSAT: u64 = 5_000 * 1000;
+	const NODE_1_VALUE_TO_SELF_MSAT: u64 = 5_000 * 1000;
+	const CHANNEL_RESERVE_MSAT: u64 = 1_000 * 1_000;
+
+	let channel_id = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		CHANNEL_VALUE_MSAT / 1000,
+		NODE_1_VALUE_TO_SELF_MSAT,
+	)
+	.2;
+	assert_eq!(nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap(), &channel_type);
+
+	// Find the HTLC amount that will be non-dust at the current feerate,
+	// but dust at the spiked feerate.
+	const SPIKED_DUST_HTLC_MSAT: u64 = 688 * 1000;
+	const HTLC_SPIKE_DUST_LIMIT_MSAT: u64 = 689 * 1000;
+	// When checking the fee spike buffer in `can_accept_incoming_htlc`, we check the remote
+	// commitment, hence inbound HTLCs will be offered HTLCs, and use the timeout dust limit.
+	let htlc_timeout_spike_tx_fee_msat =
+		second_stage_tx_fees_sat(&channel_type, SPIKED_FEERATE).1 * 1000;
+	assert_eq!(HTLC_SPIKE_DUST_LIMIT_MSAT, DUST_LIMIT_MSAT + htlc_timeout_spike_tx_fee_msat);
+
+	// Calculate here the dust limit at the current feerate so we know when node 0 cannot send
+	// any further non-dust HTLCs at the current feerate.
+	let htlc_timeout_tx_fee_msat = second_stage_tx_fees_sat(&channel_type, FEERATE).1 * 1000;
+	let htlc_dust_limit_msat = DUST_LIMIT_MSAT + htlc_timeout_tx_fee_msat;
+	// Make sure the HTLC will be non-dust at the current feerate
+	assert!(SPIKED_DUST_HTLC_MSAT > htlc_dust_limit_msat);
+
+	// Place a few non-dust HTLCs on the commitment, these HTLCs would get trimmed upon a 2x
+	// increase in the feerate.
+	let mut sent_htlcs_count: usize = 0;
+	let mut payment_hashes = Vec::new();
+	while nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat >= htlc_dust_limit_msat {
+		let (_preimage, hash, _secret, _id) =
+			route_payment(&nodes[0], &[&nodes[1]], SPIKED_DUST_HTLC_MSAT);
+		payment_hashes.push(hash);
+		sent_htlcs_count += 1;
+	}
+	assert_eq!(sent_htlcs_count, 4);
+
+	// Check the outbound and available capacities
+	let node_0_outbound_capacity_msat = NODE_0_VALUE_TO_SELF_MSAT
+		- sent_htlcs_count as u64 * SPIKED_DUST_HTLC_MSAT
+		- CHANNEL_RESERVE_MSAT;
+	let node_0_details = &nodes[0].node.list_channels()[0];
+	assert_eq!(node_0_details.outbound_capacity_msat, node_0_outbound_capacity_msat);
+	// Node 0 can now only send dust HTLCs, so we reserve the fees for a single additional
+	// inbound non-dust HTLC.
+	let min_reserved_fee_msat =
+		commit_tx_fee_sat(SPIKED_FEERATE, sent_htlcs_count + 1, &channel_type) * 1000;
+	let node_0_available_capacity_msat = node_0_outbound_capacity_msat - min_reserved_fee_msat;
+	assert_eq!(node_0_details.next_outbound_htlc_limit_msat, node_0_available_capacity_msat);
+
+	// Then send an identical, 5th non-dust HTLC, bypass the validation from the holder, and
+	// check that the counterparty fails it due to a fee spike buffer violation.
+
+	// First check the maths
+
+	// Node 0 can afford an exact 2x increase in the feerate
+	let spiked_commit_tx_fee_msat = commit_tx_fee_sat(SPIKED_FEERATE, 0, &channel_type) * 1000;
+	assert!((node_0_outbound_capacity_msat - SPIKED_DUST_HTLC_MSAT)
+		.checked_sub(spiked_commit_tx_fee_msat)
+		.is_some());
+	// Node 0 can afford a 5th non-dust HTLC at the current feerate, so `update_add_htlc`
+	// validation will pass.
+	let real_commit_tx_fee_msat = commit_tx_fee_sat(FEERATE, 5, &channel_type) * 1000;
+	assert!((node_0_outbound_capacity_msat - SPIKED_DUST_HTLC_MSAT)
+		.checked_sub(real_commit_tx_fee_msat)
+		.is_some());
+	// But we don't account for the HTLC trimming effect of the spike multiple feerate increase,
+	//  so the 5th HTLC should be rejected at `can_accept_incoming_htlc`!
+	let expected_commit_tx_fee_msat = commit_tx_fee_sat(SPIKED_FEERATE, 5, &channel_type) * 1000;
+	assert!((node_0_outbound_capacity_msat - SPIKED_DUST_HTLC_MSAT)
+		.checked_sub(expected_commit_tx_fee_msat)
+		.is_none());
+
+	// Then run the experiment
+
+	let sender_amount_msat = node_0_available_capacity_msat;
+	let receiver_amount_msat = SPIKED_DUST_HTLC_MSAT;
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], sender_amount_msat);
+	let secp_ctx = Secp256k1::new();
+	let session_priv = SecretKey::from_slice(&[42; 32]).unwrap();
+	let cur_height = nodes[0].node.best_block.read().unwrap().height + 1;
+	let onion_keys = onion_utils::construct_onion_keys(&secp_ctx, &route.paths[0], &session_priv);
+	let recipient_onion_fields =
+		RecipientOnionFields::secret_only(payment_secret, sender_amount_msat);
+	let (onion_payloads, htlc_msat, htlc_cltv) = onion_utils::test_build_onion_payloads(
+		&route.paths[0],
+		&recipient_onion_fields,
+		cur_height,
+		&None,
+		None,
+		None,
+	)
+	.unwrap();
+	assert_eq!(htlc_msat, sender_amount_msat);
+	let onion_packet =
+		onion_utils::construct_onion_packet(onion_payloads, onion_keys, [0; 32], &payment_hash)
+			.unwrap();
+	let msg = msgs::UpdateAddHTLC {
+		channel_id,
+		htlc_id: sent_htlcs_count as u64,
+		amount_msat: receiver_amount_msat,
+		payment_hash,
+		cltv_expiry: htlc_cltv,
+		onion_routing_packet: onion_packet,
+		skimmed_fee_msat: None,
+		blinding_point: None,
+		hold_htlc: None,
+		accountable: None,
+	};
+
+	nodes[1].node.handle_update_add_htlc(node_a_id, &msg);
+
+	let htlcs_in_tx = vec![
+		HTLCOutputInCommitment {
+			offered: false,
+			cltv_expiry: 81,
+			payment_hash: payment_hashes.iter().find(|hash| hash.0[0] == 0x75).unwrap().clone(),
+			amount_msat: 688_000,
+			transaction_output_index: Some(0),
+		},
+		HTLCOutputInCommitment {
+			offered: false,
+			cltv_expiry: 81,
+			payment_hash: payment_hashes.iter().find(|hash| hash.0[0] == 0x64).unwrap().clone(),
+			amount_msat: 688_000,
+			transaction_output_index: Some(1),
+		},
+		HTLCOutputInCommitment {
+			offered: false,
+			cltv_expiry: 81,
+			payment_hash,
+			amount_msat: 688_000,
+			transaction_output_index: Some(2),
+		},
+		HTLCOutputInCommitment {
+			offered: false,
+			cltv_expiry: 81,
+			payment_hash: payment_hashes.iter().find(|hash| hash.0[0] == 0x72).unwrap().clone(),
+			amount_msat: 688_000,
+			transaction_output_index: Some(3),
+		},
+		HTLCOutputInCommitment {
+			offered: false,
+			cltv_expiry: 81,
+			payment_hash: payment_hashes.iter().find(|hash| hash.0[0] == 0x66).unwrap().clone(),
+			amount_msat: 688_000,
+			transaction_output_index: Some(4),
+		},
+	];
+
+	manually_trigger_update_fail_htlc(
+		&nodes,
+		channel_id,
+		NODE_0_VALUE_TO_SELF_MSAT,
+		DUST_LIMIT_MSAT / 1000,
+		payment_hash,
+		htlcs_in_tx,
+		true,
+	);
+}
+
+#[xtest(feature = "_externalize_tests")]
+fn test_available_balances_both_commitments_dust_on_funder_commitment() {
+	let mut config = test_default_channel_config();
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+
+	let channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	const FEERATE: u32 = 253;
+	const TOTAL_ANCHORS_MSAT: u64 = 2 * 330_000;
+	const NODE_0_DUST_LIMIT_MSAT: u64 = 10_000 * 1000;
+	const NODE_1_DUST_LIMIT_MSAT: u64 = 354 * 1000;
+	const CHANNEL_VALUE_MSAT: u64 = 50_000 * 1000;
+	const NODE_0_VALUE_TO_SELF_MSAT: u64 = 25_000 * 1000;
+	const NODE_1_VALUE_TO_SELF_MSAT: u64 = 25_000 * 1000;
+	const NODE_0_SELECTED_CHANNEL_RESERVE_MSAT: u64 = 1_000 * 1_000;
+	const NODE_1_SELECTED_CHANNEL_RESERVE_MSAT: u64 = 10_000 * 1_000;
+
+	let channel_id = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		CHANNEL_VALUE_MSAT / 1000,
+		NODE_1_VALUE_TO_SELF_MSAT,
+	)
+	.2;
+	assert_eq!(nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap(), &channel_type);
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().holder_dust_limit_satoshis = NODE_0_DUST_LIMIT_MSAT / 1000;
+		chan.funding_mut().counterparty_selected_channel_reserve_satoshis =
+			Some(NODE_1_SELECTED_CHANNEL_RESERVE_MSAT / 1000);
+		assert_eq!(chan.context().counterparty_dust_limit_satoshis, NODE_1_DUST_LIMIT_MSAT / 1000);
+		assert_eq!(
+			chan.funding().holder_selected_channel_reserve_satoshis,
+			NODE_0_SELECTED_CHANNEL_RESERVE_MSAT / 1000
+		);
+	}
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().counterparty_dust_limit_satoshis = NODE_0_DUST_LIMIT_MSAT / 1000;
+		chan.funding_mut().holder_selected_channel_reserve_satoshis =
+			NODE_1_SELECTED_CHANNEL_RESERVE_MSAT / 1000;
+		assert_eq!(chan.context().holder_dust_limit_satoshis, NODE_1_DUST_LIMIT_MSAT / 1000);
+		assert_eq!(
+			chan.funding().counterparty_selected_channel_reserve_satoshis,
+			Some(NODE_0_SELECTED_CHANNEL_RESERVE_MSAT / 1000)
+		);
+	}
+
+	// This HTLC is only present on node 1's commitment
+	const SNEAKY_HTLC_MSAT: u64 = 5_000_000;
+
+	route_payment(&nodes[1], &[&nodes[0]], SNEAKY_HTLC_MSAT);
+
+	let node_1_details = &nodes[1].node.list_channels()[0];
+	let expected_outbound_capacity_msat =
+		NODE_1_VALUE_TO_SELF_MSAT - SNEAKY_HTLC_MSAT - NODE_0_SELECTED_CHANNEL_RESERVE_MSAT;
+	assert_eq!(node_1_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+	let expected_available_capacity_msat = expected_outbound_capacity_msat;
+	assert_eq!(node_1_details.next_outbound_htlc_limit_msat, expected_available_capacity_msat);
+	let expected_splice_out_max =
+		NODE_1_VALUE_TO_SELF_MSAT / 1000 - SNEAKY_HTLC_MSAT / 1000 - NODE_1_DUST_LIMIT_MSAT / 1000;
+	assert_eq!(node_1_details.next_splice_out_maximum_sat, expected_splice_out_max);
+
+	let node_0_details = &nodes[0].node.list_channels()[0];
+	let expected_outbound_capacity_msat =
+		NODE_0_VALUE_TO_SELF_MSAT - NODE_1_SELECTED_CHANNEL_RESERVE_MSAT - TOTAL_ANCHORS_MSAT;
+	assert_eq!(node_0_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+	let expected_available_capacity_msat =
+		expected_outbound_capacity_msat - commit_tx_fee_sat(FEERATE, 3, &channel_type) * 1000;
+	assert_eq!(node_0_details.next_outbound_htlc_limit_msat, expected_available_capacity_msat);
+	let expected_splice_out_max = NODE_0_VALUE_TO_SELF_MSAT / 1000
+		- TOTAL_ANCHORS_MSAT / 1000
+		- commit_tx_fee_sat(FEERATE, 2, &channel_type)
+		- NODE_0_DUST_LIMIT_MSAT / 1000;
+	assert_eq!(node_0_details.next_splice_out_maximum_sat, expected_splice_out_max);
+
+	let node_0_payment_msat = expected_available_capacity_msat;
+	send_payment(&nodes[0], &[&nodes[1]], node_0_payment_msat);
+
+	route_payment(&nodes[1], &[&nodes[0]], SNEAKY_HTLC_MSAT);
+	route_payment(&nodes[1], &[&nodes[0]], SNEAKY_HTLC_MSAT);
+
+	let node_0_details = &nodes[0].node.list_channels()[0];
+	let expected_outbound_capacity_msat = NODE_0_VALUE_TO_SELF_MSAT
+		- node_0_payment_msat
+		- NODE_1_SELECTED_CHANNEL_RESERVE_MSAT
+		- TOTAL_ANCHORS_MSAT;
+	assert_eq!(node_0_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+	assert_eq!(
+		node_0_details.outbound_capacity_msat,
+		commit_tx_fee_sat(FEERATE, 3, &channel_type) * 1000
+	);
+	assert_eq!(node_0_details.next_outbound_htlc_limit_msat, 0);
+	assert_eq!(node_0_details.next_splice_out_maximum_sat, 0);
+
+	let node_1_details = &nodes[1].node.list_channels()[0];
+	let expected_outbound_capacity_msat = NODE_1_VALUE_TO_SELF_MSAT + node_0_payment_msat
+		- 3 * SNEAKY_HTLC_MSAT
+		- NODE_0_SELECTED_CHANNEL_RESERVE_MSAT;
+	assert_eq!(node_1_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+	let (_htlc_success_tx_fee_sat, htlc_timeout_tx_fee_sat) =
+		second_stage_tx_fees_sat(&channel_type, FEERATE);
+	let expected_available_capacity_msat =
+		(NODE_1_DUST_LIMIT_MSAT / 1000 + htlc_timeout_tx_fee_sat) * 1000 - 1;
+	assert_eq!(node_1_details.next_outbound_htlc_limit_msat, expected_available_capacity_msat);
+	let expected_splice_out_max = NODE_1_VALUE_TO_SELF_MSAT / 1000 + node_0_payment_msat / 1000
+		- 3 * SNEAKY_HTLC_MSAT / 1000
+		- NODE_1_DUST_LIMIT_MSAT / 1000;
+	assert_eq!(node_1_details.next_splice_out_maximum_sat, expected_splice_out_max);
+}
+
+#[xtest(feature = "_externalize_tests")]
+fn test_available_balances_both_commitments_dust_on_fundee_commitment() {
+	let mut config = test_default_channel_config();
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	config.channel_handshake_config.announced_channel_max_inbound_htlc_value_in_flight_percentage =
+		100;
+
+	let channel_type = ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	const FEERATE: u32 = 253;
+	const TOTAL_ANCHORS_MSAT: u64 = 2 * 330_000;
+	const NODE_0_DUST_LIMIT_MSAT: u64 = 354 * 1000;
+	const NODE_1_DUST_LIMIT_MSAT: u64 = 10_000 * 1000;
+	const CHANNEL_VALUE_MSAT: u64 = 50_000 * 1000;
+	const NODE_0_VALUE_TO_SELF_MSAT: u64 = 25_000 * 1000;
+	const NODE_1_VALUE_TO_SELF_MSAT: u64 = 25_000 * 1000;
+	const NODE_0_SELECTED_CHANNEL_RESERVE_MSAT: u64 = 10_000 * 1_000;
+	const NODE_1_SELECTED_CHANNEL_RESERVE_MSAT: u64 = 1_000 * 1_000;
+
+	let channel_id = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		CHANNEL_VALUE_MSAT / 1000,
+		NODE_1_VALUE_TO_SELF_MSAT,
+	)
+	.2;
+	assert_eq!(nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap(), &channel_type);
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().counterparty_dust_limit_satoshis = NODE_1_DUST_LIMIT_MSAT / 1000;
+		chan.funding_mut().holder_selected_channel_reserve_satoshis =
+			NODE_0_SELECTED_CHANNEL_RESERVE_MSAT / 1000;
+		assert_eq!(chan.context().holder_dust_limit_satoshis, NODE_0_DUST_LIMIT_MSAT / 1000);
+		assert_eq!(
+			chan.funding().counterparty_selected_channel_reserve_satoshis,
+			Some(NODE_1_SELECTED_CHANNEL_RESERVE_MSAT / 1000)
+		);
+	}
+
+	{
+		let per_peer_state_lock;
+		let mut peer_state_lock;
+		let chan =
+			get_channel_ref!(nodes[1], nodes[0], per_peer_state_lock, peer_state_lock, channel_id);
+		chan.context_mut().holder_dust_limit_satoshis = NODE_1_DUST_LIMIT_MSAT / 1000;
+		chan.funding_mut().counterparty_selected_channel_reserve_satoshis =
+			Some(NODE_0_SELECTED_CHANNEL_RESERVE_MSAT / 1000);
+		assert_eq!(chan.context().counterparty_dust_limit_satoshis, NODE_0_DUST_LIMIT_MSAT / 1000);
+		assert_eq!(
+			chan.funding().holder_selected_channel_reserve_satoshis,
+			NODE_1_SELECTED_CHANNEL_RESERVE_MSAT / 1000
+		);
+	}
+
+	// This HTLC is only present on node 0's commitment
+	const SNEAKY_HTLC_MSAT: u64 = 5_000_000;
+
+	route_payment(&nodes[1], &[&nodes[0]], SNEAKY_HTLC_MSAT);
+
+	let node_1_details = &nodes[1].node.list_channels()[0];
+	let expected_outbound_capacity_msat =
+		NODE_1_VALUE_TO_SELF_MSAT - SNEAKY_HTLC_MSAT - NODE_0_SELECTED_CHANNEL_RESERVE_MSAT;
+	assert_eq!(node_1_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+	let expected_available_capacity_msat = expected_outbound_capacity_msat;
+	assert_eq!(node_1_details.next_outbound_htlc_limit_msat, expected_available_capacity_msat);
+	let expected_splice_out_max =
+		NODE_1_VALUE_TO_SELF_MSAT / 1000 - SNEAKY_HTLC_MSAT / 1000 - NODE_1_DUST_LIMIT_MSAT / 1000;
+	assert_eq!(node_1_details.next_splice_out_maximum_sat, expected_splice_out_max);
+
+	let node_0_details = &nodes[0].node.list_channels()[0];
+
+	let expected_outbound_capacity_msat =
+		NODE_0_VALUE_TO_SELF_MSAT - NODE_1_SELECTED_CHANNEL_RESERVE_MSAT - TOTAL_ANCHORS_MSAT;
+	assert_eq!(node_0_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+
+	let expected_splice_out_max = NODE_0_VALUE_TO_SELF_MSAT / 1000
+		- TOTAL_ANCHORS_MSAT / 1000
+		- commit_tx_fee_sat(FEERATE, 2, &channel_type)
+		- NODE_0_DUST_LIMIT_MSAT / 1000;
+	assert_eq!(node_0_details.next_splice_out_maximum_sat, expected_splice_out_max);
+
+	let expected_available_capacity_msat =
+		expected_outbound_capacity_msat - commit_tx_fee_sat(FEERATE, 3, &channel_type) * 1000;
+	assert_eq!(node_0_details.next_outbound_htlc_limit_msat, expected_available_capacity_msat);
+
+	let node_0_payment_msat = expected_available_capacity_msat;
+	send_payment(&nodes[0], &[&nodes[1]], node_0_payment_msat);
+
+	route_payment(&nodes[1], &[&nodes[0]], SNEAKY_HTLC_MSAT);
+	route_payment(&nodes[1], &[&nodes[0]], SNEAKY_HTLC_MSAT);
+
+	let node_0_details = &nodes[0].node.list_channels()[0];
+	let expected_outbound_capacity_msat = NODE_0_VALUE_TO_SELF_MSAT
+		- node_0_payment_msat
+		- NODE_1_SELECTED_CHANNEL_RESERVE_MSAT
+		- TOTAL_ANCHORS_MSAT;
+	assert_eq!(node_0_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+	assert_eq!(
+		node_0_details.outbound_capacity_msat,
+		commit_tx_fee_sat(FEERATE, 3, &channel_type) * 1000
+	);
+	assert_eq!(node_0_details.next_outbound_htlc_limit_msat, 0);
+
+	let local_balance_before_fee_sat =
+		NODE_0_VALUE_TO_SELF_MSAT / 1000 - node_0_payment_msat / 1000 - TOTAL_ANCHORS_MSAT / 1000;
+	let post_splice_delta_above_reserve = commit_tx_fee_sat(FEERATE, 4, &channel_type);
+	let divident_sat = local_balance_before_fee_sat * 100 + 100
+		- (post_splice_delta_above_reserve * 100)
+		- CHANNEL_VALUE_MSAT / 1000;
+	let expected_splice_out_max = (divident_sat - 1) / 99;
+	assert_eq!(node_0_details.next_splice_out_maximum_sat, expected_splice_out_max);
+
+	let node_1_details = &nodes[1].node.list_channels()[0];
+	let expected_outbound_capacity_msat = NODE_1_VALUE_TO_SELF_MSAT + node_0_payment_msat
+		- 3 * SNEAKY_HTLC_MSAT
+		- NODE_0_SELECTED_CHANNEL_RESERVE_MSAT;
+	assert_eq!(node_1_details.outbound_capacity_msat, expected_outbound_capacity_msat);
+	let (htlc_success_tx_fee_sat, _htlc_timeout_tx_fee_sat) =
+		second_stage_tx_fees_sat(&channel_type, FEERATE);
+	let expected_available_capacity_msat =
+		(NODE_0_DUST_LIMIT_MSAT / 1000 + htlc_success_tx_fee_sat) * 1000 - 1;
+	assert_eq!(node_1_details.next_outbound_htlc_limit_msat, expected_available_capacity_msat);
+	let expected_splice_out_max = NODE_1_VALUE_TO_SELF_MSAT / 1000 + node_0_payment_msat / 1000
+		- 3 * SNEAKY_HTLC_MSAT / 1000
+		- NODE_1_DUST_LIMIT_MSAT / 1000;
+	assert_eq!(node_1_details.next_splice_out_maximum_sat, expected_splice_out_max);
 }

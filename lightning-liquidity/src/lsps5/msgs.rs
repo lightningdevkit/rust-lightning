@@ -18,7 +18,7 @@ use super::url_utils::LSPSUrl;
 
 use lightning::ln::msgs::DecodeError;
 use lightning::util::ser::{Readable, Writeable};
-use lightning::{impl_writeable_tlv_based, impl_writeable_tlv_based_enum};
+use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
 use lightning_types::string::UntrustedString;
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
@@ -527,7 +527,7 @@ pub enum WebhookNotificationMethod {
 	LSPS5OnionMessageIncoming,
 }
 
-impl_writeable_tlv_based_enum!(WebhookNotificationMethod,
+impl_ser_tlv_based_enum!(WebhookNotificationMethod,
 	(0, LSPS5WebhookRegistered) => {},
 	(2, LSPS5PaymentIncoming) => {},
 	(4, LSPS5ExpirySoon) => {
@@ -688,7 +688,7 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 	}
 }
 
-impl_writeable_tlv_based!(WebhookNotification, {
+impl_ser_tlv_based!(WebhookNotification, {
 	(0, method, required),
 });
 
@@ -876,7 +876,7 @@ mod tests {
 	}
 
 	#[test]
-	fn test_url_security_validation() {
+	fn test_webhook_url_validation() {
 		let urls_that_should_throw = [
 			"test-app",
 			"http://example.com/webhook",
@@ -904,6 +904,16 @@ mod tests {
 				},
 			}
 		}
+	}
+
+	#[test]
+	fn test_webhook_url_accepts_https_userinfo_and_ipv6() {
+		let userinfo_url =
+			LSPS5WebhookUrl::new("https://user:pass@example.com/webhook".to_string()).unwrap();
+		assert_eq!(userinfo_url.as_str(), "https://user:pass@example.com/webhook");
+
+		let ipv6_url = LSPS5WebhookUrl::new("https://[::1]/webhook".to_string()).unwrap();
+		assert_eq!(ipv6_url.as_str(), "https://[::1]/webhook");
 	}
 
 	#[test]

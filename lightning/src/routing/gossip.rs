@@ -57,7 +57,7 @@ use core::{cmp, fmt};
 
 pub use lightning_types::routing::RoutingFees;
 
-#[cfg(feature = "std")]
+#[cfg(all(feature = "std", not(fuzzing)))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// We remove stale channel directional info two weeks after the last update, per BOLT 7's
@@ -1350,7 +1350,7 @@ impl EffectiveCapacity {
 	}
 }
 
-impl_writeable_tlv_based!(RoutingFees, {
+impl_ser_tlv_based!(RoutingFees, {
 	(0, base_msat, required),
 	(2, proportional_millionths, required)
 });

@@ -16,8 +16,8 @@
 #[cfg(not(fuzzing))]
 compile_error!("Fuzz targets need cfg=fuzzing");
 
-#[cfg(not(hashes_fuzz))]
-compile_error!("Fuzz targets need cfg=hashes_fuzz");
+#[cfg(HASHES_FLAG)]
+compile_error!("Fuzz target does not support cfg(HASHES_FLAG)");
 
 #[cfg(not(secp256k1_fuzz))]
 compile_error!("Fuzz targets need cfg=secp256k1_fuzz");
@@ -71,7 +71,11 @@ fn main() {
 
 	let mut data = Vec::with_capacity(8192);
 	std::io::stdin().read_to_end(&mut data).unwrap();
-	TARGET_NAME_test(&data, lightning_fuzz::utils::test_logger::Stdout {});
+	if std::env::var_os("LDK_FUZZ_SUPPRESS_LOGS").is_some() {
+		TARGET_NAME_test(&data, test_logger::DevNull {});
+	} else {
+		TARGET_NAME_test(&data, test_logger::Stdout {});
+	}
 }
 
 #[test]
@@ -87,7 +91,7 @@ fn run_test_cases() {
 	}
 	let mut threads = Vec::new();
 	let threads_running = Arc::new(atomic::AtomicUsize::new(0));
-	if let Ok(tests) = fs::read_dir("test_cases/TARGET_NAME") {
+	if let Ok(tests) = fs::read_dir("../test_cases/TARGET_NAME") {
 		for test in tests {
 			let mut data: Vec<u8> = Vec::new();
 			let path = test.unwrap().path();

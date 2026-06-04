@@ -358,7 +358,7 @@ pub struct Responder {
 	reply_path: BlindedMessagePath,
 }
 
-impl_writeable_tlv_based!(Responder, {
+impl_ser_tlv_based!(Responder, {
 	(0, reply_path, required),
 });
 
@@ -469,6 +469,11 @@ pub trait MessageRouter {
 
 	/// Creates [`BlindedMessagePath`]s to the `recipient` node. The nodes in `peers` are assumed to
 	/// be direct peers with the `recipient`.
+	///
+	/// While payments will fail if most of `context` is modified, modifying
+	/// [`OffersContext::InvoiceRequest::payment_metadata`] prior to blinded path construction is
+	/// allowed.
+	///
 	fn create_blinded_paths<T: secp256k1::Signing + secp256k1::Verification>(
 		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
 		context: MessageContext, peers: Vec<MessageForwardNode>, secp_ctx: &Secp256k1<T>,

@@ -80,12 +80,33 @@ fn large_payment_metadata() {
 		- final_payload_len_without_metadata;
 	let mut payment_metadata = vec![42; max_metadata_len];
 
+	macro_rules! get_payment_hash {
+		($node: expr, $metadata: expr) => {{
+			let (payment_hash, payment_secret, encrypted_metadata) = $node
+				.node
+				.create_inbound_payment(Some(amt_msat), 7200, None, Some($metadata))
+				.unwrap();
+			let encrypted_metadata = encrypted_metadata.unwrap();
+			let mut metadata_for_preimage = encrypted_metadata.clone();
+			let payment_preimage = $node
+				.node
+				.get_payment_preimage_decrypt_metadata(
+					payment_hash,
+					payment_secret,
+					Some(metadata_for_preimage.as_mut_slice()),
+				)
+				.unwrap();
+			(payment_hash, payment_preimage, payment_secret, encrypted_metadata)
+		}};
+	}
+
 	// Check that the maximum-size metadata is sendable.
-	let (mut route_0_1, payment_hash, payment_preimage, payment_secret) =
-		get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
+	let (payment_hash, payment_preimage, payment_secret, encrypted_metadata) =
+		get_payment_hash!(nodes[1], payment_metadata.clone());
+	let (mut route_0_1, ..) = get_route_and_payment_hash!(&nodes[0], &nodes[1], amt_msat);
 	let mut max_sized_onion = RecipientOnionFields {
 		payment_secret: Some(payment_secret),
-		payment_metadata: Some(payment_metadata.clone()),
+		payment_metadata: Some(encrypted_metadata),
 		custom_tlvs: Vec::new(),
 		total_mpp_amount_msat: amt_msat,
 	};
@@ -102,6 +123,7 @@ fn large_payment_metadata() {
 	let args =
 		PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, events.pop().unwrap())
 			.with_payment_secret(payment_secret)
+			.with_payment_preimage(payment_preimage)
 			.with_payment_metadata(payment_metadata.clone());
 	do_pass_along_path(args);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(
@@ -112,14 +134,18 @@ fn large_payment_metadata() {
 
 	// Check that the payment parameter for max path length will prevent us from routing past our
 	// next-hop peer given the payment_metadata size.
-	let (mut route_0_2, payment_hash_2, payment_preimage_2, payment_secret_2) =
-		get_route_and_payment_hash!(&nodes[0], &nodes[2], amt_msat);
+
+	let (payment_hash_2, _, payment_secret_2, encrypted_metadata_2) =
+		get_payment_hash!(nodes[2], payment_metadata.clone());
+	let (mut route_0_2, ..) = get_route_and_payment_hash!(&nodes[0], &nodes[2], amt_msat);
 	let mut route_params_0_2 = route_0_2.route_params.clone().unwrap();
 	route_params_0_2.payment_params.max_path_length = 1;
 	nodes[0].router.expect_find_route_query(route_params_0_2);
+	max_sized_onion.payment_secret = Some(payment_secret_2);
+	max_sized_onion.payment_metadata = Some(encrypted_metadata_2);
 
 	let id = PaymentId(payment_hash_2.0);
-	let route_params = route_0_2.route_params.clone().unwrap();
+	let mut route_params = route_0_2.route_params.clone().unwrap();
 	let err = nodes[0]
 		.node
 		.send_payment(payment_hash_2, max_sized_onion.clone(), id, route_params, Retry::Attempts(0))
@@ -128,8 +154,12 @@ fn large_payment_metadata() {
 
 	// If our payment_metadata contains 1 additional byte, we'll fail prior to pathfinding.
 	let mut too_large_onion = max_sized_onion.clone();
-	too_large_onion.payment_metadata.as_mut().map(|mut md| md.push(42));
+	too_large_onion.payment_metadata.as_mut().map(|md| md.push(42));
 	too_large_onion.total_mpp_amount_msat = MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY;
+	let mut too_large_metadata = payment_metadata.clone();
+	too_large_metadata.push(42);
+	let (payment_hash_2, _, payment_secret_2, _) = get_payment_hash!(nodes[2], too_large_metadata);
+	too_large_onion.payment_secret = Some(payment_secret_2);
 
 	// First confirm we'll fail to create the onion packet directly.
 	let secp_ctx = Secp256k1::signing_only();
@@ -164,9 +194,11 @@ fn large_payment_metadata() {
 	// If we remove enough payment_metadata bytes to allow for 2 hops, we're now able to send to
 	// nodes[2].
 	let two_hop_metadata = vec![42; max_metadata_len - INTERMED_PAYLOAD_LEN_ESTIMATE];
+	let (payment_hash_2, payment_preimage_2, payment_secret_2, two_hop_encrypted_metadata) =
+		get_payment_hash!(nodes[2], two_hop_metadata.clone());
 	let mut onion_allowing_2_hops = RecipientOnionFields {
 		payment_secret: Some(payment_secret_2),
-		payment_metadata: Some(two_hop_metadata.clone()),
+		payment_metadata: Some(two_hop_encrypted_metadata),
 		custom_tlvs: Vec::new(),
 		total_mpp_amount_msat: amt_msat,
 	};
@@ -185,6 +217,7 @@ fn large_payment_metadata() {
 	let args =
 		PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash_2, events.pop().unwrap())
 			.with_payment_secret(payment_secret_2)
+			.with_payment_preimage(payment_preimage_2)
 			.with_payment_metadata(two_hop_metadata);
 	do_pass_along_path(args);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(
@@ -222,7 +255,9 @@ fn one_hop_blinded_path_with_custom_tlv() {
 			max_cltv_expiry: u32::max_value(),
 			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+			payment_metadata: None,
+		}),
 	};
 	let receive_auth_key = chanmon_cfgs[2].keys_manager.get_receive_auth_key();
 	let mut secp_ctx = Secp256k1::new();
