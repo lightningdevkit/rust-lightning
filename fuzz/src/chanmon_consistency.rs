@@ -2609,30 +2609,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	// Final invariants should not depend on the input ending with explicit relay
 	// and mining bytes.
 	fn finish(&mut self) {
-		for _ in 0..MAX_FINISH_RELAY_MINE_ROUNDS {
-			let mut txs = Vec::new();
-			for node in &self.nodes {
-				txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
-			}
-			self.chain_state.relay_transactions(txs);
-			if self.chain_state.pending_txs.is_empty() {
-				assert_test_invariants(&self.nodes);
-				return;
-			}
-			if self.mine_blocks(ANTI_REORG_DELAY) == 0 {
-				// The input ended with pending mempool transactions but no safe
-				// block left before an HTLC fail-back window. Leave them
-				// unconfirmed rather than forcing finish cleanup to advance
-				// the chain past that boundary.
-				assert_test_invariants(&self.nodes);
-				return;
-			}
-		}
-		assert!(
-			!self.nodes.iter().any(|node| !node.broadcaster.txn_broadcasted.borrow().is_empty())
-				&& self.chain_state.pending_txs.is_empty(),
-			"finish tx mining loop failed to quiesce",
-		);
+		self.mine_relayed_txs_until_quiet();
 		assert_test_invariants(&self.nodes);
 	}
 
@@ -3450,6 +3427,30 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			node.sync_with_chain_state(chain_state, None);
 		}
 		count
+	}
+
+	fn mine_relayed_txs_until_quiet(&mut self) {
+		for _ in 0..MAX_FINISH_RELAY_MINE_ROUNDS {
+			let mut txs = Vec::new();
+			for node in &self.nodes {
+				txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
+			}
+			self.chain_state.relay_transactions(txs);
+			if self.chain_state.pending_txs.is_empty() {
+				return;
+			}
+			if self.mine_blocks(ANTI_REORG_DELAY) == 0 {
+				// Pending mempool transactions remain, but no safe block is
+				// left before an HTLC fail-back window. Leave them unconfirmed
+				// rather than advancing the chain past that boundary.
+				return;
+			}
+		}
+		assert!(
+			!self.nodes.iter().any(|node| !node.broadcaster.txn_broadcasted.borrow().is_empty())
+				&& self.chain_state.pending_txs.is_empty(),
+			"tx mining loop failed to quiesce",
+		);
 	}
 }
 
