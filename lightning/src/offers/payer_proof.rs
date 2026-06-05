@@ -593,96 +593,6 @@ pub struct UnsignedPayerProof {
 	tagged_hash: TaggedHash,
 }
 
-impl AsRef<TaggedHash> for UnsignedPayerProof {
-	fn as_ref(&self) -> &TaggedHash {
-		&self.tagged_hash
-	}
-}
-
-/// A function for signing an [`UnsignedPayerProof`].
-pub trait SignPayerProofFn {
-	/// Signs a [`TaggedHash`] computed over the payer note and the invoice's merkle root.
-	fn sign_payer_proof(&self, message: &UnsignedPayerProof) -> Result<Signature, ()>;
-}
-
-impl<F> SignPayerProofFn for F
-where
-	F: Fn(&UnsignedPayerProof) -> Result<Signature, ()>,
-{
-	fn sign_payer_proof(&self, message: &UnsignedPayerProof) -> Result<Signature, ()> {
-		self(message)
-	}
-}
-
-impl<F> merkle::SignFn<UnsignedPayerProof> for F
-where
-	F: SignPayerProofFn,
-{
-	fn sign(&self, message: &UnsignedPayerProof) -> Result<Signature, ()> {
-		self.sign_payer_proof(message)
-	}
-}
-
-// The proof's signature TLVs sit in the BOLT 12 `SIGNATURE_TYPES` range and are
-// excluded from the standard merkle-root computation.
-tlv_stream!(
-	PayerProofSignatureTlvStream, PayerProofSignatureTlvStreamRef<'a>, SIGNATURE_TYPES, {
-		(PAYER_PROOF_ISSUER_SIGNATURE_TYPE, invoice_signature: Signature),
-		(PAYER_PROOF_PROOF_SIGNATURE_TYPE, proof_signature: Signature),
-	}
-);
-
-// The data-bearing TLVs sit in `PAYER_PROOF_DATA_TYPES`, outside the signature
-// range, so the standard merkle root for `proof_signature` includes them as
-// leaves.
-tlv_stream!(
-	PayerProofDataTlvStream, PayerProofDataTlvStreamRef<'a>, PAYER_PROOF_DATA_TYPES, {
-		(PAYER_PROOF_PREIMAGE_TYPE, proof_preimage: PaymentPreimage),
-		(PAYER_PROOF_OMITTED_TLVS_TYPE, proof_omitted_markers: (Vec<BigSize>, WithoutLength)),
-		(PAYER_PROOF_MISSING_HASHES_TYPE, proof_missing_hashes: (Vec<sha256::Hash>, WithoutLength)),
-		(PAYER_PROOF_LEAF_HASHES_TYPE, proof_leaf_hashes: (Vec<sha256::Hash>, WithoutLength)),
-		(PAYER_PROOF_PROOF_NOTE_TYPE, proof_note: (String, WithoutLength)),
-	}
-);
-
-// Ordered to match canonical TLV ordering: offer, invoice_request, invoice,
-// signature, proof data, experimental_offer, experimental_invoice_request,
-// experimental_invoice.
-type FullPayerProofTlvStream = (
-	OfferTlvStream,
-	InvoiceRequestTlvStream,
-	InvoiceTlvStream,
-	PayerProofSignatureTlvStream,
-	PayerProofDataTlvStream,
-	ExperimentalOfferTlvStream,
-	ExperimentalInvoiceRequestTlvStream,
-	ExperimentalInvoiceTlvStream,
-);
-
-impl CursorReadable for FullPayerProofTlvStream {
-	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
-		let offer = CursorReadable::read(r)?;
-		let invoice_request = CursorReadable::read(r)?;
-		let invoice = CursorReadable::read(r)?;
-		let payer_proof_signatures = CursorReadable::read(r)?;
-		let payer_proof_data = CursorReadable::read(r)?;
-		let experimental_offer = CursorReadable::read(r)?;
-		let experimental_invoice_request = CursorReadable::read(r)?;
-		let experimental_invoice = CursorReadable::read(r)?;
-
-		Ok((
-			offer,
-			invoice_request,
-			invoice,
-			payer_proof_signatures,
-			payer_proof_data,
-			experimental_offer,
-			experimental_invoice_request,
-			experimental_invoice,
-		))
-	}
-}
-
 impl UnsignedPayerProof {
 	/// Build an `UnsignedPayerProof` from the underlying invoice bytes, the
 	/// included TLV types, the proof contents (everything except
@@ -793,6 +703,96 @@ impl UnsignedPayerProof {
 			proof_signature,
 			merkle_root: self.merkle_root,
 		})
+	}
+}
+
+impl AsRef<TaggedHash> for UnsignedPayerProof {
+	fn as_ref(&self) -> &TaggedHash {
+		&self.tagged_hash
+	}
+}
+
+/// A function for signing an [`UnsignedPayerProof`].
+pub trait SignPayerProofFn {
+	/// Signs a [`TaggedHash`] computed over the payer note and the invoice's merkle root.
+	fn sign_payer_proof(&self, message: &UnsignedPayerProof) -> Result<Signature, ()>;
+}
+
+impl<F> SignPayerProofFn for F
+where
+	F: Fn(&UnsignedPayerProof) -> Result<Signature, ()>,
+{
+	fn sign_payer_proof(&self, message: &UnsignedPayerProof) -> Result<Signature, ()> {
+		self(message)
+	}
+}
+
+impl<F> merkle::SignFn<UnsignedPayerProof> for F
+where
+	F: SignPayerProofFn,
+{
+	fn sign(&self, message: &UnsignedPayerProof) -> Result<Signature, ()> {
+		self.sign_payer_proof(message)
+	}
+}
+
+// The proof's signature TLVs sit in the BOLT 12 `SIGNATURE_TYPES` range and are
+// excluded from the standard merkle-root computation.
+tlv_stream!(
+	PayerProofSignatureTlvStream, PayerProofSignatureTlvStreamRef<'a>, SIGNATURE_TYPES, {
+		(PAYER_PROOF_ISSUER_SIGNATURE_TYPE, invoice_signature: Signature),
+		(PAYER_PROOF_PROOF_SIGNATURE_TYPE, proof_signature: Signature),
+	}
+);
+
+// The data-bearing TLVs sit in `PAYER_PROOF_DATA_TYPES`, outside the signature
+// range, so the standard merkle root for `proof_signature` includes them as
+// leaves.
+tlv_stream!(
+	PayerProofDataTlvStream, PayerProofDataTlvStreamRef<'a>, PAYER_PROOF_DATA_TYPES, {
+		(PAYER_PROOF_PREIMAGE_TYPE, proof_preimage: PaymentPreimage),
+		(PAYER_PROOF_OMITTED_TLVS_TYPE, proof_omitted_markers: (Vec<BigSize>, WithoutLength)),
+		(PAYER_PROOF_MISSING_HASHES_TYPE, proof_missing_hashes: (Vec<sha256::Hash>, WithoutLength)),
+		(PAYER_PROOF_LEAF_HASHES_TYPE, proof_leaf_hashes: (Vec<sha256::Hash>, WithoutLength)),
+		(PAYER_PROOF_PROOF_NOTE_TYPE, proof_note: (String, WithoutLength)),
+	}
+);
+
+// Ordered to match canonical TLV ordering: offer, invoice_request, invoice,
+// signature, proof data, experimental_offer, experimental_invoice_request,
+// experimental_invoice.
+type FullPayerProofTlvStream = (
+	OfferTlvStream,
+	InvoiceRequestTlvStream,
+	InvoiceTlvStream,
+	PayerProofSignatureTlvStream,
+	PayerProofDataTlvStream,
+	ExperimentalOfferTlvStream,
+	ExperimentalInvoiceRequestTlvStream,
+	ExperimentalInvoiceTlvStream,
+);
+
+impl CursorReadable for FullPayerProofTlvStream {
+	fn read<R: AsRef<[u8]>>(r: &mut io::Cursor<R>) -> Result<Self, DecodeError> {
+		let offer = CursorReadable::read(r)?;
+		let invoice_request = CursorReadable::read(r)?;
+		let invoice = CursorReadable::read(r)?;
+		let payer_proof_signatures = CursorReadable::read(r)?;
+		let payer_proof_data = CursorReadable::read(r)?;
+		let experimental_offer = CursorReadable::read(r)?;
+		let experimental_invoice_request = CursorReadable::read(r)?;
+		let experimental_invoice = CursorReadable::read(r)?;
+
+		Ok((
+			offer,
+			invoice_request,
+			invoice,
+			payer_proof_signatures,
+			payer_proof_data,
+			experimental_offer,
+			experimental_invoice_request,
+			experimental_invoice,
+		))
 	}
 }
 
