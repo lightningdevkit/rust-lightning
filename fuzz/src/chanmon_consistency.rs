@@ -112,8 +112,9 @@ const NUM_WALLET_UTXOS: u32 = 50;
 // boundaries. Mining commands are capped in `safe_mine_block_count` if
 // unresolved HTLCs are near expiry.
 const MINE_BLOCK_COUNTS: [u32; 8] = [1, 2, 3, 6, 12, 24, 48, 144];
-// Finish-time relay/mining rounds are capped so cleanup cannot spin forever.
-const MAX_FINISH_RELAY_MINE_ROUNDS: usize = 32;
+// Progress loops are capped so cleanup can drive realistic asynchronous
+// transaction work without letting a malformed state spin forever.
+const QUIESCENCE_ROUNDS: usize = 32;
 
 struct FuzzEstimator {
 	ret_val: atomic::AtomicU32,
@@ -382,10 +383,24 @@ impl ChainState {
 		self.pending_txs.push((txid, tx));
 	}
 
-	fn relay_transactions(&mut self, txs: Vec<Transaction>) {
+	// Feeds broadcast transactions through modeled mempool admission. We need
+	// this on ChainState so propagation and confirmation share one owner for
+	// duplicate, locktime, input, and RBF rules. The return value reports
+	// whether any broadcasts were drained, even if admission later ignores a
+	// duplicate or invalid transaction.
+	fn relay_transactions(&mut self, txs: Vec<Transaction>) -> bool {
+		let found = !txs.is_empty();
 		for tx in txs {
 			self.admit_tx_to_mempool(tx);
 		}
+		found
+	}
+
+	// Reports whether the modeled mempool is non-empty. Fuzz mining bytes and
+	// cleanup loops use this to decide whether another mining pass can make
+	// progress.
+	fn has_pending_txs(&self) -> bool {
+		!self.pending_txs.is_empty()
 	}
 
 	// Mines `count` blocks, confirming the current mempool in the first block.
@@ -915,11 +930,16 @@ type ChanMan<'a> = ChannelManager<
 >;
 
 #[inline]
+fn is_quiescent_disconnect_warning(msg: &msgs::WarningMessage) -> bool {
+	msg.data.contains("already sent splice_locked, cannot RBF")
+}
+
+#[inline]
 fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessage, bool) {
 	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
 	// disconnect their counterparty if they're expecting a timely response.
 	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
-		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
+		let is_quiescent_msg = is_quiescent_disconnect_warning(msg);
 		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
 		{
 			panic!("Unexpected disconnect case: {}", msg.data);
@@ -2589,30 +2609,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	// Final invariants should not depend on the input ending with explicit relay
 	// and mining bytes.
 	fn finish(&mut self) {
-		for _ in 0..MAX_FINISH_RELAY_MINE_ROUNDS {
-			let mut txs = Vec::new();
-			for node in &self.nodes {
-				txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
-			}
-			self.chain_state.relay_transactions(txs);
-			if self.chain_state.pending_txs.is_empty() {
-				assert_test_invariants(&self.nodes);
-				return;
-			}
-			if self.mine_blocks(ANTI_REORG_DELAY) == 0 {
-				// The input ended with pending mempool transactions but no safe
-				// block left before an HTLC fail-back window. Leave them
-				// unconfirmed rather than forcing finish cleanup to advance
-				// the chain past that boundary.
-				assert_test_invariants(&self.nodes);
-				return;
-			}
-		}
-		assert!(
-			!self.nodes.iter().any(|node| !node.broadcaster.txn_broadcasted.borrow().is_empty())
-				&& self.chain_state.pending_txs.is_empty(),
-			"finish tx mining loop failed to quiesce",
-		);
+		self.mine_relayed_txs_until_quiet("finish");
 		assert_test_invariants(&self.nodes);
 	}
 
@@ -3294,6 +3291,18 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.chain_state.relay_transactions(txs);
 	}
 
+	// Relays every node's pending broadcasts into the modeled mempool. Cleanup
+	// uses this when it should not depend on which peer fuzz bytes propagate.
+	// The bool reports whether any broadcasts were drained, not whether they
+	// were all admitted.
+	fn relay_all_broadcasts(&mut self) -> bool {
+		let mut txs = Vec::new();
+		for node in &self.nodes {
+			txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
+		}
+		self.chain_state.relay_transactions(txs)
+	}
+
 	fn earliest_pending_htlc_expiry(&self) -> Option<u32> {
 		let mut earliest_expiry: Option<u32> = None;
 		for node in &self.nodes {
@@ -3376,6 +3385,27 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			node.sync_with_chain_state(chain_state, None);
 		}
 		count
+	}
+
+	// Repeatedly relays broadcasts and mines pending transactions to depth. We
+	// need this for finish paths where confirmed transactions may broadcast
+	// child transactions that also need confirmation.
+	fn mine_relayed_txs_until_quiet(&mut self, context: &str) {
+		for _ in 0..QUIESCENCE_ROUNDS {
+			self.relay_all_broadcasts();
+			if !self.chain_state.has_pending_txs() {
+				return;
+			}
+			assert!(
+				self.mine_blocks(ANTI_REORG_DELAY) > 0,
+				"{context} cannot mine pending mempool transactions without crossing an unresolved HTLC timeout deadline"
+			);
+		}
+		assert!(
+			!self.nodes.iter().any(|node| !node.broadcaster.txn_broadcasted.borrow().is_empty())
+				&& !self.chain_state.has_pending_txs(),
+			"{context} tx mining loop failed to quiesce",
+		);
 	}
 }
 
