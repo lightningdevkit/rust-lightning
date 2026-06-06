@@ -33,8 +33,8 @@ use crate::offers::invoice_request::{
 	ExperimentalInvoiceRequestTlvStream, InvoiceRequestTlvStream, INVOICE_REQUEST_PAYER_ID_TYPE,
 };
 use crate::offers::merkle::{
-	self, next_marker, SelectiveDisclosure, SelectiveDisclosureError, SignError, TaggedHash,
-	TlvRecord, TlvStream, SIGNATURE_TYPES,
+	self, SelectiveDisclosure, SelectiveDisclosureError, SignError, TaggedHash, TlvRecord,
+	TlvStream, SIGNATURE_TYPES,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
@@ -1086,60 +1086,22 @@ impl TryFrom<Vec<u8>> for PayerProof {
 fn validate_omitted_markers_for_parsing(
 	omitted_markers: &[u64], included_types: &BTreeSet<u64>,
 ) -> Result<(), DecodeError> {
-	let mut inc_iter = included_types.iter().copied().peekable();
-	// After implicit TLV0 (marker 0), the first minimized marker would be 1
-	let mut expected_next: u64 = 1;
-	let mut prev = PAYER_METADATA_TYPE;
-
+	// Payer-proof range restriction: each marker MUST be inside one of the two valid ranges
+	// (`1..=239` or `1_000_000_000..=3_999_999_999`), i.e. outside the signature and
+	// payer-proof-data ranges and below the end of the experimental range.
 	for &marker in omitted_markers {
-		// MUST NOT contain PAYER_METADATA_TYPE
-		if marker == PAYER_METADATA_TYPE {
-			return Err(DecodeError::InvalidValue);
-		}
-
-		// MUST be inside one of the two valid ranges (`1..=239` or
-		// `1_000_000_000..=3_999_999_999`).
 		if SIGNATURE_TYPES.contains(&marker)
 			|| PAYER_PROOF_DATA_TYPES.contains(&marker)
 			|| marker >= EXPERIMENTAL_INVOICE_TYPES.end
 		{
 			return Err(DecodeError::InvalidValue);
 		}
-
-		// MUST be strictly ascending
-		if marker <= prev {
-			return Err(DecodeError::InvalidValue);
-		}
-
-		// MUST NOT contain included TLV types
-		if included_types.contains(&marker) {
-			return Err(DecodeError::InvalidValue);
-		}
-
-		// Validate minimization: marker must equal expected_next (continuation
-		// of current run), or there must be an included type X between the
-		// previous position and this marker such that X + 1 == marker.
-		if marker != expected_next {
-			let mut found = false;
-			for inc_type in inc_iter.by_ref() {
-				if next_marker(inc_type) == marker {
-					found = true;
-					break;
-				}
-				if inc_type >= marker {
-					return Err(DecodeError::InvalidValue);
-				}
-			}
-			if !found {
-				return Err(DecodeError::InvalidValue);
-			}
-		}
-
-		expected_next = next_marker(marker);
-		prev = marker;
 	}
 
-	Ok(())
+	// Ordering, non-zero, not-an-included-type, and minimization are enforced by the merkle layer,
+	// the single source of truth for marker validity (see `merkle::validate_omitted_markers`).
+	merkle::validate_omitted_markers(omitted_markers, included_types)
+		.map_err(|_| DecodeError::InvalidValue)
 }
 
 impl core::str::FromStr for PayerProof {

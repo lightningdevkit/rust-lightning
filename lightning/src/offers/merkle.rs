@@ -482,7 +482,10 @@ pub(super) fn reconstruct_merkle_root(
 	included_records: &[TlvRecord<'_>], leaf_hashes: &[sha256::Hash], omitted_markers: &[u64],
 	missing_hashes: &[sha256::Hash],
 ) -> Result<sha256::Hash, SelectiveDisclosureError> {
-	debug_assert!(validate_omitted_markers(omitted_markers).is_ok());
+	debug_assert!({
+		let included_types: BTreeSet<u64> = included_records.iter().map(|r| r.r#type).collect();
+		validate_omitted_markers(omitted_markers, &included_types).is_ok()
+	});
 
 	if included_records.len() != leaf_hashes.len() {
 		return Err(SelectiveDisclosureError::LeafHashCountMismatch);
@@ -583,20 +586,54 @@ fn reconstruct_merkle_root_dfs(
 	}
 }
 
-fn validate_omitted_markers(markers: &[u64]) -> Result<(), SelectiveDisclosureError> {
+/// Validates that `markers` is a minimized omitted-marker sequence per BOLT 12 PR 1295, relative
+/// to `included_types`. Each marker MUST be strictly ascending, non-zero, MUST NOT be an included
+/// TLV type, and MUST be minimized: it equals the marker following the previous marker (continuing
+/// a run) or the previous included type (starting a new run), per [`next_marker`]. The
+/// signature-gap jump is handled by [`next_marker`], so signature-range markers are rejected
+/// implicitly. This is the single source of truth for marker minimality; callers layer any
+/// additional range restrictions on top (e.g. the payer-proof valid ranges).
+pub(super) fn validate_omitted_markers(
+	markers: &[u64], included_types: &BTreeSet<u64>,
+) -> Result<(), SelectiveDisclosureError> {
+	let mut inc_iter = included_types.iter().copied().peekable();
+	// After the implicit TLV0 (marker 0), the first minimized marker is `next_marker(0)`.
+	let mut expected_next: u64 = next_marker(0);
 	let mut prev = 0u64;
+
 	for &marker in markers {
 		if marker == 0 {
-			return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
-		}
-		if SIGNATURE_TYPES.contains(&marker) {
 			return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
 		}
 		if marker <= prev {
 			return Err(SelectiveDisclosureError::InvalidOmittedMarkersOrder);
 		}
+		if included_types.contains(&marker) {
+			return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
+		}
+
+		// Minimization: `marker` continues the current run (`expected_next`), or an included type
+		// X sits between the previous position and `marker` with `next_marker(X) == marker`.
+		if marker != expected_next {
+			let mut found = false;
+			for inc_type in inc_iter.by_ref() {
+				if next_marker(inc_type) == marker {
+					found = true;
+					break;
+				}
+				if inc_type >= marker {
+					return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
+				}
+			}
+			if !found {
+				return Err(SelectiveDisclosureError::InvalidOmittedMarkersMarker);
+			}
+		}
+
+		expected_next = next_marker(marker);
 		prev = marker;
 	}
+
 	Ok(())
 }
 
@@ -1135,6 +1172,37 @@ mod tests {
 		// 240 would land in the signature range, so it jumps to the experimental range.
 		assert_eq!(super::next_marker(239), 1_000_000_000);
 		assert_eq!(super::next_marker(1_000_000_000), 1_000_000_001);
+	}
+
+	#[test]
+	fn validate_omitted_markers_direct() {
+		use alloc::collections::BTreeSet;
+		let none: BTreeSet<u64> = BTreeSet::new();
+
+		// A minimized leading run with nothing included is accepted.
+		assert!(super::validate_omitted_markers(&[1, 2, 3], &none).is_ok());
+		// The empty sequence is accepted.
+		assert!(super::validate_omitted_markers(&[], &none).is_ok());
+		// Zero is rejected (it is the implicit TLV0 marker).
+		assert!(super::validate_omitted_markers(&[0], &none).is_err());
+		// A non-ascending sequence is rejected.
+		assert!(super::validate_omitted_markers(&[2, 1], &none).is_err());
+		// A gap with no intervening included type to justify it is non-minimized -> rejected.
+		assert!(super::validate_omitted_markers(&[1, 3], &none).is_err());
+
+		// The same `[1, 3]` is accepted when included type 2 sits between them, because
+		// next_marker(2) == 3 justifies the jump.
+		let inc2: BTreeSet<u64> = [2u64].into_iter().collect();
+		assert!(super::validate_omitted_markers(&[1, 3], &inc2).is_ok());
+		// A marker equal to an included type is rejected.
+		assert!(super::validate_omitted_markers(&[2], &inc2).is_err());
+
+		// The signature-gap jump is accepted when justified by an included type at the top of the
+		// low range: included 239, omitted marker 1_000_000_000 (next_marker(239)).
+		let inc239: BTreeSet<u64> = [239u64].into_iter().collect();
+		assert!(super::validate_omitted_markers(&[1_000_000_000], &inc239).is_ok());
+		// ...but not without that justification.
+		assert!(super::validate_omitted_markers(&[1_000_000_000], &none).is_err());
 	}
 
 	/// Demonstrates the contradiction in BOLT 12 PR #1295 (@`db3eff3a54`) between
