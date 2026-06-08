@@ -2014,9 +2014,9 @@ impl<L: Logger> NetworkGraph<L> {
 		&self, short_channel_id: u64, capacity_sats: Option<u64>, timestamp: u64,
 		features: ChannelFeatures, node_id_1: NodeId, node_id_2: NodeId,
 	) -> Result<(), LightningError> {
-		if node_id_1 == node_id_2 {
+		if node_id_1 >= node_id_2 {
 			return Err(LightningError {
-				err: "Channel announcement node had a channel with itself".to_owned(),
+				err: "node_ids in channel_announcements must be sorted".to_owned(),
 				action: ErrorAction::IgnoreError,
 			});
 		};
@@ -2122,6 +2122,13 @@ impl<L: Logger> NetworkGraph<L> {
 		&self, msg: &msgs::UnsignedChannelAnnouncement, utxo_lookup: &Option<U>,
 	) -> Result<(), LightningError> {
 		let channels = self.channels.read().unwrap();
+
+		if msg.node_id_1 >= msg.node_id_2 {
+			return Err(LightningError {
+				err: "node_ids in channel_announcements must be sorted".to_owned(),
+				action: ErrorAction::IgnoreError,
+			});
+		}
 
 		if let Some(chan) = channels.get(&msg.short_channel_id) {
 			if chan.capacity_sats.is_some() {
@@ -2831,8 +2838,15 @@ pub(crate) mod tests {
 	pub(crate) fn get_signed_channel_announcement<F: Fn(&mut UnsignedChannelAnnouncement)>(
 		f: F, node_1_key: &SecretKey, node_2_key: &SecretKey, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> ChannelAnnouncement {
-		let node_id_1 = PublicKey::from_secret_key(&secp_ctx, node_1_key);
-		let node_id_2 = PublicKey::from_secret_key(&secp_ctx, node_2_key);
+		let mut node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_1_key));
+		let mut node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, node_2_key));
+		let mut signer_1 = node_1_key;
+		let mut signer_2 = node_2_key;
+		if node_id_1 > node_id_2 {
+			core::mem::swap(&mut node_id_1, &mut node_id_2);
+			core::mem::swap(&mut signer_1, &mut signer_2);
+		}
+
 		let node_1_btckey = &SecretKey::from_slice(&[40; 32]).unwrap();
 		let node_2_btckey = &SecretKey::from_slice(&[39; 32]).unwrap();
 
@@ -2840,8 +2854,8 @@ pub(crate) mod tests {
 			features: channelmanager::provided_channel_features(&UserConfig::default()),
 			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 			short_channel_id: 0,
-			node_id_1: NodeId::from_pubkey(&node_id_1),
-			node_id_2: NodeId::from_pubkey(&node_id_2),
+			node_id_1,
+			node_id_2,
 			bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(
 				&secp_ctx,
 				node_1_btckey,
@@ -2855,8 +2869,8 @@ pub(crate) mod tests {
 		f(&mut unsigned_announcement);
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_key),
-			node_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_key),
+			node_signature_1: secp_ctx.sign_ecdsa(&msghash, signer_1),
+			node_signature_2: secp_ctx.sign_ecdsa(&msghash, signer_2),
 			bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, node_1_btckey),
 			bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, node_2_btckey),
 			contents: unsigned_announcement,
@@ -3126,7 +3140,7 @@ pub(crate) mod tests {
 			.handle_channel_announcement(Some(node_1_pubkey), &channel_to_itself_announcement)
 		{
 			Ok(_) => panic!(),
-			Err(e) => assert_eq!(e.err, "Channel announcement node had a channel with itself"),
+			Err(e) => assert_eq!(e.err, "node_ids in channel_announcements must be sorted"),
 		};
 
 		// Test that channel announcements with the wrong chain hash are ignored (network graph is testnet,

@@ -2705,20 +2705,28 @@ mod tests {
 		let node_1_secret = &SecretKey::from_slice(&[39; 32]).unwrap();
 		let node_2_secret = &SecretKey::from_slice(&[40; 32]).unwrap();
 		let secp_ctx = Secp256k1::new();
+		let mut node_id_1 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_key));
+		let mut node_id_2 = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_key));
+		let mut node_signer_1 = &node_1_key;
+		let mut node_signer_2 = &node_2_key;
+		if node_id_1 > node_id_2 {
+			core::mem::swap(&mut node_id_1, &mut node_id_2);
+			core::mem::swap(&mut node_signer_1, &mut node_signer_2);
+		}
 		let unsigned_announcement = UnsignedChannelAnnouncement {
 			features: channelmanager::provided_channel_features(&UserConfig::default()),
 			chain_hash: genesis_hash,
 			short_channel_id,
-			node_id_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_key)),
-			node_id_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_key)),
+			node_id_1,
+			node_id_2,
 			bitcoin_key_1: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_1_secret)),
 			bitcoin_key_2: NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_2_secret)),
 			excess_data: Vec::new(),
 		};
 		let msghash = hash_to_message!(&Sha256dHash::hash(&unsigned_announcement.encode()[..])[..]);
 		let signed_announcement = ChannelAnnouncement {
-			node_signature_1: secp_ctx.sign_ecdsa(&msghash, &node_1_key),
-			node_signature_2: secp_ctx.sign_ecdsa(&msghash, &node_2_key),
+			node_signature_1: secp_ctx.sign_ecdsa(&msghash, node_signer_1),
+			node_signature_2: secp_ctx.sign_ecdsa(&msghash, node_signer_2),
 			bitcoin_signature_1: secp_ctx.sign_ecdsa(&msghash, &node_1_secret),
 			bitcoin_signature_2: secp_ctx.sign_ecdsa(&msghash, &node_2_secret),
 			contents: unsigned_announcement,
@@ -2732,10 +2740,23 @@ mod tests {
 
 	fn update_channel(
 		network_graph: &mut NetworkGraph<&TestLogger>, short_channel_id: u64, node_key: SecretKey,
-		channel_flags: u8, htlc_maximum_msat: u64, timestamp: u32,
+		mut channel_flags: u8, htlc_maximum_msat: u64, timestamp: u32,
 	) {
 		let genesis_hash = ChainHash::using_genesis_block(Network::Testnet);
 		let secp_ctx = Secp256k1::new();
+		let node_id = NodeId::from_pubkey(&PublicKey::from_secret_key(&secp_ctx, &node_key));
+		// `add_channel` may have swapped the node order to satisfy the spec's sorted node_ids
+		// requirement, so override `channel_flags` bit 0 to match the actual node position.
+		{
+			let read_only = network_graph.read_only();
+			if let Some(channel) = read_only.channel(short_channel_id) {
+				if channel.node_one == node_id {
+					channel_flags &= !1;
+				} else {
+					channel_flags |= 1;
+				}
+			}
+		}
 		let unsigned_update = UnsignedChannelUpdate {
 			chain_hash: genesis_hash,
 			short_channel_id,
