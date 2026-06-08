@@ -1361,6 +1361,10 @@ pub fn do_test_multiple_package_conflicts(p2a_anchor: bool) {
 	};
 	assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
+	if nodes[0].node.test_persistent_monitor_events_enabled() {
+		// If persistent_monitor_events is enabled, the RAA monitor update is not blocked.
+		check_added_monitors(&nodes[0], 1);
+	}
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
 	expect_payment_sent!(nodes[0], preimage_2);
 
@@ -1628,7 +1632,10 @@ pub fn test_htlc_on_chain_success() {
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 	let events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 2);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 2 },
+	);
 	assert_eq!(events.len(), 5);
 	let mut first_claimed = false;
 	for event in events {
@@ -2675,7 +2682,10 @@ pub fn test_simple_peer_disconnect() {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(
+		&nodes[0],
+		if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+	);
 
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage_4);
 	fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash_6);
@@ -4289,7 +4299,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	// Finally, give node B the HTLC success transaction and ensure it extracts the preimage to
 	// provide to node A.
 	mine_transaction(&nodes[1], htlc_success_tx_to_confirm);
-	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(392), true, true);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(196), true, true);
 	let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert!(updates.update_add_htlcs.is_empty());
 	assert!(updates.update_fail_htlcs.is_empty());
@@ -4300,7 +4310,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
-	expect_payment_sent(&nodes[0], our_payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], our_payment_preimage);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -7911,7 +7921,15 @@ fn do_test_onchain_htlc_settlement_after_close(
 		_ => panic!("Unexpected event"),
 	};
 	nodes[1].node.handle_revoke_and_ack(node_c_id, &carol_revocation);
-	check_added_monitors(&nodes[1], 1);
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		if broadcast_alice && !go_onchain_before_fulfill {
+			check_added_monitors(&nodes[1], 1);
+		} else {
+			check_added_monitors(&nodes[1], 2);
+		}
+	} else {
+		check_added_monitors(&nodes[1], 1);
+	}
 
 	// If this test requires the force-closed channel to not be on-chain until after the fulfill,
 	// here's where we put said channel's commitment tx on-chain.
@@ -7943,6 +7961,13 @@ fn do_test_onchain_htlc_settlement_after_close(
 				assert_eq!(bob_txn.len(), 2);
 			}
 			check_spends!(bob_txn[0], chan_ab.3);
+		}
+	}
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		if !broadcast_alice || go_onchain_before_fulfill {
+			// In some cases we'll replay the claim via a MonitorEvent and be unable to detect that it's
+			// a duplicate since the inbound edge is on-chain.
+			expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], fee, went_onchain, false);
 		}
 	}
 
@@ -8579,7 +8604,9 @@ pub fn test_inconsistent_mpp_params() {
 	pass_along_path(&nodes[0], path_b, real_amt, hash, Some(payment_secret), event, true, None);
 
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path_a, path_b], preimage));
-	expect_payment_sent(&nodes[0], preimage, Some(None), true, true);
+	let expect_post_ev_mon_update =
+		if nodes[0].node.test_persistent_monitor_events_enabled() { false } else { true };
+	expect_payment_sent(&nodes[0], preimage, Some(None), true, expect_post_ev_mon_update);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -9944,7 +9971,10 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let (persister, chain_monitor);
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut cfg = test_default_channel_config();
+	// If persistent_monitor_events is enabled, RAAs will not be blocked on events.
+	cfg.override_persistent_monitor_events = Some(false);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(cfg), None, None]);
 	let node_a_reload;
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
@@ -10208,6 +10238,7 @@ fn test_dup_htlc_claim_onchain_and_offchain() {
 	);
 	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
+	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 	let node_c_id = nodes[2].node.get_our_node_id();
 
@@ -10231,8 +10262,8 @@ fn test_dup_htlc_claim_onchain_and_offchain() {
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs[0].clone());
 	check_added_monitors(&nodes[1], 1);
 
-	// Ignore B's attempts to claim the HTLC from A.
-	nodes[1].node.get_and_clear_pending_msg_events();
+	// Capture B's updates but ignore them for now.
+	let mut bs_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
 
 	// Get C's commitment transactions. C's commitment includes the HTLC and C has
 	// an HTLC-success transaction (claiming with preimage). Mine both on B.
@@ -10257,4 +10288,9 @@ fn test_dup_htlc_claim_onchain_and_offchain() {
 	// the monitor to generate an HTLCEvent with the preimage via process_pending_monitor_events,
 	// which calls claim_funds_internal a second time.
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY);
+
+	// Finally, complete the payment.
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_updates.update_fulfill_htlcs.remove(0));
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_updates.commitment_signed, false, false);
+	expect_payment_sent!(nodes[0], payment_preimage);
 }
