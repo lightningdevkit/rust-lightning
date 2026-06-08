@@ -413,7 +413,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		}
 
 		let claimable_outpoints_len: u64 = Readable::read(reader)?;
-		let mut claimable_outpoints = hash_map_with_capacity(cmp::min(pending_claim_requests_len as usize, MAX_ALLOC_SIZE / 128));
+		let mut claimable_outpoints = hash_map_with_capacity(cmp::min(claimable_outpoints_len as usize, MAX_ALLOC_SIZE / 128));
 		for _ in 0..claimable_outpoints_len {
 			let outpoint = Readable::read(reader)?;
 			let ancestor_claim_txid = Readable::read(reader)?;
