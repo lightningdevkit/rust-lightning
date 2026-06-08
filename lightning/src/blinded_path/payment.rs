@@ -790,7 +790,7 @@ impl<'a, F: ForwardTlvsInfo> Writeable for BlindedPaymentTlvsRef<'a, F> {
 
 impl Readable for BlindedPaymentTlvs {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_stream!(r, {
+		_init_and_read_tlv_stream_with_custom_tlv_decode!(r, {
 			// Reasoning: Padding refers to filler data added to a packet to increase
 			// its size and obscure its actual length. Since padding contains no meaningful
 			// information, we can safely omit reading it here.
@@ -803,6 +803,14 @@ impl Readable for BlindedPaymentTlvs {
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
 			(65539, is_dummy, option)
+		}, |typ: u64, _reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if typ == 1 {
+				return Ok(true);
+			}
+			if typ % 2 == 1 {
+				return Err(DecodeError::UnknownRequiredFeature);
+			}
+			Ok(false)
 		});
 
 		match (
@@ -843,7 +851,7 @@ impl Readable for BlindedPaymentTlvs {
 
 impl Readable for BlindedTrampolineTlvs {
 	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_tlv_stream!(r, {
+		_init_and_read_tlv_stream_with_custom_tlv_decode!(r, {
 			(4, next_trampoline, option),
 			(8, next_blinding_override, option),
 			(10, payment_relay, option),
@@ -851,6 +859,14 @@ impl Readable for BlindedTrampolineTlvs {
 			(14, features, (option, encoding: (BlindedHopFeatures, WithoutLength))),
 			(65536, payment_secret, option),
 			(65537, payment_context, option),
+		}, |typ: u64, _reader: &mut FixedLengthReader<_>| -> Result<bool, DecodeError> {
+			if typ == 1 {
+				return Ok(true);
+			}
+			if typ % 2 == 1 {
+				return Err(DecodeError::UnknownRequiredFeature);
+			}
+			Ok(false)
 		});
 
 		if let Some(next_trampoline) = next_trampoline {
@@ -1126,12 +1142,15 @@ impl_ser_tlv_based!(Bolt12RefundContext, {
 #[cfg(test)]
 mod tests {
 	use crate::blinded_path::payment::{
-		Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode,
-		PaymentRelay, ReceiveTlvs,
+		BlindedPaymentTlvs, BlindedTrampolineTlvs, Bolt12RefundContext, ForwardTlvs,
+		PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 	};
+	use crate::io::Cursor;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
+	use crate::ln::msgs::DecodeError;
 	use crate::types::features::BlindedHopFeatures;
 	use crate::types::payment::PaymentSecret;
+	use crate::util::ser::{BigSize, Readable, Writeable};
 	use bitcoin::secp256k1::PublicKey;
 
 	#[test]
@@ -1414,5 +1433,43 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, 3997);
+	}
+
+	#[test]
+	fn blinded_payment_tlvs_reject_unknown_odd_types() {
+		let receive_tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([0; 32]),
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		};
+
+		let mut encoded = Vec::new();
+		receive_tlvs.write(&mut encoded).unwrap();
+		BigSize(65541).write(&mut encoded).unwrap();
+		BigSize(0).write(&mut encoded).unwrap();
+
+		assert!(matches!(
+			BlindedPaymentTlvs::read(&mut Cursor::new(&encoded)),
+			Err(DecodeError::UnknownRequiredFeature),
+		));
+	}
+
+	#[test]
+	fn blinded_trampoline_tlvs_reject_unknown_odd_types() {
+		let receive_tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([0; 32]),
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		};
+
+		let mut encoded = Vec::new();
+		receive_tlvs.write(&mut encoded).unwrap();
+		BigSize(65541).write(&mut encoded).unwrap();
+		BigSize(0).write(&mut encoded).unwrap();
+
+		assert!(matches!(
+			BlindedTrampolineTlvs::read(&mut Cursor::new(&encoded)),
+			Err(DecodeError::UnknownRequiredFeature),
+		));
 	}
 }
