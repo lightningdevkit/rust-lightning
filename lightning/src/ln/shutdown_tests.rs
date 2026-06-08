@@ -1864,7 +1864,10 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
-	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let mut cfg = test_default_channel_config();
+	// When persistent_monitor_events is enabled, monitor updates will never be blocked.
+	cfg.override_persistent_monitor_events = Some(false);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(cfg), None]);
 	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let node_a_id = nodes[0].node.get_our_node_id();

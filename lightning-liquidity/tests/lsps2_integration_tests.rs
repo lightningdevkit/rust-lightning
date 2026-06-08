@@ -8,7 +8,6 @@ use common::{
 };
 
 use lightning::events::{ClosureReason, Event};
-use lightning::get_event_msg;
 use lightning::ln::channelmanager::{
 	OptionalBolt11PaymentParams, PaymentId, TrustedChannelFeatures,
 };
@@ -17,6 +16,7 @@ use lightning::ln::msgs::BaseMessageHandler;
 use lightning::ln::msgs::ChannelMessageHandler;
 use lightning::ln::msgs::MessageSendEvent;
 use lightning::ln::types::ChannelId;
+use lightning::{expect_payment_sent, get_event_msg};
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::ser::LSPSDateTime;
@@ -1340,7 +1340,7 @@ fn client_trusts_lsp_end_to_end_test() {
 	let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
 	assert!(broadcasted.iter().any(|b| b.compute_txid() == funding_tx.compute_txid()));
 
-	expect_payment_sent(&payer_node, preimage.unwrap(), Some(total_fee_msat), true, true);
+	expect_payment_sent!(&payer_node, preimage.unwrap(), total_fee_msat);
 }
 
 fn execute_lsps2_dance(
