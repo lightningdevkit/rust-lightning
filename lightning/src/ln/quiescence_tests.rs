@@ -259,7 +259,7 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	// We have two updates pending:
-	{
+	if !nodes[0].node.test_persistent_monitor_events_enabled() {
 		let test_chain_mon = &nodes[0].chain_monitor;
 		let (_, latest_update) =
 			test_chain_mon.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
@@ -274,6 +274,27 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 		// One for the commitment secret update from the last `revoke_and_ack`
 		chain_monitor.channel_monitor_updated(chan_id, new_latest_update).unwrap();
 		// Once that update completes, we'll get the `PaymentPathSuccessful` event
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		if let Event::PaymentPathSuccessful { .. } = &events[0] {
+		} else {
+			panic!("{events:?}");
+		}
+	} else {
+		// In the persistent monitor events path, we don't block the RAA monitor update, so
+		// `expect_post_ev_mon_update` is false here
+		expect_payment_sent(&nodes[0], preimage, None, false, false);
+		// The latest commitment transaction update from the the `revoke_and_ack` was previously
+		// blocked via `InProgress`, so update that here, which will unblock the commitment secret
+		// update from the RAA
+		let test_chain_mon = &nodes[0].chain_monitor;
+		let (_, latest_update) =
+			test_chain_mon.latest_monitor_update_id.lock().unwrap().get(&chan_id).unwrap().clone();
+		let chain_monitor = &nodes[0].chain_monitor.chain_monitor;
+		// Complete the held update, which releases the commitment secret update, which releases the
+		// `PaymentPathSuccessful` event
+		chain_monitor.channel_monitor_updated(chan_id, latest_update).unwrap();
+		check_added_monitors(&nodes[0], 1);
 		let events = nodes[0].node.get_and_clear_pending_events();
 		assert_eq!(events.len(), 1);
 		if let Event::PaymentPathSuccessful { .. } = &events[0] {
@@ -438,7 +459,10 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 	} else {
 		assert!(events.iter().find(|e| matches!(e, Event::PaymentSent { .. })).is_some());
 		assert!(events.iter().find(|e| matches!(e, Event::PaymentPathSuccessful { .. })).is_some());
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(
+			&nodes[0],
+			if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 },
+		);
 	}
 	nodes[0].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[0], payment_hash1, payment_secret1, payment_amount);
@@ -467,7 +491,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 		let conditions = PaymentFailedConditions::new();
 		expect_payment_failed_conditions(&nodes[1], payment_hash1, true, conditions);
 	} else {
-		expect_payment_sent(&nodes[1], payment_preimage1, None, true, true);
+		expect_payment_sent!(&nodes[1], payment_preimage1);
 	}
 }
 
@@ -673,6 +697,9 @@ fn do_test_quiescence_during_disconnection(with_pending_claim: bool, propose_dis
 			assert_eq!(bs_raa_stfu.len(), 2);
 			if let MessageSendEvent::SendRevokeAndACK { msg, .. } = &bs_raa_stfu[0] {
 				nodes[0].node.handle_revoke_and_ack(node_b_id, &msg);
+				if nodes[0].node.test_persistent_monitor_events_enabled() {
+					check_added_monitors(&nodes[0], 1);
+				}
 				expect_payment_sent!(&nodes[0], preimage);
 			} else {
 				panic!("Unexpected first message {bs_raa_stfu:?}");

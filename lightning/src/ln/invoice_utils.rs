@@ -1354,7 +1354,7 @@ mod test {
 			&[&[&nodes[fwd_idx]]],
 			payment_preimage,
 		));
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+		expect_payment_sent!(&nodes[0], payment_preimage);
 	}
 
 	#[test]

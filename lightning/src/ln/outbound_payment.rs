@@ -2248,7 +2248,7 @@ impl OutboundPayments {
 	#[rustfmt::skip]
 	pub(super) fn claim_htlc<L: Logger>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, bolt12_invoice: Option<PaidBolt12Invoice>,
-		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
+		session_priv: SecretKey, path: Path, from_onchain: bool, best_block_height: u32, ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
 	)
@@ -2256,6 +2256,16 @@ impl OutboundPayments {
 	{
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
+
+		if from_onchain {
+			// If we are re-processing this claim from a `MonitorEvent` and the `ChannelManager` is
+			// outdated and has no idea about the payment, we may need to re-insert here to ensure a
+			// `PaymentSent` event gets generated.
+			self.insert_from_monitor_on_startup(
+				payment_id, payment_preimage.into(), session_priv_bytes, &path, best_block_height, logger
+			);
+		}
+
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let mut pending_events = pending_events.lock().unwrap();
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {

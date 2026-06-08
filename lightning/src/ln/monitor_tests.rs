@@ -274,7 +274,7 @@ fn archive_fully_resolved_monitors() {
 
 	// Finally, we process the pending `MonitorEvent` from nodes[0], allowing the `ChannelMonitor`
 	// to be archived `ARCHIVAL_DELAY_BLOCKS` blocks later.
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage);
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 	connect_blocks(&nodes[0], ARCHIVAL_DELAY_BLOCKS - 1);
@@ -747,9 +747,9 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 	mine_transaction(&nodes[0], &b_broadcast_txn[0]);
 	if prev_commitment_tx {
 		expect_payment_path_successful!(nodes[0]);
-		check_added_monitors(&nodes[0], 1);
+		check_added_monitors(&nodes[0], if nodes[0].node.test_persistent_monitor_events_enabled() { 0 } else { 1 });
 	} else {
-		expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+		expect_payment_sent!(&nodes[0], payment_preimage);
 	}
 	assert_eq!(sorted_vec(vec![sent_htlc_balance.clone(), sent_htlc_timeout_balance.clone()]),
 		sorted_vec(nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
@@ -1015,7 +1015,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 	// Now confirm nodes[1]'s HTLC claim, giving nodes[0] the preimage. Note that the "maybe
 	// claimable" balance remains until we see ANTI_REORG_DELAY blocks.
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn[0]);
-	expect_payment_sent(&nodes[0], payment_preimage_2, None, true, true);
+	expect_payment_sent!(&nodes[0], payment_preimage_2);
 	assert_eq!(sorted_vec(vec![Balance::ClaimableAwaitingConfirmations {
 			amount_satoshis: 1_000_000 - 10_000 - 20_000 - commitment_tx_fee - anchor_outputs_value,
 			confirmation_height: node_a_commitment_claimable,
@@ -2097,7 +2097,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 		as_revoked_txn[1].clone()
 	};
 	mine_transaction(&nodes[1], &htlc_success_claim);
-	expect_payment_sent(&nodes[1], claimed_payment_preimage, None, true, true);
+	expect_payment_sent!(&nodes[1], claimed_payment_preimage);
 
 	let mut claim_txn_2 = nodes[1].tx_broadcaster.txn_broadcast();
 	// Once B sees the HTLC-Success transaction it splits its claim transaction into two, though in
@@ -3250,14 +3250,15 @@ fn test_event_replay_causing_monitor_replay() {
 	// Now process the `PaymentSent` to get the final RAA `ChannelMonitorUpdate`, checking that it
 	// resulted in a `ChannelManager` persistence request.
 	nodes[0].node.get_and_clear_needs_persistence();
-	expect_payment_sent(&nodes[0], payment_preimage, None, true, true /* expected post-event monitor update*/);
+	expect_payment_sent!(nodes[0], payment_preimage);
 	assert!(nodes[0].node.get_and_clear_needs_persistence());
 
 	let serialized_monitor = get_monitor!(nodes[0], chan.2).encode();
 	reload_node!(nodes[0], &serialized_channel_manager, &[&serialized_monitor], persister, new_chain_monitor, node_deserialized);
 
 	// Expect the `PaymentSent` to get replayed, this time without the duplicate monitor update
-	expect_payment_sent(&nodes[0], payment_preimage, None, false, false /* expected post-event monitor update*/);
+	let per_path_evs = if nodes[0].node.test_persistent_monitor_events_enabled() { true } else { false };
+	expect_payment_sent(&nodes[0], payment_preimage, None, per_path_evs, false /* expected post-event monitor update*/);
 }
 
 #[test]
@@ -3546,16 +3547,20 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	// After the background events are processed in `get_and_clear_pending_events`, above, node B
 	// will create the requisite `ChannelMontiorUpdate` for claiming the forwarded payment back.
 	// The HTLC, however, is added to the holding cell for replay after the peer connects, below.
-	// It will also apply a `ChannelMonitorUpdate` to let the `ChannelMonitor` know that the
-	// payment can now be forgotten as the `PaymentSent` event was handled.
-	check_added_monitors(&nodes[1], 2);
+	if nodes[1].node.test_persistent_monitor_events_enabled() {
+		check_added_monitors(&nodes[1], 1);
+	} else {
+		// It will also apply a `ChannelMonitorUpdate` to let the `ChannelMonitor` know that the
+		// payment can now be forgotten as the `PaymentSent` event was handled.
+		check_added_monitors(&nodes[1], 2);
+	}
 
 	nodes[0].node.peer_disconnected(nodes[1].node.get_our_node_id());
 
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
 	reconnect_args.pending_cell_htlc_claims = (1, 0);
 	reconnect_nodes(reconnect_args);
-	expect_payment_sent(&nodes[0], preimage_a, None, true, true);
+	expect_payment_sent!(&nodes[0], preimage_a);
 }
 
 #[test]
@@ -3594,6 +3599,9 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 	let mut cfg = test_default_channel_config();
 	cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
 	cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	// This test specifically tests lost monitor events, which requires the legacy
+	// (non-persistent) monitor event behavior.
+	cfg.override_persistent_monitor_events = Some(false);
 	let cfgs = [Some(cfg.clone()), Some(cfg.clone()), Some(cfg.clone())];
 
 	let chanmon_cfgs = create_chanmon_cfgs(3);
@@ -3803,27 +3811,83 @@ fn do_test_lost_timeout_monitor_events(confirm_tx: CommitmentType, dust_htlcs: b
 }
 
 #[test]
-fn test_lost_timeout_monitor_events() {
+fn test_lost_timeout_monitor_events_a() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_b() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_c() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_d() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_e() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_f() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_g() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_h() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_i() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false, false);
+}
+#[test]
+fn test_lost_timeout_monitor_events_j() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true, false);
-
+}
+#[test]
+fn test_lost_timeout_monitor_events_k() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_l() {
 	do_test_lost_timeout_monitor_events(CommitmentType::RevokedCounterparty, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_m() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_n() {
 	do_test_lost_timeout_monitor_events(CommitmentType::PreviousCounterparty, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_o() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_p() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LatestCounterparty, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_q() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_r() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithoutLastHTLC, true, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_s() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, false, true);
+}
+#[test]
+fn test_lost_timeout_monitor_events_t() {
 	do_test_lost_timeout_monitor_events(CommitmentType::LocalWithLastHTLC, true, true);
 }
 
@@ -3883,8 +3947,7 @@ fn test_ladder_preimage_htlc_claims() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	expect_payment_sent(&nodes[0], payment_preimage1, None, true, false);
-	check_added_monitors(&nodes[0], 1);
+	expect_payment_sent!(&nodes[0], payment_preimage1);
 
 	nodes[1].node.claim_funds(payment_preimage2);
 	expect_payment_claimed!(&nodes[1], payment_hash2, 1_000_000);
@@ -3906,6 +3969,5 @@ fn test_ladder_preimage_htlc_claims() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 
-	expect_payment_sent(&nodes[0], payment_preimage2, None, true, false);
-	check_added_monitors(&nodes[0], 1);
+	expect_payment_sent!(&nodes[0], payment_preimage2);
 }
