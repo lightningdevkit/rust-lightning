@@ -33,7 +33,7 @@ use crate::chain::chaininterface::{
 };
 use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
-	LATENCY_GRACE_PERIOD_BLOCKS,
+	OutboundHTLCClaim, OutboundHTLCFail, LATENCY_GRACE_PERIOD_BLOCKS,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BlockLocator;
@@ -1158,7 +1158,7 @@ pub(crate) struct CommitmentStats {
 /// description
 enum UpdateFulfillFetch {
 	NewClaim { monitor_update: ChannelMonitorUpdate, htlc_value_msat: u64, update_blocked: bool },
-	DuplicateClaim {},
+	DuplicateClaim { htlc_not_found: bool },
 }
 
 /// The return type of get_update_fulfill_htlc_and_commit.
@@ -1174,7 +1174,12 @@ pub enum UpdateFulfillCommitFetch {
 	},
 	/// Indicates the HTLC fulfill is duplicative and already existed either in the holding cell
 	/// or has been forgotten (presumably previously claimed).
-	DuplicateClaim {},
+	DuplicateClaim {
+		/// Set if the HTLC was already fully removed from the channel. This can happen if the claim
+		/// came from the outbound edge claiming onchain *after* the HTLC was already fully removed
+		/// from this inbound edge channel off-chain.
+		htlc_not_found: bool,
+	},
 }
 
 /// Error returned when processing an invalid interactive-tx message from our counterparty.
@@ -1287,6 +1292,9 @@ pub(crate) struct ShutdownResult {
 	pub(crate) monitor_update: Option<(PublicKey, OutPoint, ChannelId, ChannelMonitorUpdate)>,
 	/// A list of dropped outbound HTLCs that can safely be failed backwards immediately.
 	pub(crate) dropped_outbound_htlcs: Vec<(HTLCSource, PaymentHash, PublicKey, ChannelId)>,
+	/// A list of inbound HTLC ids whose forwarded monitor-event ack condition is complete because
+	/// the HTLC was already locally removed when the channel closed.
+	pub(crate) htlcs_to_ack: Vec<u64>,
 	/// An unbroadcasted batch funding transaction id. The closure of this channel should be
 	/// propagated to the remainder of the batch.
 	pub(crate) unbroadcasted_batch_funding_txid: Option<Txid>,
@@ -1515,10 +1523,18 @@ pub(crate) const CHANNEL_ANNOUNCEMENT_PROPAGATION_DELAY: u32 = 144;
 #[derive(Debug)]
 struct PendingChannelMonitorUpdate {
 	update: ChannelMonitorUpdate,
+	/// Set if (a) we are the inbound edge to a forwarded HTLC and (b) this monitor update
+	/// irrevocably removes said HTLC (or HTLCs). The caller will use these ids to ack any monitor
+	/// events that were waiting on these HTLCs to resolve once the monitor update is complete.
+	///
+	/// This is not persisted; monitor events are replayed on startup and reconstruct any pending
+	/// ack state.
+	htlc_ids_to_ack: Vec<u64>,
 }
 
 impl_ser_tlv_based!(PendingChannelMonitorUpdate, {
 	(0, update, required),
+	(_unused, htlc_ids_to_ack, (static_value, Vec::new())),
 });
 
 /// A payment channel with a counterparty throughout its life-cycle, encapsulating negotiation and
@@ -3740,7 +3756,7 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 			funding.get_holder_selected_contest_delay(), &context.destination_script,
 			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
 			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
-			context.is_manual_broadcast,
+			context.is_manual_broadcast, context.get_user_id(),
 		);
 		channel_monitor.provide_initial_counterparty_commitment_tx(
 			counterparty_initial_commitment_tx.clone(),
@@ -6461,6 +6477,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		assert!(!matches!(self.channel_state, ChannelState::ShutdownComplete));
 
 		let broadcast = self.is_funding_broadcastable();
+		let mut htlcs_to_ack = Vec::new();
 
 		// We go ahead and "free" any holding cell HTLCs or HTLCs we haven't yet committed to and
 		// return them to fail the payment.
@@ -6476,7 +6493,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						self.channel_id,
 					));
 				},
-				_ => {},
+				HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. }
+				| HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
+				| HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } => htlcs_to_ack.push(htlc_id),
 			}
 		}
 
@@ -6523,6 +6542,13 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			}
 		}
 
+		// See `ShutdownResult::htlcs_to_ack`.
+		for htlc in self.pending_inbound_htlcs.iter() {
+			if let InboundHTLCState::LocalRemoved(_) = &htlc.state {
+				htlcs_to_ack.push(htlc.htlc_id);
+			}
+		}
+
 		let monitor_update = if let Some(funding_txo) = funding.get_funding_txo() {
 			// We should only generate a closing `ChannelMonitorUpdate` if we already have a
 			// `ChannelMonitor` for the disk (i.e. `counterparty_next_commitment_transaction_number`
@@ -6561,6 +6587,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			closure_reason,
 			monitor_update,
 			dropped_outbound_htlcs,
+			htlcs_to_ack,
 			unbroadcasted_batch_funding_txid,
 			channel_id: self.channel_id,
 			user_channel_id: self.user_id,
@@ -7699,7 +7726,7 @@ where
 								"Tried to fulfill an HTLC that was already failed"
 							);
 						}
-						return UpdateFulfillFetch::DuplicateClaim {};
+						return UpdateFulfillFetch::DuplicateClaim { htlc_not_found: false };
 					},
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
@@ -7712,7 +7739,7 @@ where
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			return UpdateFulfillFetch::DuplicateClaim {};
+			return UpdateFulfillFetch::DuplicateClaim { htlc_not_found: true };
 		}
 
 		// Now update local state:
@@ -7740,7 +7767,7 @@ where
 						if htlc_id_arg == htlc_id {
 							// Make sure we don't leave latest_monitor_update_id incremented here:
 							self.context.latest_monitor_update_id -= 1;
-							return UpdateFulfillFetch::DuplicateClaim {};
+							return UpdateFulfillFetch::DuplicateClaim { htlc_not_found: false };
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. }
@@ -7849,9 +7876,10 @@ where
 					if !update_blocked {
 						debug_assert!(false, "If there is a pending blocked monitor we should have MonitorUpdateInProgress set");
 						let update = self.build_commitment_no_status_check(logger);
-						self.context
-							.blocked_monitor_updates
-							.push(PendingChannelMonitorUpdate { update });
+						self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+							update,
+							htlc_ids_to_ack: Vec::new(),
+						});
 					}
 				}
 
@@ -7866,15 +7894,21 @@ where
 				);
 				UpdateFulfillCommitFetch::NewClaim { monitor_update, htlc_value_msat }
 			},
-			UpdateFulfillFetch::DuplicateClaim {} => UpdateFulfillCommitFetch::DuplicateClaim {},
+			UpdateFulfillFetch::DuplicateClaim { htlc_not_found } => {
+				UpdateFulfillCommitFetch::DuplicateClaim { htlc_not_found }
+			},
 		}
 	}
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
+	///
+	/// On `Err`, the returned bool is set if the HTLC was already fully removed from the channel.
+	/// Callers may use it to clean up any state that was waiting on this HTLC removal, such as a
+	/// pending monitor event on the outbound edge.
 	pub fn queue_fail_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, err_packet: msgs::OnionErrorPacket, logger: &L,
-	) -> Result<(), ChannelError> {
+	) -> Result<(), (ChannelError, bool)> {
 		self.fail_htlc(htlc_id_arg, err_packet, true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
@@ -7885,18 +7919,20 @@ where
 	/// See [`Self::queue_fail_htlc`] for more info.
 	pub fn queue_fail_malformed_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, failure_code: u16, sha256_of_onion: [u8; 32], logger: &L,
-	) -> Result<(), ChannelError> {
+	) -> Result<(), (ChannelError, bool)> {
 		self.fail_htlc(htlc_id_arg, (sha256_of_onion, failure_code), true, logger)
 			.map(|msg_opt| assert!(msg_opt.is_none(), "We forced holding cell?"))
 	}
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
 	/// if it was already resolved). Otherwise returns `Ok`.
+	///
+	/// On `Err`, the returned bool is set if the HTLC was already fully removed from the channel.
 	#[rustfmt::skip]
 	fn fail_htlc<L: Logger, E: FailHTLCContents + Clone>(
 		&mut self, htlc_id_arg: u64, err_contents: E, mut force_holding_cell: bool,
 		logger: &L
-	) -> Result<Option<E::Message>, ChannelError> {
+	) -> Result<Option<E::Message>, (ChannelError, bool)> {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
 			panic!("Was asked to fail an HTLC when channel was not in an operational state");
 		}
@@ -7911,18 +7947,18 @@ where
 				match htlc.state {
 					InboundHTLCState::Committed { .. } => {},
 					InboundHTLCState::LocalRemoved(_) => {
-						return Err(ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)));
+						return Err((ChannelError::Ignore(format!("HTLC {} was already resolved", htlc.htlc_id)), false));
 					},
 					_ => {
 						debug_assert!(false, "Have an inbound HTLC we tried to claim before it was fully committed to");
-						return Err(ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc.htlc_id)));
+						return Err((ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc.htlc_id)), false));
 					}
 				}
 				pending_idx = idx;
 			}
 		}
 		if pending_idx == core::usize::MAX {
-			return Err(ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc_id_arg)));
+			return Err((ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc_id_arg)), true));
 		}
 
 		if !self.context.channel_state.can_generate_new_commitment() {
@@ -7936,14 +7972,14 @@ where
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
-							return Err(ChannelError::Ignore(format!("HTLC {} was already claimed!", htlc_id)));
+							return Err((ChannelError::Ignore(format!("HTLC {} was already claimed!", htlc_id)), false));
 						}
 					},
 					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, .. } |
 						&HTLCUpdateAwaitingACK::FailMalformedHTLC { htlc_id, .. } =>
 					{
 						if htlc_id_arg == htlc_id {
-							return Err(ChannelError::Ignore(format!("HTLC {} was already pending failure", htlc_id)));
+							return Err((ChannelError::Ignore(format!("HTLC {} was already pending failure", htlc_id)), false));
 						}
 					},
 					_ => {}
@@ -8633,6 +8669,7 @@ where
 					commitment_tx,
 					htlc_outputs,
 					claimed_htlcs: vec![],
+					failed_htlcs: vec![],
 					nondust_htlc_sources: nondust_htlc_sources.collect(),
 				}
 			})?;
@@ -8708,6 +8745,7 @@ where
 			commitment_txs,
 			htlc_data: htlc_data.expect("At least one funding scope must have been considered"),
 			claimed_htlcs: Vec::new(),
+			failed_htlcs: Vec::new(),
 		};
 		self.commitment_signed_update_monitor(update, logger)
 	}
@@ -8781,6 +8819,7 @@ where
 			}
 		}
 		let mut claimed_htlcs = Vec::new();
+		let mut failed_htlcs = Vec::new();
 		for htlc in self.context.pending_outbound_htlcs.iter_mut() {
 			if let &mut OutboundHTLCState::RemoteRemoved(ref mut outcome) = &mut htlc.state {
 				log_trace!(logger, "Updating HTLC {} to AwaitingRemoteRevokeToRemove due to commitment_signed in channel {}.",
@@ -8791,14 +8830,31 @@ where
 					attribution_data: None,
 				};
 				mem::swap(outcome, &mut reason);
-				if let OutboundHTLCOutcome::Success { preimage, .. } = reason {
-					// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
-					// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
-					// have a `Success(None)` reason. In this case we could forget some HTLC
-					// claims, but such an upgrade is unlikely and including claimed HTLCs here
-					// fixes a bug which the user was exposed to on 0.0.104 when they started the
-					// claim anyway.
-					claimed_htlcs.push((SentHTLCId::from_source(&htlc.source), preimage));
+				match &mut reason {
+					OutboundHTLCOutcome::Success { preimage, .. } => {
+						// If a user (a) receives an HTLC claim using LDK 0.0.104 or before, then (b)
+						// upgrades to LDK 0.0.114 or later before the HTLC is fully resolved, we could
+						// have a `Success(None)` reason. In this case we could forget some HTLC
+						// claims, but such an upgrade is unlikely and including claimed HTLCs here
+						// fixes a bug which the user was exposed to on 0.0.104 when they started the
+						// claim anyway.
+						claimed_htlcs.push(OutboundHTLCClaim {
+							htlc_id: SentHTLCId::from_source(&htlc.source),
+							preimage: *preimage,
+							skimmed_fee_msat: htlc.skimmed_fee_msat,
+						});
+					},
+					OutboundHTLCOutcome::Failure(fail_reason) => {
+						// The monitor needs the HTLC hold time to correctly resolve the HTLC when generating a
+						// monitor event for its failure.
+						hold_time_since(htlc.send_timestamp).map(|hold_time| {
+							fail_reason.set_hold_time(hold_time);
+						});
+						failed_htlcs.push(OutboundHTLCFail {
+							htlc_id: SentHTLCId::from_source(&htlc.source),
+							failure_reason: fail_reason.clone(),
+						});
+					},
 				}
 				htlc.state = OutboundHTLCState::AwaitingRemoteRevokeToRemove(reason);
 				need_commitment = true;
@@ -8808,17 +8864,23 @@ where
 		match &mut update {
 			ChannelMonitorUpdateStep::LatestHolderCommitment {
 				claimed_htlcs: ref mut update_claimed_htlcs,
+				failed_htlcs: ref mut update_failed_htlcs,
 				..
 			} => {
 				debug_assert!(update_claimed_htlcs.is_empty());
 				*update_claimed_htlcs = claimed_htlcs.clone();
+				debug_assert!(update_failed_htlcs.is_empty());
+				*update_failed_htlcs = failed_htlcs.clone();
 			},
 			ChannelMonitorUpdateStep::LatestHolderCommitmentTXInfo {
 				claimed_htlcs: ref mut update_claimed_htlcs,
+				failed_htlcs: ref mut update_failed_htlcs,
 				..
 			} => {
 				debug_assert!(update_claimed_htlcs.is_empty());
 				*update_claimed_htlcs = claimed_htlcs.clone();
+				debug_assert!(update_failed_htlcs.is_empty());
+				*update_failed_htlcs = failed_htlcs.clone();
 			},
 			_ => debug_assert!(false),
 		}
@@ -9024,18 +9086,27 @@ where
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None
 					},
-					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => Some(
-						self.fail_htlc(htlc_id, err_packet.clone(), false, logger)
-							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+					&HTLCUpdateAwaitingACK::FailHTLC { htlc_id, ref err_packet } => {
+						let res = self.fail_htlc(htlc_id, err_packet.clone(), false, logger);
+						debug_assert!(
+							!matches!(&res, Err((_, true))),
+							"holding cell HTLC fails are always present in pending_inbound_htlcs",
+						);
+						Some(res.map(|fail_msg_opt| fail_msg_opt.map(|_| ())).map_err(|(e, _)| e))
+					},
 					&HTLCUpdateAwaitingACK::FailMalformedHTLC {
 						htlc_id,
 						failure_code,
 						sha256_of_onion,
-					} => Some(
-						self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger)
-							.map(|fail_msg_opt| fail_msg_opt.map(|_| ())),
-					),
+					} => {
+						let res =
+							self.fail_htlc(htlc_id, (sha256_of_onion, failure_code), false, logger);
+						debug_assert!(
+							!matches!(&res, Err((_, true))),
+							"holding cell HTLC fail-malformeds are always present in pending_inbound_htlcs",
+						);
+						Some(res.map(|fail_msg_opt| fail_msg_opt.map(|_| ())).map_err(|(e, _)| e))
+					},
 				};
 				if let Some(res) = fail_htlc_res {
 					match res {
@@ -9113,7 +9184,7 @@ where
 		(
 			Vec<(HTLCSource, PaymentHash)>,
 			Vec<(StaticInvoice, BlindedMessagePath)>,
-			Option<ChannelMonitorUpdate>,
+			Option<(ChannelMonitorUpdate, Vec<u64>)>,
 		),
 		ChannelError,
 	> {
@@ -9220,6 +9291,7 @@ where
 		let mut static_invoices = Vec::new();
 		let mut require_commitment = false;
 		let mut value_to_self_msat_diff: i64 = 0;
+		let mut htlc_ids_to_ack = Vec::new();
 
 		{
 			// Take references explicitly so that we can hold multiple references to self.context.
@@ -9235,6 +9307,7 @@ where
 					if let &InboundHTLCRemovalReason::Fulfill { .. } = reason {
 						value_to_self_msat_diff += htlc.amount_msat as i64;
 					}
+					htlc_ids_to_ack.push(htlc.htlc_id);
 					*expecting_peer_commitment_signed = true;
 					false
 				} else {
@@ -9426,13 +9499,19 @@ where
 		};
 		macro_rules! return_with_htlcs_to_fail {
 			($htlcs_to_fail: expr) => {
+				let htlc_ids_to_ack = core::mem::take(&mut htlc_ids_to_ack);
 				if !release_monitor {
-					self.context
-						.blocked_monitor_updates
-						.push(PendingChannelMonitorUpdate { update: monitor_update });
+					self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
+						update: monitor_update,
+						htlc_ids_to_ack,
+					});
 					return Ok(($htlcs_to_fail, static_invoices, None));
 				} else {
-					return Ok(($htlcs_to_fail, static_invoices, Some(monitor_update)));
+					return Ok((
+						$htlcs_to_fail,
+						static_invoices,
+						Some((monitor_update, htlc_ids_to_ack)),
+					));
 				}
 			};
 		}
@@ -11312,6 +11391,7 @@ where
 			closure_reason,
 			monitor_update: None,
 			dropped_outbound_htlcs: Vec::new(),
+			htlcs_to_ack: Vec::new(),
 			unbroadcasted_batch_funding_txid: self
 				.context
 				.unbroadcasted_batch_funding_txid(&self.funding),
@@ -11649,14 +11729,15 @@ where
 
 	/// Returns the next blocked monitor update, if one exists, and a bool which indicates a
 	/// further blocked monitor update exists after the next.
-	pub fn unblock_next_blocked_monitor_update(&mut self) -> Option<(ChannelMonitorUpdate, bool)> {
+	pub fn unblock_next_blocked_monitor_update(
+		&mut self,
+	) -> Option<(ChannelMonitorUpdate, Vec<u64>, bool)> {
 		if self.context.blocked_monitor_updates.is_empty() {
 			return None;
 		}
-		Some((
-			self.context.blocked_monitor_updates.remove(0).update,
-			!self.context.blocked_monitor_updates.is_empty(),
-		))
+		let PendingChannelMonitorUpdate { update, htlc_ids_to_ack } =
+			self.context.blocked_monitor_updates.remove(0);
+		Some((update, htlc_ids_to_ack, !self.context.blocked_monitor_updates.is_empty()))
 	}
 
 	/// Pushes a new monitor update into our monitor update queue, returning it if it should be
@@ -11667,7 +11748,7 @@ where
 		let release_monitor = self.context.blocked_monitor_updates.is_empty();
 		if !release_monitor {
 			self.context.blocked_monitor_updates.push(PendingChannelMonitorUpdate {
-				update,
+				update, htlc_ids_to_ack: Vec::new()
 			});
 			None
 		} else {
