@@ -24,10 +24,10 @@ use super::offers::{OffersMessage, OffersMessageHandler};
 use super::packet::{OnionMessageContents, Packet};
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageContext,
-	MessageForwardNode, OffersContext, MESSAGE_PADDING_ROUND_OFF,
+	MessageForwardNode, NextMessageHop, OffersContext, MESSAGE_PADDING_ROUND_OFF,
 };
 use crate::blinded_path::utils::is_padded;
-use crate::blinded_path::EmptyNodeIdLookUp;
+use crate::blinded_path::NodeIdLookUp;
 use crate::events::{Event, EventsProvider};
 use crate::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
@@ -60,15 +60,38 @@ struct MessengerNode {
 		Arc<TestKeysInterface>,
 		Arc<TestNodeSigner>,
 		Arc<TestLogger>,
-		Arc<EmptyNodeIdLookUp>,
+		Arc<TestNodeIdLookUp>,
 		Arc<MessageRouter>,
 		Arc<TestOffersMessageHandler>,
 		Arc<TestAsyncPaymentsMessageHandler>,
 		Arc<TestDNSResolverMessageHandler>,
 		Arc<TestCustomMessageHandler>,
 	>,
+	node_id_lookup: Arc<TestNodeIdLookUp>,
 	custom_message_handler: Arc<TestCustomMessageHandler>,
 	gossip_sync: Arc<P2PGossipSync<Arc<NetGraph>, Arc<TestChainSource>, Arc<TestLogger>>>,
+}
+
+/// A [`NodeIdLookUp`] that resolves SCIDs to node ids from an insertable map (empty by default,
+/// so it behaves like an empty lookup unless a mapping is added).
+struct TestNodeIdLookUp {
+	scid_to_node_id: Mutex<HashMap<u64, PublicKey>>,
+}
+
+impl TestNodeIdLookUp {
+	fn new() -> Self {
+		Self { scid_to_node_id: Mutex::new(new_hash_map()) }
+	}
+
+	fn add_mapping(&self, scid: u64, node_id: PublicKey) {
+		self.scid_to_node_id.lock().unwrap().insert(scid, node_id);
+	}
+}
+
+impl NodeIdLookUp for TestNodeIdLookUp {
+	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
+		self.scid_to_node_id.lock().unwrap().get(&short_channel_id).copied()
+	}
 }
 
 impl Drop for MessengerNode {
@@ -275,10 +298,15 @@ fn create_nodes(num_messengers: u8) -> Vec<MessengerNode> {
 struct MessengerCfg {
 	secret_override: Option<SecretKey>,
 	intercept_offline_peer_oms: bool,
+	intercept_unknown_scid_oms: bool,
 }
 impl MessengerCfg {
 	fn new() -> Self {
-		Self { secret_override: None, intercept_offline_peer_oms: false }
+		Self {
+			secret_override: None,
+			intercept_offline_peer_oms: false,
+			intercept_unknown_scid_oms: false,
+		}
 	}
 	fn with_node_secret(mut self, secret: SecretKey) -> Self {
 		self.secret_override = Some(secret);
@@ -286,6 +314,10 @@ impl MessengerCfg {
 	}
 	fn with_offline_peer_interception(mut self) -> Self {
 		self.intercept_offline_peer_oms = true;
+		self
+	}
+	fn with_unknown_scid_interception(mut self) -> Self {
+		self.intercept_unknown_scid_oms = true;
 		self
 	}
 }
@@ -304,31 +336,32 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 		let entropy_source = Arc::new(TestKeysInterface::new(&seed, Network::Testnet));
 		let node_signer = Arc::new(TestNodeSigner::new(secret_key));
 
-		let node_id_lookup = Arc::new(EmptyNodeIdLookUp {});
+		let node_id_lookup = Arc::new(TestNodeIdLookUp::new());
 		let message_router =
 			DefaultMessageRouter::new(Arc::clone(&network_graph), Arc::clone(&entropy_source));
 		let offers_message_handler = Arc::new(TestOffersMessageHandler {});
 		let async_payments_message_handler = Arc::new(TestAsyncPaymentsMessageHandler {});
 		let dns_resolver_message_handler = Arc::new(TestDNSResolverMessageHandler {});
 		let custom_message_handler = Arc::new(TestCustomMessageHandler::new());
-		let messenger = if cfg.intercept_offline_peer_oms {
+		let messenger = if cfg.intercept_offline_peer_oms || cfg.intercept_unknown_scid_oms {
 			OnionMessenger::new_with_offline_peer_interception(
 				Arc::clone(&entropy_source),
 				Arc::clone(&node_signer),
 				logger,
-				node_id_lookup,
+				Arc::clone(&node_id_lookup),
 				Arc::new(message_router),
 				offers_message_handler,
 				async_payments_message_handler,
 				dns_resolver_message_handler,
 				Arc::clone(&custom_message_handler),
+				cfg.intercept_unknown_scid_oms,
 			)
 		} else {
 			OnionMessenger::new(
 				Arc::clone(&entropy_source),
 				Arc::clone(&node_signer),
 				logger,
-				node_id_lookup,
+				Arc::clone(&node_id_lookup),
 				Arc::new(message_router),
 				offers_message_handler,
 				async_payments_message_handler,
@@ -341,6 +374,7 @@ fn create_nodes_using_cfgs(cfgs: Vec<MessengerCfg>) -> Vec<MessengerNode> {
 			node_id: node_signer.get_node_id(Recipient::Node).unwrap(),
 			entropy_source,
 			messenger,
+			node_id_lookup,
 			custom_message_handler,
 			gossip_sync: Arc::clone(&gossip_sync),
 		});
@@ -1144,9 +1178,13 @@ fn intercept_offline_peer_oms() {
 	let mut events = release_events(&nodes[1]);
 	assert_eq!(events.len(), 1);
 	let onion_message = match events.remove(0) {
-		Event::OnionMessageIntercepted { peer_node_id, message } => {
-			assert_eq!(peer_node_id, final_node_vec[0].node_id);
-			message
+		Event::OnionMessageIntercepted { next_hop, message } => {
+			if let NextMessageHop::NodeId(peer_node_id) = next_hop {
+				assert_eq!(peer_node_id, final_node_vec[0].node_id);
+				message
+			} else {
+				panic!();
+			}
 		},
 		_ => panic!(),
 	};
@@ -1171,6 +1209,129 @@ fn intercept_offline_peer_oms() {
 	nodes[1].messenger.forward_onion_message(onion_message, &final_node_vec[0].node_id).unwrap();
 	final_node_vec[0].custom_message_handler.expect_message(TestCustomMessage::Pong);
 	pass_along_path(&vec![nodes.remove(1), final_node_vec.remove(0)]);
+}
+
+#[test]
+fn intercept_unknown_scid_oms() {
+	// Ensure that if OnionMessenger is initialized with
+	// new_with_offline_peer_interception and `intercept_for_unknown_scids` set, we will
+	// intercept OMs that use an unknown SCID as the next hop, generate the right events, and
+	// forward OMs when they are re-injected by the user.
+	let node_cfgs = vec![
+		MessengerCfg::new(),
+		MessengerCfg::new().with_unknown_scid_interception(),
+		MessengerCfg::new(),
+	];
+	let mut nodes = create_nodes_using_cfgs(node_cfgs);
+
+	let peer_conn_evs = release_events(&nodes[1]);
+	assert_eq!(peer_conn_evs.len(), 2);
+	for (i, ev) in peer_conn_evs.iter().enumerate() {
+		match ev {
+			Event::OnionMessagePeerConnected { peer_node_id } => {
+				let node_idx = if i == 0 { 0 } else { 2 };
+				assert_eq!(peer_node_id, &nodes[node_idx].node_id);
+			},
+			_ => panic!(),
+		}
+	}
+
+	// Use a SCID-based intermediate hop to trigger the unknown SCID interception path. Since no
+	// mapping was added to the `TestNodeIdLookUp`, the SCID cannot be resolved, so the
+	// OnionMessenger will generate an `OnionMessageIntercepted` event with a `ShortChannelId`
+	// next hop.
+	let scid = 42;
+	let message = TestCustomMessage::Pong;
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: Some(scid) }];
+	let blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[2].node_id,
+		nodes[2].messenger.node_signer.get_receive_auth_key(),
+		MessageContext::Custom(Vec::new()),
+		false,
+		&*nodes[2].entropy_source,
+		&Secp256k1::new(),
+	);
+	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+
+	nodes[0].messenger.send_onion_message(message, instructions).unwrap();
+	let mut final_node_vec = nodes.split_off(2);
+	pass_along_path(&nodes);
+
+	// We expect an `OnionMessageIntercepted` event with a `ShortChannelId` next hop since the
+	// SCID is not resolvable (no mapping was added to the `TestNodeIdLookUp`).
+	let mut events = release_events(&nodes[1]);
+	assert_eq!(events.len(), 1);
+	let onion_message = match events.remove(0) {
+		Event::OnionMessageIntercepted { next_hop, message } => {
+			if let NextMessageHop::ShortChannelId(intercepted_scid) = next_hop {
+				assert_eq!(intercepted_scid, scid);
+				message
+			} else {
+				panic!("Expected ShortChannelId next hop, got NodeId");
+			}
+		},
+		_ => panic!(),
+	};
+
+	// The user resolves the SCID externally and forwards the intercepted message to the
+	// correct peer.
+	nodes[1].messenger.forward_onion_message(onion_message, &final_node_vec[0].node_id).unwrap();
+	final_node_vec[0].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&vec![nodes.remove(1), final_node_vec.remove(0)]);
+}
+
+#[test]
+fn intercept_resolved_scid_offline_peer_oms() {
+	// Ensure that when a forwarded OM's next hop is a SCID that resolves to a known but offline
+	// peer, the offline-peer interception path reports the resolved node id rather than the SCID,
+	// even though `intercept_for_unknown_scids` is disabled.
+	let node_cfgs = vec![
+		MessengerCfg::new(),
+		MessengerCfg::new().with_offline_peer_interception(),
+		MessengerCfg::new(),
+	];
+	let mut nodes = create_nodes_using_cfgs(node_cfgs);
+
+	// Clear the initial `OnionMessagePeerConnected` events.
+	let _ = release_events(&nodes[1]);
+
+	// Resolve the SCID to nodes[2] and disconnect it so it appears as a known-but-offline peer.
+	let scid = 42;
+	nodes[1].node_id_lookup.add_mapping(scid, nodes[2].node_id);
+	disconnect_peers(&nodes[1], &nodes[2]);
+
+	let message = TestCustomMessage::Pong;
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[1].node_id, short_channel_id: Some(scid) }];
+	let blinded_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[2].node_id,
+		nodes[2].messenger.node_signer.get_receive_auth_key(),
+		MessageContext::Custom(Vec::new()),
+		false,
+		&*nodes[2].entropy_source,
+		&Secp256k1::new(),
+	);
+	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+
+	nodes[0].messenger.send_onion_message(message, instructions).unwrap();
+	let final_node_vec = nodes.split_off(2);
+	pass_along_path(&nodes);
+
+	// The next hop resolved to a known (but offline) peer, so the event must carry its node id
+	// rather than the SCID variant (which `intercept_for_unknown_scids` would have produced).
+	let mut events = release_events(&nodes[1]);
+	assert_eq!(events.len(), 1);
+	match events.remove(0) {
+		Event::OnionMessageIntercepted { next_hop, .. } => {
+			assert_eq!(next_hop, NextMessageHop::NodeId(final_node_vec[0].node_id));
+		},
+		_ => panic!(),
+	}
 }
 
 #[test]
