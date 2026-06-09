@@ -4799,6 +4799,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 			&chan_mgrs[i],
 			IgnoringMessageHandler {},
 			IgnoringMessageHandler {},
+			true,
 		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(

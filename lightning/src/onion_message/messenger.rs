@@ -273,6 +273,7 @@ pub struct OnionMessenger<
 	dns_resolver_handler: DRH,
 	custom_handler: CMH,
 	intercept_messages_for_offline_peers: bool,
+	intercept_for_unknown_scids: bool,
 	pending_intercepted_msgs_events: Mutex<Vec<Event>>,
 	pending_peer_connected_events: Mutex<Vec<Event>>,
 	pending_events_processor: AtomicBool,
@@ -1393,6 +1394,7 @@ impl<
 			dns_resolver,
 			custom_handler,
 			false,
+			false,
 		)
 	}
 
@@ -1400,11 +1402,18 @@ impl<
 	/// intended to be forwarded to offline peers, we will intercept them for
 	/// later forwarding.
 	///
+	/// If `intercept_for_unknown_scids` is set, we will additionally intercept onion messages whose
+	/// next hop is a [`NextMessageHop::ShortChannelId`] that cannot be resolved to a connected
+	/// peer, generating an [`Event::OnionMessageIntercepted`] with a
+	/// [`NextMessageHop::ShortChannelId`] next hop. This variant of the event was introduced in
+	/// LDK 0.3, so users who persist [`Event::OnionMessageIntercepted`] events and may need to
+	/// downgrade to LDK 0.2 must leave this disabled.
+	///
 	/// Interception flow:
-	/// 1. If an onion message for an offline peer is received, `OnionMessenger` will
-	///    generate an [`Event::OnionMessageIntercepted`]. Event handlers can
-	///    then choose to persist this onion message for later forwarding, or drop
-	///    it.
+	/// 1. If an onion message for an offline peer or (if `intercept_for_unknown_scids` is set) an
+	///    unknown SCID is received, `OnionMessenger` will generate an
+	///    [`Event::OnionMessageIntercepted`]. Event handlers can then choose to persist this
+	///    onion message for later forwarding, or drop it.
 	/// 2. When the offline peer later comes back online, `OnionMessenger` will
 	///    generate an [`Event::OnionMessagePeerConnected`]. Event handlers will
 	///    then fetch all previously intercepted onion messages for this peer.
@@ -1420,6 +1429,7 @@ impl<
 	pub fn new_with_offline_peer_interception(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL, message_router: MR,
 		offers_handler: OMH, async_payments_handler: APH, dns_resolver: DRH, custom_handler: CMH,
+		intercept_for_unknown_scids: bool,
 	) -> Self {
 		Self::new_inner(
 			entropy_source,
@@ -1432,13 +1442,14 @@ impl<
 			dns_resolver,
 			custom_handler,
 			true,
+			intercept_for_unknown_scids,
 		)
 	}
 
 	fn new_inner(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL, message_router: MR,
 		offers_handler: OMH, async_payments_handler: APH, dns_resolver: DRH, custom_handler: CMH,
-		intercept_messages_for_offline_peers: bool,
+		intercept_messages_for_offline_peers: bool, intercept_for_unknown_scids: bool,
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -1455,6 +1466,7 @@ impl<
 			dns_resolver_handler: dns_resolver,
 			custom_handler,
 			intercept_messages_for_offline_peers,
+			intercept_for_unknown_scids,
 			pending_intercepted_msgs_events: Mutex::new(Vec::new()),
 			pending_peer_connected_events: Mutex::new(Vec::new()),
 			pending_events_processor: AtomicBool::new(false),
@@ -1666,7 +1678,20 @@ impl<
 			NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
 				Some(pubkey) => pubkey,
 				None => {
-					log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}", scid, log_suffix);
+					if self.intercept_for_unknown_scids {
+						log_trace!(
+							self.logger,
+							"Generating OnionMessageIntercepted event for SCID {} {}",
+							scid,
+							log_suffix
+						);
+						self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
+							next_hop,
+							message: onion_message,
+						});
+						return Ok(());
+					}
+					log_trace!(self.logger, "Dropping forwarded onion message: unable to resolve next hop using SCID {} {}", scid, log_suffix);
 					return Err(SendError::GetNodeIdFailed);
 				},
 			},
@@ -1709,7 +1734,7 @@ impl<
 					log_suffix
 				);
 				self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
-					peer_node_id: next_node_id,
+					next_hop,
 					message: onion_message,
 				});
 				Ok(())
