@@ -470,6 +470,94 @@ impl FilesystemStoreInner {
 
 		Ok(keys)
 	}
+
+	fn list_all_keys(
+		&self, use_empty_ns_dir: bool,
+	) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
+		let prefixed_dest = &self.data_dir;
+		if !prefixed_dest.exists() {
+			return Ok(Vec::new());
+		}
+
+		let mut keys = Vec::new();
+
+		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
+			let primary_entry = primary_entry?;
+			let primary_path = primary_entry.path();
+			if dir_entry_is_store_artifact(&primary_path) {
+				continue 'primary_loop;
+			}
+
+			if dir_entry_is_key(&primary_entry)? {
+				let primary_namespace = String::new();
+				let secondary_namespace = String::new();
+				let key = get_key_from_dir_entry_path(&primary_path, prefixed_dest, false)?;
+				keys.push((primary_namespace, secondary_namespace, key));
+				continue 'primary_loop;
+			}
+
+			// The primary_entry is actually also a directory.
+			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
+				let secondary_entry = secondary_entry?;
+				let secondary_path = secondary_entry.path();
+				if dir_entry_is_store_artifact(&secondary_path) {
+					continue 'secondary_loop;
+				}
+
+				if dir_entry_is_key(&secondary_entry)? {
+					let primary_namespace = get_key_from_dir_entry_path(
+						&primary_path,
+						prefixed_dest,
+						use_empty_ns_dir,
+					)?;
+					let secondary_namespace = String::new();
+					let key = get_key_from_dir_entry_path(&secondary_path, &primary_path, false)?;
+					keys.push((primary_namespace, secondary_namespace, key));
+					continue 'secondary_loop;
+				}
+
+				// The secondary_entry is actually also a directory.
+				for tertiary_entry in fs::read_dir(&secondary_path)? {
+					let tertiary_entry = tertiary_entry?;
+					let tertiary_path = tertiary_entry.path();
+					if dir_entry_is_store_artifact(&tertiary_path) {
+						continue;
+					}
+
+					if dir_entry_is_key(&tertiary_entry)? {
+						let primary_namespace = get_key_from_dir_entry_path(
+							&primary_path,
+							prefixed_dest,
+							use_empty_ns_dir,
+						)?;
+						let secondary_namespace = get_key_from_dir_entry_path(
+							&secondary_path,
+							&primary_path,
+							use_empty_ns_dir,
+						)?;
+						let key =
+							get_key_from_dir_entry_path(&tertiary_path, &secondary_path, false)?;
+						keys.push((primary_namespace, secondary_namespace, key));
+					} else {
+						debug_assert!(
+							false,
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						let msg = format!(
+							"Failed to list keys of path {}: only two levels of namespaces are supported",
+							PrintableString(tertiary_path.to_str().unwrap_or_default())
+						);
+						return Err(lightning::io::Error::new(
+							lightning::io::ErrorKind::Other,
+							msg,
+						));
+					}
+				}
+			}
+		}
+		Ok(keys)
+	}
 }
 
 impl FilesystemStoreState {
@@ -640,92 +728,26 @@ impl FilesystemStoreState {
 		}
 	}
 
+	#[cfg(feature = "tokio")]
+	pub(crate) fn list_all_keys_async(
+		&self, use_empty_ns_dir: bool,
+	) -> impl Future<Output = Result<Vec<(String, String, String)>, lightning::io::Error>> + 'static + Send
+	{
+		let this = Arc::clone(&self.inner);
+
+		async move {
+			tokio::task::spawn_blocking(move || this.list_all_keys(use_empty_ns_dir))
+				.await
+				.unwrap_or_else(|e| {
+					Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
+				})
+		}
+	}
+
 	pub(crate) fn list_all_keys_impl(
 		&self, use_empty_ns_dir: bool,
 	) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
-		let prefixed_dest = &self.inner.data_dir;
-		if !prefixed_dest.exists() {
-			return Ok(Vec::new());
-		}
-
-		let mut keys = Vec::new();
-
-		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
-			let primary_entry = primary_entry?;
-			let primary_path = primary_entry.path();
-			if dir_entry_is_store_artifact(&primary_path) {
-				continue 'primary_loop;
-			}
-
-			if dir_entry_is_key(&primary_entry)? {
-				let primary_namespace = String::new();
-				let secondary_namespace = String::new();
-				let key = get_key_from_dir_entry_path(&primary_path, prefixed_dest, false)?;
-				keys.push((primary_namespace, secondary_namespace, key));
-				continue 'primary_loop;
-			}
-
-			// The primary_entry is actually also a directory.
-			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
-				let secondary_entry = secondary_entry?;
-				let secondary_path = secondary_entry.path();
-				if dir_entry_is_store_artifact(&secondary_path) {
-					continue 'secondary_loop;
-				}
-
-				if dir_entry_is_key(&secondary_entry)? {
-					let primary_namespace = get_key_from_dir_entry_path(
-						&primary_path,
-						prefixed_dest,
-						use_empty_ns_dir,
-					)?;
-					let secondary_namespace = String::new();
-					let key = get_key_from_dir_entry_path(&secondary_path, &primary_path, false)?;
-					keys.push((primary_namespace, secondary_namespace, key));
-					continue 'secondary_loop;
-				}
-
-				// The secondary_entry is actually also a directory.
-				for tertiary_entry in fs::read_dir(&secondary_path)? {
-					let tertiary_entry = tertiary_entry?;
-					let tertiary_path = tertiary_entry.path();
-					if dir_entry_is_store_artifact(&tertiary_path) {
-						continue;
-					}
-
-					if dir_entry_is_key(&tertiary_entry)? {
-						let primary_namespace = get_key_from_dir_entry_path(
-							&primary_path,
-							prefixed_dest,
-							use_empty_ns_dir,
-						)?;
-						let secondary_namespace = get_key_from_dir_entry_path(
-							&secondary_path,
-							&primary_path,
-							use_empty_ns_dir,
-						)?;
-						let key =
-							get_key_from_dir_entry_path(&tertiary_path, &secondary_path, false)?;
-						keys.push((primary_namespace, secondary_namespace, key));
-					} else {
-						debug_assert!(
-							false,
-							"Failed to list keys of path {}: only two levels of namespaces are supported",
-							PrintableString(tertiary_path.to_str().unwrap_or_default())
-						);
-						let msg = format!(
-							"Failed to list keys of path {}: only two levels of namespaces are supported",
-							PrintableString(tertiary_path.to_str().unwrap_or_default())
-						);
-						return Err(lightning::io::Error::new(
-							lightning::io::ErrorKind::Other,
-							msg,
-						));
-					}
-				}
-			}
-		}
-		Ok(keys)
+		self.inner.list_all_keys(use_empty_ns_dir)
 	}
 }
 
