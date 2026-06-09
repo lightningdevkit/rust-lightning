@@ -762,6 +762,13 @@ impl Default for OptionalBolt11PaymentParams {
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
 pub struct OptionalBolt12PaymentParams {
+	/// The amount this node contributes to the payment. Set to `None` to pay the full invoice
+	/// amount.
+	///
+	/// For payments split across multiple senders, provide a partial amount here — the onion total
+	/// is always set to the full invoice amount so that the recipient can correctly validate the
+	/// payment.
+	pub amount_msats: Option<u64>,
 	/// Pathfinding options which tweak how the path is constructed to the recipient.
 	pub route_params_config: RouteParametersConfig,
 	/// The number of tries or time during which we'll retry this payment if some paths to the
@@ -776,6 +783,7 @@ pub struct OptionalBolt12PaymentParams {
 impl Default for OptionalBolt12PaymentParams {
 	fn default() -> Self {
 		Self {
+			amount_msats: None,
 			route_params_config: Default::default(),
 			#[cfg(feature = "std")]
 			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
@@ -5851,6 +5859,10 @@ impl<
 	/// whether or not the payment was successful.
 	///
 	/// [timer tick]: Self::timer_tick_occurred
+	#[deprecated(
+		since = "0.3.0",
+		note = "Use ChannelManager::pay_for_bolt12_invoice instead, providing a fresh payment_id and verifying the invoice yourself."
+	)]
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
@@ -5890,19 +5902,17 @@ impl<
 	/// that the invoice was previously requested. The caller is responsible for invoice
 	/// verification and for providing a unique `payment_id`.
 	///
-	/// `amount_msats` controls how much this node contributes to the payment. Set to `None` to pay
-	/// the full invoice amount. For payments split across multiple senders, provide a partial
-	/// `amount_msats` here — the onion total is always set to the full invoice amount so that the
-	/// recipient can correctly validate the payment.
+	/// The amount this node contributes to the payment can be set via
+	/// [`OptionalBolt12PaymentParams::amount_msats`], which defaults to the full invoice amount.
 	///
 	/// Returns [`Bolt12PaymentError::DuplicateInvoice`] if a payment with the given `payment_id`
-	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if `amount_msats` is zero or exceeds the
-	/// invoice amount.
+	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if the requested amount is zero
+	/// or exceeds the invoice amount.
 	///
 	/// Either [`Event::PaymentSent`] or [`Event::PaymentFailed`] will be generated once the
 	/// payment completes.
 	pub fn pay_for_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
 		optional_params: OptionalBolt12PaymentParams,
 	) -> Result<(), Bolt12PaymentError> {
 		let best_block_height = self.best_block.read().unwrap().height;
@@ -5911,7 +5921,6 @@ impl<
 		self.pending_outbound_payments.pay_for_bolt12_invoice(
 			invoice,
 			payment_id,
-			amount_msats,
 			optional_params,
 			&self.router,
 			self.list_usable_channels(),

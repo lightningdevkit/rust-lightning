@@ -1140,7 +1140,7 @@ impl OutboundPayments {
 	pub(super) fn pay_for_bolt12_invoice<
 		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP, L: Logger,
 	>(
-		&self, invoice: &Bolt12Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
 		optional_params: OptionalBolt12PaymentParams,
 		router: &R, first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
 		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
@@ -1152,7 +1152,7 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let OptionalBolt12PaymentParams { retry_strategy, route_params_config } = optional_params;
+		let OptionalBolt12PaymentParams { amount_msats, retry_strategy, route_params_config } = optional_params;
 
 		let invoice_amount = invoice.amount_msats();
 		let send_amount = amount_msats.unwrap_or(invoice_amount);

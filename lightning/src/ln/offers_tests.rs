@@ -1303,6 +1303,7 @@ fn creates_and_pays_for_offer_with_retry() {
 
 /// Checks that a deferred invoice can be paid asynchronously from an Event::InvoiceReceived.
 #[test]
+#[allow(deprecated)] // Tests the deprecated send_payment_for_bolt12_invoice.
 fn pays_bolt12_invoice_asynchronously() {
 	let mut manually_pay_cfg = test_default_channel_config();
 	manually_pay_cfg.manually_handle_bolt12_invoices = true;
@@ -2724,7 +2725,7 @@ fn pay_for_bolt12_invoice_with_fresh_payment_id() {
 	get_event!(bob, Event::PaymentFailed);
 
 	let payment_id = PaymentId([2; 32]);
-	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, None, Default::default()).unwrap();
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Default::default()).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
 	route_bolt12_payment(bob, &[alice], &invoice);
@@ -2788,25 +2789,31 @@ fn pay_for_bolt12_invoice_error_cases() {
 	let payment_id = PaymentId([2; 32]);
 
 	// Zero amount is rejected.
+	let zero_amount_params = channelmanager::OptionalBolt12PaymentParams {
+		amount_msats: Some(0),
+		..Default::default()
+	};
 	assert_eq!(
-		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Some(0), Default::default()),
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, zero_amount_params),
 		Err(Bolt12PaymentError::InvalidAmount),
 	);
 
 	// Overpaying is rejected before any state is inserted.
+	let overpay_params = channelmanager::OptionalBolt12PaymentParams {
+		amount_msats: Some(invoice.amount_msats() + 1),
+		..Default::default()
+	};
 	assert_eq!(
-		bob.node.pay_for_bolt12_invoice(
-			&invoice, payment_id, Some(invoice.amount_msats() + 1), Default::default()
-		),
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, overpay_params),
 		Err(Bolt12PaymentError::InvalidAmount),
 	);
 
 	// First call succeeds and starts the payment.
-	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, None, Default::default()).unwrap();
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Default::default()).unwrap();
 
 	// Re-using the same payment_id is rejected.
 	assert_eq!(
-		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, None, Default::default()),
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Default::default()),
 		Err(Bolt12PaymentError::DuplicateInvoice),
 	);
 
@@ -2831,7 +2838,7 @@ fn pay_for_bolt12_invoice_error_cases() {
 
 	let unknown_features_payment_id = PaymentId([3; 32]);
 	assert_eq!(
-		bob.node.pay_for_bolt12_invoice(&unknown_features_invoice, unknown_features_payment_id, None, Default::default()),
+		bob.node.pay_for_bolt12_invoice(&unknown_features_invoice, unknown_features_payment_id, Default::default()),
 		Err(Bolt12PaymentError::UnknownRequiredFeatures),
 	);
 
@@ -2889,10 +2896,11 @@ fn pay_for_bolt12_invoice_partial_amount() {
 	let payment_id = PaymentId([2; 32]);
 
 	let params = channelmanager::OptionalBolt12PaymentParams {
+		amount_msats: Some(partial_amount),
 		retry_strategy: Retry::Attempts(0),
 		..Default::default()
 	};
-	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Some(partial_amount), params).unwrap();
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, params).unwrap();
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
 	check_added_monitors(bob, 1);
