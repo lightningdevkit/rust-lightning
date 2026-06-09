@@ -1108,8 +1108,8 @@ fn test_0conf_channel_reorg() {
 	mine_transaction(&nodes[1], &tx);
 	mine_transaction(&nodes[2], &tx);
 
-	// Send a payment using the channel's real SCID, which will be public in a few blocks once we
-	// can generate a channel_announcement.
+	// Send a payment using the channel's alias SCID. The channel itself will be public in a few
+	// blocks once we can generate a channel_announcement.
 	let bs_chans = nodes[1].node.list_usable_channels();
 	let bs_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
 	let original_scid = bs_chan.short_channel_id.unwrap();
@@ -1117,7 +1117,7 @@ fn test_0conf_channel_reorg() {
 
 	let (mut route, payment_hash, payment_preimage, payment_secret) =
 		get_route_and_payment_hash!(nodes[1], nodes[2], 10_000);
-	assert_eq!(route.paths[0].hops[0].short_channel_id, original_scid);
+	assert_eq!(route.paths[0].hops[0].short_channel_id, bs_chan.outbound_scid_alias.unwrap());
 	send_along_route_with_secret(
 		&nodes[1],
 		route.clone(),
@@ -1188,7 +1188,7 @@ fn test_0conf_channel_reorg() {
 	assert_ne!(original_scid, new_scid);
 	assert_eq!(nodes[2].node.list_usable_channels()[0].short_channel_id.unwrap(), new_scid);
 
-	// At this point, the channel should happily forward or send payments with either the old SCID
+	// At this point, the channel should happily forward or send payments with either the alias SCID
 	// or the new SCID...
 	send_along_route_with_secret(
 		&nodes[1],
@@ -1286,12 +1286,22 @@ fn test_0conf_channel_reorg() {
 
 	let onion = RecipientOnionFields::secret_only(payment_secret, 10_000);
 	let id = PaymentId([0; 32]);
-	nodes[1].node.send_payment_with_route(route, payment_hash, onion.clone(), id).unwrap();
+
+	// The route uses the alias SCID, which is stable across reorgs. To verify the old real SCID
+	// is invalidated after propagation delay, we explicitly build a route using original_scid.
+	let mut old_scid_route = route.clone();
+	old_scid_route.paths[0].hops[0].short_channel_id = original_scid;
+	nodes[1].node.send_payment_with_route(old_scid_route, payment_hash, onion.clone(), id).unwrap();
 	let mut conditions = PaymentFailedConditions::new();
 	conditions.reason = Some(PaymentFailureReason::RouteNotFound);
 	expect_payment_failed_conditions(&nodes[1], payment_hash, false, conditions);
 
-	nodes[0].node.send_payment_with_route(forwarded_route, payment_hash, onion, id).unwrap();
+	let mut old_scid_forwarded_route = forwarded_route.clone();
+	old_scid_forwarded_route.paths[0].hops[1].short_channel_id = original_scid;
+	nodes[0]
+		.node
+		.send_payment_with_route(old_scid_forwarded_route, payment_hash, onion, id)
+		.unwrap();
 	check_added_monitors(&nodes[0], 1);
 	let mut ev = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(ev.len(), 1);

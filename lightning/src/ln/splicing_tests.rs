@@ -3880,7 +3880,7 @@ fn fail_splice_on_tx_complete_error() {
 
 	// Queue an outgoing HTLC to the holding cell. It should be freed once we exit quiescence.
 	let (route, payment_hash, _payment_preimage, payment_secret) =
-		get_route_and_payment_hash!(initiator, acceptor, 1_000_000);
+		get_route_and_payment_hash!(acceptor, initiator, 1_000_000);
 	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 	let payment_id = PaymentId(payment_hash.0);
 	acceptor.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
