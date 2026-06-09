@@ -100,6 +100,11 @@ struct InvoiceContents {
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
 	held_htlc_available_paths: Vec<BlindedMessagePath>,
+	/// Opaque, application-specific data set by the recipient via
+	/// `StaticInvoiceBuilder::experimental_app_data`. Carried in an experimental, optional TLV
+	/// record so that implementations which don't understand it ignore it rather than rejecting the
+	/// invoice.
+	experimental_app_data: Option<String>,
 	#[cfg(test)]
 	experimental_baz: Option<u64>,
 }
@@ -458,6 +463,7 @@ impl InvoiceContents {
 			fallbacks: None,
 			features: Bolt12InvoiceFeatures::empty(),
 			signing_pubkey,
+			experimental_app_data: None,
 			#[cfg(test)]
 			experimental_baz: None,
 		}
@@ -486,6 +492,7 @@ impl InvoiceContents {
 		};
 
 		let experimental_invoice = ExperimentalInvoiceTlvStreamRef {
+			experimental_app_data: self.experimental_app_data.as_ref(),
 			#[cfg(test)]
 			experimental_baz: self.experimental_baz,
 		};
@@ -573,6 +580,10 @@ impl InvoiceContents {
 		&self.features
 	}
 
+	fn experimental_app_data(&self) -> Option<&str> {
+		self.experimental_app_data.as_deref()
+	}
+
 	fn signing_pubkey(&self) -> PublicKey {
 		self.signing_pubkey
 	}
@@ -626,7 +637,7 @@ type PartialInvoiceTlvStreamRef<'a> = (
 	OfferTlvStreamRef<'a>,
 	InvoiceTlvStreamRef<'a>,
 	ExperimentalOfferTlvStreamRef,
-	ExperimentalInvoiceTlvStreamRef,
+	ExperimentalInvoiceTlvStreamRef<'a>,
 );
 
 impl TryFrom<ParsedMessage<FullInvoiceTlvStream>> for StaticInvoice {
@@ -685,6 +696,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceTlvStream {
+				experimental_app_data,
 				#[cfg(test)]
 				experimental_baz,
 			},
@@ -729,6 +741,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			fallbacks,
 			features,
 			signing_pubkey,
+			experimental_app_data,
 			#[cfg(test)]
 			experimental_baz,
 		})
@@ -769,7 +782,7 @@ mod tests {
 		InvoiceTlvStreamRef<'a>,
 		SignatureTlvStreamRef<'a>,
 		ExperimentalOfferTlvStreamRef,
-		ExperimentalInvoiceTlvStreamRef,
+		ExperimentalInvoiceTlvStreamRef<'a>,
 	);
 
 	impl StaticInvoice {
@@ -935,13 +948,61 @@ mod tests {
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
-				ExperimentalInvoiceTlvStreamRef { experimental_baz: None },
+				ExperimentalInvoiceTlvStreamRef {
+					experimental_app_data: None,
+					experimental_baz: None
+				},
 			)
 		);
 
 		if let Err(e) = StaticInvoice::try_from(buffer) {
 			panic!("error parsing invoice: {:?}", e);
 		}
+	}
+
+	#[test]
+	fn builds_invoice_with_experimental_app_data() {
+		let node_id = recipient_pubkey();
+		let payment_paths = payment_paths();
+		let now = now();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
+
+		// An invoice without the record reads back as `None`.
+		assert_eq!(invoice().experimental_app_data(), None);
+
+		let app_data = "hello world".to_string();
+		let invoice = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths.clone(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		)
+		.unwrap()
+		.experimental_app_data(app_data.clone())
+		.build_and_sign(&secp_ctx)
+		.unwrap();
+
+		assert_eq!(invoice.experimental_app_data(), Some(app_data.as_str()));
+
+		// The experimental, optional record round-trips through serialization, and the signature
+		// (which commits to it) still verifies on parse.
+		let mut buffer = Vec::new();
+		invoice.write(&mut buffer).unwrap();
+		assert_eq!(invoice.bytes, buffer.as_slice());
+
+		let parsed = StaticInvoice::try_from(buffer).unwrap();
+		assert_eq!(parsed.experimental_app_data(), Some(app_data.as_str()));
 	}
 
 	#[cfg(feature = "std")]

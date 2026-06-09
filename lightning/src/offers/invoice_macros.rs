@@ -80,6 +80,19 @@ macro_rules! invoice_builder_methods_common { (
 		$invoice_fields.features.set_basic_mpp_optional();
 		$return_value
 	}
+
+	#[doc = concat!("Sets [`", stringify!($invoice_type), "::experimental_app_data`].")]
+	///
+	/// Carries opaque, application-specific data in an experimental, optional TLV record.
+	/// Implementations that don't understand the record ignore it rather than rejecting the
+	/// invoice, so this is safe to use for interop with other implementations. The data is
+	/// committed to by the invoice signature.
+	///
+	/// Successive calls to this method will override the previous setting.
+	pub fn experimental_app_data($($self_mut)* $self: $self_type, data: String) -> $return_type {
+		$invoice_fields.experimental_app_data = Some(data);
+		$return_value
+	}
 } }
 
 #[cfg(test)]
@@ -145,6 +158,14 @@ macro_rules! invoice_accessors_common { ($self: ident, $contents: expr, $invoice
 	/// Features pertaining to paying an invoice.
 	pub fn invoice_features(&$self) -> &Bolt12InvoiceFeatures {
 		$contents.features()
+	}
+
+	/// Opaque, application-specific data set by the recipient, if any.
+	///
+	/// Carried in an experimental, optional TLV record that implementations which don't
+	/// understand it ignore rather than rejecting the invoice.
+	pub fn experimental_app_data(&$self) -> Option<&str> {
+		$contents.experimental_app_data()
 	}
 } }
 

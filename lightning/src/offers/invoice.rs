@@ -422,6 +422,7 @@ macro_rules! invoice_builder_methods {
 				fallbacks: None,
 				features: Bolt12InvoiceFeatures::empty(),
 				signing_pubkey,
+				experimental_app_data: None,
 				#[cfg(test)]
 				experimental_baz: None,
 			}
@@ -773,6 +774,10 @@ struct InvoiceFields {
 	fallbacks: Option<Vec<FallbackAddress>>,
 	features: Bolt12InvoiceFeatures,
 	signing_pubkey: PublicKey,
+	/// Opaque, application-specific data set by the recipient via
+	/// `InvoiceBuilder::experimental_app_data`. Carried in an experimental, optional TLV record so
+	/// that implementations which don't understand it ignore it rather than rejecting the invoice.
+	experimental_app_data: Option<String>,
 	#[cfg(test)]
 	experimental_baz: Option<u64>,
 }
@@ -1295,6 +1300,10 @@ impl InvoiceContents {
 		&self.fields().features
 	}
 
+	fn experimental_app_data(&self) -> Option<&str> {
+		self.fields().experimental_app_data.as_deref()
+	}
+
 	fn signing_pubkey(&self) -> PublicKey {
 		self.fields().signing_pubkey
 	}
@@ -1406,7 +1415,7 @@ pub(super) fn filter_fallbacks(chain: ChainHash, fallbacks: &Vec<FallbackAddress
 }
 
 impl InvoiceFields {
-	fn as_tlv_stream(&self) -> (InvoiceTlvStreamRef<'_>, ExperimentalInvoiceTlvStreamRef) {
+	fn as_tlv_stream(&self) -> (InvoiceTlvStreamRef<'_>, ExperimentalInvoiceTlvStreamRef<'_>) {
 		let features = {
 			if self.features == Bolt12InvoiceFeatures::empty() {
 				None
@@ -1431,6 +1440,7 @@ impl InvoiceFields {
 				held_htlc_available_paths: None,
 			},
 			ExperimentalInvoiceTlvStreamRef {
+				experimental_app_data: self.experimental_app_data.as_ref(),
 				#[cfg(test)]
 				experimental_baz: self.experimental_baz,
 			},
@@ -1520,18 +1530,20 @@ pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::RangeFrom<u64> = 3_000_0
 #[cfg(not(test))]
 tlv_stream!(
 	ExperimentalInvoiceTlvStream,
-	ExperimentalInvoiceTlvStreamRef,
+	ExperimentalInvoiceTlvStreamRef<'a>,
 	EXPERIMENTAL_INVOICE_TYPES,
 	{
 		// When adding experimental TLVs, update EXPERIMENTAL_TLV_ALLOCATION_SIZE accordingly in
 		// both UnsignedBolt12Invoice:new and UnsignedStaticInvoice::new to avoid unnecessary
 		// allocations.
+		(3_000_000_003, experimental_app_data: (String, WithoutLength)),
 	}
 );
 
 #[cfg(test)]
 tlv_stream!(
-	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, EXPERIMENTAL_INVOICE_TYPES, {
+	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef<'a>, EXPERIMENTAL_INVOICE_TYPES, {
+		(3_000_000_003, experimental_app_data: (String, WithoutLength)),
 		(3_999_999_999, experimental_baz: (u64, HighZeroBytesDroppedBigSize)),
 	}
 );
@@ -1574,7 +1586,7 @@ type FullInvoiceTlvStreamRef<'a> = (
 	SignatureTlvStreamRef<'a>,
 	ExperimentalOfferTlvStreamRef,
 	ExperimentalInvoiceRequestTlvStreamRef,
-	ExperimentalInvoiceTlvStreamRef,
+	ExperimentalInvoiceTlvStreamRef<'a>,
 );
 
 impl CursorReadable for FullInvoiceTlvStream {
@@ -1618,7 +1630,7 @@ type PartialInvoiceTlvStreamRef<'a> = (
 	InvoiceTlvStreamRef<'a>,
 	ExperimentalOfferTlvStreamRef,
 	ExperimentalInvoiceRequestTlvStreamRef,
-	ExperimentalInvoiceTlvStreamRef,
+	ExperimentalInvoiceTlvStreamRef<'a>,
 );
 
 impl CursorReadable for PartialInvoiceTlvStream {
@@ -1705,6 +1717,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			experimental_offer_tlv_stream,
 			experimental_invoice_request_tlv_stream,
 			ExperimentalInvoiceTlvStream {
+				experimental_app_data,
 				#[cfg(test)]
 				experimental_baz,
 			},
@@ -1740,6 +1753,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			fallbacks,
 			features,
 			signing_pubkey,
+			experimental_app_data,
 			#[cfg(test)]
 			experimental_baz,
 		};
@@ -2042,7 +2056,10 @@ mod tests {
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
 				ExperimentalInvoiceRequestTlvStreamRef { experimental_bar: None },
-				ExperimentalInvoiceTlvStreamRef { experimental_baz: None },
+				ExperimentalInvoiceTlvStreamRef {
+					experimental_app_data: None,
+					experimental_baz: None
+				},
 			),
 		);
 
@@ -2145,7 +2162,10 @@ mod tests {
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
 				ExperimentalInvoiceRequestTlvStreamRef { experimental_bar: None },
-				ExperimentalInvoiceTlvStreamRef { experimental_baz: None },
+				ExperimentalInvoiceTlvStreamRef {
+					experimental_app_data: None,
+					experimental_baz: None
+				},
 			),
 		);
 
@@ -3520,6 +3540,66 @@ mod tests {
 				Bolt12ParseError::InvalidSignature(secp256k1::Error::IncorrectSignature)
 			),
 		}
+	}
+
+	#[test]
+	fn builds_invoice_with_experimental_app_data() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let payment_id = PaymentId([1; 32]);
+
+		let secp_ctx = Secp256k1::new();
+		let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let app_data = "hello world".to_string();
+		let invoice = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.unwrap()
+			.experimental_app_data(app_data.clone())
+			.build()
+			.unwrap()
+			.sign(|message: &UnsignedBolt12Invoice| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			})
+			.unwrap();
+
+		assert_eq!(invoice.experimental_app_data(), Some(app_data.as_str()));
+
+		// The experimental, optional record round-trips through serialization, and the signature
+		// (which commits to it) still verifies on parse.
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		let parsed = Bolt12Invoice::try_from(encoded_invoice.clone()).unwrap();
+		assert_eq!(parsed.bytes, encoded_invoice);
+		assert_eq!(parsed.experimental_app_data(), Some(app_data.as_str()));
+
+		// An invoice without the record reads back as `None`.
+		let invoice = OfferBuilder::new(keys.public_key())
+			.amount_msats(1000)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(|message: &UnsignedBolt12Invoice| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			})
+			.unwrap();
+		assert_eq!(invoice.experimental_app_data(), None);
 	}
 
 	#[test]
