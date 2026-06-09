@@ -905,7 +905,7 @@ impl OfferContents {
 
 	fn is_valid_quantity(&self, quantity: u64) -> bool {
 		match self.supported_quantity {
-			Quantity::Bounded(n) => quantity <= n.get(),
+			Quantity::Bounded(n) => quantity > 0 && quantity <= n.get(),
 			Quantity::Unbounded => quantity > 0,
 			Quantity::One => quantity == 1,
 		}
