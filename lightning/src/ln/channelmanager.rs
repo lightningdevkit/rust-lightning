@@ -5884,30 +5884,95 @@ impl<
 		)
 	}
 
-	fn check_refresh_async_receive_offer_cache(&self, timer_tick_occurred: bool) {
+	fn check_refresh_async_receive_offer_cache(&self, timer_tick_occurred: bool) -> Result<(), ()> {
+		self.check_refresh_async_receive_offer_cache_with_payment_metadata(
+			timer_tick_occurred,
+			None,
+		)
+	}
+
+	fn check_refresh_async_receive_offer_cache_with_payment_metadata(
+		&self, timer_tick_occurred: bool, payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
+	) -> Result<(), ()> {
 		let peers = self.get_peers_for_blinded_path();
 		let channels = self.list_usable_channels();
 		let router = &self.router;
-		let refresh_res = self.flow.check_refresh_async_receive_offer_cache(
+		self.flow.check_refresh_async_receive_offer_cache_with_payment_metadata(
 			peers,
 			channels,
 			router,
 			timer_tick_occurred,
-		);
-		match refresh_res {
-			Err(()) => {
-				log_error!(
-					self.logger,
-					"Failed to create blinded paths when requesting async receive offer paths"
-				);
-			},
-			Ok(()) => {},
-		}
+			payment_metadata,
+		)
 	}
 
 	#[cfg(test)]
 	pub(crate) fn test_check_refresh_async_receive_offers(&self) {
-		self.check_refresh_async_receive_offer_cache(false);
+		self.check_refresh_async_receive_offer_cache(false).unwrap();
+	}
+
+	/// Requests fresh async receive offer paths from the configured static invoice server, if any.
+	pub fn refresh_async_receive_offers(&self) -> Result<(), ()> {
+		self.check_refresh_async_receive_offer_cache(false).map_err(|()| {
+			log_error!(
+				self.logger,
+				"Failed to create blinded paths when requesting async receive offer paths"
+			);
+		})
+	}
+
+	/// Requests fresh async receive offer paths from the configured static invoice server, if any,
+	/// and attaches `payment_metadata` to the resulting BOLT 12 payment contexts.
+	///
+	/// The metadata is persisted with the async receive offer cache so future static-invoice
+	/// refreshes for the same offer continue to include it.
+	pub fn refresh_async_receive_offers_with_payment_metadata(
+		&self, payment_metadata: BTreeMap<u64, Vec<u8>>,
+	) -> Result<(), ()> {
+		self.check_refresh_async_receive_offer_cache_with_payment_metadata(
+			false,
+			Some(payment_metadata),
+		)
+		.map_err(|()| {
+			log_error!(
+				self.logger,
+				"Failed to create blinded paths when requesting async receive offer paths"
+			);
+		})
+	}
+
+	/// Returns once an async receive offer is ready after the interactive static-invoice
+	/// protocol completes, or immediately if one is already available.
+	///
+	/// Callers that need a timeout can combine this future with their runtime's timeout
+	/// primitive.
+	#[cfg_attr(
+		feature = "std",
+		doc = "Synchronous callers should instead fetch the underlying [`Future`] via [`Self::get_async_receive_offer_ready_future`] and call [`Future::wait_timeout`] on it."
+	)]
+	///
+	/// [`Future`]: crate::util::wakers::Future
+	#[cfg_attr(
+		feature = "std",
+		doc = "[`Future::wait_timeout`]: crate::util::wakers::Future::wait_timeout"
+	)]
+	pub async fn await_async_receive_offer(&self) -> Result<Offer, ()> {
+		if let Ok(offer) = self.get_async_receive_offer() {
+			return Ok(offer);
+		}
+
+		self.flow.get_async_receive_offer_ready_future().await;
+		self.get_async_receive_offer()
+	}
+
+	/// Returns a [`Future`] that completes when an async receive offer is ready.
+	///
+	/// See [`OffersMessageFlow::get_async_receive_offer_ready_future`] for details.
+	///
+	/// [`Future`]: crate::util::wakers::Future
+	/// [`OffersMessageFlow::get_async_receive_offer_ready_future`]: crate::offers::flow::OffersMessageFlow::get_async_receive_offer_ready_future
+	pub fn get_async_receive_offer_ready_future(&self) -> crate::util::wakers::Future {
+		self.flow.get_async_receive_offer_ready_future()
 	}
 
 	/// Should be called after handling an [`Event::PersistStaticInvoice`], where the `Responder`
@@ -9129,7 +9194,12 @@ impl<
 			self.pending_outbound_payments
 				.remove_stale_payments(duration_since_epoch, &self.pending_events);
 
-			self.check_refresh_async_receive_offer_cache(true);
+			let _ = self.check_refresh_async_receive_offer_cache(true).map_err(|()| {
+				log_error!(
+					self.logger,
+					"Failed to create blinded paths when requesting async receive offer paths"
+				);
+			});
 
 			if self.check_free_holding_cells() {
 				// While we try to ensure we clear holding cells immediately, its possible we miss
@@ -16055,7 +16125,12 @@ impl<
 		// interactively building offers as soon as we can after startup. We can't start building offers
 		// until we have some peer connection(s) to receive onion messages over, so as a minor optimization
 		// refresh the cache when a peer connects.
-		self.check_refresh_async_receive_offer_cache(false);
+		let _ = self.check_refresh_async_receive_offer_cache(false).map_err(|()| {
+			log_error!(
+				self.logger,
+				"Failed to create blinded paths when requesting async receive offer paths"
+			);
+		});
 		res
 	}
 
