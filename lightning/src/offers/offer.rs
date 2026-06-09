@@ -118,7 +118,7 @@ pub(super) const IV_BYTES_WITH_METADATA: &[u8; IV_LEN] = b"LDK Offer ~~~~~~";
 pub(super) const IV_BYTES_WITHOUT_METADATA: &[u8; IV_LEN] = b"LDK Offer v2~~~~";
 
 /// An identifier for an [`Offer`] built using [`DerivedMetadata`].
-#[derive(Clone, Copy, Eq, PartialEq)]
+#[derive(Clone, Copy, Eq, Hash, PartialEq)]
 pub struct OfferId(pub [u8; 32]);
 
 impl OfferId {
