@@ -5,7 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
-use crate::common::{ConfirmedTx, FilterQueue, SyncState};
+use crate::common::{is_potentially_unsafe_merkle_leaf, ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 
 use electrum_client::utils::validate_merkle_proof;
@@ -284,7 +284,7 @@ impl<L: Logger> ElectrumSyncClient<L> {
 					// https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
 					// To protect against this (highly unlikely) attack vector, we check that the
 					// transaction is at least 65 bytes in length.
-					if tx.total_size() == 64 {
+					if is_potentially_unsafe_merkle_leaf(&tx) {
 						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
 						continue;
 					}

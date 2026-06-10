@@ -133,6 +133,10 @@ impl FilterQueue {
 	}
 }
 
+pub(crate) fn is_potentially_unsafe_merkle_leaf(tx: &Transaction) -> bool {
+	tx.base_size() == 64
+}
+
 #[derive(Debug)]
 pub(crate) struct ConfirmedTx {
 	pub tx: Transaction,
@@ -140,4 +144,36 @@ pub(crate) struct ConfirmedTx {
 	pub block_header: Header,
 	pub block_height: u32,
 	pub pos: usize,
+}
+
+#[cfg(test)]
+mod tests {
+	use super::is_potentially_unsafe_merkle_leaf;
+
+	use bitcoin::absolute::LockTime;
+	use bitcoin::hashes::Hash;
+	use bitcoin::transaction::Version;
+	use bitcoin::{Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness};
+
+	#[test]
+	fn merkle_leaf_check_uses_non_witness_size() {
+		let mut witness = Witness::new();
+		witness.push(vec![0]);
+
+		let tx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![TxIn {
+				previous_output: OutPoint { txid: Txid::all_zeros(), vout: 0 },
+				script_sig: ScriptBuf::new(),
+				sequence: Sequence::ZERO,
+				witness,
+			}],
+			output: vec![TxOut { value: Amount::ZERO, script_pubkey: ScriptBuf::from(vec![0; 4]) }],
+		};
+
+		assert_eq!(tx.base_size(), 64, "test setup: base size must be 64");
+		assert!(tx.total_size() > 64, "test setup: witness must pad total size");
+		assert!(is_potentially_unsafe_merkle_leaf(&tx));
+	}
 }
