@@ -1177,7 +1177,7 @@ impl PaymentParameters {
 	/// [`PaymentParameters::expiry_time`].
 	pub fn from_bolt11_invoice(invoice: &Bolt11Invoice) -> Self {
 		let mut payment_params = Self::from_node_id(
-			invoice.recover_payee_pub_key(),
+			invoice.get_payee_pub_key(),
 			invoice.min_final_cltv_expiry_delta() as u32,
 		)
 		.with_route_hints(invoice.route_hints())
@@ -4094,7 +4094,7 @@ mod tests {
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, P2PGossipSync};
 	use crate::routing::router::{
 		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, get_route,
-		BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path,
+		BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path, Payee,
 		PaymentParameters, PublicHopCandidate, Route, RouteHint, RouteHintHop, RouteHop,
 		RouteParameters, RoutingFees, ScorerAccountingForInFlightHtlcs,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
@@ -4113,6 +4113,8 @@ mod tests {
 	use crate::util::test_utils as ln_test_utils;
 
 	use bitcoin::amount::Amount;
+	use bitcoin::bech32::primitives::decode::CheckedHrpstring;
+	use bitcoin::bech32::{ByteIterExt, Fe32IterExt};
 	use bitcoin::constants::ChainHash;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
@@ -4124,10 +4126,58 @@ mod tests {
 	use bitcoin::transaction::TxOut;
 	use chacha20_poly1305::chacha20::ChaCha20;
 	use chacha20_poly1305::{Key, Nonce};
+	use lightning_invoice::{Bolt11Bech32, Bolt11Invoice, Currency, InvoiceBuilder};
 
 	use crate::io::Cursor;
 	use crate::prelude::*;
 	use crate::sync::{Arc, Mutex};
+	use crate::types::payment::{PaymentHash, PaymentSecret};
+
+	fn invoice_with_included_payee_pub_key_and_bad_recovery_id() -> (Bolt11Invoice, PublicKey) {
+		let secp_ctx = Secp256k1::new();
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
+
+		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+			.description("Test".to_string())
+			.amount_milli_satoshis(1000)
+			.payment_hash(PaymentHash([0; 32]))
+			.payment_secret(PaymentSecret([21; 32]))
+			.payee_pub_key(public_key)
+			.min_final_cltv_expiry_delta(144)
+			.duration_since_epoch(core::time::Duration::from_secs(1234567))
+			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
+			.unwrap();
+
+		let invoice_string = invoice.to_string();
+		let parsed = CheckedHrpstring::new::<Bolt11Bech32>(&invoice_string).unwrap();
+		let hrp = parsed.hrp();
+		let mut data: Vec<_> = parsed.fe32_iter::<&mut dyn Iterator<Item = u8>>().collect();
+		let signature_start = data.len() - 104;
+		let mut signature_bytes: Vec<u8> =
+			data[signature_start..].iter().copied().fes_to_bytes().collect();
+		signature_bytes[64] = 2;
+		let signature_data: Vec<_> = signature_bytes.into_iter().bytes_to_fes().collect();
+		data.splice(signature_start.., signature_data);
+
+		let bad_invoice_string = data
+			.into_iter()
+			.with_checksum::<bitcoin::bech32::Bech32>(&hrp)
+			.chars()
+			.collect::<String>();
+		(bad_invoice_string.parse().unwrap(), public_key)
+	}
+
+	#[test]
+	fn payment_params_from_bolt11_invoice_uses_included_payee_pub_key() {
+		let (invoice, public_key) = invoice_with_included_payee_pub_key_and_bad_recovery_id();
+		let payment_params = PaymentParameters::from_bolt11_invoice(&invoice);
+
+		match payment_params.payee {
+			Payee::Clear { node_id, .. } => assert_eq!(node_id, public_key),
+			Payee::Blinded { .. } => panic!("BOLT11 invoice should create a clear payee"),
+		}
+	}
 
 	#[rustfmt::skip]
 	fn get_channel_details(short_channel_id: Option<u64>, node_id: PublicKey,
