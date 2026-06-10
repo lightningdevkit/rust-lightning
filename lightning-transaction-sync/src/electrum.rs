@@ -277,6 +277,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		for txid in &sync_state.watched_transactions {
 			match self.client.transaction_get(&txid) {
 				Ok(tx) => {
+					if tx.compute_txid() != *txid {
+						log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
+						return Err(InternalError::Failed);
+					}
+
 					// Skip before using an arbitrary returned output to look up the
 					// transaction's script history.
 					if is_potentially_unsafe_merkle_leaf(&tx) {
@@ -365,6 +370,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 
 						match self.client.transaction_get(&txid) {
 							Ok(tx) => {
+								if tx.compute_txid() != txid {
+									log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
+									return Err(InternalError::Failed);
+								}
+
 								let mut is_spend = false;
 								for txin in &tx.input {
 									let watched_outpoint =
@@ -527,5 +537,25 @@ impl<L: Logger> Filter for ElectrumSyncClient<L> {
 	fn register_output(&self, output: WatchedOutput) {
 		let mut locked_queue = self.queue.lock().unwrap();
 		locked_queue.outputs.insert(output.outpoint.into_bitcoin_outpoint(), output);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn transaction_get_responses_are_verified_at_call_sites() {
+		let src = include_str!("electrum.rs");
+		let watched_transaction_check = concat!("if tx.compute_", "txid() != *txid");
+		let watched_output_spend_check = concat!("if tx.compute_", "txid() != txid");
+
+		assert!(
+			src.contains(watched_transaction_check),
+			"watched transaction_get responses must be verified against the requested txid"
+		);
+		assert!(
+			src.contains(watched_output_spend_check),
+			"watched-output spend transaction_get responses must be verified against the \
+			 requested txid"
+		);
 	}
 }
