@@ -491,7 +491,7 @@ impl AsyncReceiveOfferCache {
 			match offer.status {
 				OfferStatus::Used { invoice_created_at: ref mut inv_created_at }
 				| OfferStatus::Ready { invoice_created_at: ref mut inv_created_at } => {
-					*inv_created_at = core::cmp::min(invoice_created_at, *inv_created_at);
+					*inv_created_at = core::cmp::max(invoice_created_at, *inv_created_at);
 				},
 				OfferStatus::Pending => offer.status = OfferStatus::Ready { invoice_created_at },
 			}
