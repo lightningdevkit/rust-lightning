@@ -10756,6 +10756,9 @@ where
 		let required_revoke = if msg.next_remote_commitment_number == our_commitment_transaction {
 			// Remote isn't waiting on any RevokeAndACK from us!
 			// Note that if we need to repeat our ChannelReady we'll do that in the next if block.
+			// If a stale ChannelManager replayed a completed update, the monitor-pending state may
+			// still think we owe one; the reestablish proof is authoritative here.
+			self.context.monitor_pending_revoke_and_ack = false;
 			None
 		} else if msg.next_remote_commitment_number + 1 == our_commitment_transaction {
 			if self.context.channel_state.is_monitor_update_in_progress() {
@@ -10826,9 +10829,25 @@ where
 					channel_id: self.context.channel_id,
 					splice_txid,
 				})
+		}).or_else(|| {
+			// If a splice confirms after we've sent `channel_reestablish` but before we've received
+			// theirs, we may promote the splice and clear `pending_splice`. We still need to send
+			// `splice_locked` after reestablishing as it was not included in our
+			// `channel_reestablish`.
+			let current_funding_txid = self.funding.get_funding_txid()?;
+			(self.pending_splice.is_none()
+				&& self.funding.channel_transaction_parameters.splice_parent_funding_txid.is_some()
+				&& Some(current_funding_txid) != funding_locked_txid_sent_in_reestablish)
+				.then(|| msgs::SpliceLocked {
+					channel_id: self.context.channel_id,
+					splice_txid: current_funding_txid,
+				})
 		});
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
+			// If a stale ChannelManager replayed a completed update, the monitor-pending state may
+			// still think we owe one.
+			self.context.monitor_pending_commitment_signed = false;
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected with only lost outbound RAA");
 			} else {

@@ -11052,6 +11052,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			}
 
+			if let Some(funding_tx_signed) = funding_tx_signed.as_ref() {
+				// These [`FundingTxSigned`] fields are only expected as a result of calling
+				// [`ChannelManager::funding_transaction_signed`].
+				debug_assert!(funding_tx_signed.commitment_signed.is_none());
+				debug_assert!(funding_tx_signed.counterparty_initial_commitment_signed_result.is_none());
+			}
+			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.splice_locked.take()) {
+				pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+					node_id: counterparty_node_id,
+					msg,
+				});
+			}
+
 			macro_rules! handle_cs { () => {
 				if let Some(update) = commitment_update {
 					pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
@@ -11080,12 +11093,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 			}
 
-			if let Some(funding_tx_signed) = funding_tx_signed.as_ref() {
-				// These [`FundingTxSigned`] fields are only expected as a result of calling
-				// [`ChannelManager::funding_transaction_signed`].
-				debug_assert!(funding_tx_signed.commitment_signed.is_none());
-				debug_assert!(funding_tx_signed.counterparty_initial_commitment_signed_result.is_none());
-			}
 			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.tx_signatures.take()) {
 				pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 					node_id: counterparty_node_id,
@@ -11110,13 +11117,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 					});
 				}
-			}
-
-			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.splice_locked.take()) {
-				pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
-					node_id: counterparty_node_id,
-					msg,
-				});
 			}
 		} else if let Some(msg) = channel_ready {
 			self.send_channel_ready(pending_msg_events, channel, msg);
