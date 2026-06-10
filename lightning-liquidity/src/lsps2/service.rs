@@ -904,7 +904,7 @@ where
 	/// [`LSPS2ServiceEvent::BuyRequest`]: crate::lsps2::event::LSPS2ServiceEvent::BuyRequest
 	pub async fn invoice_parameters_generated(
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
-		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
+		cltv_expiry_delta: u16, client_trusts_lsp: bool, user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let mut message_queue_notifier = self.pending_messages.notifier();
 		let mut should_persist = false;
@@ -2179,7 +2179,7 @@ where
 	/// Wraps [`LSPS2ServiceHandler::invoice_parameters_generated`].
 	pub fn invoice_parameters_generated(
 		&self, counterparty_node_id: &PublicKey, request_id: LSPSRequestId, intercept_scid: u64,
-		cltv_expiry_delta: u32, client_trusts_lsp: bool, user_channel_id: u128,
+		cltv_expiry_delta: u16, client_trusts_lsp: bool, user_channel_id: u128,
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.invoice_parameters_generated(
 			counterparty_node_id,
