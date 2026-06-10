@@ -1697,7 +1697,7 @@ mod tests {
 		// Replaying both original claim requests during that window must not
 		// re-add the already-spent outpoint to the delayed package.
 		tx_handler.update_claims_view_from_requests(
-			requests,
+			requests.clone(),
 			spend_height,
 			spend_height,
 			&&broadcaster,
@@ -1725,5 +1725,24 @@ mod tests {
 		assert_eq!(locked.len(), 2);
 		assert!(locked.contains(&spent_outpoint));
 		assert!(locked.contains(&still_delayed_outpoint));
+
+		// Replaying the original claim requests after the reorg must not
+		// duplicate the resurrected outpoints in the delayed package either.
+		tx_handler.update_claims_view_from_requests(
+			requests,
+			spend_height,
+			spend_height,
+			&&broadcaster,
+			ConfirmationTarget::UrgentOnChainSweep,
+			&destination_script,
+			&fee_estimator,
+			&logger,
+		);
+		let locked = locked_outpoints(&tx_handler, locktime);
+		assert_eq!(locked.len(), 2);
+		assert!(locked.contains(&spent_outpoint));
+		assert!(locked.contains(&still_delayed_outpoint));
+		assert!(tx_handler.pending_claim_requests.is_empty());
+		assert!(tx_handler.claimable_outpoints.is_empty());
 	}
 }
