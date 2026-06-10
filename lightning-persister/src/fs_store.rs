@@ -331,19 +331,24 @@ impl KVStore for FilesystemStore {
 	}
 }
 
-fn dir_entry_is_key(p: &Path) -> Result<bool, lightning::io::Error> {
-	if let Some(ext) = p.extension() {
-		#[cfg(target_os = "windows")]
-		{
-			// Clean up any trash files lying around.
-			if ext == "trash" {
-				fs::remove_file(p).ok();
-				return Ok(false);
+fn dir_entry_is_store_artifact(path: &Path) -> bool {
+	match path.extension().and_then(|ext| ext.to_str()) {
+		Some("tmp") => true,
+		Some("trash") => {
+			#[cfg(target_os = "windows")]
+			{
+				// Clean up any trash files lying around.
+				fs::remove_file(path).ok();
 			}
-		}
-		if ext == "tmp" {
-			return Ok(false);
-		}
+			true
+		},
+		_ => false,
+	}
+}
+
+fn dir_entry_is_key(p: &Path) -> Result<bool, lightning::io::Error> {
+	if dir_entry_is_store_artifact(&p) {
+		return Ok(false);
 	}
 
 	let metadata = p.metadata().map_err(|e| {
@@ -436,6 +441,9 @@ impl MigratableKVStore for FilesystemStore {
 
 		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
 			let primary_path = primary_entry?.path();
+			if dir_entry_is_store_artifact(&primary_path) {
+				continue 'primary_loop;
+			}
 
 			if dir_entry_is_key(&primary_path)? {
 				let primary_namespace = String::new();
@@ -448,6 +456,9 @@ impl MigratableKVStore for FilesystemStore {
 			// The primary_entry is actually also a directory.
 			'secondary_loop: for secondary_entry in fs::read_dir(&primary_path)? {
 				let secondary_path = secondary_entry?.path();
+				if dir_entry_is_store_artifact(&secondary_path) {
+					continue 'secondary_loop;
+				}
 
 				if dir_entry_is_key(&secondary_path)? {
 					let primary_namespace = get_key_from_dir_entry(&primary_path, prefixed_dest)?;
@@ -461,6 +472,9 @@ impl MigratableKVStore for FilesystemStore {
 				for tertiary_entry in fs::read_dir(&secondary_path)? {
 					let tertiary_entry = tertiary_entry?;
 					let tertiary_path = tertiary_entry.path();
+					if dir_entry_is_store_artifact(&tertiary_path) {
+						continue;
+					}
 
 					if dir_entry_is_key(&tertiary_path)? {
 						let primary_namespace =
@@ -527,6 +541,28 @@ mod tests {
 		temp_path.push("test_read_write_remove_list_persist");
 		let fs_store = FilesystemStore::new(temp_path);
 		do_read_write_remove_list_persist(&fs_store);
+	}
+
+	#[test]
+	fn list_all_keys_skips_leftover_store_artifacts() {
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_list_all_keys_skips_leftover_store_artifacts");
+		let fs_store = FilesystemStore::new(temp_path.clone());
+		KVStore::write(&fs_store, "primary", "secondary", "key", &[1]).unwrap();
+
+		fs::write(temp_path.join("top_level.0.tmp"), b"stale").unwrap();
+		fs::write(temp_path.join("top_level.0.trash"), b"stale").unwrap();
+
+		let primary_path = temp_path.join("primary");
+		fs::write(primary_path.join("primary_level.0.tmp"), b"stale").unwrap();
+		fs::write(primary_path.join("primary_level.0.trash"), b"stale").unwrap();
+
+		let secondary_path = primary_path.join("secondary");
+		fs::write(secondary_path.join("secondary_level.0.tmp"), b"stale").unwrap();
+		fs::write(secondary_path.join("secondary_level.0.trash"), b"stale").unwrap();
+
+		let keys = fs_store.list_all_keys().unwrap();
+		assert_eq!(keys, vec![("primary".to_string(), "secondary".to_string(), "key".to_string())]);
 	}
 
 	#[test]
