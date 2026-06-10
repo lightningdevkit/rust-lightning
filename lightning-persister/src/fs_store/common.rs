@@ -42,6 +42,14 @@ fn path_to_windows_str<T: AsRef<OsStr>>(path: &T) -> Vec<u16> {
 	path.as_ref().encode_wide().chain(Some(0)).collect()
 }
 
+fn remove_file_if_exists(path: &Path) -> lightning::io::Result<()> {
+	match fs::remove_file(path) {
+		Ok(()) => Ok(()),
+		Err(e) if e.kind() == ErrorKind::NotFound => Ok(()),
+		Err(e) => Err(e.into()),
+	}
+}
+
 // The number of times we retry listing keys in `FilesystemStore::list` before we give up reaching
 // a consistent view and error out.
 const LIST_DIR_CONSISTENCY_RETRIES: usize = 10;
@@ -277,33 +285,43 @@ impl FilesystemStoreInner {
 		let tmp_file_ext = format!("{}.tmp", self.tmp_file_counter.fetch_add(1, Ordering::AcqRel));
 		tmp_file_path.set_extension(tmp_file_ext);
 
-		{
-			let mut tmp_file = fs::File::create(&tmp_file_path)?;
-			tmp_file.write_all(&buf)?;
+		let tmp_file_res = match fs::File::create(&tmp_file_path) {
+			Ok(mut tmp_file) => (|| -> lightning::io::Result<()> {
+				tmp_file.write_all(&buf)?;
 
-			// If we need to preserve the original mtime (for updates), set it before fsync.
-			if let Some(mtime) = mtime {
-				let times = fs::FileTimes::new().set_modified(mtime);
-				tmp_file.set_times(times)?;
-			}
+				// If we need to preserve the original mtime (for updates), set it before fsync.
+				if let Some(mtime) = mtime {
+					let times = fs::FileTimes::new().set_modified(mtime);
+					tmp_file.set_times(times)?;
+				}
 
-			tmp_file.sync_all()?;
+				tmp_file.sync_all()?;
+				Ok(())
+			})(),
+			Err(e) => return Err(e.into()),
+		};
+		if let Err(e) = tmp_file_res {
+			let _ = remove_file_if_exists(&tmp_file_path);
+			return Err(e);
 		}
 
-		self.execute_locked_write(inner_lock_ref, dest_file_path.clone(), version, || {
-			#[cfg(not(target_os = "windows"))]
-			{
-				fs::rename(&tmp_file_path, &dest_file_path)?;
-				let dir_file = fs::OpenOptions::new().read(true).open(&parent_directory)?;
-				dir_file.sync_all()?;
-				Ok(())
-			}
+		let mut tmp_file_needs_cleanup = true;
+		let write_res =
+			self.execute_locked_write(inner_lock_ref, dest_file_path.clone(), version, || {
+				#[cfg(not(target_os = "windows"))]
+				{
+					fs::rename(&tmp_file_path, &dest_file_path)?;
+					tmp_file_needs_cleanup = false;
+					let dir_file = fs::OpenOptions::new().read(true).open(&parent_directory)?;
+					dir_file.sync_all()?;
+					Ok(())
+				}
 
-			#[cfg(target_os = "windows")]
-			{
-				let res = if dest_file_path.exists() {
-					call!(unsafe {
-						windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
+				#[cfg(target_os = "windows")]
+				{
+					let res = if dest_file_path.exists() {
+						call!(unsafe {
+							windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
 							path_to_windows_str(&dest_file_path).as_ptr(),
 							path_to_windows_str(&tmp_file_path).as_ptr(),
 							std::ptr::null(),
@@ -311,30 +329,41 @@ impl FilesystemStoreInner {
 							std::ptr::null_mut() as *const core::ffi::c_void,
 							std::ptr::null_mut() as *const core::ffi::c_void,
 							)
-					})
-				} else {
-					call!(unsafe {
-						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+						})
+					} else {
+						call!(unsafe {
+							windows_sys::Win32::Storage::FileSystem::MoveFileExW(
 							path_to_windows_str(&tmp_file_path).as_ptr(),
 							path_to_windows_str(&dest_file_path).as_ptr(),
 							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
 							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
 							)
-					})
-				};
+						})
+					};
 
-				match res {
-					Ok(()) => {
-						// We fsync the dest file in hopes this will also flush the metadata to disk.
-						let dest_file =
-							fs::OpenOptions::new().read(true).write(true).open(&dest_file_path)?;
-						dest_file.sync_all()?;
-						Ok(())
-					},
-					Err(e) => Err(e.into()),
+					match res {
+						Ok(()) => {
+							tmp_file_needs_cleanup = false;
+							// We fsync the dest file in hopes this will also flush the metadata to disk.
+							let dest_file = fs::OpenOptions::new()
+								.read(true)
+								.write(true)
+								.open(&dest_file_path)?;
+							dest_file.sync_all()?;
+							Ok(())
+						},
+						Err(e) => Err(e.into()),
+					}
+				}
+			});
+		if tmp_file_needs_cleanup {
+			if let Err(e) = remove_file_if_exists(&tmp_file_path) {
+				if write_res.is_ok() {
+					return Err(e);
 				}
 			}
-		})
+		}
+		write_res
 	}
 
 	fn remove_version(

@@ -444,6 +444,39 @@ mod tests {
 		assert_eq!(listed_keys.len(), 0);
 	}
 
+	#[cfg(feature = "tokio")]
+	#[tokio::test]
+	async fn stale_write_does_not_leak_tmp_file() {
+		use lightning::util::persist::KVStore;
+
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_stale_write_does_not_leak_tmp_file_v2");
+		let _ = fs::remove_dir_all(&temp_path);
+		let fs_store = FilesystemStoreV2::new(temp_path.clone()).unwrap();
+
+		let data1 = vec![1u8; 32];
+		let data2 = vec![2u8; 32];
+
+		let primary = "testspace";
+		let secondary = "testsubspace";
+		let key = "testkey";
+
+		let fut1 = KVStore::write(&fs_store, primary, secondary, key, data1);
+		let fut2 = KVStore::write(&fs_store, primary, secondary, key, data2);
+
+		fut2.await.unwrap();
+		fut1.await.unwrap();
+
+		let dir = temp_path.join(primary).join(secondary);
+		let tmp_files: Vec<_> = fs::read_dir(&dir)
+			.unwrap()
+			.filter_map(|e| e.ok())
+			.map(|e| e.path())
+			.filter(|p| p.extension().map_or(false, |ext| ext == "tmp"))
+			.collect();
+		assert!(tmp_files.is_empty(), "Found leaked tmp files: {:?}", tmp_files);
+	}
+
 	#[test]
 	fn test_data_migration() {
 		let mut source_temp_path = std::env::temp_dir();
