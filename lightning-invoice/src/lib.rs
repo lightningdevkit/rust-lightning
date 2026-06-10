@@ -1478,7 +1478,7 @@ impl Bolt11Invoice {
 		unreachable!("ensured by constructor");
 	}
 
-	/// Get the payee's public key if one was included in the invoice
+	/// Get the payee's public key if one was explicitly included in the invoice's `n` field.
 	pub fn payee_pub_key(&self) -> Option<&PublicKey> {
 		self.signed_invoice.payee_pub_key().map(|x| &x.0)
 	}
@@ -1498,12 +1498,13 @@ impl Bolt11Invoice {
 		self.signed_invoice.features()
 	}
 
-	/// Get the invoice's payee public key.
+	/// Recover the payee's public key from the invoice signature.
 	///
-	/// This uses the explicitly included payee public key, if present, otherwise it recovers the
-	/// payee public key from the signature. Prefer [`Self::get_payee_pub_key`] for clarity.
-	pub fn recover_payee_pub_key(&self) -> PublicKey {
-		self.get_payee_pub_key()
+	/// This attempts signature recovery regardless of whether a payee public key was explicitly
+	/// included in the invoice's `n` field. Recovery can fail for a valid invoice with an included
+	/// `n` field, so [`Self::get_payee_pub_key`] should be used to obtain the invoice's payee key.
+	pub fn recover_payee_pub_key(&self) -> Option<PublicKey> {
+		self.signed_invoice.recover_payee_pub_key().ok().map(|p| p.0)
 	}
 
 	/// Get the invoice's payee public key, preferring an explicitly included payee public key and
@@ -1511,9 +1512,7 @@ impl Bolt11Invoice {
 	pub fn get_payee_pub_key(&self) -> PublicKey {
 		match self.payee_pub_key() {
 			Some(pk) => *pk,
-			None => {
-				self.signed_invoice.recover_payee_pub_key().expect("was checked by constructor").0
-			},
+			None => self.recover_payee_pub_key().expect("was checked by constructor"),
 		}
 	}
 
@@ -2063,7 +2062,7 @@ mod test {
 	}
 
 	#[test]
-	fn recover_payee_pub_key_uses_included_payee_pub_key() {
+	fn recover_payee_pub_key_returns_signature_recovery_result() {
 		use crate::{
 			Bolt11Invoice, Bolt11InvoiceSignature, Currency, InvoiceBuilder, PaymentHash,
 			PaymentSecret, SignedRawBolt11Invoice,
@@ -2076,9 +2075,20 @@ mod test {
 		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
 		let public_key = PublicKey::from_secret_key(&secp_ctx, &private_key);
 
-		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+		let invoice_without_payee_pub_key = InvoiceBuilder::new(Currency::Bitcoin)
 			.description("Test".to_string())
 			.payment_hash(PaymentHash([0; 32]))
+			.payment_secret(PaymentSecret([21; 32]))
+			.min_final_cltv_expiry_delta(144)
+			.duration_since_epoch(Duration::from_secs(1234567))
+			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
+			.unwrap();
+		assert_eq!(invoice_without_payee_pub_key.recover_payee_pub_key(), Some(public_key));
+		assert_eq!(invoice_without_payee_pub_key.get_payee_pub_key(), public_key);
+
+		let invoice_with_payee_pub_key = InvoiceBuilder::new(Currency::Bitcoin)
+			.description("Test".to_string())
+			.payment_hash(PaymentHash([1; 32]))
 			.payment_secret(PaymentSecret([21; 32]))
 			.payee_pub_key(public_key)
 			.min_final_cltv_expiry_delta(144)
@@ -2086,7 +2096,7 @@ mod test {
 			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
 			.unwrap();
 
-		let signed_raw = invoice.into_signed_raw();
+		let signed_raw = invoice_with_payee_pub_key.into_signed_raw();
 		let (raw_invoice, hash, signature) = signed_raw.into_parts();
 		let (_orig_rid, sig_bytes) = signature.0.serialize_compact();
 		let bad_rid = RecoveryId::from_i32(2).unwrap();
@@ -2099,7 +2109,7 @@ mod test {
 		let bad_invoice = Bolt11Invoice::from_signed(bad_signed_raw).unwrap();
 
 		assert_eq!(bad_invoice.payee_pub_key(), Some(&public_key));
-		assert_eq!(bad_invoice.recover_payee_pub_key(), public_key);
+		assert_eq!(bad_invoice.recover_payee_pub_key(), None);
 		assert_eq!(bad_invoice.get_payee_pub_key(), public_key);
 	}
 
