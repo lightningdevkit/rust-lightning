@@ -91,14 +91,17 @@ impl FilesystemStoreState {
 	}
 
 	fn get_new_version_and_lock_ref(&self, dest_file_path: PathBuf) -> (Arc<RwLock<u64>>, u64) {
+		let mut outer_lock = self.inner.locks.lock().unwrap();
+
 		let version = self.next_version.fetch_add(1, Ordering::Relaxed);
 		if version == u64::MAX {
 			panic!("FilesystemStore version counter overflowed");
 		}
 
 		// Get a reference to the inner lock. We do this early so that the arc can double as an in-flight counter for
-		// cleaning up unused locks.
-		let inner_lock_ref = self.inner.get_inner_lock_ref(dest_file_path);
+		// cleaning up unused locks. Allocate the version while holding the lock map mutex so that clean_locks cannot
+		// remove the entry after a version has been reserved but before its lock reference is cloned.
+		let inner_lock_ref = Arc::clone(&outer_lock.entry(dest_file_path).or_default());
 
 		(inner_lock_ref, version)
 	}
@@ -849,5 +852,42 @@ pub(crate) fn get_key_from_dir_entry_path(
 			);
 			return Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, msg));
 		},
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	use std::sync::Arc;
+	use std::thread;
+	use std::time::Duration;
+
+	#[test]
+	fn version_is_not_reserved_before_lock_ref() {
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_version_is_not_reserved_before_lock_ref");
+		let state = Arc::new(FilesystemStoreState::new(temp_path));
+		let path =
+			state.get_checked_dest_file_path("ns", "sub", Some("key"), "write", false).unwrap();
+
+		let outer_lock = state.inner.locks.lock().unwrap();
+		let state_for_thread = Arc::clone(&state);
+		let path_for_thread = path.clone();
+		let handle =
+			thread::spawn(move || state_for_thread.get_new_version_and_lock_ref(path_for_thread));
+
+		thread::sleep(Duration::from_millis(50));
+		assert_eq!(
+			state.next_version.load(Ordering::Relaxed),
+			1,
+			"version allocation must wait until the lock reference can be cloned"
+		);
+
+		drop(outer_lock);
+
+		let (inner_lock_ref, version) = handle.join().unwrap();
+		assert_eq!(version, 1);
+		state.inner.clean_locks(&inner_lock_ref, path);
 	}
 }
