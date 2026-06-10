@@ -439,12 +439,16 @@ impl PendingChecks {
 								pending_states.push(Arc::clone(&future.state));
 							}
 
+							// The pending entry for this SCID may point to this same future.
+							// Drop the state lock before checking for a replacement.
+							drop(async_messages);
 							Self::check_replace_previous_entry(
 								msg,
 								full_msg,
 								Some(Arc::downgrade(&future.state)),
 								&mut pending_checks.channels,
 							)?;
+							let mut async_messages = future.state.lock().unwrap();
 							async_messages.channel_announce = Some(if let Some(msg) = full_msg {
 								ChannelAnnouncement::Full(msg.clone())
 							} else {
@@ -1026,6 +1030,56 @@ mod tests {
 			network_graph.read_only().channels().get(&scid).unwrap().announcement_message
 			.as_ref().unwrap().contents.features.supports_unknown_test_feature();
 		assert!(!is_test_feature_set);
+	}
+
+	#[test]
+	fn test_no_deadlock_same_future_different_announcement() {
+		// A user's UtxoLookup may return the same UtxoFuture for repeated lookups for a
+		// given SCID. A different channel_announcement with that SCID should replace the
+		// pending message without re-locking the already-held future state.
+		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
+
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
+
+		assert_eq!(
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
+
+		let secp_ctx = Secp256k1::new();
+		let replacement_pk_1 = &SecretKey::from_slice(&[99; 32]).unwrap();
+		let replacement_pk_2 = &SecretKey::from_slice(&[98; 32]).unwrap();
+		let replacement_announcement = get_signed_channel_announcement(
+			|msg| msg.features.set_unknown_feature_optional(),
+			replacement_pk_1,
+			replacement_pk_2,
+			&secp_ctx,
+		);
+		assert_eq!(
+			network_graph
+				.update_channel_from_announcement(&replacement_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 2);
+
+		future
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
+		#[rustfmt::skip]
+		let is_replacement_feature_set =
+			network_graph.read_only().channels().get(&scid).unwrap().announcement_message
+			.as_ref().unwrap().contents.features.supports_unknown_test_feature();
+		assert!(is_replacement_feature_set);
 	}
 
 	#[test]
