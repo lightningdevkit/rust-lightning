@@ -1293,7 +1293,7 @@ mod test {
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(non_default_invoice_expiry_secs.into()));
 		assert!(!invoice.features().unwrap().supports_basic_mpp());
 
-		let payment_params = PaymentParameters::from_node_id(invoice.recover_payee_pub_key(),
+		let payment_params = PaymentParameters::from_node_id(invoice.get_payee_pub_key(),
 				invoice.min_final_cltv_expiry_delta() as u32)
 			.with_bolt11_features(invoice.features().unwrap().clone()).unwrap()
 			.with_route_hints(invoice.route_hints()).unwrap();
@@ -1338,7 +1338,7 @@ mod test {
 
 		let payment_preimage_opt = if user_generated_pmt_hash { None } else { Some(payment_preimage) };
 		assert_eq!(other_events.borrow().len(), 1);
-		check_payment_claimable(&other_events.borrow()[0], payment_hash, payment_secret, payment_amt, payment_preimage_opt, invoice.recover_payee_pub_key());
+		check_payment_claimable(&other_events.borrow()[0], payment_hash, payment_secret, payment_amt, payment_preimage_opt, invoice.get_payee_pub_key());
 		do_claim_payment_along_route(
 			ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[fwd_idx]]], payment_preimage)
 		);
