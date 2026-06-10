@@ -42,7 +42,7 @@ use crate::utils::async_poll::dummy_waker;
 
 use lightning::chain::chaininterface::{BroadcasterInterface, TransactionType};
 use lightning::events::HTLCHandlingFailureType;
-use lightning::ln::channelmanager::{AChannelManager, FailureCode, InterceptId};
+use lightning::ln::channelmanager::{AChannelManager, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
@@ -1375,10 +1375,8 @@ where
 			{
 				let intercepted_htlcs = payment_queue.clear();
 				for htlc in intercepted_htlcs {
-					self.channel_manager.get_cm().fail_htlc_backwards_with_reason(
-						&htlc.payment_hash,
-						FailureCode::TemporaryNodeFailure,
-					);
+					// A missing intercept has already been released; still reset this LSPS2 state.
+					let _ = self.channel_manager.get_cm().fail_intercepted_htlc(htlc.intercept_id);
 				}
 
 				jit_channel.state = OutboundJITChannelState::PendingInitialPayment {
