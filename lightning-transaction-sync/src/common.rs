@@ -133,6 +133,10 @@ impl FilterQueue {
 	}
 }
 
+pub(crate) fn is_potentially_unsafe_merkle_leaf(tx: &Transaction) -> bool {
+	tx.base_size() == 64
+}
+
 #[derive(Debug)]
 pub(crate) struct ConfirmedTx {
 	pub tx: Transaction,
