@@ -6252,8 +6252,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 									Some(self.on_holder_tx_csv) } else { None };
 								#[cfg(debug_assertions)]
 								if let Some(csv) = on_to_local_output_csv {
+									// The delayed output created by the HTLC spend sits at the same
+									// index as the input spending the commitment HTLC output. This
+									// holds pre-anchors, where the spend has a single input and
+									// output, as well as post-anchors, where the counterparty
+									// signature commits to the pairing via
+									// SIGHASH_SINGLE | ANYONECANPAY.
+									let input_idx = tx.input.iter()
+										.position(|inp| inp.previous_output == input.previous_output)
+										.expect("input is one of tx.input") as u16;
 									debug_assert!(
-										self.has_delayed_maturing_output_for_tx(txid, csv),
+										self.has_delayed_maturing_output_for_tx(txid, input_idx, csv),
 										"CSV-delayed HTLC spend confirmation should have a matching MaturingOutput"
 									);
 								}
@@ -6420,13 +6429,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[cfg(debug_assertions)]
-	fn has_delayed_maturing_output_for_tx(&self, txid: Txid, csv: u16) -> bool {
+	fn has_delayed_maturing_output_for_tx(&self, txid: Txid, output_index: u16, csv: u16) -> bool {
 		self.onchain_events_awaiting_threshold_conf.iter().any(|entry| {
 			entry.txid == txid
 				&& match &entry.event {
 					OnchainEvent::MaturingOutput {
 						descriptor: SpendableOutputDescriptor::DelayedPaymentOutput(descriptor),
-					} => descriptor.to_self_delay == csv,
+					} => {
+						descriptor.outpoint.index == output_index && descriptor.to_self_delay == csv
+					},
 					_ => false,
 				}
 		})
