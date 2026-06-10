@@ -2328,7 +2328,11 @@ fn test_trivial_inflight_htlc_tracking() {
 	}
 	let pending_payments = nodes[0].node.list_recent_payments();
 	assert_eq!(pending_payments.len(), 1);
-	let details = RecentPaymentDetails::Fulfilled { payment_hash: Some(payment_hash), payment_id };
+	let details = RecentPaymentDetails::Fulfilled {
+		payment_hash: Some(payment_hash),
+		payment_id,
+		fee_paid_msat: Some(1000),
+	};
 	assert_eq!(pending_payments[0], details);
 
 	// Remove fulfilled payment
@@ -2374,6 +2378,7 @@ fn test_trivial_inflight_htlc_tracking() {
 		payment_id,
 		payment_hash,
 		total_msat: 500000,
+		pending_fee_msat: Some(1000),
 		is_probe: false,
 	};
 	assert_eq!(pending_payments[0], details);
