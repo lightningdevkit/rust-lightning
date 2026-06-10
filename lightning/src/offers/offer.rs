@@ -25,6 +25,7 @@
 //! use core::time::Duration;
 //!
 //! use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
+//! use lightning::offers::currency::NullCurrencyConversion;
 //! use lightning::offers::offer::{Offer, OfferBuilder, Quantity};
 //! use lightning::offers::parse::Bolt12ParseError;
 //! use lightning::util::ser::{Readable, Writeable};
@@ -41,9 +42,10 @@
 //! let secp_ctx = Secp256k1::new();
 //! let keys = Keypair::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
 //! let pubkey = PublicKey::from(keys);
+//! let converter = NullCurrencyConversion;
 //!
 //! let expiration = SystemTime::now() + Duration::from_secs(24 * 60 * 60);
-//! let offer = OfferBuilder::new(pubkey)
+//! let offer = OfferBuilder::new(pubkey, &converter)
 //!     .description("coffee, large".to_string())
 //!     .amount_msats(20_000)
 //!     .supported_quantity(Quantity::Unbounded)
@@ -82,6 +84,7 @@ use crate::io;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+use crate::offers::currency::CurrencyConversion;
 use crate::offers::merkle::{TaggedHash, TlvRecord, TlvStream};
 use crate::offers::nonce::Nonce;
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
@@ -167,8 +170,9 @@ impl Readable for OfferId {
 /// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 ///
 /// [module-level documentation]: self
-pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
+pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing, CC: CurrencyConversion> {
 	offer: OfferContents,
+	converter: &'a CC,
 	metadata_strategy: core::marker::PhantomData<M>,
 	secp_ctx: Option<&'a Secp256k1<T>>,
 }
@@ -180,8 +184,9 @@ pub struct OfferBuilder<'a, M: MetadataStrategy, T: secp256k1::Signing> {
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
 #[derive(Clone)]
-pub struct OfferWithExplicitMetadataBuilder<'a> {
+pub struct OfferWithExplicitMetadataBuilder<'a, CC: CurrencyConversion> {
 	offer: OfferContents,
+	converter: &'a CC,
 	metadata_strategy: core::marker::PhantomData<ExplicitMetadata>,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
 }
@@ -193,8 +198,9 @@ pub struct OfferWithExplicitMetadataBuilder<'a> {
 /// [module-level documentation]: self
 #[cfg(c_bindings)]
 #[derive(Clone)]
-pub struct OfferWithDerivedMetadataBuilder<'a> {
+pub struct OfferWithDerivedMetadataBuilder<'a, CC: CurrencyConversion> {
 	offer: OfferContents,
+	converter: &'a CC,
 	metadata_strategy: core::marker::PhantomData<DerivedMetadata>,
 	secp_ctx: Option<&'a Secp256k1<secp256k1::All>>,
 }
@@ -234,7 +240,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 		///
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
-		pub fn new(signing_pubkey: PublicKey) -> Self {
+		pub fn new(signing_pubkey: PublicKey, converter: &'a CC) -> Self {
 			Self {
 				offer: OfferContents {
 					chains: None,
@@ -250,6 +256,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 					#[cfg(test)]
 					experimental_foo: None,
 				},
+				converter,
 				metadata_strategy: core::marker::PhantomData,
 				secp_ctx: None,
 			}
@@ -284,7 +291,7 @@ macro_rules! offer_derived_metadata_builder_methods {
 		/// [`InvoiceRequest::verify_using_recipient_data`]: crate::offers::invoice_request::InvoiceRequest::verify_using_recipient_data
 		/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
 		pub fn deriving_signing_pubkey(
-			node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce,
+			node_id: PublicKey, expanded_key: &ExpandedKey, nonce: Nonce, converter: &'a CC,
 			secp_ctx: &'a Secp256k1<$secp_context>,
 		) -> Self {
 			let derivation_material = MetadataMaterial::new(nonce, expanded_key, None);
@@ -304,6 +311,7 @@ macro_rules! offer_derived_metadata_builder_methods {
 					#[cfg(test)]
 					experimental_foo: None,
 				},
+				converter,
 				metadata_strategy: core::marker::PhantomData,
 				secp_ctx: Some(secp_ctx),
 			}
@@ -349,7 +357,7 @@ macro_rules! offer_builder_methods { (
 	/// Sets the [`Offer::amount`].
 	///
 	/// Successive calls to this method will override the previous setting.
-	pub(super) fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
+	pub fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
 		$self.offer.amount = Some(amount);
 		$return_value
 	}
@@ -401,13 +409,17 @@ macro_rules! offer_builder_methods { (
 	/// Builds an [`Offer`] from the builder's settings.
 	pub fn build($($self_mut)* $self: $self_type) -> Result<Offer, Bolt12SemanticError> {
 		match $self.offer.amount {
-			Some(Amount::Bitcoin { amount_msats }) => {
-				if amount_msats == 0 || amount_msats > MAX_VALUE_MSAT {
+			None => {},
+			Some(amount) => {
+				// Validate that the offer amount resolves to a non-zero
+				// millisatoshi range within the maximum msats allowed.
+				let (minimum_msats, _maximum_msats) = amount
+					.to_msats_range($self.converter)?;
+
+				if minimum_msats == 0 {
 					return Err(Bolt12SemanticError::InvalidAmount);
 				}
-			},
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
-			None => {},
+			}
 		}
 
 		if $self.offer.amount.is_some() && $self.offer.description.is_none() {
@@ -515,66 +527,69 @@ macro_rules! offer_builder_test_methods { (
 	}
 } }
 
-impl<'a, M: MetadataStrategy, T: secp256k1::Signing> OfferBuilder<'a, M, T> {
+impl<'a, M: MetadataStrategy, T: secp256k1::Signing, CC: CurrencyConversion>
+	OfferBuilder<'a, M, T, CC>
+{
 	offer_builder_methods!(self, Self, Self, self, mut);
 
 	#[cfg(test)]
 	offer_builder_test_methods!(self, Self, Self, self, mut);
 }
 
-impl<'a> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly> {
+impl<'a, CC: CurrencyConversion> OfferBuilder<'a, ExplicitMetadata, secp256k1::SignOnly, CC> {
 	offer_explicit_metadata_builder_methods!(self, Self, Self, self, mut);
 }
 
-impl<'a, T: secp256k1::Signing> OfferBuilder<'a, DerivedMetadata, T> {
+impl<'a, T: secp256k1::Signing, CC: CurrencyConversion> OfferBuilder<'a, DerivedMetadata, T, CC> {
 	offer_derived_metadata_builder_methods!(T);
 }
 
 #[cfg(all(c_bindings, not(test)))]
-impl<'a> OfferWithExplicitMetadataBuilder<'a> {
+impl<'a, CC: CurrencyConversion> OfferWithExplicitMetadataBuilder<'a, CC> {
 	offer_explicit_metadata_builder_methods!(self, &mut Self, (), ());
 	offer_builder_methods!(self, &mut Self, (), ());
 }
 
 #[cfg(all(c_bindings, test))]
-impl<'a> OfferWithExplicitMetadataBuilder<'a> {
+impl<'a, CC: CurrencyConversion> OfferWithExplicitMetadataBuilder<'a, CC> {
 	offer_explicit_metadata_builder_methods!(self, &mut Self, &mut Self, self);
 	offer_builder_methods!(self, &mut Self, &mut Self, self);
 	offer_builder_test_methods!(self, &mut Self, &mut Self, self);
 }
 
 #[cfg(all(c_bindings, not(test)))]
-impl<'a> OfferWithDerivedMetadataBuilder<'a> {
+impl<'a, CC: CurrencyConversion> OfferWithDerivedMetadataBuilder<'a, CC> {
 	offer_derived_metadata_builder_methods!(secp256k1::All);
 	offer_builder_methods!(self, &mut Self, (), ());
 }
 
 #[cfg(all(c_bindings, test))]
-impl<'a> OfferWithDerivedMetadataBuilder<'a> {
+impl<'a, CC: CurrencyConversion> OfferWithDerivedMetadataBuilder<'a, CC> {
 	offer_derived_metadata_builder_methods!(secp256k1::All);
 	offer_builder_methods!(self, &mut Self, &mut Self, self);
 	offer_builder_test_methods!(self, &mut Self, &mut Self, self);
 }
 
 #[cfg(c_bindings)]
-impl<'a> From<OfferBuilder<'a, DerivedMetadata, secp256k1::All>>
-	for OfferWithDerivedMetadataBuilder<'a>
+impl<'a, CC: CurrencyConversion> From<OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>>
+	for OfferWithDerivedMetadataBuilder<'a, CC>
 {
-	fn from(builder: OfferBuilder<'a, DerivedMetadata, secp256k1::All>) -> Self {
-		let OfferBuilder { offer, metadata_strategy, secp_ctx } = builder;
+	fn from(builder: OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>) -> Self {
+		let OfferBuilder { offer, converter, metadata_strategy, secp_ctx } = builder;
 
-		Self { offer, metadata_strategy, secp_ctx }
+		Self { offer, converter, metadata_strategy, secp_ctx }
 	}
 }
 
 #[cfg(c_bindings)]
-impl<'a> From<OfferWithDerivedMetadataBuilder<'a>>
-	for OfferBuilder<'a, DerivedMetadata, secp256k1::All>
+impl<'a, CC: CurrencyConversion> From<OfferWithDerivedMetadataBuilder<'a, CC>>
+	for OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>
 {
-	fn from(builder: OfferWithDerivedMetadataBuilder<'a>) -> Self {
-		let OfferWithDerivedMetadataBuilder { offer, metadata_strategy, secp_ctx } = builder;
+	fn from(builder: OfferWithDerivedMetadataBuilder<'a, CC>) -> Self {
+		let OfferWithDerivedMetadataBuilder { offer, converter, metadata_strategy, secp_ctx } =
+			builder;
 
-		Self { offer, metadata_strategy, secp_ctx }
+		Self { offer, converter, metadata_strategy, secp_ctx }
 	}
 }
 
@@ -936,7 +951,26 @@ impl OfferContents {
 		let offer_amount_msats = match self.amount {
 			None => 0,
 			Some(Amount::Bitcoin { amount_msats }) => amount_msats,
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
+			Some(Amount::Currency { .. }) => {
+				// This function is used by invoice request build checkers and parsers
+				// to ensure that the `InvoiceRequest::amount_msats()` is sufficient
+				// compared to the offer's amount.
+				//
+				// However, if the `Offer::Amount` is specified in a fiat currency,
+				// we, as the payer, skip this local validation. We instead defer
+				// to the payee's ultimate judgment when they verify our request
+				// and issue the corresponding invoice.
+				//
+				// With this approach, we leave it to the payee (offer creator)
+				// to decide whether the amount we specified is reasonable relative
+				// to their fiat offer, or—if we omitted the amount—to dictate the
+				// final msat total in the invoice themselves.
+				//
+				// Deferring this validation rightly leaves the onus of currency conversion
+				// and precise verification to the invoice creator.
+
+				return Ok(());
+			},
 		};
 
 		if !self.expects_quantity() || quantity.is_some() {
@@ -1123,6 +1157,61 @@ pub enum Amount {
 		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
 		amount: u64,
 	},
+}
+
+impl Amount {
+	/// Returns the accepted millisatoshi range for this amount.
+	///
+	/// Bitcoin-denominated amounts return an exact range where the minimum
+	/// and maximum values are equal.
+	///
+	/// Currency-denominated amounts are converted using the exchange-rate
+	/// bounds provided by the given [`CurrencyConversion`] implementation.
+	pub fn to_msats_range<CC: CurrencyConversion>(
+		&self, converter: &CC,
+	) -> Result<(u64, u64), Bolt12SemanticError> {
+		match *self {
+			Amount::Bitcoin { amount_msats } => {
+				if amount_msats > MAX_VALUE_MSAT {
+					return Err(Bolt12SemanticError::InvalidAmount);
+				}
+
+				Ok((amount_msats, amount_msats))
+			},
+			Amount::Currency { iso4217_code, amount } => {
+				let range = converter
+					.conversion_range(iso4217_code)
+					.map(|rate_bound| rate_bound.to_range())
+					.map_err(|_| Bolt12SemanticError::UnsupportedCurrency)?;
+
+				// Ensure the lower bound is payable. If it exceeds `MAX_VALUE_MSAT`,
+				// no valid payment amount can satisfy the range.
+				let minimum_msats = u128::from(amount)
+					.checked_mul(u128::from(range.minimum.msats()))
+					.and_then(|numerator| {
+						numerator.checked_div(u128::from(range.minimum.minor_units().get()))
+					})
+					.and_then(|amount_msats| amount_msats.try_into().ok())
+					.filter(|msats| *msats <= MAX_VALUE_MSAT)
+					.ok_or(Bolt12SemanticError::InvalidAmount)?;
+
+				// Overflow when computing the upper bound implies an amount larger than
+				// the maximum representable payment amount is acceptable by the node.
+				// In that case, saturate to MAX_VALUE_MSAT since any larger value would
+				// be rejected anyway.
+				let maximum_msats = u128::from(amount)
+					.checked_mul(u128::from(range.maximum.msats()))
+					.and_then(|numerator| {
+						numerator.checked_div(u128::from(range.maximum.minor_units().get()))
+					})
+					.and_then(|amount_msats| amount_msats.try_into().ok())
+					.unwrap_or(u64::MAX)
+					.min(MAX_VALUE_MSAT);
+
+				Ok((minimum_msats, maximum_msats))
+			},
+		}
+	}
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
@@ -1395,6 +1484,7 @@ mod tests {
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
+	use crate::offers::currency::NullCurrencyConversion;
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::CurrencyCode;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
@@ -1402,6 +1492,7 @@ mod tests {
 	use crate::types::features::OfferFeatures;
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
+	use crate::util::test_utils::TestCurrencyConversion;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;
@@ -1410,7 +1501,7 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_defaults() {
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 
 		let mut buffer = Vec::new();
 		offer.write(&mut buffer).unwrap();
@@ -1461,17 +1552,23 @@ mod tests {
 		let mainnet = ChainHash::using_genesis_block(Network::Bitcoin);
 		let testnet = ChainHash::using_genesis_block(Network::Testnet);
 
-		let offer = OfferBuilder::new(pubkey(42)).chain(Network::Bitcoin).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.chain(Network::Bitcoin)
+			.build()
+			.unwrap();
 		assert!(offer.supports_chain(mainnet));
 		assert_eq!(offer.chains(), vec![mainnet]);
 		assert_eq!(offer.as_tlv_stream().0.chains, None);
 
-		let offer = OfferBuilder::new(pubkey(42)).chain(Network::Testnet).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.chain(Network::Testnet)
+			.build()
+			.unwrap();
 		assert!(offer.supports_chain(testnet));
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().0.chains, Some(&vec![testnet]));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.chain(Network::Testnet)
 			.chain(Network::Testnet)
 			.build()
@@ -1480,7 +1577,7 @@ mod tests {
 		assert_eq!(offer.chains(), vec![testnet]);
 		assert_eq!(offer.as_tlv_stream().0.chains, Some(&vec![testnet]));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build()
@@ -1493,11 +1590,15 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_metadata() {
-		let offer = OfferBuilder::new(pubkey(42)).metadata(vec![42; 32]).unwrap().build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.metadata(vec![42; 32])
+			.unwrap()
+			.build()
+			.unwrap();
 		assert_eq!(offer.metadata(), Some(&vec![42; 32]));
 		assert_eq!(offer.as_tlv_stream().0.metadata, Some(&vec![42; 32]));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.metadata(vec![42; 32])
 			.unwrap()
 			.metadata(vec![43; 32])
@@ -1519,11 +1620,17 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
-			.amount_msats(1000)
-			.experimental_foo(42)
-			.build()
-			.unwrap();
+		let offer = OfferBuilder::deriving_signing_pubkey(
+			node_id,
+			&expanded_key,
+			nonce,
+			&NullCurrencyConversion,
+			&secp_ctx,
+		)
+		.amount_msats(1000)
+		.experimental_foo(42)
+		.build()
+		.unwrap();
 		assert!(offer.metadata().is_some());
 		assert_eq!(offer.issuer_signing_pubkey(), Some(node_id));
 
@@ -1599,12 +1706,18 @@ mod tests {
 
 		#[cfg(c_bindings)]
 		use super::OfferWithDerivedMetadataBuilder as OfferBuilder;
-		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
-			.amount_msats(1000)
-			.path(blinded_path)
-			.experimental_foo(42)
-			.build()
-			.unwrap();
+		let offer = OfferBuilder::deriving_signing_pubkey(
+			node_id,
+			&expanded_key,
+			nonce,
+			&NullCurrencyConversion,
+			&secp_ctx,
+		)
+		.amount_msats(1000)
+		.path(blinded_path)
+		.experimental_foo(42)
+		.build()
+		.unwrap();
 		assert!(offer.metadata().is_none());
 		assert_ne!(offer.issuer_signing_pubkey(), Some(node_id));
 
@@ -1668,16 +1781,20 @@ mod tests {
 		let currency_amount =
 			Amount::Currency { iso4217_code: CurrencyCode::new(*b"USD").unwrap(), amount: 10 };
 
-		let offer = OfferBuilder::new(pubkey(42)).amount_msats(1000).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.amount_msats(1000)
+			.build()
+			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
 		assert_eq!(offer.amount(), Some(bitcoin_amount));
 		assert_eq!(tlv_stream.0.amount, Some(1000));
 		assert_eq!(tlv_stream.0.currency, None);
 
 		#[cfg(not(c_bindings))]
-		let builder = OfferBuilder::new(pubkey(42)).amount(currency_amount.clone());
+		let builder =
+			OfferBuilder::new(pubkey(42), &NullCurrencyConversion).amount(currency_amount.clone());
 		#[cfg(c_bindings)]
-		let mut builder = OfferBuilder::new(pubkey(42));
+		let mut builder = OfferBuilder::new(pubkey(42), &NullCurrencyConversion);
 		#[cfg(c_bindings)]
 		builder.amount(currency_amount.clone());
 		let tlv_stream = builder.offer.as_tlv_stream();
@@ -1689,7 +1806,16 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
 		}
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &TestCurrencyConversion {})
+			.amount(currency_amount.clone())
+			.build()
+			.unwrap();
+		let tlv_stream = offer.as_tlv_stream();
+		assert_eq!(offer.amount(), Some(currency_amount.clone()));
+		assert_eq!(tlv_stream.0.amount, Some(10));
+		assert_eq!(tlv_stream.0.currency, Some(b"USD"));
+
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.amount(currency_amount.clone())
 			.amount(bitcoin_amount.clone())
 			.build()
@@ -1699,13 +1825,14 @@ mod tests {
 		assert_eq!(tlv_stream.0.currency, None);
 
 		let invalid_amount = Amount::Bitcoin { amount_msats: MAX_VALUE_MSAT + 1 };
-		match OfferBuilder::new(pubkey(42)).amount(invalid_amount).build() {
+		match OfferBuilder::new(pubkey(42), &NullCurrencyConversion).amount(invalid_amount).build()
+		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
 
 		// An amount of 0 must be rejected per BOLT 12.
-		match OfferBuilder::new(pubkey(42)).amount_msats(0).build() {
+		match OfferBuilder::new(pubkey(42), &NullCurrencyConversion).amount_msats(0).build() {
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
@@ -1713,11 +1840,14 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_description() {
-		let offer = OfferBuilder::new(pubkey(42)).description("foo".into()).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.description("foo".into())
+			.build()
+			.unwrap();
 		assert_eq!(offer.description(), Some(PrintableString("foo")));
 		assert_eq!(offer.as_tlv_stream().0.description, Some(&String::from("foo")));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.description("foo".into())
 			.description("bar".into())
 			.build()
@@ -1725,21 +1855,24 @@ mod tests {
 		assert_eq!(offer.description(), Some(PrintableString("bar")));
 		assert_eq!(offer.as_tlv_stream().0.description, Some(&String::from("bar")));
 
-		let offer = OfferBuilder::new(pubkey(42)).amount_msats(1000).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.amount_msats(1000)
+			.build()
+			.unwrap();
 		assert_eq!(offer.description(), Some(PrintableString("")));
 		assert_eq!(offer.as_tlv_stream().0.description, Some(&String::from("")));
 	}
 
 	#[test]
 	fn builds_offer_with_features() {
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap();
 		assert_eq!(offer.offer_features(), &OfferFeatures::unknown());
 		assert_eq!(offer.as_tlv_stream().0.features, Some(&OfferFeatures::unknown()));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.features_unchecked(OfferFeatures::unknown())
 			.features_unchecked(OfferFeatures::empty())
 			.build()
@@ -1754,14 +1887,17 @@ mod tests {
 		let past_expiry = Duration::from_secs(0);
 		let now = future_expiry - Duration::from_secs(1_000);
 
-		let offer = OfferBuilder::new(pubkey(42)).absolute_expiry(future_expiry).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.absolute_expiry(future_expiry)
+			.build()
+			.unwrap();
 		#[cfg(feature = "std")]
 		assert!(!offer.is_expired());
 		assert!(!offer.is_expired_no_std(now));
 		assert_eq!(offer.absolute_expiry(), Some(future_expiry));
 		assert_eq!(offer.as_tlv_stream().0.absolute_expiry, Some(future_expiry.as_secs()));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.absolute_expiry(future_expiry)
 			.absolute_expiry(past_expiry)
 			.build()
@@ -1794,7 +1930,7 @@ mod tests {
 			),
 		];
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.path(paths[0].clone())
 			.path(paths[1].clone())
 			.build()
@@ -1809,11 +1945,14 @@ mod tests {
 
 	#[test]
 	fn builds_offer_with_issuer() {
-		let offer = OfferBuilder::new(pubkey(42)).issuer("foo".into()).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.issuer("foo".into())
+			.build()
+			.unwrap();
 		assert_eq!(offer.issuer(), Some(PrintableString("foo")));
 		assert_eq!(offer.as_tlv_stream().0.issuer, Some(&String::from("foo")));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.issuer("foo".into())
 			.issuer("bar".into())
 			.build()
@@ -1827,21 +1966,25 @@ mod tests {
 		let one = NonZeroU64::new(1).unwrap();
 		let ten = NonZeroU64::new(10).unwrap();
 
-		let offer =
-			OfferBuilder::new(pubkey(42)).supported_quantity(Quantity::One).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.supported_quantity(Quantity::One)
+			.build()
+			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
 		assert!(!offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert_eq!(tlv_stream.0.quantity_max, None);
 
-		let offer =
-			OfferBuilder::new(pubkey(42)).supported_quantity(Quantity::Unbounded).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.supported_quantity(Quantity::Unbounded)
+			.build()
+			.unwrap();
 		let tlv_stream = offer.as_tlv_stream();
 		assert!(offer.expects_quantity());
 		assert_eq!(offer.supported_quantity(), Quantity::Unbounded);
 		assert_eq!(tlv_stream.0.quantity_max, Some(0));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.supported_quantity(Quantity::Bounded(ten))
 			.build()
 			.unwrap();
@@ -1850,7 +1993,7 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(ten));
 		assert_eq!(tlv_stream.0.quantity_max, Some(10));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.supported_quantity(Quantity::Bounded(one))
 			.build()
 			.unwrap();
@@ -1859,7 +2002,7 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::Bounded(one));
 		assert_eq!(tlv_stream.0.quantity_max, Some(1));
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.supported_quantity(Quantity::Bounded(ten))
 			.supported_quantity(Quantity::One)
 			.build()
@@ -1878,7 +2021,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		match OfferBuilder::new(pubkey(42))
+		match OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.features_unchecked(OfferFeatures::unknown())
 			.build()
 			.unwrap()
@@ -1891,7 +2034,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_chains() {
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.chain(Network::Bitcoin)
 			.chain(Network::Testnet)
 			.build()
@@ -1903,7 +2046,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_amount() {
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.amount(Amount::Bitcoin { amount_msats: 1000 })
 			.build()
 			.unwrap();
@@ -2038,12 +2181,12 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_description() {
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.description("foo".to_string())
 			.amount_msats(1000)
 			.build()
@@ -2071,7 +2214,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_paths() {
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.path(BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
@@ -2094,7 +2237,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.path(BlindedMessagePath::from_blinded_path(
 				pubkey(40),
 				pubkey(41),
@@ -2110,7 +2253,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let mut builder = OfferBuilder::new(pubkey(42));
+		let mut builder = OfferBuilder::new(pubkey(42), &NullCurrencyConversion);
 		builder.offer.issuer_signing_pubkey = None;
 		builder.offer.paths = Some(vec![]);
 
@@ -2128,19 +2271,23 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_quantity() {
-		let offer =
-			OfferBuilder::new(pubkey(42)).supported_quantity(Quantity::One).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.supported_quantity(Quantity::One)
+			.build()
+			.unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer =
-			OfferBuilder::new(pubkey(42)).supported_quantity(Quantity::Unbounded).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
+			.supported_quantity(Quantity::Unbounded)
+			.build()
+			.unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.supported_quantity(Quantity::Bounded(NonZeroU64::new(10).unwrap()))
 			.build()
 			.unwrap();
@@ -2148,7 +2295,7 @@ mod tests {
 			panic!("error parsing offer: {:?}", e);
 		}
 
-		let offer = OfferBuilder::new(pubkey(42))
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.supported_quantity(Quantity::Bounded(NonZeroU64::new(1).unwrap()))
 			.build()
 			.unwrap();
@@ -2159,7 +2306,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_issuer_id() {
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 		if let Err(e) = offer.to_string().parse::<Offer>() {
 			panic!("error parsing offer: {:?}", e);
 		}
@@ -2188,7 +2335,7 @@ mod tests {
 		const UNKNOWN_ODD_TYPE: u64 = OFFER_TYPES.end - 1;
 		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
 
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
@@ -2204,7 +2351,7 @@ mod tests {
 		const UNKNOWN_EVEN_TYPE: u64 = OFFER_TYPES.end - 2;
 		assert!(UNKNOWN_EVEN_TYPE % 2 == 0);
 
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
@@ -2220,7 +2367,7 @@ mod tests {
 
 	#[test]
 	fn parses_offer_with_experimental_tlv_records() {
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
@@ -2233,7 +2380,7 @@ mod tests {
 			Err(e) => panic!("error parsing offer: {:?}", e),
 		}
 
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
@@ -2249,7 +2396,7 @@ mod tests {
 
 	#[test]
 	fn fails_parsing_offer_with_out_of_range_tlv_records() {
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();
@@ -2262,7 +2409,7 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 
-		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion).build().unwrap();
 
 		let mut encoded_offer = Vec::new();
 		offer.write(&mut encoded_offer).unwrap();

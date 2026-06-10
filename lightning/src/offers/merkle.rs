@@ -286,6 +286,7 @@ mod tests {
 
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
+	use crate::offers::currency::NullCurrencyConversion;
 	use crate::offers::invoice_request::{InvoiceRequest, UnsignedInvoiceRequest};
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{Amount, CurrencyCode, OfferBuilder};
@@ -354,7 +355,7 @@ mod tests {
 		};
 
 		// BOLT 12 test vectors
-		let invoice_request = OfferBuilder::new(recipient_pubkey)
+		let invoice_request = OfferBuilder::new(recipient_pubkey, &NullCurrencyConversion)
 			.description("A Mathematical Treatise".into())
 			.amount(Amount::Currency {
 				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
@@ -395,14 +396,15 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let unsigned_invoice_request = OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build()
-			.unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.payer_note("bar".into())
-			.build_unchecked();
+		let unsigned_invoice_request =
+			OfferBuilder::new(recipient_pubkey(), &NullCurrencyConversion)
+				.amount_msats(1000)
+				.build()
+				.unwrap()
+				.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+				.unwrap()
+				.payer_note("bar".into())
+				.build_unchecked();
 
 		// Simply test that we can grab the tag and merkle root exposed by the accessor
 		// functions, then use them to succesfully compute a tagged hash.
@@ -427,7 +429,7 @@ mod tests {
 			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey)
+		let invoice_request = OfferBuilder::new(recipient_pubkey, &NullCurrencyConversion)
 			.amount_msats(100)
 			.build_unchecked()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
@@ -461,7 +463,7 @@ mod tests {
 			Keypair::from_secret_key(&secp_ctx, &secret_key).public_key()
 		};
 
-		let invoice_request = OfferBuilder::new(recipient_pubkey)
+		let invoice_request = OfferBuilder::new(recipient_pubkey, &NullCurrencyConversion)
 			.amount_msats(100)
 			.build_unchecked()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
