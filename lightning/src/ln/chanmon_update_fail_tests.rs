@@ -5031,9 +5031,8 @@ fn native_async_persist() {
 	let update_status = async_chain_monitor.update_channel(chan_id, &updates[1]);
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
-	persist_futures.poll_futures();
-	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
-
+	// Monitor update writes should be handed to the KVStore before the spawned persistence
+	// future is polled, matching the async KVStore call-order contract.
 	let pending_writes = kv_store.list_pending_async_writes(
 		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 		&key,
@@ -5046,6 +5045,9 @@ fn native_async_persist() {
 		"2",
 	);
 	assert_eq!(pending_writes.len(), 1);
+
+	persist_futures.poll_futures();
+	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
 
 	kv_store.complete_async_writes_through(
 		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
