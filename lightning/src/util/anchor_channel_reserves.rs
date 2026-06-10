@@ -25,7 +25,7 @@ use crate::chain::chainmonitor::ChainMonitor;
 use crate::chain::chainmonitor::Persist;
 use crate::chain::Filter;
 use crate::events::bump_transaction::Utxo;
-use crate::ln::chan_utils::max_htlcs;
+use crate::ln::chan_utils::{max_htlcs, BASE_INPUT_WEIGHT};
 use crate::ln::channelmanager::AChannelManager;
 use crate::prelude::new_hash_set;
 use crate::sign::ecdsa::EcdsaChannelSigner;
@@ -240,11 +240,11 @@ pub fn get_supportable_anchor_channels(
 	let mut total_fractional_amount = Amount::from_sat(0);
 	let mut num_whole_utxos = 0;
 	for utxo in utxos {
-		let satisfaction_fee = context
+		let spend_fee = context
 			.upper_bound_fee_rate
-			.fee_wu(Weight::from_wu(utxo.satisfaction_weight))
+			.fee_wu(Weight::from_wu(BASE_INPUT_WEIGHT + utxo.satisfaction_weight))
 			.unwrap_or(Amount::MAX);
-		let amount = utxo.output.value.checked_sub(satisfaction_fee).unwrap_or(Amount::MIN);
+		let amount = utxo.output.value.checked_sub(spend_fee).unwrap_or(Amount::MIN);
 		if amount >= reserve_per_channel {
 			num_whole_utxos += 1;
 		} else {
@@ -382,6 +382,15 @@ mod test {
 			make_p2wpkh_utxo(reserve_per_channel * 20 / 100),
 		];
 		assert_eq!(get_supportable_anchor_channels(&context, utxos.as_slice()), 3);
+	}
+
+	#[test]
+	fn test_get_supportable_anchor_channels_accounts_for_input_weight() {
+		let context = AnchorChannelReserveContext::default();
+		let reserve = get_reserve_per_channel(&context);
+		let utxo = make_p2wpkh_utxo(reserve - Amount::from_sat(1));
+
+		assert_eq!(get_supportable_anchor_channels(&context, &[utxo]), 0);
 	}
 
 	#[test]
