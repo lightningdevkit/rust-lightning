@@ -256,10 +256,14 @@ impl LSPSDateTime {
 		now_seconds_since_epoch > datetime_seconds_since_epoch
 	}
 
-	/// Returns the absolute difference between two datetimes as a `Duration`.
+	/// Returns the elapsed duration from `other` to `self`, or zero if `other` is later.
 	pub fn duration_since(&self, other: &Self) -> Duration {
-		let diff_secs = self.0.timestamp().abs_diff(other.0.timestamp());
-		Duration::from_secs(diff_secs)
+		let diff_secs = self.0.timestamp().saturating_sub(other.0.timestamp());
+		if diff_secs <= 0 {
+			Duration::ZERO
+		} else {
+			Duration::from_secs(diff_secs as u64)
+		}
 	}
 
 	/// Returns the time in seconds since the unix epoch.
@@ -986,6 +990,8 @@ pub(crate) mod u32_fee_rate {
 mod tests {
 	use super::*;
 
+	use core::time::Duration;
+
 	use lightning::io::Cursor;
 
 	#[test]
@@ -995,6 +1001,15 @@ mod tests {
 		expected_datetime.write(&mut buf).unwrap();
 		let decoded_datetime: LSPSDateTime = Readable::read(&mut Cursor::new(buf)).unwrap();
 		assert_eq!(expected_datetime, decoded_datetime);
+	}
+
+	#[test]
+	fn datetime_duration_since_is_directional() {
+		let earlier = LSPSDateTime::new_from_duration_since_epoch(Duration::from_secs(30));
+		let later = LSPSDateTime::new_from_duration_since_epoch(Duration::from_secs(90));
+
+		assert_eq!(later.duration_since(&earlier), Duration::from_secs(60));
+		assert_eq!(earlier.duration_since(&later), Duration::ZERO);
 	}
 
 	#[test]
