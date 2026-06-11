@@ -466,15 +466,13 @@ pub enum OffersContext {
 	OutboundPaymentForRefund {
 		/// Payment ID used when creating a [`Refund`].
 		///
-		/// [`Refund`]: crate::offers::refund::Refund
-		payment_id: PaymentId,
-
-		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid [`Refund`] and
-		/// for deriving its signing keys.
+		/// Used when handling a received [`Bolt12Invoice`] to confirm it arrived over the reply path
+		/// created for this payment, rather than one an attacker could use to learn our identity by
+		/// observing which payment we make. The invoice itself is verified using its payer metadata.
 		///
-		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`Refund`]: crate::offers::refund::Refund
-		nonce: Nonce,
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+		payment_id: PaymentId,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for an [`InvoiceRequest`].
 	///
@@ -487,15 +485,13 @@ pub enum OffersContext {
 	OutboundPaymentForOffer {
 		/// Payment ID used when creating an [`InvoiceRequest`].
 		///
-		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-		payment_id: PaymentId,
-
-		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid
-		/// [`InvoiceRequest`] and for deriving its signing keys.
+		/// Used when handling a received [`Bolt12Invoice`] to confirm it arrived over the reply path
+		/// created for this payment, rather than one an attacker could use to learn our identity by
+		/// observing which payment we make. The invoice itself is verified using its payer metadata.
 		///
-		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-		nonce: Nonce,
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+		payment_id: PaymentId,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for a [`Bolt12Invoice`].
 	///
@@ -678,7 +674,6 @@ impl_ser_tlv_based_enum!(OffersContext,
 	},
 	(1, OutboundPaymentForRefund) => {
 		(0, payment_id, required),
-		(1, nonce, required),
 	},
 	(2, InboundPayment) => {
 		(0, payment_hash, required),
@@ -690,7 +685,6 @@ impl_ser_tlv_based_enum!(OffersContext,
 	},
 	(4, OutboundPaymentForOffer) => {
 		(0, payment_id, required),
-		(1, nonce, required),
 	},
 );
 
