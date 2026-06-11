@@ -1588,6 +1588,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
+		let mut payer_metadata = encrypted_payment_id.to_vec();
+		payer_metadata.extend_from_slice(nonce.as_slice());
 
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
@@ -1602,7 +1604,7 @@ mod tests {
 		invoice_request.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice_request.bytes, buffer.as_slice());
-		assert_eq!(invoice_request.payer_metadata(), &encrypted_payment_id);
+		assert_eq!(invoice_request.payer_metadata(), payer_metadata.as_slice());
 		assert_eq!(
 			invoice_request.chains(),
 			vec![ChainHash::using_genesis_block(Network::Bitcoin)]
@@ -1634,7 +1636,7 @@ mod tests {
 		assert_eq!(
 			invoice_request.as_tlv_stream(),
 			(
-				PayerTlvStreamRef { metadata: Some(&encrypted_payment_id.to_vec()) },
+				PayerTlvStreamRef { metadata: Some(&payer_metadata) },
 				OfferTlvStreamRef {
 					chains: None,
 					metadata: None,
@@ -1735,10 +1737,10 @@ mod tests {
 			.unwrap()
 			.sign(recipient_sign)
 			.unwrap();
-		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_ok());
+		match invoice.verify_using_metadata(&expanded_key, &secp_ctx) {
+			Ok(payment_id) => assert_eq!(payment_id, PaymentId([1; 32])),
+			Err(()) => panic!("verification failed"),
+		}
 
 		// Fails verification with altered fields
 		let (
@@ -1774,9 +1776,7 @@ mod tests {
 			.unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 
 		// Fails verification with altered payer id
 		let (
@@ -1812,9 +1812,7 @@ mod tests {
 			.unwrap();
 
 		let invoice = Bolt12Invoice::try_from(encoded_invoice).unwrap();
-		assert!(invoice
-			.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx)
-			.is_err());
+		assert!(invoice.verify_using_metadata(&expanded_key, &secp_ctx).is_err());
 	}
 
 	#[test]
