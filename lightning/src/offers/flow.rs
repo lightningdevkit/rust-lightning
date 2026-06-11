@@ -503,7 +503,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			None if invoice.is_for_refund_without_paths() => {
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
-			Some(&OffersContext::OutboundPaymentForOffer { payment_id, .. }) => {
+			Some(&OffersContext::OutboundPaymentForOffer { payment_id }) => {
 				if invoice.is_for_offer() {
 					invoice.verify_using_metadata(expanded_key, secp_ctx).and_then(|extracted| {
 						(extracted == payment_id).then(|| payment_id).ok_or(())
@@ -512,7 +512,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 					Err(())
 				}
 			},
-			Some(&OffersContext::OutboundPaymentForRefund { payment_id, .. }) => {
+			Some(&OffersContext::OutboundPaymentForRefund { payment_id }) => {
 				if invoice.is_for_refund() {
 					invoice.verify_using_metadata(expanded_key, secp_ctx).and_then(|extracted| {
 						(extracted == payment_id).then(|| payment_id).ok_or(())
@@ -693,7 +693,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 		let nonce = Nonce::from_entropy_source(entropy);
 		let context =
-			MessageContext::Offers(OffersContext::OutboundPaymentForRefund { payment_id, nonce });
+			MessageContext::Offers(OffersContext::OutboundPaymentForRefund { payment_id });
 
 		// Create the base builder with common properties
 		let mut builder = RefundBuilder::deriving_signing_pubkey(
@@ -1089,13 +1089,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// over those blinded paths, which can be verified against the intended outbound payment,
 	/// ensuring the invoice corresponds to a payment we actually want to make.
 	///
-	/// # Nonce
-	/// The nonce is used to create a unique [`MessageContext`] for the reply paths.
-	/// These will be used to verify the corresponding [`Bolt12Invoice`] when it is received.
-	///
-	/// Note: The provided [`Nonce`] MUST be the same as the [`Nonce`] used for creating the
-	/// [`InvoiceRequest`] to ensure correct verification of the corresponding [`Bolt12Invoice`].
-	///
 	/// See [`OffersMessageFlow::create_invoice_request_builder`] for more details.
 	///
 	/// # Peers
@@ -1107,11 +1100,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// [`InvoiceError`]: crate::offers::invoice_error::InvoiceError
 	/// [`supports_onion_messages`]: crate::types::features::Features::supports_onion_messages
 	pub fn enqueue_invoice_request(
-		&self, invoice_request: InvoiceRequest, payment_id: PaymentId, nonce: Nonce,
+		&self, invoice_request: InvoiceRequest, payment_id: PaymentId,
 		peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
-		let context =
-			MessageContext::Offers(OffersContext::OutboundPaymentForOffer { payment_id, nonce });
+		let context = MessageContext::Offers(OffersContext::OutboundPaymentForOffer { payment_id });
 		let reply_paths = self
 			.create_blinded_paths(peers, context)
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
