@@ -93,14 +93,15 @@ impl FilesystemStoreState {
 	fn get_new_version_and_lock_ref(&self, dest_file_path: PathBuf) -> (Arc<RwLock<u64>>, u64) {
 		let mut outer_lock = self.inner.locks.lock().unwrap();
 
+		// Allocate the version while holding the lock map mutex so that clean_locks cannot remove the entry after a
+		// version has been reserved but before its lock reference is cloned.
 		let version = self.next_version.fetch_add(1, Ordering::Relaxed);
 		if version == u64::MAX {
 			panic!("FilesystemStore version counter overflowed");
 		}
 
 		// Get a reference to the inner lock. We do this early so that the arc can double as an in-flight counter for
-		// cleaning up unused locks. Allocate the version while holding the lock map mutex so that clean_locks cannot
-		// remove the entry after a version has been reserved but before its lock reference is cloned.
+		// cleaning up unused locks.
 		let inner_lock_ref = Arc::clone(&outer_lock.entry(dest_file_path).or_default());
 
 		(inner_lock_ref, version)
