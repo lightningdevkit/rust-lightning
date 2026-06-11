@@ -133,7 +133,6 @@ use crate::offers::invoice_request::{
 use crate::offers::merkle::{
 	self, SignError, SignFn, SignatureTlvStream, SignatureTlvStreamRef, TaggedHash, TlvStream,
 };
-use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
 	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, OfferId, OfferTlvStream,
 	OfferTlvStreamRef, Quantity, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
@@ -1008,28 +1007,15 @@ impl Bolt12Invoice {
 				(&invoice_request.inner.payer.0, INVOICE_REQUEST_IV_BYTES)
 			},
 			InvoiceContents::ForRefund { refund, .. } => {
-				(&refund.payer.0, REFUND_IV_BYTES_WITH_METADATA)
+				let iv_bytes = if refund.paths().is_empty() {
+					REFUND_IV_BYTES_WITH_METADATA
+				} else {
+					REFUND_IV_BYTES_WITHOUT_METADATA
+				};
+				(&refund.payer.0, iv_bytes)
 			},
 		};
 		self.contents.verify(&self.bytes, metadata, key, iv_bytes, secp_ctx)
-	}
-
-	/// Verifies that the invoice was for a request or refund created using the given key by
-	/// checking a payment id and nonce included with the [`BlindedMessagePath`] for which the invoice was
-	/// sent through.
-	pub fn verify_using_payer_data<T: secp256k1::Signing>(
-		&self, payment_id: PaymentId, nonce: Nonce, key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
-	) -> Result<PaymentId, ()> {
-		let metadata = Metadata::payer_data(payment_id, nonce, key);
-		let iv_bytes = match &self.contents {
-			InvoiceContents::ForOffer { .. } => INVOICE_REQUEST_IV_BYTES,
-			InvoiceContents::ForRefund { .. } => REFUND_IV_BYTES_WITHOUT_METADATA,
-		};
-		self.contents.verify(&self.bytes, &metadata, key, iv_bytes, secp_ctx).and_then(
-			|extracted_payment_id| {
-				(payment_id == extracted_payment_id).then(|| payment_id).ok_or(())
-			},
-		)
 	}
 
 	pub(crate) fn as_tlv_stream(&self) -> FullInvoiceTlvStreamRef<'_> {
@@ -1892,6 +1878,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 		let encrypted_payment_id = expanded_key.crypt_for_offer(payment_id.0, nonce);
+		let mut payer_metadata = encrypted_payment_id.to_vec();
+		payer_metadata.extend_from_slice(nonce.as_slice());
 
 		let payment_paths = payment_paths();
 		let payment_hash = payment_hash();
@@ -1913,7 +1901,7 @@ mod tests {
 		unsigned_invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(unsigned_invoice.bytes, buffer.as_slice());
-		assert_eq!(unsigned_invoice.payer_metadata(), &encrypted_payment_id);
+		assert_eq!(unsigned_invoice.payer_metadata(), payer_metadata.as_slice());
 		assert_eq!(
 			unsigned_invoice.offer_chains(),
 			Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)])
@@ -1957,7 +1945,7 @@ mod tests {
 		invoice.write(&mut buffer).unwrap();
 
 		assert_eq!(invoice.bytes, buffer.as_slice());
-		assert_eq!(invoice.payer_metadata(), &encrypted_payment_id);
+		assert_eq!(invoice.payer_metadata(), payer_metadata.as_slice());
 		assert_eq!(
 			invoice.offer_chains(),
 			Some(vec![ChainHash::using_genesis_block(Network::Bitcoin)])
@@ -1975,10 +1963,7 @@ mod tests {
 		assert_eq!(invoice.amount_msats(), 1000);
 		assert_eq!(invoice.invoice_request_features(), &InvoiceRequestFeatures::empty());
 		assert_eq!(invoice.quantity(), None);
-		assert_eq!(
-			invoice.verify_using_payer_data(payment_id, nonce, &expanded_key, &secp_ctx),
-			Ok(payment_id),
-		);
+		assert_eq!(invoice.verify_using_metadata(&expanded_key, &secp_ctx), Ok(payment_id));
 		assert_eq!(invoice.payer_note(), None);
 		assert_eq!(invoice.payment_paths(), payment_paths.as_slice());
 		assert_eq!(invoice.created_at(), now);
@@ -2001,7 +1986,7 @@ mod tests {
 		assert_eq!(
 			invoice.as_tlv_stream(),
 			(
-				PayerTlvStreamRef { metadata: Some(&encrypted_payment_id.to_vec()) },
+				PayerTlvStreamRef { metadata: Some(&payer_metadata) },
 				OfferTlvStreamRef {
 					chains: None,
 					metadata: None,
