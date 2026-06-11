@@ -43,7 +43,9 @@ use lightning::chain;
 use lightning::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
-use lightning::chain::channelmonitor::{Balance, ChannelMonitor, ANTI_REORG_DELAY};
+use lightning::chain::channelmonitor::{
+	Balance, ChannelMonitor, ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER,
+};
 use lightning::chain::{
 	chainmonitor, channelmonitor, BlockLocator, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
@@ -424,9 +426,7 @@ impl ChainState {
 		self.pending_txs.push((txid, tx));
 	}
 
-	// Feeds broadcast transactions through modeled mempool admission. We need
-	// this on ChainState so propagation and confirmation share one owner for
-	// duplicate, locktime, input, and RBF rules. The return value reports
+	// Feeds broadcast transactions through modeled mempool admission. Returns
 	// whether any broadcasts were drained, even if admission later ignores a
 	// duplicate or invalid transaction.
 	fn relay_transactions(&mut self, txs: Vec<Transaction>) -> bool {
@@ -481,8 +481,6 @@ impl ChainState {
 	}
 }
 
-// ChannelMonitor restart candidates are stored as serialized blobs, matching
-// what a real persister would have durable at crash time.
 pub struct VecWriter(pub Vec<u8>);
 impl Writer for VecWriter {
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), ::lightning::io::Error> {
@@ -924,11 +922,10 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-// These signer ops can be blocked by fuzz bytes. Most unblock bytes target
-// live-channel and splice signing. Holder-side signing is tracked in the same
-// set because force-close cleanup may require monitors to build holder
-// commitment or HTLC claim transactions; `settle_all` re-enables everything so
-// final failures are not caused by intentionally blocked signing.
+// Signer ops that fuzz bytes may block. The holder-side ops matter after a
+// force-close, when monitors build holder commitment or HTLC claim
+// transactions; `settle_all` re-enables everything so final failures are not
+// caused by intentionally blocked signing.
 const SUPPORTED_SIGNER_OPS: [SignerOp; 6] = [
 	SignerOp::SignCounterpartyCommitment,
 	SignerOp::GetPerCommitmentPoint,
@@ -948,11 +945,14 @@ const CLOSED_CHANNEL_WRONG_NODE_ERROR_PREFIX: &str =
 const INVALID_REESTABLISH_FORCE_CLOSE_ERROR: &str =
 	"Peer sent an invalid channel_reestablish to force close in a non-standard way";
 const NEEDED_CHANNEL_REESTABLISH_ERROR: &str = "when we needed a channel_reestablish";
-// These bounds define when the harness may accept a non-explicit close as an
-// HTLC-timeout close. They are checked immediately before block connection,
-// which is where LDK can observe the new height and decide to close.
+// Bounds for accepting a non-explicit close as an HTLC-timeout close, mirroring
+// the monitor's force-close conditions: an outbound HTLC closes the channel once
+// `LATENCY_GRACE_PERIOD_BLOCKS` past expiry, an inbound HTLC with a known
+// preimage once expiry is within `CLTV_CLAIM_BUFFER` blocks. Both LDK constants
+// are private, so derive the claim buffer from the public fail-back buffer to
+// catch drift.
 const HTLC_TIMEOUT_GRACE_BLOCKS: u32 = 3;
-const HTLC_CLAIM_BUFFER_BLOCKS: u32 = 36;
+const HTLC_CLAIM_BUFFER_BLOCKS: u32 = HTLC_FAIL_BACK_BUFFER - HTLC_TIMEOUT_GRACE_BLOCKS;
 // These distinct short strings let the harness recognize user force-close
 // errors without accepting arbitrary SendErrorMessage actions.
 const FORCE_CLOSE_ERROR_MESSAGES: [&str; 4] = ["]]]]]]]]]", "]]]]]]]]", "]]]]]]]", "]]]]]"];
@@ -999,8 +999,8 @@ type ChanMan<'a> = ChannelManager<
 	Arc<dyn Logger + MaybeSend + MaybeSync>,
 >;
 
-// Recognizes splice-quiescence warning disconnects. We need to distinguish
-// them from real close errors so the harness can exit quiescence and continue.
+// Recognizes splice-quiescence warning disconnects, which are recoverable and
+// must be distinguished from real close errors.
 fn is_quiescent_disconnect_warning(msg: &msgs::WarningMessage) -> bool {
 	msg.data.contains("already sent splice_locked, cannot RBF")
 		|| msg.data.contains("contribution no longer valid at quiescence")
@@ -1074,10 +1074,8 @@ impl<'a> HarnessNode<'a> {
 		keys_manager: &Arc<KeyProvider>, logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 		persister: &Arc<HarnessPersister>, deferred: bool,
 	) -> Arc<TestChainMonitor> {
-		// The monitor gets the same broadcaster and fee estimator as the
-		// ChannelManager. That is important after force-close because monitor
-		// events, not manager events, can produce the claim and bump
-		// transactions this harness later mines.
+		// The monitor shares the node's broadcaster so post-close claim and
+		// bump transactions reach the same queue that relay commands drain.
 		Arc::new(chainmonitor::ChainMonitor::new(
 			None,
 			Arc::clone(broadcaster),
@@ -1134,10 +1132,8 @@ impl<'a> HarnessNode<'a> {
 			best_block_timestamp,
 		);
 		let bump_wallet_sync = Arc::new(WalletSync::new(Arc::clone(&wallet), Arc::clone(&logger)));
-		// BumpTransaction events need a wallet-backed handler so anchor and
-		// claim transactions can be completed and rebroadcast into the harness
-		// mempool. Without this, the force-close path would observe monitor
-		// events but never turn some of them into mineable transactions.
+		// Wallet-backed handler that turns BumpTransaction events into complete,
+		// broadcast anchor and HTLC claim transactions.
 		let bump_tx_handler = BumpTransactionEventHandlerSync::new(
 			Arc::clone(&broadcaster),
 			bump_wallet_sync,
@@ -1322,11 +1318,6 @@ impl<'a> HarnessNode<'a> {
 	// pending claim transactions. Different on-chain claim paths use
 	// SignHolderCommitment or SignHolderHtlcTransaction for force-closed channels.
 	fn enable_holder_signer_ops(&self) {
-		// Counterparty signing operations are enough for live-channel message
-		// flow. Holder signing operations become relevant after a commitment
-		// transaction is on chain, when LDK may ask the signer for local claim
-		// material. Keep this as a separate fuzz action so inputs can exercise
-		// blocked signer state before and after a close.
 		self.keys_manager.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
 		self.keys_manager.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
 		self.monitor.signer_unblocked(None);
@@ -1412,15 +1403,12 @@ impl<'a> HarnessNode<'a> {
 		}
 	}
 
-	// Drains raw ChannelMonitor events for this node. We need this because
-	// monitor-generated BumpTransaction events do not flow through the manager
-	// event queue but still produce transactions the harness must mine.
+	// Drains raw ChannelMonitor events. Monitor-generated BumpTransaction events
+	// do not flow through the manager event queue but still produce transactions
+	// the harness must mine.
 	fn process_monitor_pending_events(&self) {
 		self.monitor.process_pending_events(&|event: events::Event| {
 			if let events::Event::BumpTransaction(ref bump) = event {
-				// Only bump events affect the modeled mempool. The synchronous
-				// handler completes the wallet-backed transaction and broadcasts
-				// it through the same TestBroadcaster that relay commands drain.
 				self.bump_tx_handler.handle_event(bump);
 			}
 			Ok(())
@@ -1619,10 +1607,8 @@ impl EventQueues {
 					*node_id == a_id
 				},
 				MessageSendEvent::HandleError { ref action, ref node_id } => {
-					// Error events are routed like normal peer messages, but
-					// first prove that this is one of the harness-expected error
-					// paths. This avoids accepting arbitrary LDK HandleError
-					// output just because force-close coverage was enabled.
+					// Validate before routing so arbitrary HandleError output is
+					// not accepted as expected force-close behavior.
 					close_tracker.assert_expected_control_error_action(action);
 					if Some(*node_id) == expect_drop_id {
 						panic!(
@@ -1658,16 +1644,12 @@ impl EventQueues {
 		}
 	}
 
-	// Drains messages generated by a peer disconnect. We need this to validate
-	// disconnect-time HandleError events before dropping in-flight link traffic.
+	// Drains messages generated by a peer disconnect, validating HandleError
+	// events before the link queues are cleared.
 	fn drain_on_disconnect(
 		&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3],
 		close_tracker: &ChannelCloseTracker,
 	) {
-		// Disconnecting a peer can itself generate messages or HandleError
-		// events. Drain them before clearing the link so the harness checks
-		// their contents, while still ensuring no message remains queued for the
-		// disconnected edge peer.
 		match edge_node {
 			0 => {
 				for event in nodes[0].get_and_clear_pending_msg_events() {
@@ -1765,17 +1747,11 @@ impl PeerLink {
 		}
 	}
 
-	// Asserts that untracked sibling channels on this link are still listed. We
-	// need this local invariant to catch an accidental force close on the wrong
-	// channel, while ChannelCloseTracker checks whether tracked closes were
-	// actually expected.
+	// Asserts every untracked channel on this link is still listed by both
+	// peers, catching a force close that hit the wrong sibling channel.
 	fn assert_no_unexpected_channel_closes(
 		&self, nodes: &[HarnessNode<'_>; 3], close_tracker: &ChannelCloseTracker,
 	) {
-		// A tracked channel can disappear from list_channels after a close. Every
-		// untracked channel on the same peer link must remain open. This catches
-		// a force close on the wrong sibling channel, and lets ChannelCloseTracker
-		// decide whether the tracked close itself was expected.
 		let node_a_channels = nodes[self.node_a].list_channels();
 		let node_b_channels = nodes[self.node_b].list_channels();
 		for channel_id in &self.channel_ids {
@@ -1797,15 +1773,11 @@ impl PeerLink {
 		}
 	}
 
-	// Records channels from this link that have already disappeared. We need
-	// this after event or chain processing, where a close may be observable only
-	// through list_channels state.
+	// Records channels from this link that disappeared from list_channels
+	// without a tracked close.
 	fn record_disappeared_channels(
 		&self, nodes: &[HarnessNode<'_>; 3], close_tracker: &mut ChannelCloseTracker,
 	) {
-		// A topology-only disappearance is recorded as Unexpected first. A later
-		// ChannelClosed event or timeout pre-check can upgrade the same channel
-		// to Expected; otherwise the final close invariant fails.
 		let node_a_channels = nodes[self.node_a].list_channels();
 		let node_b_channels = nodes[self.node_b].list_channels();
 		for channel_id in &self.channel_ids {
@@ -1946,80 +1918,31 @@ impl ChannelCloseTracker {
 		Self { closed_channels: new_hash_map() }
 	}
 
-	// Reports whether this channel is already closing or closed. Payment sends
-	// use this to avoid creating fresh traffic through paths that cleanup must
-	// now resolve or block.
 	fn is_closed_or_closing(&self, channel_id: &ChannelId) -> bool {
 		self.closed_channels.contains_key(channel_id)
 	}
 
-	// Reports whether a close was explicitly authorized or matched an HTLC
-	// timeout predicate. Error validation uses this to distinguish expected
-	// peer close messages from arbitrary protocol errors.
 	fn is_expected(&self, channel_id: &ChannelId) -> bool {
 		matches!(self.closed_channels.get(channel_id), Some(ChannelCloseState::Expected))
 	}
 
-	// Reports whether any close has been observed or authorized. Cleanup uses
-	// this to decide whether force-close settlement work needs to run.
 	fn has_closed_channels(&self) -> bool {
 		!self.closed_channels.is_empty()
 	}
 
-	// Marks a channel close as expected. We need this to make explicit closes
-	// and timeout-derived closes unavailable for new sends immediately, while
-	// still letting final invariants reject channels that disappeared first.
 	fn expect_channel_close(&mut self, channel_id: ChannelId) {
-		// If topology observation saw the channel disappear first, upgrade that
-		// `Unexpected` state once LDK later reports a valid close reason.
+		// Upgrades a topology-observed Unexpected entry once a valid close
+		// reason is known.
 		self.closed_channels.insert(channel_id, ChannelCloseState::Expected);
 	}
 
-	// Records exactly one explicit force-close target. We need the set-size
-	// check here so future opcode edits cannot accidentally authorize a whole
-	// link, or all channels, while trying to close one channel.
-	fn expect_explicit_force_close(&mut self, channel_id: ChannelId) {
-		let had_close_entry = self.is_closed_or_closing(&channel_id);
-		let close_count = self.closed_channels.len();
-		self.expect_channel_close(channel_id);
-		assert_eq!(
-			self.closed_channels.len(),
-			close_count + usize::from(!had_close_entry),
-			"explicit force-close expected more than one new channel to close",
-		);
-		assert!(
-			self.is_expected(&channel_id),
-			"explicit force-close did not expect its own channel to close",
-		);
-	}
-
-	// Records a topology-observed close that does not yet have a valid reason.
-	// A later ChannelClosed event or timeout pre-check can upgrade it to
-	// Expected; otherwise the final close invariant fails.
+	// Records a close observed only through topology. It stays Unexpected, and
+	// fails the final close invariant, unless a ChannelClosed event or timeout
+	// pre-check later upgrades it.
 	fn record_unexpected_channel_close(&mut self, channel_id: ChannelId) {
 		self.closed_channels.entry(channel_id).or_insert(ChannelCloseState::Unexpected);
 	}
 
-	// Allows a channel close only after checking the HTLC-timeout predicate. We
-	// need this guard so height sync cannot accidentally whitelist arbitrary
-	// force closes.
-	fn allow_htlc_timeout_channel_close(
-		&mut self, channel_id: ChannelId, outbound_timed_out: bool, inbound_timed_out: bool,
-	) {
-		// Height sync is the only place where a non-explicit close becomes
-		// expected. Keep the timeout predicate attached to the allowance so a
-		// future caller cannot mark arbitrary channels as timeout-closable.
-		assert!(
-			outbound_timed_out || inbound_timed_out,
-			"HTLC-timeout close allowance for channel {:?} without a timed-out HTLC",
-			channel_id,
-		);
-		self.expect_channel_close(channel_id);
-	}
-
-	// Validates a ChannelClosed event and records it as expected when the close
-	// reason itself proves an HTLC timeout. We need this because some timeout
-	// closes are only surfaced by the event emitted while processing blocks.
 	fn record_channel_closed_event(
 		&mut self, channel_id: ChannelId, reason: &events::ClosureReason,
 	) {
@@ -2046,14 +1969,9 @@ impl ChannelCloseTracker {
 		);
 	}
 
-	// Verifies that an LDK HandleError action is one of the harness-controlled
-	// paths. We need this because force-close coverage should not accept
-	// arbitrary protocol errors as expected behavior.
+	// Asserts an LDK HandleError action is one of the error paths the harness
+	// can produce intentionally.
 	fn assert_expected_control_error_action(&self, action: &msgs::ErrorAction) {
-		// Delayed message delivery can make `timer_tick_occurred` disconnect a
-		// peer that did not respond in time. User force-closes and on-chain
-		// HTLC timeouts can also send specific error strings through the peer.
-		// Anything outside those paths remains unexpected.
 		let expected = match action {
 			msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
 				// Warning-only disconnects do not close channels. They are
@@ -2081,13 +1999,9 @@ impl ChannelCloseTracker {
 		assert!(expected, "Expected harness control error, got: {:?}", action);
 	}
 
-	// Verifies that every tracked channel close became expected. We need this
-	// because closes can surface later as events or topology changes after the
-	// timeout or force-close command that made them expected.
+	// Verifies every tracked close was authorized by an explicit force-close
+	// command or an HTLC-timeout condition.
 	fn assert_no_unexpected_channel_closes(&self) {
-		// This is the global close invariant. A close is acceptable only when
-		// an explicit fuzz command expected it or height sync detected an HTLC
-		// timeout condition for that channel.
 		for (channel_id, state) in &self.closed_channels {
 			assert!(
 				*state == ChannelCloseState::Expected,
@@ -2126,6 +2040,20 @@ struct PendingPayment {
 	claim_funds_called: bool,
 }
 
+impl PendingPayment {
+	// Payments are registered with at least one path, asserted in
+	// register_payment, so these do not need an emptiness check.
+	fn all_paths_blocked(&self) -> bool {
+		(0..self.paths.len()).all(|path_idx| self.blocked_paths.contains(&path_idx))
+	}
+
+	fn all_paths_finished(&self) -> bool {
+		(0..self.paths.len()).all(|path_idx| {
+			self.blocked_paths.contains(&path_idx) || self.failed_paths.contains(&path_idx)
+		})
+	}
+}
+
 struct PaymentTracker {
 	payment_ctr: u64,
 	records_by_id: HashMap<PaymentId, PendingPayment>,
@@ -2145,37 +2073,13 @@ impl PaymentTracker {
 		}
 	}
 
-	// Checks that compact path accounting matches the full Route. We need this
-	// boundary assertion because later cleanup reasons about stored SCIDs rather
-	// than the original Route object.
-	fn assert_path_scids_match_route(payment_paths: &[PaymentPath], route: &Route) {
-		assert_eq!(
-			payment_paths.len(),
-			route.paths.len(),
-			"tracked payment path count differs from route path count",
-		);
-		for (payment_path, route_path) in payment_paths.iter().zip(route.paths.iter()) {
-			assert_eq!(
-				payment_path.len(),
-				route_path.hops.len(),
-				"tracked payment hop count differs from route hop count",
-			);
-			for ((_, _, scid), hop) in payment_path.iter().zip(route_path.hops.iter()) {
-				assert_eq!(
-					*scid, hop.short_channel_id,
-					"tracked payment path SCID differs from route hop SCID",
-				);
-			}
-		}
-	}
-
-	// Starts tracking a successfully accepted outbound payment. We need this to
-	// tie sender events, receiver events, route paths, and reload generation
-	// state to the same payment id/hash pair.
+	// Starts tracking a successfully accepted outbound payment under both its
+	// id and hash.
 	fn register_payment(
 		&mut self, source_idx: usize, payment_id: PaymentId, payment_hash: PaymentHash,
 		payment_paths: Vec<PaymentPath>, first_persisted_manager_generation: u64,
 	) {
+		assert!(!payment_paths.is_empty(), "tracked payment must have at least one path");
 		assert!(
 			self.ids_by_hash.insert(payment_hash, payment_id).is_none(),
 			"duplicate payment_hash {:?}",
@@ -2211,9 +2115,7 @@ impl PaymentTracker {
 		self.records_by_id.get_mut(&payment_id)
 	}
 
-	// Marks payments forgotten by a stale manager reload as rolled back. We need
-	// this so final cleanup does not wait for sender events the reloaded manager
-	// can no longer produce.
+	// Marks payments forgotten by a stale manager reload as rolled back.
 	fn sync_pending_with_manager_generation(
 		&mut self, node_idx: usize, loaded_manager_generation: u64,
 	) -> Vec<PaymentHash> {
@@ -2235,51 +2137,38 @@ impl PaymentTracker {
 	}
 
 	// Reports whether any claim_funds call still needs receiver or sender-side
-	// accounting. We need this as a cleanup-loop predicate for claimed HTLCs
-	// that may resolve over multiple blocks and events.
+	// accounting.
 	fn has_unfinished_claims(&self) -> bool {
 		self.records_by_id.values().any(|record| {
 			record.claim_funds_called
 				&& (!record.receiver_claimed
-					|| (record.sender_outcome.is_none()
-						&& !record.paths.is_empty()
-						&& !record
-							.paths
-							.iter()
-							.enumerate()
-							.all(|(path_idx, _)| record.blocked_paths.contains(&path_idx))))
+					|| (record.sender_outcome.is_none() && !record.all_paths_blocked()))
 		})
 	}
 
-	// Reports whether payment state can still make cleanup progress. We need
-	// this to keep driving events and blocks while pending paths or claims are
-	// still meaningfully live.
+	// Reports whether payment state can still make cleanup progress.
 	fn has_live_payment_work(&self) -> bool {
-		self.records_by_id.values().any(|record| {
-			record.status == PaymentStatus::Pending
-				&& !(record.paths.len() > 0
-					&& record.paths.iter().enumerate().all(|(path_idx, _)| {
-						record.blocked_paths.contains(&path_idx)
-							|| record.failed_paths.contains(&path_idx)
-					}))
-		}) || self.has_unfinished_claims()
+		self.records_by_id
+			.values()
+			.any(|record| record.status == PaymentStatus::Pending && !record.all_paths_finished())
+			|| self.has_unfinished_claims()
 	}
 
 	fn claim_funds_called(&self, hash: &PaymentHash) -> bool {
 		self.record_for_hash(hash).map(|record| record.claim_funds_called).unwrap_or(false)
 	}
 
-	// Clears the outstanding claim_funds obligation for a payment. We need this
-	// when LDK rejects the local claim before PaymentClaimed, or when a stale
-	// manager reload means the reloaded node can no longer emit that event.
+	// Clears the claim_funds obligation when LDK rejects the local claim before
+	// PaymentClaimed, or when a stale manager reload means the reloaded node can
+	// no longer emit that event.
 	fn clear_claim(&mut self, hash: &PaymentHash) {
 		if let Some(record) = self.record_for_hash_mut(hash) {
 			record.claim_funds_called = false;
 		}
 	}
 
-	// Blocks tracked paths for one payment that used a closed channel. We need
-	// this for HTLC-timeout close events that identify the affected hash.
+	// Blocks tracked paths for one payment that used a closed channel, for
+	// HTLC-timeout close events that identify the affected hash.
 	fn block_paths_containing_channel(&mut self, hash: &PaymentHash, channel_id: ChannelId) {
 		if let Some(record) = self.record_for_hash_mut(hash) {
 			for path_idx in 0..record.paths.len() {
@@ -2292,14 +2181,10 @@ impl PaymentTracker {
 		}
 	}
 
-	// Blocks dust-sized path parts through a closed channel. We need this
-	// because dust HTLCs cannot produce an on-chain claim event to resolve the
-	// payment path later.
+	// Blocks dust-sized path parts through a closed channel. Dust HTLCs have no
+	// commitment output, so once the channel closes they can never resolve
+	// through an on-chain claim.
 	fn block_dust_paths_containing_channel(&mut self, channel_id: ChannelId, dust_limit_msat: u64) {
-		// The harness no longer records dust at force-close time. Instead,
-		// whenever a channel closes, it marks any path part below the standard
-		// dust threshold as blocked. This applies uniformly to explicit closes
-		// and timeout-driven closes.
 		for record in self.records_by_id.values_mut() {
 			for path_idx in 0..record.paths.len() {
 				if record.blocked_paths.contains(&path_idx) {
@@ -2316,14 +2201,10 @@ impl PaymentTracker {
 		}
 	}
 
-	// Blocks remaining pending paths through channels already closing or closed.
-	// We need this final cleanup step to distinguish stranded paths from live,
-	// still-resolvable payment work.
+	// Blocks pending paths through closing channels: once cleanup ends they are
+	// unresolvable. The close invariant separately checks that each tracked
+	// close was expected.
 	fn block_unresolvable_closed_paths(&mut self, close_tracker: &ChannelCloseTracker) {
-		// After cleanup, any remaining pending payment path through a tracked
-		// closed channel is unresolvable. Mark it blocked before asserting no
-		// pending payments; the separate close invariant then checks that the
-		// tracked close was expected.
 		for record in self.records_by_id.values_mut() {
 			if record.status != PaymentStatus::Pending {
 				continue;
@@ -2342,9 +2223,8 @@ impl PaymentTracker {
 		}
 	}
 
-	// Records a path-level failure event against a tracked payment. We need this
-	// for MPP accounting, where individual paths can fail before the whole
-	// payment resolves.
+	// Records a path-level failure event against a tracked payment, for MPP
+	// accounting where individual paths can fail before the payment resolves.
 	fn mark_path_failed(
 		&mut self, node_idx: usize, payment_id: Option<PaymentId>, failed_path: &Path,
 	) {
@@ -2376,22 +2256,12 @@ impl PaymentTracker {
 		}
 	}
 
-	// Asserts no live pending payments remain. We need this final invariant to
-	// ensure cleanup resolved every path or proved it cannot make progress
-	// because the path failed, closed, or was dust-blocked.
+	// Asserts no live pending payments remain: every path resolved, failed, or
+	// was blocked by a close or dust.
 	fn assert_no_pending(&self, context: &str) {
-		// A pending payment is acceptable only if every path has either failed
-		// or been blocked. The reason for each close-backed block is checked by
-		// the channel-close invariant, so this assertion can focus on payment
-		// liveness.
 		let mut pending_ids = [Vec::new(), Vec::new(), Vec::new()];
 		for record in self.records_by_id.values().filter(|record| {
-			let all_paths_finished = !record.paths.is_empty()
-				&& record.paths.iter().enumerate().all(|(path_idx, _)| {
-					record.blocked_paths.contains(&path_idx)
-						|| record.failed_paths.contains(&path_idx)
-				});
-			record.status == PaymentStatus::Pending && !all_paths_finished
+			record.status == PaymentStatus::Pending && !record.all_paths_finished()
 		}) {
 			pending_ids[record.source_idx].push(record.payment_id);
 		}
@@ -2407,26 +2277,17 @@ impl PaymentTracker {
 		}
 	}
 
-	// Asserts claim_funds calls reached valid receiver and sender outcomes. We
-	// need this because on-chain claims can resolve receiver-side before the
-	// sender learns success or an expected blocked-path failure.
+	// Asserts claim_funds calls reached valid outcomes: the receiver saw
+	// PaymentClaimed, and the sender either learned success or failed only
+	// after every path was blocked.
 	fn assert_claims_resolved(&self) {
-		// claim_funds is special: after the receiver claims, we also need to
-		// verify the sender side either learned success, learned failure only
-		// after all paths were blocked, or was otherwise blocked from receiving
-		// a meaningful resolution.
 		for record in self.records_by_id.values().filter(|record| record.claim_funds_called) {
 			assert!(
 				record.receiver_claimed,
 				"Payment {:?} was claimed with claim_funds but receiver never got PaymentClaimed",
 				record.payment_hash,
 			);
-			let all_paths_blocked = !record.paths.is_empty()
-				&& record
-					.paths
-					.iter()
-					.enumerate()
-					.all(|(path_idx, _)| record.blocked_paths.contains(&path_idx));
+			let all_paths_blocked = record.all_paths_blocked();
 			match record.sender_outcome {
 				Some(SenderOutcome::Sent) => {},
 				Some(SenderOutcome::Failed) => assert!(
@@ -2445,9 +2306,9 @@ impl PaymentTracker {
 		}
 	}
 
-	// Checks whether LDK kept outbound state for a send attempt. We need this
-	// because a payment can exhaust retries immediately while committed HTLCs
-	// still need later accounting.
+	// Checks whether LDK kept outbound state for a send attempt. A payment can
+	// exhaust retries immediately while committed HTLCs still need later
+	// accounting.
 	fn check_payment_send_events(source: &ChanMan, sent_payment_id: PaymentId) -> bool {
 		for payment in source.list_recent_payments() {
 			match payment {
@@ -2470,22 +2331,18 @@ impl PaymentTracker {
 		return false;
 	}
 
-	// Detects whether a payment hash still has committed outbound HTLCs. We
-	// need this to keep exhausted-retry payments tracked until those HTLCs
-	// resolve through messages or chain activity.
+	// Detects whether a payment hash still has committed outbound HTLCs, to
+	// keep exhausted-retry payments tracked until those HTLCs resolve.
 	fn has_pending_outbound_htlc(source: &ChanMan, payment_hash: PaymentHash) -> bool {
 		source.list_channels().iter().any(|chan| {
 			chan.pending_outbound_htlcs.iter().any(|htlc| htlc.payment_hash == payment_hash)
 		})
 	}
 
-	// Creates deterministic payment material and registers the inbound hash
-	// with the receiver. We need deterministic material so hand-built fuzz
-	// scenarios can be replayed while still using an LDK-accepted secret.
+	// Creates counter-derived payment material so hand-built fuzz inputs replay
+	// the same scenario. The receiver registers the hash, which yields a real
+	// PaymentSecret accepted by LDK.
 	fn next_payment(&mut self, dest: &ChanMan) -> (PaymentSecret, PaymentHash, PaymentId) {
-		// Derive payment material from the counter so route construction is
-		// reproducible across fuzz runs. The receiver still creates the inbound
-		// payment, which gives us a real PaymentSecret accepted by LDK.
 		self.payment_ctr += 1;
 		let mut payment_preimage = PaymentPreimage([0; 32]);
 		payment_preimage.0[0..8].copy_from_slice(&self.payment_ctr.to_be_bytes());
@@ -2500,16 +2357,13 @@ impl PaymentTracker {
 	}
 
 	// Sends a single-hop payment and records it only if LDK kept outbound state.
-	// We need this as the base payment path that later close and claim
-	// accounting can reason about.
 	fn send(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
 		dest_chan_id: ChannelId, amt: u64, close_tracker: &ChannelCloseTracker,
 	) -> bool {
 		if close_tracker.is_closed_or_closing(&dest_chan_id) {
-			// Do not intentionally send over a channel the harness already knows
-			// is closed. That would test route construction failure, not
-			// force-close cleanup.
+			// Sending over a known-closing channel would test route construction
+			// failure, not force-close cleanup.
 			return false;
 		}
 		let source = &nodes[source_idx];
@@ -2532,8 +2386,6 @@ impl PaymentTracker {
 			amt,
 		);
 		let route = Route {
-			// Direct sends use one path and one hop. The hand-built route keeps
-			// the harness deterministic and lets PaymentPath mirror it exactly.
 			paths: vec![Path {
 				hops: vec![RouteHop {
 					pubkey: dest.get_our_node_id(),
@@ -2549,7 +2401,6 @@ impl PaymentTracker {
 			route_params: Some(route_params.clone()),
 		};
 		let payment_paths = vec![vec![(dest_chan_id, amt, dest_scid)]];
-		Self::assert_path_scids_match_route(&payment_paths, &route);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2575,9 +2426,8 @@ impl PaymentTracker {
 		succeeded
 	}
 
-	// Sends a two-hop payment through the middle node. We need this to cover
-	// forwarded HTLC cleanup and to record which channel on each link carried
-	// the payment.
+	// Sends a two-hop payment through the middle node to cover forwarded HTLC
+	// cleanup.
 	fn send_hop(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, middle_idx: usize,
 		middle_chan_id: ChannelId, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
@@ -2586,9 +2436,8 @@ impl PaymentTracker {
 		if close_tracker.is_closed_or_closing(&middle_chan_id)
 			|| close_tracker.is_closed_or_closing(&dest_chan_id)
 		{
-			// Two-hop sends are useful only when both channels are still live.
-			// Once either hop closes, later cleanup should account for the
-			// existing payment, not create a new one over the closed path.
+			// Once either hop closes, cleanup should account for the existing
+			// payment, not create a new one over the closed path.
 			return;
 		}
 		let source = &nodes[source_idx];
@@ -2653,7 +2502,6 @@ impl PaymentTracker {
 			(middle_chan_id, amt + first_hop_fee, middle_scid),
 			(dest_chan_id, amt, dest_scid),
 		]];
-		Self::assert_path_scids_match_route(&payment_paths, &route);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2679,33 +2527,18 @@ impl PaymentTracker {
 		}
 	}
 
-	// Sends a direct MPP payment with no intermediate hop. We need this to
-	// cover payments split across sibling channels while tracking each part
-	// separately when one channel closes.
+	// Sends a direct MPP payment split across the destination channels still
+	// considered live, so coverage of partially-closed MPP destinations remains.
 	fn send_mpp_direct(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
 		dest_chan_ids: &[ChannelId], amt: u64, close_tracker: &ChannelCloseTracker,
 	) {
-		// MPP sends filter out already-closed channels but keep using any live
-		// sibling channels. This preserves coverage where one part is blocked
-		// by a close while later fuzz bytes still try to use remaining channels.
-		let live_dest_chan_ids = {
-			dest_chan_ids
-				.iter()
-				.copied()
-				.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
-				.collect::<Vec<_>>()
-		};
-		if live_dest_chan_ids.is_empty() {
-			return;
-		}
 		let source = &nodes[source_idx];
 		let dest = &nodes[dest_idx];
-		let (secret, hash, id) = self.next_payment(dest);
-		let mut paths = Vec::new();
 		let dest_chans = dest.list_channels();
-		let dest_scids: Vec<_> = live_dest_chan_ids
+		let dest_scids: Vec<_> = dest_chan_ids
 			.iter()
+			.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
 			.filter_map(|chan_id| {
 				dest_chans
 					.iter()
@@ -2718,38 +2551,15 @@ impl PaymentTracker {
 		if num_paths == 0 {
 			return;
 		}
+		let (secret, hash, id) = self.next_payment(dest);
 		let amt_per_path = amt / num_paths as u64;
-		for (i, (_, dest_scid)) in dest_scids.iter().enumerate() {
-			let path_amt = if i == num_paths - 1 {
-				amt - amt_per_path * (num_paths as u64 - 1)
-			} else {
-				amt_per_path
-			};
-			paths.push(Path {
-				hops: vec![RouteHop {
-					pubkey: dest.get_our_node_id(),
-					node_features: dest.node_features(),
-					short_channel_id: *dest_scid,
-					channel_features: dest.channel_features(),
-					fee_msat: path_amt,
-					cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
-					maybe_announced_channel: true,
-				}],
-				blinded_tail: None,
-			});
-		}
-		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(dest.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
-			amt,
-		);
-		let route = Route { paths, route_params: Some(route_params) };
-		let payment_paths = dest_scids
+		// Build the tracked paths first and derive the Route from them so the
+		// two cannot drift apart.
+		let payment_paths: Vec<PaymentPath> = dest_scids
 			.iter()
 			.enumerate()
 			.map(|(i, (chan_id, dest_scid))| {
-				// Match the same remainder handling used while building the
-				// Route so the accounting amount exactly equals the route amount
-				// for each part.
+				// The last path receives the rounding remainder.
 				let path_amt = if i == num_paths - 1 {
 					amt - amt_per_path * (num_paths as u64 - 1)
 				} else {
@@ -2757,8 +2567,30 @@ impl PaymentTracker {
 				};
 				vec![(*chan_id, path_amt, *dest_scid)]
 			})
-			.collect::<Vec<_>>();
-		Self::assert_path_scids_match_route(&payment_paths, &route);
+			.collect();
+		let paths = payment_paths
+			.iter()
+			.map(|payment_path| {
+				let (_, path_amt, dest_scid) = payment_path[0];
+				Path {
+					hops: vec![RouteHop {
+						pubkey: dest.get_our_node_id(),
+						node_features: dest.node_features(),
+						short_channel_id: dest_scid,
+						channel_features: dest.channel_features(),
+						fee_msat: path_amt,
+						cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
+						maybe_announced_channel: true,
+					}],
+					blinded_tail: None,
+				}
+			})
+			.collect();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(dest.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
+			amt,
+		);
+		let route = Route { paths, route_params: Some(route_params) };
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2776,41 +2608,21 @@ impl PaymentTracker {
 		}
 	}
 
-	// Sends a two-hop MPP payment split across one or both links. We need this
-	// to cover path-level failure and close accounting when only some parts of a
-	// forwarded payment are stranded.
+	// Sends a two-hop MPP payment split across the live channels on one or both
+	// links. The path count is the larger live channel count; the shorter side
+	// is reused round-robin so paths can be blocked independently by either hop.
 	fn send_mpp_hop(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, middle_idx: usize,
 		middle_chan_ids: &[ChannelId], dest_idx: usize, dest_chan_ids: &[ChannelId], amt: u64,
 		close_tracker: &ChannelCloseTracker,
 	) {
-		// For two-hop MPP, the path count is the maximum number of live channels
-		// on either side. The shorter side is reused round-robin, creating paths
-		// that can be independently blocked by either the first or second hop.
-		let (live_middle_chan_ids, live_dest_chan_ids) = {
-			(
-				middle_chan_ids
-					.iter()
-					.copied()
-					.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
-					.collect::<Vec<_>>(),
-				dest_chan_ids
-					.iter()
-					.copied()
-					.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
-					.collect::<Vec<_>>(),
-			)
-		};
-		if live_middle_chan_ids.is_empty() || live_dest_chan_ids.is_empty() {
-			return;
-		}
 		let source = &nodes[source_idx];
 		let middle = &nodes[middle_idx];
 		let dest = &nodes[dest_idx];
-		let (secret, hash, id) = self.next_payment(dest);
 		let middle_chans = middle.list_channels();
-		let middle_scids: Vec<_> = live_middle_chan_ids
+		let middle_scids: Vec<_> = middle_chan_ids
 			.iter()
+			.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
 			.filter_map(|chan_id| {
 				middle_chans
 					.iter()
@@ -2820,8 +2632,9 @@ impl PaymentTracker {
 			})
 			.collect();
 		let dest_chans = dest.list_channels();
-		let dest_scids: Vec<_> = live_dest_chan_ids
+		let dest_scids: Vec<_> = dest_chan_ids
 			.iter()
+			.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
 			.filter_map(|chan_id| {
 				dest_chans
 					.iter()
@@ -2830,60 +2643,21 @@ impl PaymentTracker {
 					.map(|scid| (*chan_id, scid))
 			})
 			.collect();
-		let num_paths = middle_scids.len().max(dest_scids.len());
 		if middle_scids.is_empty() || dest_scids.is_empty() {
 			return;
 		}
+		let num_paths = middle_scids.len().max(dest_scids.len());
+		let (secret, hash, id) = self.next_payment(dest);
 		let first_hop_fee = 50_000;
 		let amt_per_path = amt / num_paths as u64;
 		let fee_per_path = first_hop_fee / num_paths as u64;
-		let mut paths = Vec::with_capacity(num_paths);
-		for i in 0..num_paths {
-			let (_, middle_scid) = middle_scids[i % middle_scids.len()];
-			let (_, dest_scid) = dest_scids[i % dest_scids.len()];
-			let path_amt = if i == num_paths - 1 {
-				amt - amt_per_path * (num_paths as u64 - 1)
-			} else {
-				amt_per_path
-			};
-			let path_fee = if i == num_paths - 1 {
-				first_hop_fee - fee_per_path * (num_paths as u64 - 1)
-			} else {
-				fee_per_path
-			};
-			paths.push(Path {
-				hops: vec![
-					RouteHop {
-						pubkey: middle.get_our_node_id(),
-						node_features: middle.node_features(),
-						short_channel_id: middle_scid,
-						channel_features: middle.channel_features(),
-						fee_msat: path_fee,
-						cltv_expiry_delta: FUZZ_FORWARD_CLTV_DELTA,
-						maybe_announced_channel: true,
-					},
-					RouteHop {
-						pubkey: dest.get_our_node_id(),
-						node_features: dest.node_features(),
-						short_channel_id: dest_scid,
-						channel_features: dest.channel_features(),
-						fee_msat: path_amt,
-						cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
-						maybe_announced_channel: true,
-					},
-				],
-				blinded_tail: None,
-			});
-		}
-		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(dest.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
-			amt,
-		);
-		let route = Route { paths, route_params: Some(route_params) };
-		let payment_paths = (0..num_paths)
+		// Build the tracked paths first and derive the Route from them so the
+		// two cannot drift apart.
+		let payment_paths: Vec<PaymentPath> = (0..num_paths)
 			.map(|i| {
 				let (middle_chan_id, middle_scid) = middle_scids[i % middle_scids.len()];
 				let (dest_chan_id, dest_scid) = dest_scids[i % dest_scids.len()];
+				// The last path receives the rounding remainders.
 				let path_amt = if i == num_paths - 1 {
 					amt - amt_per_path * (num_paths as u64 - 1)
 				} else {
@@ -2899,8 +2673,42 @@ impl PaymentTracker {
 					(dest_chan_id, path_amt, dest_scid),
 				]
 			})
-			.collect::<Vec<_>>();
-		Self::assert_path_scids_match_route(&payment_paths, &route);
+			.collect();
+		let paths = payment_paths
+			.iter()
+			.map(|payment_path| {
+				let (_, middle_amt, middle_scid) = payment_path[0];
+				let (_, path_amt, dest_scid) = payment_path[1];
+				Path {
+					hops: vec![
+						RouteHop {
+							pubkey: middle.get_our_node_id(),
+							node_features: middle.node_features(),
+							short_channel_id: middle_scid,
+							channel_features: middle.channel_features(),
+							fee_msat: middle_amt - path_amt,
+							cltv_expiry_delta: FUZZ_FORWARD_CLTV_DELTA,
+							maybe_announced_channel: true,
+						},
+						RouteHop {
+							pubkey: dest.get_our_node_id(),
+							node_features: dest.node_features(),
+							short_channel_id: dest_scid,
+							channel_features: dest.channel_features(),
+							fee_msat: path_amt,
+							cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
+							maybe_announced_channel: true,
+						},
+					],
+					blinded_tail: None,
+				}
+			})
+			.collect();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(dest.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
+			amt,
+		);
+		let route = Route { paths, route_params: Some(route_params) };
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2918,13 +2726,12 @@ impl PaymentTracker {
 		}
 	}
 
-	// Claims or fails a receive-side payment event. We need this helper to keep
-	// claim_funds bookkeeping tied to the deterministic preimage map.
+	// Claims or fails a receive-side payment event.
 	fn claim_payment(&mut self, node: &HarnessNode<'_>, payment_hash: PaymentHash, fail: bool) {
 		if fail {
-			// Event-processing fuzz bytes can choose to fail claimable payments
-			// backward, preserving existing chanmon coverage where payments are
-			// rejected rather than claimed.
+			// Fuzz bytes can choose to fail claimable payments backward,
+			// preserving coverage where payments are rejected rather than
+			// claimed.
 			node.fail_htlc_backwards(&payment_hash);
 		} else {
 			// The preimage was generated by next_payment, so a missing entry
@@ -2941,8 +2748,7 @@ impl PaymentTracker {
 		}
 	}
 
-	// Records sender-side payment success and clears the pending record. We need
-	// this outcome to cross-check receiver claims and blocked-path accounting.
+	// Records sender-side payment success and resolves the pending record.
 	fn mark_sent(&mut self, node_idx: usize, sent_id: PaymentId, payment_hash: PaymentHash) {
 		if let Some(record) = self.record_for_hash_mut(&payment_hash) {
 			assert_ne!(record.sender_outcome, Some(SenderOutcome::Failed));
@@ -2951,9 +2757,7 @@ impl PaymentTracker {
 		self.mark_resolved_payment(node_idx, sent_id, true);
 	}
 
-	// Records sender-side payment failure and clears the pending record. We need
-	// this to distinguish valid failures caused by blocked paths from failures
-	// that would contradict a receiver-side claim.
+	// Records sender-side payment failure and resolves the pending record.
 	fn mark_failed(
 		&mut self, node_idx: usize, payment_id: PaymentId, payment_hash: Option<PaymentHash>,
 	) {
@@ -2975,28 +2779,24 @@ impl PaymentTracker {
 		self.mark_resolved_payment(node_idx, payment_id, false);
 	}
 
-	// Moves a tracked payment id out of Pending. We need one transition point so
-	// success, hash-bearing failure, and id-only failure all update the same
-	// accounting state.
+	// Moves a tracked payment id out of Pending. With assert_already_resolved,
+	// a duplicate resolution must be Resolved rather than RolledBack.
 	fn mark_resolved_payment(
 		&mut self, node_idx: usize, payment_id: PaymentId, assert_already_resolved: bool,
 	) {
 		// Some events can arrive before the send helper records the payment,
-		// especially when the payment is immediately rejected. In non-strict
-		// mode, ignore those unknown ids. In strict mode, PaymentSent for an
-		// unknown id would be a tracker bug.
+		// especially when the payment is immediately rejected. Ignore those
+		// unknown ids, except for PaymentSent where an unknown id would be a
+		// tracker bug.
 		let Some(record) = self.records_by_id.get_mut(&payment_id) else {
 			assert!(!assert_already_resolved);
 			return;
 		};
 		assert_eq!(record.source_idx, node_idx);
-		if record.status == PaymentStatus::Pending {
-			record.status = PaymentStatus::Resolved;
-		} else if assert_already_resolved {
+		if assert_already_resolved && record.status != PaymentStatus::Pending {
 			assert_eq!(record.status, PaymentStatus::Resolved);
-		} else {
-			record.status = PaymentStatus::Resolved;
 		}
+		record.status = PaymentStatus::Resolved;
 	}
 }
 
@@ -3065,9 +2865,7 @@ fn assert_no_stale_splice_negotiation(
 	);
 }
 
-// Checks topology and broadcast invariants that should hold after cleanup. We
-// need this final guard to catch harness bugs that leave stray broadcasts or
-// accidentally lose open channels while allowing tracked closed channels.
+// Checks topology and broadcast invariants that should hold after cleanup.
 fn assert_test_invariants(nodes: &[HarnessNode<'_>; 3], has_closed_channels: bool) {
 	let channel_counts = [
 		nodes[0].list_channels().len(),
@@ -3331,10 +3129,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let wallets = [wallet_a.as_ref(), wallet_b.as_ref(), wallet_c.as_ref()];
 		let mut chain_state = ChainState::new();
 		for wallet in wallets {
-			// Seed each wallet with many confirmed outputs. Anchor and splice
-			// flows may need fresh inputs long after the channel setup phase, and
-			// exhausting the wallet would obscure the force-close behavior under
-			// test.
+			// Seed each wallet generously; anchor and splice flows need fresh
+			// inputs long after setup, and an exhausted wallet would obscure the
+			// close behavior under test.
 			let coinbase_tx = bitcoin::Transaction {
 				version: bitcoin::transaction::Version::TWO,
 				lock_time: bitcoin::absolute::LockTime::ZERO,
@@ -3349,8 +3146,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			for vout in 0..NUM_WALLET_UTXOS {
 				wallet.add_utxo(coinbase_tx.clone(), vout);
 			}
-			// Mine the wallet UTXOs into the same ChainState that later drives
-			// channel funding, splice transactions, and on-chain claims.
 			chain_state.mine_setup_tx_to_depth(coinbase_tx, ANTI_REORG_DELAY);
 		}
 
@@ -3420,12 +3215,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		make_channel(&mut nodes, 1, 2, 6, false, false, &mut chain_state);
 
 		// Wipe setup-time broadcasts so normal operation starts with an empty
-		// relay queue. Later broadcasts only enter the mempool through relay
-		// commands or finish cleanup.
+		// relay queue; the setup funding is already represented in ChainState.
 		for node in &nodes {
-			// Channel setup broadcasts synthetic funding transactions. Clear the
-			// broadcasters after setup because all setup funding is already
-			// represented in ChainState.
 			node.broadcaster.txn_broadcasted.borrow_mut().clear();
 		}
 		for node in &mut nodes {
@@ -3476,9 +3267,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	// Final invariants should not depend on the input ending with explicit relay
 	// and mining bytes.
 	fn finish(&mut self) {
-		// A fuzz input may stop immediately after a broadcast or relay. Before
-		// final invariants, mine those transactions to avoid reporting a false
-		// stuck state just because the byte stream ended.
 		self.mine_relayed_txs_until_quiet("finish");
 		self.record_disappeared_channels();
 		self.assert_no_unexpected_channel_closes();
@@ -3486,22 +3274,15 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		assert_test_invariants(&self.nodes, has_closed_channels);
 	}
 
-	// Checks both peer links for unintended sibling-channel closes. We need this
-	// harness-level wrapper so final validation covers the whole A-B-C topology.
+	// Checks both peer links for unintended sibling-channel closes.
 	fn assert_no_unexpected_channel_closes(&self) {
 		self.ab_link.assert_no_unexpected_channel_closes(&self.nodes, &self.close_tracker);
 		self.bc_link.assert_no_unexpected_channel_closes(&self.nodes, &self.close_tracker);
 	}
 
-	// Records closes that are visible through current topology state. We need
-	// this because some closes are observed as missing channels instead of, or
-	// before, explicit ChannelClosed accounting.
+	// Records closes visible only as channels missing from list_channels, which
+	// can happen before, or instead of, ChannelClosed event processing.
 	fn record_disappeared_channels(&mut self) {
-		// Run this from both finish and settle_all because a close can be
-		// observed through ChannelClosed events or simply through a channel
-		// disappearing from list_channels after chain/message processing. The
-		// close tracker records topology-only disappearance as Unexpected until
-		// a valid close reason upgrades it.
 		self.ab_link.record_disappeared_channels(&self.nodes, &mut self.close_tracker);
 		self.bc_link.record_disappeared_channels(&self.nodes, &mut self.close_tracker);
 	}
@@ -3764,10 +3545,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				},
 				MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
 					if close_tracker.is_closed_or_closing(&msg.channel_id) {
-						// Once a channel is tracked as closing or closed, a
-						// delayed reestablish for it is stale harness traffic.
-						// Dropping it avoids turning the same tracked close into
-						// a second unrelated error path.
+						// A delayed reestablish for a closing channel is stale
+						// traffic that would only manufacture a second error path
+						// for the same close.
 						return None;
 					}
 					let dest_idx =
@@ -3860,10 +3640,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 							let dest_idx =
 								log_peer_message(node_idx, node_id, nodes, out, "warning");
 							if is_quiescent_disconnect_warning(msg) {
-								// Splice quiescence warnings are recovery
-								// signals, not channel closes. Exit
-								// quiescence on both peers so later fuzz bytes
-								// can continue normal message flow.
+								// Splice quiescence warnings are recovery signals,
+								// not closes; exit quiescence on both peers.
 								nodes[node_idx]
 									.node
 									.exit_quiescence(node_id, &msg.channel_id)
@@ -3875,9 +3653,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 							}
 						},
 						msgs::ErrorAction::SendErrorMessage { msg } => {
-							// SendErrorMessage is delivered to the peer so the
-							// counterparty observes the close or protocol error
-							// the same way it would over the wire.
+							// Deliver the error so the counterparty observes the
+							// close the same way it would over the wire.
 							let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "error");
 							nodes[dest_idx].handle_error(source_node_id, msg);
 						},
@@ -3908,9 +3685,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let mut events = queues.take_for_node(node_idx);
 		let mut new_events = Vec::new();
 		if limit_events != ProcessMessages::OnePendingMessage {
-			// Calling get_and_clear_pending_msg_events can itself release HTLC
-			// holding cells. OnePendingMessage intentionally avoids that side
-			// effect, while the other modes include fresh events.
 			new_events = nodes[node_idx].get_and_clear_pending_msg_events();
 		}
 		let mut had_events = false;
@@ -3952,8 +3726,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	// Drains user-facing events from one node and updates harness accounting.
-	// We need this as the bridge from LDK events into payment, close, splice,
-	// and bump-transaction state tracked by the fuzzer.
 	fn process_events(&mut self, node_idx: usize, fail: bool) -> bool {
 		let nodes = &self.nodes;
 		let payments = &mut self.payments;
@@ -3970,10 +3742,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					if claim_deadline
 						.map_or(false, |deadline| nodes[node_idx].manager_height() >= deadline)
 					{
-						// PaymentClaimable is actionable only before its
-						// deadline. Once it is stale, let LDK's timeout/failback
-						// events drive the payment accounting instead of calling
-						// claim_funds outside its API guarantee.
+						// Past the claim_deadline, claim_funds is outside its API
+						// contract; let LDK's timeout fail-back resolve the payment.
 						continue;
 					}
 					if claim_set.insert(payment_hash.0, ()).is_none() {
@@ -4076,21 +3846,14 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					}
 				},
 				events::Event::SpliceNegotiated { .. } => {
-					// A negotiated splice is not yet a mined splice, and the
-					// harness also keeps transaction propagation explicit. LDK
-					// broadcasts the new funding transaction through the test
-					// broadcaster; relay commands or finish cleanup decide when
-					// that broadcast reaches the modeled mempool, and mining
-					// commands decide when the mempool gets confirmed.
+					// LDK already broadcast the new funding transaction; relay and
+					// mining commands decide when it confirms.
 				},
 				events::Event::SpliceNegotiationFailed { .. } => {},
 				events::Event::ChannelClosed { channel_id, reason, .. } => {
 					close_tracker.record_channel_closed_event(channel_id, &reason);
-					// Dust-blocked HTLCs can never produce an on-chain claim,
-					// regardless of whether the close was explicit or caused by
-					// an HTLC timeout. Mark those paths blocked at close time so
-					// later pending-payment assertions do not wait for an event
-					// LDK cannot produce.
+					// Dust HTLCs on the closed channel can never produce an
+					// on-chain claim, so block their paths up front.
 					payments.block_dust_paths_containing_channel(
 						channel_id,
 						MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS as u64 * 1000,
@@ -4099,27 +3862,18 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 						payment_hash: Some(payment_hash),
 					} = reason
 					{
-						// Timeout closes identify the affected payment hash, so
-						// the tracker can block only the paths for that payment
-						// that actually used the closed channel.
+						// The timeout close names the affected payment, so only
+						// its paths through the closed channel are blocked.
 						payments.block_paths_containing_channel(&payment_hash, channel_id);
 					}
 				},
-				events::Event::DiscardFunding { .. } => {
-					// Aborted funding or splice negotiation does not touch the
-					// chain model unless a transaction was actually relayed and
-					// mined.
-				},
+				events::Event::DiscardFunding { .. } => {},
 				events::Event::SpendableOutputs { .. } => {
 					// This target tracks wallet UTXOs from confirmed
 					// wallet-owned transaction outputs. It does not sweep LDK
 					// spendable outputs.
 				},
 				events::Event::BumpTransaction(bump) => {
-					// Let LDK's wallet-backed bump handler complete and
-					// rebroadcast anchor or claim transactions. Relay commands
-					// or finish cleanup decide when those broadcasts enter the
-					// modeled mempool.
 					nodes[node_idx].bump_tx_handler.handle_event(&bump);
 				},
 				_ => panic!("Unhandled event: {:?}", event),
@@ -4142,9 +3896,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.process_events(node_idx, fail);
 	}
 
-	// Drives event and message processing until the harness is quiet. We need
-	// this before settlement phases that assume no immediately deliverable work
-	// is still queued.
+	// Drives event and message processing until the harness is quiet.
 	fn process_all_events(&mut self) {
 		let settled = self.progress_until_quiet(MAX_SETTLE_ITERATIONS);
 		assert!(settled, "process_all_events exceeded settle budget");
@@ -4164,9 +3916,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		min_monitor_height
 	}
 
-	// Restarts one node from a fuzz-selected persisted state. We need this to
-	// keep monitor replay coverage while updating payment records that the
-	// reloaded manager can no longer remember.
+	// Restarts one node from a fuzz-selected persisted state, updating payment
+	// records the reloaded manager can no longer remember.
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
 		if !self.nodes[node_idx].deferred {
 			self.nodes[node_idx].checkpoint_manager_persistence();
@@ -4231,21 +3982,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 	}
 
-	// Drives the whole harness toward settlement and checks final invariants. We
-	// need this for the `0xff` command, where the test proves force-close and
-	// payment cleanup either complete or fail at the invariant that explains
-	// what remained stuck.
+	// Drives the whole harness toward settlement and checks final invariants.
 	fn settle_all(&mut self) {
-		// First, make sure peers are all connected to each other. The cleanup
-		// invariants are about eventual resolution, not about preserving a
-		// fuzzer-selected temporary disconnection into the final settle step.
+		// The cleanup invariants are about eventual resolution, so undo any
+		// fuzzer-selected disconnections first.
 		self.reconnect_ab();
 		self.reconnect_bc();
 
 		for op in SUPPORTED_SIGNER_OPS {
-			// The fuzzer may have blocked any signer operation. Re-enable all of
-			// them before final cleanup so failures after this point indicate
-			// missing event, chain, or accounting progress instead of an
+			// Re-enable all signer ops so failures after this point indicate
+			// missing event, chain, or accounting progress rather than an
 			// intentionally blocked signer.
 			self.nodes[0].keys_manager.enable_op_for_all_signers(op);
 			self.nodes[1].keys_manager.enable_op_for_all_signers(op);
@@ -4295,9 +4041,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				let can_drive_more_cleanup =
 					has_cleanup_balances || self.has_pending_work() || has_pending_htlcs;
 				let next_claimed_htlc_boundary = self.next_claimed_htlc_boundary(&balances);
-				// Mining one more block is safe only while the next block remains
-				// below the nearest claim boundary that still needs sender-side
-				// accounting.
+				// This only gates the explicit height advance below; progress
+				// rounds can still mine to confirm transactions already in the
+				// mempool.
 				let can_advance_without_claimed_expiry = next_claimed_htlc_boundary
 					.map_or(true, |boundary| {
 						self.chain_state.tip_height().saturating_add(1) < boundary
@@ -4365,29 +4111,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.close_tracker.assert_no_unexpected_channel_closes();
 		self.assert_no_unexpected_channel_closes();
 
-		for chan_id in *self.ab_link.channel_ids() {
-			if self.close_tracker.is_closed_or_closing(&chan_id) {
-				continue;
-			}
-			// After all cleanup, each still-open channel should be able to send
-			// in at least one direction, unless neither side advertises any
-			// usable amount. Probe with the channel's current min/max instead of
-			// a fixed amount because force-close and fee updates can change the
-			// sendable range.
-			if self.probe_amount_for_direction(0, chan_id).is_some() {
-				assert!(self.can_send_after_settle(0, 1, chan_id));
-			} else if self.probe_amount_for_direction(1, chan_id).is_some() {
-				assert!(self.can_send_after_settle(1, 0, chan_id));
-			}
-		}
-		for chan_id in *self.bc_link.channel_ids() {
-			if self.close_tracker.is_closed_or_closing(&chan_id) {
-				continue;
-			}
-			if self.probe_amount_for_direction(1, chan_id).is_some() {
-				assert!(self.can_send_after_settle(1, 2, chan_id));
-			} else if self.probe_amount_for_direction(2, chan_id).is_some() {
-				assert!(self.can_send_after_settle(2, 1, chan_id));
+		// Every still-open channel must be able to send in at least one
+		// direction; closed channels are validated by close accounting instead.
+		for (node_a, node_b, channel_ids) in
+			[(0, 1, *self.ab_link.channel_ids()), (1, 2, *self.bc_link.channel_ids())]
+		{
+			for chan_id in channel_ids {
+				if self.close_tracker.is_closed_or_closing(&chan_id) {
+					continue;
+				}
+				self.assert_sendable_after_settle(node_a, node_b, chan_id);
 			}
 		}
 
@@ -4431,10 +4164,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.chain_state.relay_transactions(txs)
 	}
 
-	// Mines blocks through ChainState, then syncs wallets and nodes. We need the
-	// harness wrapper because block production is chain-only, while confirmed
-	// transactions still update wallet UTXOs and LDK chain listeners.
-	fn mine_blocks(&mut self, count: u32) -> bool {
+	// Mines blocks through ChainState, applies confirmed transactions to the
+	// wallets, and syncs node chain listeners.
+	fn mine_blocks(&mut self, count: u32) {
 		assert!(count > 0, "mining zero blocks should not be requested");
 
 		let confirmed_txs = self.chain_state.mine_blocks(count);
@@ -4463,17 +4195,13 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			}
 		}
 		self.sync_all_nodes_with_chain_state();
-		true
 	}
 
-	// Repeatedly relays broadcasts and mines pending transactions to depth. We
-	// need this for finish and settle paths where confirmed claims may broadcast
-	// child transactions that also need confirmation.
+	// Repeatedly relays broadcasts and mines pending transactions to depth, for
+	// finish and settle paths where confirmed claims may broadcast child
+	// transactions that also need confirmation.
 	fn mine_relayed_txs_until_quiet(&mut self, context: &str) {
 		for _ in 0..QUIESCENCE_ROUNDS {
-			// Finish and settle paths should not leave already-broadcast
-			// transactions stranded. Relay all broadcasts, mine them to normal
-			// depth, and repeat because confirmed claims can broadcast children.
 			self.relay_all_broadcasts();
 			if !self.chain_state.has_pending_txs() {
 				return;
@@ -4487,13 +4215,13 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		);
 	}
 
-	// Collects claimable balances from every monitor. We need this to know when
-	// on-chain funds still require more blocks, transactions, or monitor work.
+	// Collects claimable balances from the monitors of closed channels, to know
+	// when on-chain funds still require more blocks, transactions, or monitor
+	// work.
 	fn claimable_balances(&self) -> Vec<Balance> {
-		// ChannelMonitor::get_claimable_balances needs references to currently
-		// open channels so it can classify balances relative to the live channel
-		// set. Closed channels are represented by monitors, while open channel
-		// refs prevent open-channel balances from being misclassified.
+		// get_claimable_balances skips monitors whose channel appears in the
+		// ignored list, so passing every open channel returns balances only for
+		// closed channels.
 		let open_channels = self.nodes[0]
 			.node
 			.list_channels()
@@ -4506,9 +4234,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.nodes.iter().flat_map(|node| node.monitor.get_claimable_balances(&open_refs)).collect()
 	}
 
-	// Reports whether any monitor persistence completion is still pending. We
-	// need this because unresolved monitor updates can block claim generation or
-	// channel-manager progress even when no peer messages are queued.
+	// Reports whether any monitor persistence completion is still pending; these
+	// can block claim generation even when no peer messages are queued.
 	fn has_pending_monitor_updates(&self) -> bool {
 		self.nodes.iter().any(|node| {
 			node.persister
@@ -4520,14 +4247,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		})
 	}
 
-	// Finds the nearest HTLC claim or expiry boundary that still matters. We
-	// need this so settlement can advance blocks without skipping over a height
-	// where sender-side resolution may change.
+	// Finds the nearest HTLC claim or expiry boundary for a claim that still
+	// needs sender-side resolution. Crossing such a boundary can change the
+	// failure mode the harness observes, so settlement stops mining before it.
 	fn next_claimed_htlc_boundary(&self, balances: &[Balance]) -> Option<u32> {
-		// When a claimed HTLC still needs sender-side resolution, advancing
-		// past its claim or expiry boundary can change the failure mode the
-		// harness observes. Return the nearest such height so settle_all can
-		// stop before crossing it.
 		balances
 			.iter()
 			.filter_map(|balance| {
@@ -4545,31 +4268,24 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				};
 				// Boundaries only matter for claims whose sender side has not
 				// resolved and whose paths are not all already blocked.
-				let claim_needs_sender_resolution =
-					self.payments
-						.record_for_hash(payment_hash)
-						.map(|record| {
-							record.claim_funds_called
-								&& record.sender_outcome.is_none()
-								&& !(record.paths.len() > 0
-									&& record.paths.iter().enumerate().all(|(path_idx, _)| {
-										record.blocked_paths.contains(&path_idx)
-									}))
-						})
-						.unwrap_or(false);
+				let claim_needs_sender_resolution = self
+					.payments
+					.record_for_hash(payment_hash)
+					.map(|record| {
+						record.claim_funds_called
+							&& record.sender_outcome.is_none()
+							&& !record.all_paths_blocked()
+					})
+					.unwrap_or(false);
 				claim_needs_sender_resolution.then_some(height)
 			})
 			.min()
 	}
 
-	// Checks whether any modeled subsystem still has work to do. We need this
-	// broader signal because on-chain cleanup may be pending in queues,
-	// broadcasts, mempool entries, monitors, or claimable balances.
+	// Checks whether any modeled subsystem still has work to do: queued
+	// messages, broadcasts, mempool entries, monitor updates, or claimable
+	// balances.
 	fn has_pending_work(&self) -> bool {
-		// This is deliberately broader than "has queued messages". On-chain
-		// cleanup can be waiting on monitor updates, newly broadcast
-		// transactions, or claimable balances even when peer message queues are
-		// empty.
 		!self.queues.ab.is_empty()
 			|| !self.queues.ba.is_empty()
 			|| !self.queues.bc.is_empty()
@@ -4580,9 +4296,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			|| !self.claimable_balances().is_empty()
 	}
 
-	// Checks live channels for unresolved HTLCs. We need this final settlement
-	// signal to prove the force-close cleanup did not leave channel HTLC state
-	// stuck.
+	// Checks live channels for unresolved HTLCs.
 	fn has_pending_htlcs(&self) -> bool {
 		self.nodes.iter().any(|node| {
 			node.list_channels().iter().any(|chan| {
@@ -4591,9 +4305,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		})
 	}
 
-	// Completes any deferred monitor updates across both peer links. We need
-	// this because fuzzed persistence delay should be released during cleanup so
-	// chain and message processing can continue.
+	// Completes any deferred monitor updates so fuzzed persistence delay does
+	// not block cleanup.
 	fn complete_pending_monitor_updates(&self) -> bool {
 		let mut completed_monitor_update = false;
 		for id in self.ab_link.channel_ids() {
@@ -4607,17 +4320,15 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		completed_monitor_update
 	}
 
-	// Syncs every harness node to the current ChainState tip. We need this after
-	// mining so all managers and monitors observe the same confirmed chain.
+	// Syncs every harness node to the current ChainState tip.
 	fn sync_all_nodes_with_chain_state(&mut self) {
 		for idx in 0..self.nodes.len() {
 			self.sync_node_with_chain_state(idx, None);
 		}
 	}
 
-	// Syncs one node toward the ChainState tip and pre-authorizes timeout closes.
-	// We need the pre-sync check because LDK may emit ChannelClosed while
-	// processing the connected blocks.
+	// Syncs one node toward the ChainState tip, first pre-authorizing the
+	// timeout closes LDK may perform while connecting the blocks.
 	fn sync_node_with_chain_state(&mut self, node_idx: usize, num_blocks: Option<u32>) {
 		let target_height = if let Some(num_blocks) = num_blocks {
 			std::cmp::min(
@@ -4627,58 +4338,44 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		} else {
 			self.chain_state.tip_height()
 		};
-		// Before delivering the height to LDK, decide whether reaching that
-		// height makes an HTLC-timeout close expected. This lets the later
-		// ChannelClosed event be checked against a concrete timeout predicate.
 		self.allow_htlc_timeout_closes_for_node(node_idx, target_height);
 		self.nodes[node_idx].sync_with_chain_state(&self.chain_state, num_blocks);
 	}
 
-	// Marks channels whose HTLCs can force-close at the target height. We need
-	// this to accept timeout-driven closes without accepting arbitrary channel
-	// disappearance.
+	// Marks channels whose HTLCs allow LDK to force-close at the target height,
+	// mirroring the monitor's timeout conditions: an outbound HTLC past expiry
+	// by the grace period, or an inbound HTLC near expiry whose preimage the
+	// node may have learned through a claim. The monitor only knows a preimage
+	// after claim_funds, so checking the claim keeps this allowance close to
+	// what LDK can actually do.
 	fn allow_htlc_timeout_closes_for_node(&mut self, node_idx: usize, target_height: u32) {
 		for chan in self.nodes[node_idx].list_channels() {
-			// LDK may force-close when either our outbound HTLC has aged past
-			// the timeout grace or our inbound HTLC is close enough to expiry
-			// that claiming with a known preimage is unsafe to delay.
 			let outbound_timed_out = chan.pending_outbound_htlcs.iter().any(|htlc| {
 				htlc.cltv_expiry.saturating_add(HTLC_TIMEOUT_GRACE_BLOCKS) <= target_height
 			});
 			let inbound_timed_out = chan.pending_inbound_htlcs.iter().any(|htlc| {
 				htlc.cltv_expiry <= target_height.saturating_add(HTLC_CLAIM_BUFFER_BLOCKS)
-					&& self.payments.payment_preimages.contains_key(&htlc.payment_hash)
+					&& self.payments.claim_funds_called(&htlc.payment_hash)
 			});
 			if outbound_timed_out || inbound_timed_out {
-				self.close_tracker.allow_htlc_timeout_channel_close(
-					chan.channel_id,
-					outbound_timed_out,
-					inbound_timed_out,
-				);
+				self.close_tracker.expect_channel_close(chan.channel_id);
 			}
 		}
 	}
 
-	// Drains monitor-generated events on every node. We need this after mining
-	// or completing persistence because monitors can enqueue claim handling work
-	// independently of peer messages.
+	// Drains monitor-generated events on every node; monitors can enqueue claim
+	// work independently of peer messages.
 	fn process_monitor_pending_events(&self) {
 		for node in &self.nodes {
 			node.process_monitor_pending_events();
 		}
 	}
 
-	// Runs one granular cleanup pass and reports whether anything advanced. We
-	// need this to settle natural follow-up work without adding a large compound
-	// fuzz opcode.
+	// Runs one cleanup pass and reports whether anything advanced.
 	fn progress_round(&mut self) -> bool {
 		let made_progress = self.checkpoint_manager_persistences();
 		let completed_monitor_update = self.complete_pending_monitor_updates();
 		let mut had_msg_or_ev = false;
-		// A progress round is deliberately granular: drain peer messages, drain
-		// user events, relay anything broadcast, and mine only if the mempool is
-		// non-empty. This keeps normal fuzz bytes meaningful while still letting
-		// settle_all drive on-chain cleanup to quiescence.
 		for node_idx in 0..3 {
 			if self.process_msg_events(node_idx, false, ProcessMessages::AllMessages) {
 				had_msg_or_ev = true;
@@ -4692,9 +4389,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let relayed_before_mining = self.relay_all_broadcasts();
 		let mined_txs = self.chain_state.has_pending_txs();
 		if mined_txs {
-			// If any transactions entered the mempool, mine them deeply enough
-			// for normal confirmation-sensitive logic to run in the same
-			// progress round.
+			// Mine mempool transactions deeply enough for confirmation-sensitive
+			// logic to run in the same progress round.
 			self.mine_blocks(ANTI_REORG_DELAY);
 		}
 		self.process_monitor_pending_events();
@@ -4706,9 +4402,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			|| mined_txs || had_msg_or_ev
 	}
 
-	// Repeats progress rounds until two consecutive quiet passes or exhaustion.
-	// We need the second quiet pass because one drain can expose work that is
-	// only visible on the next pass.
+	// Repeats progress rounds until two consecutive quiet passes, since one
+	// drain can expose work that is only visible on the next pass.
 	fn progress_until_quiet(&mut self, max_iters: usize) -> bool {
 		let mut last_pass_no_updates = false;
 		for _ in 0..max_iters {
@@ -4752,13 +4447,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.bc_link.reconnect(&self.nodes);
 	}
 
-	// Executes an explicit force-close command for one channel. We need this to
-	// authorize exactly that close before calling into LDK so later invariants
-	// can reject unrelated channel loss.
+	// Force-closes one channel, recording the expected close before calling
+	// into LDK so the invariants reject any other channel loss.
 	fn force_close(
 		&mut self, closer_idx: usize, channel_id: ChannelId, counterparty_idx: usize, reason: &str,
 	) {
-		self.close_tracker.expect_explicit_force_close(channel_id);
+		self.close_tracker.expect_channel_close(channel_id);
 		let _ = self.nodes[closer_idx].node.force_close_broadcasting_latest_txn(
 			&channel_id,
 			&self.nodes[counterparty_idx].get_our_node_id(),
@@ -4766,9 +4460,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		);
 	}
 
-	// Chooses an amount that should be sendable in one direction after cleanup.
-	// We need this because post-force-close fees and reserves can change a
-	// channel's valid send range.
+	// Chooses a post-settle probe amount for one direction, clamping the
+	// historical 10_000_000 msat probe into the channel's current sendable
+	// range after fees, reserves, or force-close cleanup changed it.
 	fn probe_amount_for_direction(
 		&self, source_idx: usize, dest_chan_id: ChannelId,
 	) -> Option<u64> {
@@ -4778,9 +4472,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			.iter()
 			.find(|chan| chan.channel_id == dest_chan_id)
 			.and_then(|chan| {
-				// Prefer the historical 10_000_000 msat probe amount, but clamp
-				// it into the channel's current sendable range after fees,
-				// reserves, or force-close cleanup changed that range.
 				let probe_amt = cmp::max(
 					cmp::min(10_000_000, chan.next_outbound_htlc_limit_msat),
 					chan.next_outbound_htlc_minimum_msat,
@@ -4793,27 +4484,24 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			})
 	}
 
-	// Attempts a final probe payment over a surviving channel. We need this to
-	// prove open sibling channels remain usable after force-close settlement.
-	fn can_send_after_settle(
-		&mut self, source_idx: usize, dest_idx: usize, dest_chan_id: ChannelId,
-	) -> bool {
-		if self.close_tracker.is_closed_or_closing(&dest_chan_id) {
-			// Closed channels are validated by close accounting, not by the
-			// post-settle sendability probe.
-			return false;
-		}
-		let Some(amt) = self.probe_amount_for_direction(source_idx, dest_chan_id) else {
-			return false;
-		};
-		self.payments.send(
-			&self.nodes,
-			source_idx,
-			dest_idx,
-			dest_chan_id,
-			amt,
-			&self.close_tracker,
-		)
+	// Asserts a surviving channel can still route a payment in at least one
+	// direction after settlement.
+	fn assert_sendable_after_settle(&mut self, node_a: usize, node_b: usize, chan_id: ChannelId) {
+		let sent =
+			[(node_a, node_b), (node_b, node_a)].into_iter().any(|(source_idx, dest_idx)| {
+				let Some(amt) = self.probe_amount_for_direction(source_idx, chan_id) else {
+					return false;
+				};
+				self.payments.send(
+					&self.nodes,
+					source_idx,
+					dest_idx,
+					chan_id,
+					amt,
+					&self.close_tracker,
+				)
+			});
+		assert!(sent, "channel {:?} cannot send in either direction after settling", chan_id);
 	}
 }
 
