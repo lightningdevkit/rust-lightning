@@ -11,7 +11,11 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+#[cfg(test)]
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex, RwLock};
 
 #[cfg(target_os = "windows")]
@@ -99,6 +103,8 @@ impl FilesystemStoreState {
 		if version == u64::MAX {
 			panic!("FilesystemStore version counter overflowed");
 		}
+		#[cfg(test)]
+		maybe_pause_after_version_allocation(&self.inner, &dest_file_path);
 
 		// Get a reference to the inner lock. We do this early so that the arc can double as an in-flight counter for
 		// cleaning up unused locks.
@@ -857,38 +863,77 @@ pub(crate) fn get_key_from_dir_entry_path(
 }
 
 #[cfg(test)]
+struct VersionAllocatedHook {
+	dest_file_path: PathBuf,
+	version_allocated: mpsc::Sender<()>,
+	continue_write: Mutex<mpsc::Receiver<()>>,
+	fired: AtomicBool,
+}
+
+#[cfg(test)]
+static VERSION_ALLOCATED_HOOK: Mutex<Option<Arc<VersionAllocatedHook>>> = Mutex::new(None);
+
+#[cfg(test)]
+fn maybe_pause_after_version_allocation(inner: &FilesystemStoreInner, dest_file_path: &Path) {
+	let hook = VERSION_ALLOCATED_HOOK.lock().unwrap().clone();
+	if let Some(hook) = hook {
+		if hook.dest_file_path.as_path() != dest_file_path
+			|| hook.fired.swap(true, Ordering::AcqRel)
+		{
+			return;
+		}
+
+		let version_allocation_holds_lock = inner.locks.try_lock().is_err();
+		hook.version_allocated.send(()).unwrap();
+		if !version_allocation_holds_lock {
+			hook.continue_write.lock().unwrap().recv().unwrap();
+		}
+	}
+}
+
+#[cfg(test)]
 mod tests {
 	use super::*;
 
 	use std::sync::Arc;
 	use std::thread;
-	use std::time::Duration;
 
 	#[test]
-	fn version_is_not_reserved_before_lock_ref() {
+	fn stale_write_after_lock_cleanup_does_not_overwrite_newer_write() {
 		let mut temp_path = std::env::temp_dir();
-		temp_path.push("test_version_is_not_reserved_before_lock_ref");
-		let state = Arc::new(FilesystemStoreState::new(temp_path));
+		temp_path.push("test_stale_write_after_lock_cleanup");
+		let _ = std::fs::remove_dir_all(&temp_path);
+
+		let state = Arc::new(FilesystemStoreState::new(temp_path.clone()));
 		let path =
 			state.get_checked_dest_file_path("ns", "sub", Some("key"), "write", false).unwrap();
+		let (version_allocated, wait_for_version) = mpsc::channel();
+		let (continue_write, wait_to_continue) = mpsc::channel();
+		*VERSION_ALLOCATED_HOOK.lock().unwrap() = Some(Arc::new(VersionAllocatedHook {
+			dest_file_path: path.clone(),
+			version_allocated,
+			continue_write: Mutex::new(wait_to_continue),
+			fired: AtomicBool::new(false),
+		}));
 
-		let outer_lock = state.inner.locks.lock().unwrap();
 		let state_for_thread = Arc::clone(&state);
 		let path_for_thread = path.clone();
-		let handle =
-			thread::spawn(move || state_for_thread.get_new_version_and_lock_ref(path_for_thread));
+		let stale_write = thread::spawn(move || {
+			let (inner_lock_ref, version) =
+				state_for_thread.get_new_version_and_lock_ref(path_for_thread.clone());
+			state_for_thread
+				.inner
+				.write_version(inner_lock_ref, path_for_thread, b"stale".to_vec(), version, false)
+				.unwrap();
+		});
 
-		thread::sleep(Duration::from_millis(50));
-		assert_eq!(
-			state.next_version.load(Ordering::Relaxed),
-			1,
-			"version allocation must wait until the lock reference can be cloned"
-		);
+		wait_for_version.recv().unwrap();
+		state.write_impl("ns", "sub", "key", b"newer".to_vec(), false).unwrap();
+		continue_write.send(()).unwrap();
+		stale_write.join().unwrap();
+		*VERSION_ALLOCATED_HOOK.lock().unwrap() = None;
 
-		drop(outer_lock);
-
-		let (inner_lock_ref, version) = handle.join().unwrap();
-		assert_eq!(version, 1);
-		state.inner.clean_locks(&inner_lock_ref, path);
+		assert_eq!(state.read_impl("ns", "sub", "key", false).unwrap(), b"newer");
+		let _ = std::fs::remove_dir_all(temp_path);
 	}
 }
