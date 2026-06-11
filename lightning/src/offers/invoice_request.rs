@@ -2127,6 +2127,19 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidQuantity),
 		}
 
+		match OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.supported_quantity(Quantity::Bounded(ten))
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.quantity(0)
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidQuantity),
+		}
+
 		let invoice_request = OfferBuilder::new(recipient_pubkey())
 			.amount_msats(1000)
 			.supported_quantity(Quantity::Unbounded)

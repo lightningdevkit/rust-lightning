@@ -670,23 +670,27 @@ where
 		self.pending_events.get_and_clear_pending_events()
 	}
 
-	/// Persists the state of the service handlers towards the given [`KVStore`] implementation.
+	/// Persists the state of the service handlers towards the given [`KVStore`] implementation if
+	/// needed.
+	///
+	/// Returns `true` if it persisted sevice handler data.
 	///
 	/// This will be regularly called by LDK's background processor if necessary and only needs to
 	/// be called manually if it's not utilized.
-	pub async fn persist(&self) -> Result<(), lightning::io::Error> {
+	pub async fn persist(&self) -> Result<bool, lightning::io::Error> {
 		// TODO: We should eventually persist in parallel.
-		self.pending_events.persist().await?;
+		let mut did_persist = false;
+		did_persist |= self.pending_events.persist().await?;
 
 		if let Some(lsps2_service_handler) = self.lsps2_service_handler.as_ref() {
-			lsps2_service_handler.persist().await?;
+			did_persist |= lsps2_service_handler.persist().await?;
 		}
 
 		if let Some(lsps5_service_handler) = self.lsps5_service_handler.as_ref() {
-			lsps5_service_handler.persist().await?;
+			did_persist |= lsps5_service_handler.persist().await?;
 		}
 
-		Ok(())
+		Ok(did_persist)
 	}
 
 	fn handle_lsps_message(
@@ -1285,8 +1289,10 @@ where
 
 	/// Persists the state of the service handlers towards the given [`KVStoreSync`] implementation.
 	///
+	/// Returns `true` if it persisted sevice handler data.
+	///
 	/// Wraps [`LiquidityManager::persist`].
-	pub fn persist(&self) -> Result<(), lightning::io::Error> {
+	pub fn persist(&self) -> Result<bool, lightning::io::Error> {
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
 		match Box::pin(self.inner.persist()).as_mut().poll(&mut ctx) {
