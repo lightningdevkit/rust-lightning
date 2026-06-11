@@ -563,10 +563,18 @@ pub struct ClaimId(pub [u8; 32]);
 
 impl ClaimId {
 	pub(crate) fn from_htlcs(htlcs: &[HTLCDescriptor]) -> ClaimId {
+		let mut htlc_outpoints = htlcs
+			.iter()
+			.map(|htlc| {
+				(htlc.commitment_txid.to_byte_array(), htlc.htlc.transaction_output_index.unwrap())
+			})
+			.collect::<Vec<_>>();
+		htlc_outpoints.sort_unstable();
+
 		let mut engine = Sha256::engine();
-		for htlc in htlcs {
-			engine.input(&htlc.commitment_txid.to_byte_array());
-			engine.input(&htlc.htlc.transaction_output_index.unwrap().to_be_bytes());
+		for (commitment_txid, transaction_output_index) in htlc_outpoints {
+			engine.input(&commitment_txid);
+			engine.input(&transaction_output_index.to_be_bytes());
 		}
 		ClaimId(Sha256::from_engine(engine).to_byte_array())
 	}
@@ -581,7 +589,44 @@ impl ClaimId {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::ln::chan_utils::{
+		ChannelTransactionParameters, HTLCOutputInCommitment, HolderCommitmentTransaction,
+	};
+	use crate::sign::ChannelDerivationParameters;
+	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use bitcoin::hashes::Hash;
+
+	fn dummy_htlc_descriptor(
+		commitment_txid: Txid, transaction_output_index: u32,
+	) -> HTLCDescriptor {
+		let channel_parameters = ChannelTransactionParameters::test_dummy(100_000);
+		let htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 1000,
+			cltv_expiry: 100,
+			payment_hash: PaymentHash::from(PaymentPreimage([1; 32])),
+			transaction_output_index: Some(transaction_output_index),
+		};
+		let funding_outpoint = channel_parameters.funding_outpoint.unwrap();
+		let commitment_tx =
+			HolderCommitmentTransaction::dummy(100_000, funding_outpoint, vec![htlc.clone()]);
+		let trusted_tx = commitment_tx.trust();
+
+		HTLCDescriptor {
+			channel_derivation_parameters: ChannelDerivationParameters {
+				value_satoshis: channel_parameters.channel_value_satoshis,
+				keys_id: [1; 32],
+				transaction_parameters: channel_parameters,
+			},
+			commitment_txid,
+			per_commitment_number: trusted_tx.commitment_number(),
+			per_commitment_point: trusted_tx.per_commitment_point(),
+			feerate_per_kw: trusted_tx.negotiated_feerate_per_kw(),
+			htlc,
+			preimage: None,
+			counterparty_sig: commitment_tx.counterparty_htlc_sigs[0],
+		}
+	}
 
 	#[test]
 	fn test_best_block() {
@@ -617,5 +662,18 @@ mod tests {
 		let hash_other = BlockHash::from_slice(&[99; 32]).unwrap();
 		let chain_c = BlockLocator::new(hash_other, 200);
 		assert_eq!(chain_a.find_common_ancestor(&chain_c), None);
+	}
+
+	#[test]
+	fn test_htlc_claim_id_is_descriptor_order_independent() {
+		// Use opposite txid and vout ordering so the assertion would fail if
+		// ClaimId still hashed descriptors in caller-provided order.
+		let first = dummy_htlc_descriptor(Txid::from_slice(&[1; 32]).unwrap(), 2);
+		let second = dummy_htlc_descriptor(Txid::from_slice(&[2; 32]).unwrap(), 1);
+
+		assert_eq!(
+			ClaimId::from_htlcs(&[first.clone(), second.clone()]),
+			ClaimId::from_htlcs(&[second, first])
+		);
 	}
 }

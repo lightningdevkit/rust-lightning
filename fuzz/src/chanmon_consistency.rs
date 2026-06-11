@@ -14,9 +14,10 @@
 //! To test this we stand up a network of three nodes and read bytes from the fuzz input to denote
 //! actions such as sending payments, handling events, or changing monitor update return values on
 //! a per-node basis. This should allow it to find any cases where the ordering of actions results
-//! in us getting out of sync with ourselves, and, assuming at least one of our recieve- or
-//! send-side handling is correct, other peers. We consider it a failure if any action results in a
-//! channel being force-closed.
+//! in us getting out of sync with ourselves, and, assuming at least one of our receive- or
+//! send-side handling is correct, other peers. The fuzzer also models a small mempool and
+//! exercises controlled force-closes, including user-initiated closes and timeout-driven closes,
+//! through on-chain confirmation and cleanup.
 
 use bitcoin::amount::Amount;
 use bitcoin::constants::genesis_block;
@@ -27,6 +28,7 @@ use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
 use bitcoin::FeeRate;
+use bitcoin::OutPoint as BitcoinOutPoint;
 
 use bitcoin::block::Header;
 use bitcoin::hash_types::Txid;
@@ -41,18 +43,20 @@ use lightning::chain;
 use lightning::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
-use lightning::chain::channelmonitor::ChannelMonitor;
+use lightning::chain::channelmonitor::{
+	Balance, ChannelMonitor, ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER,
+};
 use lightning::chain::{
 	chainmonitor, channelmonitor, BlockLocator, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
-use lightning::events;
+use lightning::events::{self, EventsProvider};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
 use lightning::ln::channel_state::ChannelDetails;
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
-	TrustedChannelFeatures,
+	TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA, MIN_FINAL_CLTV_EXPIRY_DELTA,
 };
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::inbound_payment::ExpandedKey;
@@ -83,6 +87,8 @@ use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChann
 use lightning::util::test_utils::TestWalletSource;
 use lightning::util::wallet_utils::{WalletSourceSync, WalletSync};
 
+use lightning::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
+
 use lightning_invoice::RawBolt11Invoice;
 
 use crate::utils::test_logger::{self, Output};
@@ -102,6 +108,28 @@ use std::sync::atomic;
 use std::sync::{Arc, Mutex};
 
 const MAX_FEE: u32 = 10_000;
+// The fuzz wallet needs enough confirmed inputs for splice, anchor, and claim
+// transactions so failures come from on-chain close handling rather than from
+// the harness running out of wallet inputs.
+const NUM_WALLET_UTXOS: u32 = 50;
+// A single fuzz byte can mine more than one block so a corpus entry does not
+// need long runs of identical "mine one block" commands to reach CSV or CLTV
+// boundaries. The early entries remain small so the fuzzer can still explore
+// fine-grained height changes.
+const MINE_BLOCK_COUNTS: [u32; 8] = [1, 2, 3, 6, 12, 24, 48, 144];
+// Progress loops are capped so `0xff` and cleanup paths can drive realistic
+// asynchronous work without letting a malformed state spin forever.
+const QUIESCENCE_ROUNDS: usize = 32;
+// Force-close cleanup may require many height advances because claims can be
+// chained through commitment, HTLC, anchor, and delayed-output transactions.
+// This is intentionally large, but still finite, so a stuck cleanup becomes an
+// assertion instead of an infinite fuzz run.
+const FORCE_CLOSE_CLEANUP_ROUNDS: usize = 4096;
+// Use LDK's minimum CLTV deltas to keep timeout-driven close scenarios reachable
+// in short fuzz inputs while still respecting the library's configured limits.
+const FUZZ_FINAL_CLTV_DELTA: u32 = MIN_FINAL_CLTV_EXPIRY_DELTA as u32;
+const FUZZ_FORWARD_CLTV_DELTA: u32 = MIN_CLTV_EXPIRY_DELTA as u32;
+
 struct FuzzEstimator {
 	ret_val: atomic::AtomicU32,
 }
@@ -183,9 +211,14 @@ impl BroadcasterInterface for TestBroadcaster {
 struct ChainState {
 	blocks: Vec<(Header, Vec<Transaction>)>,
 	confirmed_txids: HashSet<Txid>,
-	/// Unconfirmed transactions (e.g., splice txs). Conflicting RBF candidates may coexist;
-	/// `confirm_pending_txs` determines which one confirms.
+	/// Unconfirmed transactions admitted to the mempool, in valid block order:
+	/// every input is either confirmed already or created by an earlier
+	/// transaction in this vector.
 	pending_txs: Vec<(Txid, Transaction)>,
+	/// Unspent outputs created by confirmed transactions. Mempool admission
+	/// checks inputs against this set, adjusted for outputs created and spent
+	/// by the transactions already in `pending_txs`.
+	utxos: HashSet<BitcoinOutPoint>,
 }
 
 impl ChainState {
@@ -196,6 +229,7 @@ impl ChainState {
 			blocks: vec![(genesis_header, Vec::new())],
 			confirmed_txids: HashSet::new(),
 			pending_txs: Vec::new(),
+			utxos: HashSet::new(),
 		}
 	}
 
@@ -203,79 +237,219 @@ impl ChainState {
 		(self.blocks.len() - 1) as u32
 	}
 
-	fn is_outpoint_spent(&self, outpoint: &bitcoin::OutPoint) -> bool {
-		self.blocks.iter().any(|(_, txs)| {
-			txs.iter().any(|tx| tx.input.iter().any(|input| input.previous_output == *outpoint))
-		})
+	// Initial channel funding is represented by a no-input transaction. It is
+	// not a valid Bitcoin transaction, but it gives LDK a stable funding
+	// outpoint without modeling coin selection during channel setup.
+	fn is_synthetic_funding_tx(tx: &Transaction) -> bool {
+		!tx.is_coinbase() && tx.input.is_empty()
 	}
 
-	fn confirm_tx(&mut self, tx: Transaction) -> bool {
-		let txid = tx.compute_txid();
-		if self.confirmed_txids.contains(&txid) {
-			return false;
+	// Checks whether a transaction spends an input twice or spends an output
+	// not present in `utxos`.
+	fn has_invalid_inputs(tx: &Transaction, utxos: &HashSet<BitcoinOutPoint>) -> bool {
+		let mut spent_inputs = HashSet::new();
+		for input in &tx.input {
+			if !spent_inputs.insert(input.previous_output) {
+				return true;
+			}
+			if !utxos.contains(&input.previous_output) {
+				return true;
+			}
 		}
-		if tx.input.iter().any(|input| self.is_outpoint_spent(&input.previous_output)) {
-			return false;
-		}
-		self.confirmed_txids.insert(txid);
+		false
+	}
 
+	fn apply_tx_to_utxos(&mut self, txid: Txid, tx: &Transaction) {
+		for input in &tx.input {
+			self.utxos.remove(&input.previous_output);
+		}
+		for idx in 0..tx.output.len() {
+			self.utxos.insert(BitcoinOutPoint { txid, vout: idx as u32 });
+		}
+	}
+
+	fn mine_block(&mut self, txs: Vec<Transaction>) {
 		let prev_hash = self.blocks.last().unwrap().0.block_hash();
 		let header = create_dummy_header(prev_hash, 42);
-		self.blocks.push((header, vec![tx]));
-
-		for _ in 0..5 {
-			let prev_hash = self.blocks.last().unwrap().0.block_hash();
-			let header = create_dummy_header(prev_hash, 42);
-			self.blocks.push((header, Vec::new()));
-		}
-		true
+		self.blocks.push((header, txs));
 	}
 
-	/// Add a transaction to the pending pool (mempool). Multiple conflicting transactions (RBF
-	/// candidates) may coexist; `confirm_pending_txs` selects which one to confirm.
-	fn add_pending_tx(&mut self, tx: Transaction) {
-		self.pending_txs.push((tx.compute_txid(), tx));
+	fn mine_empty_blocks(&mut self, count: u32) {
+		for _ in 0..count {
+			self.mine_block(Vec::new());
+		}
 	}
 
-	/// Confirm pending transactions in a single block, selecting deterministically among
-	/// conflicting RBF candidates. Sorting by txid ensures the winner is determined by fuzz input
-	/// content. Transactions that double-spend an already-confirmed outpoint are skipped.
-	fn confirm_pending_txs(&mut self) {
-		let mut txs = std::mem::take(&mut self.pending_txs);
-		txs.sort_by_key(|(txid, _)| *txid);
+	// Mines a setup transaction directly into a block, bypassing the mempool,
+	// and buries it to `depth`. Wallet seeding and synthetic funding
+	// transactions are not relayable, so they cannot go through normal
+	// admission.
+	fn mine_setup_tx_to_depth(&mut self, tx: Transaction, depth: u32) {
+		assert!(
+			tx.is_coinbase() || Self::is_synthetic_funding_tx(&tx),
+			"direct setup mining is only for coinbase and synthetic funding transactions: {:?}",
+			tx,
+		);
+		let txid = tx.compute_txid();
+		assert!(
+			self.confirmed_txids.insert(txid),
+			"direct setup transaction was already confirmed: {:?}",
+			tx,
+		);
+		self.apply_tx_to_utxos(txid, &tx);
 
-		let mut confirmed = Vec::new();
-		let mut spent_outpoints = Vec::new();
-		for (txid, tx) in txs {
-			if self.confirmed_txids.contains(&txid) {
-				continue;
-			}
-			if tx.input.iter().any(|input| {
-				self.is_outpoint_spent(&input.previous_output)
-					|| spent_outpoints.contains(&input.previous_output)
-			}) {
-				continue;
-			}
-			self.confirmed_txids.insert(txid);
-			for input in &tx.input {
-				spent_outpoints.push(input.previous_output);
-			}
-			confirmed.push(tx);
+		self.mine_block(vec![tx]);
+		self.mine_empty_blocks(depth.saturating_sub(1));
+	}
+
+	// Attempts to admit a broadcast transaction to the mempool, enforcing
+	// locktime, input, and RBF rules. Mining later confirms the whole mempool
+	// without further selection.
+	fn admit_tx_to_mempool(&mut self, tx: Transaction) {
+		let txid = tx.compute_txid();
+		let lock_time = tx.lock_time.to_consensus_u32();
+		let locktime_enabled =
+			tx.input.iter().any(|input| input.sequence.enables_absolute_lock_time());
+
+		// Commitment transactions split the obscured commitment number across
+		// nSequence and nLockTime with fixed top bytes 0x80 and 0x20. The
+		// non-final sequence makes nLockTime relevant, and the 0x20 top byte
+		// puts the value above the 500M timestamp threshold even though it is
+		// not a fuzz-driven wall-clock lock.
+		let is_ldk_commitment_obscured_locktime =
+			tx.input.len() == 1 && tx.input[0].sequence.0 >> 24 == 0x80 && lock_time >> 24 == 0x20;
+
+		let immature_absolute_locktime =
+			locktime_enabled && tx.lock_time.is_block_height() && self.tip_height() < lock_time;
+		assert!(
+			!immature_absolute_locktime,
+			"broadcast immature locktime transaction into chanmon harness mempool: {:?}",
+			tx,
+		);
+
+		let unmodeled_time_locktime = locktime_enabled
+			&& tx.lock_time.is_block_time()
+			&& !is_ldk_commitment_obscured_locktime;
+		assert!(
+			!unmodeled_time_locktime,
+			"broadcast time-locked transaction into chanmon harness mempool: {:?}",
+			tx,
+		);
+
+		assert!(
+			!tx.is_coinbase() && !Self::is_synthetic_funding_tx(&tx),
+			"setup-only transaction entered chanmon harness mempool: {:?}",
+			tx,
+		);
+
+		if self.confirmed_txids.contains(&txid) {
+			return;
 		}
-
-		if confirmed.is_empty() {
+		if self.pending_txs.iter().any(|(pending_txid, _)| *pending_txid == txid) {
 			return;
 		}
 
-		let prev_hash = self.blocks.last().unwrap().0.block_hash();
-		let header = create_dummy_header(prev_hash, 42);
-		self.blocks.push((header, confirmed));
-
-		for _ in 0..5 {
-			let prev_hash = self.blocks.last().unwrap().0.block_hash();
-			let header = create_dummy_header(prev_hash, 42);
-			self.blocks.push((header, Vec::new()));
+		// Fee-rate policy is not modeled, so among conflicting RBF candidates
+		// the last one relayed wins.
+		let mut conflicting_pending_txids = HashSet::new();
+		for (pending_txid, pending_tx) in &self.pending_txs {
+			let signals_rbf = pending_tx.input.iter().any(|input| input.sequence.is_rbf());
+			let conflicts_with_new_tx = pending_tx.input.iter().any(|pending_input| {
+				tx.input.iter().any(|input| input.previous_output == pending_input.previous_output)
+			});
+			if conflicts_with_new_tx {
+				if !signals_rbf {
+					return;
+				}
+				conflicting_pending_txids.insert(*pending_txid);
+			}
 		}
+		if !conflicting_pending_txids.is_empty() {
+			let mut removed_outputs = HashSet::new();
+			let mut retained_txs = Vec::new();
+			for (pending_txid, pending_tx) in self.pending_txs.drain(..) {
+				let direct_conflict = conflicting_pending_txids.contains(&pending_txid);
+				let spends_removed_tx = pending_tx
+					.input
+					.iter()
+					.any(|input| removed_outputs.contains(&input.previous_output));
+				if direct_conflict || spends_removed_tx {
+					for idx in 0..pending_tx.output.len() {
+						removed_outputs
+							.insert(BitcoinOutPoint { txid: pending_txid, vout: idx as u32 });
+					}
+				} else {
+					retained_txs.push((pending_txid, pending_tx));
+				}
+			}
+			self.pending_txs = retained_txs;
+		}
+
+		// Build the UTXO set this transaction would see if the current mempool
+		// confirmed.
+		let mut available_utxos = self.utxos.clone();
+		for (pending_txid, pending_tx) in &self.pending_txs {
+			for input in &pending_tx.input {
+				available_utxos.remove(&input.previous_output);
+			}
+			for idx in 0..pending_tx.output.len() {
+				available_utxos.insert(BitcoinOutPoint { txid: *pending_txid, vout: idx as u32 });
+			}
+		}
+		if Self::has_invalid_inputs(&tx, &available_utxos) {
+			return;
+		}
+		self.pending_txs.push((txid, tx));
+	}
+
+	// Feeds broadcast transactions through modeled mempool admission. Returns
+	// whether any broadcasts were drained, even if admission later ignores a
+	// duplicate or invalid transaction.
+	fn relay_transactions(&mut self, txs: Vec<Transaction>) -> bool {
+		let found = !txs.is_empty();
+		for tx in txs {
+			self.admit_tx_to_mempool(tx);
+		}
+		found
+	}
+
+	// Reports whether the modeled mempool is non-empty. Fuzz mining bytes and
+	// cleanup loops use this to decide whether another mining pass can make
+	// progress.
+	fn has_pending_txs(&self) -> bool {
+		!self.pending_txs.is_empty()
+	}
+
+	// Mines `count` blocks, confirming the current mempool in the first block.
+	fn mine_blocks(&mut self, count: u32) -> Vec<Transaction> {
+		assert!(count > 0, "mining zero blocks should not be requested");
+
+		let mempool_txs = std::mem::take(&mut self.pending_txs);
+		let confirmed_txs = if mempool_txs.is_empty() {
+			self.mine_empty_blocks(1);
+			Vec::new()
+		} else {
+			let mut confirmed = Vec::new();
+			for (txid, tx) in mempool_txs {
+				assert!(
+					!Self::has_invalid_inputs(&tx, &self.utxos),
+					"mempool transaction was no longer valid at mining time: {:?}",
+					tx,
+				);
+				assert!(
+					self.confirmed_txids.insert(txid),
+					"mempool transaction was already confirmed at mining time: {:?}",
+					tx,
+				);
+				self.apply_tx_to_utxos(txid, &tx);
+				confirmed.push(tx);
+			}
+			let confirmed_txs = confirmed.clone();
+			self.mine_block(confirmed);
+			confirmed_txs
+		};
+		self.mine_empty_blocks(count - 1);
+		confirmed_txs
 	}
 
 	fn block_at(&self, height: u32) -> &(Header, Vec<Transaction>) {
@@ -586,6 +760,12 @@ type TestChainMonitor = chainmonitor::ChainMonitor<
 	Arc<HarnessPersister>,
 	Arc<KeyProvider>,
 >;
+type TestBumpTransactionEventHandler = BumpTransactionEventHandlerSync<
+	Arc<TestBroadcaster>,
+	Arc<WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+	Arc<KeyProvider>,
+	Arc<dyn Logger + MaybeSend + MaybeSync>,
+>;
 
 struct KeyProvider {
 	node_secret: SecretKey,
@@ -718,14 +898,40 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-// Since this fuzzer is only concerned with live-channel operations, we don't need to worry about
-// any signer operations that come after a force close.
-const SUPPORTED_SIGNER_OPS: [SignerOp; 4] = [
+// Signer ops that fuzz bytes may block. The holder-side ops matter after a
+// force-close, when monitors build holder commitment or HTLC claim
+// transactions; `settle_all` re-enables everything so final failures are not
+// caused by intentionally blocked signing.
+const SUPPORTED_SIGNER_OPS: [SignerOp; 6] = [
 	SignerOp::SignCounterpartyCommitment,
 	SignerOp::GetPerCommitmentPoint,
 	SignerOp::ReleaseCommitmentSecret,
 	SignerOp::SignSpliceSharedInput,
+	SignerOp::SignHolderCommitment,
+	SignerOp::SignHolderHtlcTransaction,
 ];
+// LDK reports expected force-close paths through message text in a few places.
+// The harness keeps these strings centralized so reviewers can audit exactly
+// which peer errors are treated as control-flow artifacts of the test.
+const HTLC_TIMEOUT_ERROR_PREFIX: &str = "Channel closed because HTLC(s) on the channel timed out";
+const ONCHAIN_TX_CONFIRMED_ERROR: &str =
+	"Channel closed because commitment or closing transaction was confirmed on chain.";
+const CLOSED_CHANNEL_WRONG_NODE_ERROR_PREFIX: &str =
+	"Got a message for a channel from the wrong node! No such channel_id";
+const INVALID_REESTABLISH_FORCE_CLOSE_ERROR: &str =
+	"Peer sent an invalid channel_reestablish to force close in a non-standard way";
+const NEEDED_CHANNEL_REESTABLISH_ERROR: &str = "when we needed a channel_reestablish";
+// Bounds for accepting a non-explicit close as an HTLC-timeout close, mirroring
+// the monitor's force-close conditions: an outbound HTLC closes the channel once
+// `LATENCY_GRACE_PERIOD_BLOCKS` past expiry, an inbound HTLC with a known
+// preimage once expiry is within `CLTV_CLAIM_BUFFER` blocks. Both LDK constants
+// are private, so derive the claim buffer from the public fail-back buffer to
+// catch drift.
+const HTLC_TIMEOUT_GRACE_BLOCKS: u32 = 3;
+const HTLC_CLAIM_BUFFER_BLOCKS: u32 = HTLC_FAIL_BACK_BUFFER - HTLC_TIMEOUT_GRACE_BLOCKS;
+// These distinct short strings let the harness recognize user force-close
+// errors without accepting arbitrary SendErrorMessage actions.
+const FORCE_CLOSE_ERROR_MESSAGES: [&str; 4] = ["]]]]]]]]]", "]]]]]]]]", "]]]]]]]", "]]]]]"];
 
 impl KeyProvider {
 	fn make_enforcement_state_cell(
@@ -769,20 +975,10 @@ type ChanMan<'a> = ChannelManager<
 	Arc<dyn Logger + MaybeSend + MaybeSync>,
 >;
 
-#[inline]
-fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessage, bool) {
-	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
-	// disconnect their counterparty if they're expecting a timely response.
-	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
-		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
-		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
-		{
-			panic!("Unexpected disconnect case: {}", msg.data);
-		}
-		(msg, is_quiescent_msg)
-	} else {
-		panic!("Expected disconnect, got: {:?}", action);
-	}
+// Recognizes splice-quiescence warning disconnects, which are recoverable and
+// must be distinguished from real close errors.
+fn is_quiescent_disconnect_warning(msg: &msgs::WarningMessage) -> bool {
+	msg.data.contains("already sent splice_locked, cannot RBF")
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -816,12 +1012,12 @@ struct HarnessNode<'a> {
 	logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 	broadcaster: Arc<TestBroadcaster>,
 	fee_estimator: Arc<FuzzEstimator>,
-	wallet: TestWalletSource,
+	wallet: Arc<TestWalletSource>,
+	bump_tx_handler: TestBumpTransactionEventHandler,
 	persistence_style: ChannelMonitorUpdateStatus,
 	deferred: bool,
 	serialized_manager: Vec<u8>,
 	serialized_manager_generation: u64,
-	height: u32,
 	last_htlc_clear_fee: u32,
 }
 
@@ -852,6 +1048,8 @@ impl<'a> HarnessNode<'a> {
 		keys_manager: &Arc<KeyProvider>, logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 		persister: &Arc<HarnessPersister>, deferred: bool,
 	) -> Arc<TestChainMonitor> {
+		// The monitor shares the node's broadcaster so post-close claim and
+		// bump transactions reach the same queue that relay commands drain.
 		Arc::new(chainmonitor::ChainMonitor::new(
 			None,
 			Arc::clone(broadcaster),
@@ -865,7 +1063,7 @@ impl<'a> HarnessNode<'a> {
 	}
 
 	fn new<Out: Output + MaybeSend + MaybeSync>(
-		node_id: u8, wallet: TestWalletSource, fee_estimator: Arc<FuzzEstimator>,
+		node_id: u8, wallet: Arc<TestWalletSource>, fee_estimator: Arc<FuzzEstimator>,
 		broadcaster: Arc<TestBroadcaster>, persistence_style: ChannelMonitorUpdateStatus,
 		deferred: bool, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
 	) -> Self {
@@ -906,6 +1104,15 @@ impl<'a> HarnessNode<'a> {
 			params,
 			best_block_timestamp,
 		);
+		let wallet_sync = Arc::new(WalletSync::new(Arc::clone(&wallet), Arc::clone(&logger)));
+		// Wallet-backed handler that turns BumpTransaction events into complete,
+		// broadcast anchor and HTLC claim transactions.
+		let bump_tx_handler = BumpTransactionEventHandlerSync::new(
+			Arc::clone(&broadcaster),
+			wallet_sync,
+			Arc::clone(&keys_manager),
+			Arc::clone(&logger),
+		);
 		Self {
 			node_id,
 			node,
@@ -916,11 +1123,11 @@ impl<'a> HarnessNode<'a> {
 			broadcaster,
 			fee_estimator,
 			wallet,
+			bump_tx_handler,
 			persistence_style,
 			deferred,
 			serialized_manager: Vec::new(),
 			serialized_manager_generation: 0,
-			height: 0,
 			last_htlc_clear_fee: 253,
 		}
 	}
@@ -957,22 +1164,77 @@ impl<'a> HarnessNode<'a> {
 		}
 	}
 
+	fn manager_height(&self) -> u32 {
+		self.node.current_best_block().height
+	}
+
+	// Connects a block range to ChainMonitor and ChannelManager. The start
+	// heights are independent because reload may pair monitors and a manager
+	// persisted at different chain tips.
+	fn connect_chain_range(
+		&mut self, chain_state: &ChainState, monitor_start_height: u32, manager_start_height: u32,
+		target_height: u32,
+	) {
+		assert!(
+			target_height >= monitor_start_height,
+			"connect_chain_range cannot move monitor height backward ({} -> {})",
+			monitor_start_height,
+			target_height
+		);
+		assert!(
+			target_height >= manager_start_height,
+			"connect_chain_range cannot move manager height backward ({} -> {})",
+			manager_start_height,
+			target_height
+		);
+		let start_height = cmp::min(monitor_start_height, manager_start_height);
+		let mut height = start_height;
+		while height < target_height {
+			let mut next_height = height + 1;
+			while next_height <= target_height && chain_state.block_at(next_height).1.is_empty() {
+				next_height += 1;
+			}
+			if next_height > target_height {
+				// The rest of the range is empty. One best-block update to the
+				// final height is enough because LDK's Confirm API explicitly
+				// allows best_block_updated to skip intermediary blocks.
+				height = target_height;
+				let (header, _) = chain_state.block_at(height);
+				if height > monitor_start_height {
+					self.monitor.best_block_updated(header, height);
+				}
+				if height > manager_start_height {
+					self.node.best_block_updated(header, height);
+				}
+				break;
+			}
+			height = next_height;
+			let (header, txn) = chain_state.block_at(height);
+			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+			if height > monitor_start_height {
+				self.monitor.transactions_confirmed(header, &txdata, height);
+			}
+			if height > manager_start_height {
+				self.node.transactions_confirmed(header, &txdata, height);
+			}
+			if height > monitor_start_height {
+				self.monitor.best_block_updated(header, height);
+			}
+			if height > manager_start_height {
+				self.node.best_block_updated(header, height);
+			}
+		}
+	}
+
 	fn sync_with_chain_state(&mut self, chain_state: &ChainState, num_blocks: Option<u32>) {
 		let target_height = if let Some(num_blocks) = num_blocks {
-			std::cmp::min(self.height + num_blocks, chain_state.tip_height())
+			std::cmp::min(self.manager_height() + num_blocks, chain_state.tip_height())
 		} else {
 			chain_state.tip_height()
 		};
 
-		while self.height < target_height {
-			self.height += 1;
-			let (header, txn) = chain_state.block_at(self.height);
-			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			if !txdata.is_empty() {
-				self.node.transactions_confirmed(header, &txdata, self.height);
-			}
-			self.node.best_block_updated(header, self.height);
-		}
+		let start_height = self.manager_height();
+		self.connect_chain_range(chain_state, start_height, start_height, target_height);
 	}
 
 	fn checkpoint_manager_persistence(&mut self) -> bool {
@@ -1024,6 +1286,15 @@ impl<'a> HarnessNode<'a> {
 		self.node.timer_tick_occurred();
 	}
 
+	// Re-enables holder claim signing and asks the chain monitor to retry
+	// pending claim transactions. Different on-chain claim paths use
+	// SignHolderCommitment or SignHolderHtlcTransaction for force-closed channels.
+	fn enable_holder_signer_ops(&self) {
+		self.keys_manager.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+		self.keys_manager.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+		self.monitor.signer_unblocked(None);
+	}
+
 	fn current_feerate_sat_per_kw(&self) -> FeeRate {
 		self.fee_estimator.feerate_sat_per_kw()
 	}
@@ -1033,7 +1304,7 @@ impl<'a> HarnessNode<'a> {
 	}
 
 	fn splice_in(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) {
-		let wallet = WalletSync::new(&self.wallet, Arc::clone(&self.logger));
+		let wallet = WalletSync::new(Arc::clone(&self.wallet), Arc::clone(&self.logger));
 		match self.node.splice_channel(channel_id, counterparty_node_id) {
 			Ok(funding_template) => {
 				let feerate =
@@ -1103,6 +1374,18 @@ impl<'a> HarnessNode<'a> {
 				);
 			},
 		}
+	}
+
+	// Drains raw ChannelMonitor events. Monitor-generated BumpTransaction events
+	// do not flow through the manager event queue but still produce transactions
+	// the harness must mine.
+	fn process_monitor_pending_events(&self) {
+		self.monitor.process_pending_events(&|event: events::Event| {
+			if let events::Event::BumpTransaction(ref bump) = event {
+				self.bump_tx_handler.handle_event(bump);
+			}
+			Ok(())
+		});
 	}
 
 	fn reload<Out: Output + MaybeSend + MaybeSync>(
@@ -1266,8 +1549,8 @@ impl EventQueues {
 
 	fn route_from_middle<'a, I: IntoIterator<Item = MessageSendEvent>>(
 		&mut self, excess_events: I, expect_drop_node: Option<usize>, nodes: &[HarnessNode<'a>; 3],
+		close_tracker: &ChannelCloseTracker,
 	) {
-		// Push any events from Node B onto queues.ba and queues.bc.
 		let a_id = nodes[0].get_our_node_id();
 		let expect_drop_id = expect_drop_node.map(|id| nodes[id].get_our_node_id());
 		for event in excess_events {
@@ -1297,7 +1580,9 @@ impl EventQueues {
 					*node_id == a_id
 				},
 				MessageSendEvent::HandleError { ref action, ref node_id } => {
-					assert_disconnect_action(action);
+					// Validate before routing so arbitrary HandleError output is
+					// not accepted as expected force-close behavior.
+					close_tracker.assert_expected_control_error_action(action);
 					if Some(*node_id) == expect_drop_id {
 						panic!(
 							"peer_disconnected should drop msgs bound for the disconnected peer"
@@ -1332,7 +1617,12 @@ impl EventQueues {
 		}
 	}
 
-	fn drain_on_disconnect(&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3]) {
+	// Drains messages generated by a peer disconnect, validating HandleError
+	// events before the link queues are cleared.
+	fn drain_on_disconnect(
+		&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3],
+		close_tracker: &ChannelCloseTracker,
+	) {
 		match edge_node {
 			0 => {
 				for event in nodes[0].get_and_clear_pending_msg_events() {
@@ -1346,12 +1636,17 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_disconnect_action(action);
+							close_tracker.assert_expected_control_error_action(action);
 						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(0), nodes);
+				self.route_from_middle(
+					nodes[1].get_and_clear_pending_msg_events(),
+					Some(0),
+					nodes,
+					close_tracker,
+				);
 			},
 			2 => {
 				for event in nodes[2].get_and_clear_pending_msg_events() {
@@ -1365,12 +1660,17 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_disconnect_action(action);
+							close_tracker.assert_expected_control_error_action(action);
 						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(2), nodes);
+				self.route_from_middle(
+					nodes[1].get_and_clear_pending_msg_events(),
+					Some(2),
+					nodes,
+					close_tracker,
+				);
 			},
 			_ => panic!("unsupported disconnected edge"),
 		}
@@ -1420,7 +1720,55 @@ impl PeerLink {
 		}
 	}
 
-	fn disconnect(&mut self, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues) {
+	// Asserts every untracked channel on this link is still listed by both
+	// peers, catching a force close that hit the wrong sibling channel.
+	fn assert_no_unexpected_channel_closes(
+		&self, nodes: &[HarnessNode<'_>; 3], close_tracker: &ChannelCloseTracker,
+	) {
+		let node_a_channels = nodes[self.node_a].list_channels();
+		let node_b_channels = nodes[self.node_b].list_channels();
+		for channel_id in &self.channel_ids {
+			if close_tracker.is_closed_or_closing(channel_id) {
+				continue;
+			}
+			assert!(
+				node_a_channels.iter().any(|chan| chan.channel_id == *channel_id),
+				"Node {} no longer lists channel {:?} without an intentional force-close",
+				self.node_a,
+				channel_id,
+			);
+			assert!(
+				node_b_channels.iter().any(|chan| chan.channel_id == *channel_id),
+				"Node {} no longer lists channel {:?} without an intentional force-close",
+				self.node_b,
+				channel_id,
+			);
+		}
+	}
+
+	// Records channels from this link that disappeared from list_channels
+	// without a tracked close.
+	fn record_disappeared_channels(
+		&self, nodes: &[HarnessNode<'_>; 3], close_tracker: &mut ChannelCloseTracker,
+	) {
+		let node_a_channels = nodes[self.node_a].list_channels();
+		let node_b_channels = nodes[self.node_b].list_channels();
+		for channel_id in &self.channel_ids {
+			if close_tracker.is_closed_or_closing(channel_id) {
+				continue;
+			}
+			let node_a_has = node_a_channels.iter().any(|chan| chan.channel_id == *channel_id);
+			let node_b_has = node_b_channels.iter().any(|chan| chan.channel_id == *channel_id);
+			if !node_a_has || !node_b_has {
+				close_tracker.record_unexpected_channel_close(*channel_id);
+			}
+		}
+	}
+
+	fn disconnect(
+		&mut self, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues,
+		close_tracker: &ChannelCloseTracker,
+	) {
 		if self.disconnected {
 			return;
 		}
@@ -1429,6 +1777,9 @@ impl PeerLink {
 		nodes[self.node_a].peer_disconnected(node_b_id);
 		nodes[self.node_b].peer_disconnected(node_a_id);
 		self.disconnected = true;
+		// Only links involving B are supported. The edge node is the peer whose
+		// local messages can be drained directly, while B's newly generated
+		// messages may need routing to the other still-connected edge.
 		let edge_node = if self.node_a == 1 {
 			self.node_b
 		} else if self.node_b == 1 {
@@ -1436,7 +1787,7 @@ impl PeerLink {
 		} else {
 			panic!("unsupported link topology")
 		};
-		queues.drain_on_disconnect(edge_node, nodes);
+		queues.drain_on_disconnect(edge_node, nodes, close_tracker);
 		queues.clear_link(self);
 	}
 
@@ -1463,6 +1814,7 @@ impl PeerLink {
 
 	fn disconnect_for_reload(
 		&mut self, restarted_node: usize, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues,
+		close_tracker: &ChannelCloseTracker,
 	) {
 		if self.disconnected {
 			return;
@@ -1475,10 +1827,14 @@ impl PeerLink {
 		self.disconnected = true;
 
 		if remaining_node == 1 {
+			// If the surviving peer is B, it may still have messages for the
+			// other edge node. Route those while asserting nothing is queued for
+			// the restarted node that just disconnected.
 			queues.route_from_middle(
 				nodes[1].get_and_clear_pending_msg_events(),
 				Some(restarted_node),
 				nodes,
+				close_tracker,
 			);
 		} else {
 			nodes[remaining_node].get_and_clear_pending_msg_events();
@@ -1487,99 +1843,445 @@ impl PeerLink {
 	}
 }
 
+// A tracked path stores only the data the cleanup invariants need later:
+// `(channel_id, amount_msat, short_channel_id)`. The channel id lets a close
+// or dust threshold mark a path as no longer resolvable through the live
+// channel graph. The SCID mirrors the route information in PaymentPathFailed
+// events so the harness can match LDK's failure event back to the tracked path.
+type PaymentPath = Vec<(ChannelId, u64, u64)>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SenderOutcome {
+	Sent,
+	Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PaymentStatus {
+	Pending,
+	Resolved,
+	// The sender ChannelManager was reloaded from a generation older than the
+	// send. After that reload, the payment may legitimately never produce a
+	// sender-side resolution event.
+	RolledBack,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChannelCloseState {
+	// The harness has a valid reason for this channel to be closing or closed:
+	// an explicit force-close command, or an HTLC timeout detected during
+	// height sync. Expected channels are treated as unavailable for new sends.
+	Expected,
+	// The channel disappeared before the harness knew a valid close reason.
+	// This lets topology-only observations be recorded and checked by the final
+	// close invariant.
+	Unexpected,
+}
+
+struct ChannelCloseTracker {
+	// Absent channels are still considered live. Present channels are closing
+	// or already closed, with the value recording whether the close was
+	// expected. Keeping one state per channel avoids having to compare separate
+	// "observed" and "allowed" sets.
+	closed_channels: HashMap<ChannelId, ChannelCloseState>,
+}
+
+impl ChannelCloseTracker {
+	fn new() -> Self {
+		Self { closed_channels: new_hash_map() }
+	}
+
+	fn is_closed_or_closing(&self, channel_id: &ChannelId) -> bool {
+		self.closed_channels.contains_key(channel_id)
+	}
+
+	fn is_expected(&self, channel_id: &ChannelId) -> bool {
+		matches!(self.closed_channels.get(channel_id), Some(ChannelCloseState::Expected))
+	}
+
+	fn has_closed_channels(&self) -> bool {
+		!self.closed_channels.is_empty()
+	}
+
+	fn expect_channel_close(&mut self, channel_id: ChannelId) {
+		// Upgrades a topology-observed Unexpected entry once a valid close
+		// reason is known.
+		self.closed_channels.insert(channel_id, ChannelCloseState::Expected);
+	}
+
+	// Records a close observed only through topology. It stays Unexpected, and
+	// fails the final close invariant, unless a ChannelClosed event or timeout
+	// pre-check later upgrades it.
+	fn record_unexpected_channel_close(&mut self, channel_id: ChannelId) {
+		self.closed_channels.entry(channel_id).or_insert(ChannelCloseState::Unexpected);
+	}
+
+	fn record_channel_closed_event(
+		&mut self, channel_id: ChannelId, reason: &events::ClosureReason,
+	) {
+		// Most closes must have been expected before LDK emits ChannelClosed.
+		// HTLC timeout closes are the exception: the timeout condition can be
+		// observed while connecting the block, so the close event itself carries
+		// the evidence.
+		let expected_before_close = self.is_expected(&channel_id);
+		let allowed_by_htlc_timeout = match reason {
+			events::ClosureReason::HTLCsTimedOut { .. } => true,
+			events::ClosureReason::CounterpartyForceClosed { peer_msg } => {
+				peer_msg.0.starts_with(HTLC_TIMEOUT_ERROR_PREFIX)
+			},
+			_ => false,
+		};
+		if allowed_by_htlc_timeout {
+			self.expect_channel_close(channel_id);
+		}
+		assert!(
+			expected_before_close || allowed_by_htlc_timeout,
+			"Channel {:?} closed without an explicit force-close or HTLC timeout: {:?}",
+			channel_id,
+			reason,
+		);
+	}
+
+	// Asserts an LDK HandleError action is one of the error paths the harness
+	// can produce intentionally.
+	fn assert_expected_control_error_action(&self, action: &msgs::ErrorAction) {
+		let expected = match action {
+			msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
+				// Warning-only disconnects do not close channels. They are
+				// accepted when the fuzzer delays normal protocol progress far
+				// enough for a peer timeout, or when splice quiescence needs to
+				// be exited.
+				msg.data.contains("Disconnecting due to timeout awaiting response")
+					|| msg.data.contains("already sent splice_locked, cannot RBF")
+			},
+			msgs::ErrorAction::SendErrorMessage { msg } => {
+				// Error messages can close channels, so they are accepted only
+				// for channels that were pre-authorized, or for the narrow
+				// timeout and wrong-node messages LDK can emit while peers race
+				// with on-chain confirmation.
+				msg.data.starts_with(HTLC_TIMEOUT_ERROR_PREFIX)
+					|| msg.data.starts_with(CLOSED_CHANNEL_WRONG_NODE_ERROR_PREFIX)
+					|| (self.is_expected(&msg.channel_id)
+						&& (FORCE_CLOSE_ERROR_MESSAGES.contains(&msg.data.as_str())
+							|| msg.data == ONCHAIN_TX_CONFIRMED_ERROR
+							|| msg.data == INVALID_REESTABLISH_FORCE_CLOSE_ERROR
+							|| msg.data.contains(NEEDED_CHANNEL_REESTABLISH_ERROR)))
+			},
+			_ => false,
+		};
+		assert!(expected, "Expected harness control error, got: {:?}", action);
+	}
+
+	// Verifies every tracked close was authorized by an explicit force-close
+	// command or an HTLC-timeout condition.
+	fn assert_no_unexpected_channel_closes(&self) {
+		for (channel_id, state) in &self.closed_channels {
+			assert!(
+				*state == ChannelCloseState::Expected,
+				"Channel {:?} closed without an explicit force-close or HTLC timeout",
+				channel_id,
+			);
+		}
+	}
+}
+
+#[derive(Debug)]
 struct PendingPayment {
+	source_idx: usize,
 	payment_id: PaymentId,
 	payment_hash: PaymentHash,
+	// The manager generation expected to persist this payment. If a reload uses
+	// an older manager snapshot, the payment is marked RolledBack so the cleanup
+	// invariant does not wait for an event from a payment the manager forgot.
 	first_persisted_manager_generation: u64,
+	paths: Vec<PaymentPath>,
+	// A blocked path is one that cannot reasonably finish through normal
+	// payment events anymore because a channel in that path closed or because
+	// the on-chain output would be below dust.
+	blocked_paths: HashSet<usize>,
+	// A failed path is one LDK explicitly reported through PaymentPathFailed.
+	failed_paths: HashSet<usize>,
+	status: PaymentStatus,
+	// Sender and receiver events are intentionally tracked independently. A
+	// claimed on-chain HTLC may produce receiver-side completion before the
+	// sender-side PaymentSent or PaymentFailed has propagated back.
+	sender_outcome: Option<SenderOutcome>,
+	receiver_claimed: bool,
+	// Set after the harness calls claim_funds. It stays set until the receiver
+	// sees PaymentClaimed, or until LDK rejects the local claim before it can be
+	// made safe on chain.
+	claim_funds_called: bool,
 }
 
-struct NodePayments {
-	pending: Vec<PendingPayment>,
-	resolved: HashMap<PaymentId, Option<PaymentHash>>,
-}
-
-impl NodePayments {
-	fn new() -> Self {
-		Self { pending: Vec::new(), resolved: new_hash_map() }
+impl PendingPayment {
+	// Payments are registered with at least one path, asserted in
+	// register_payment, so these do not need an emptiness check.
+	fn all_paths_blocked(&self) -> bool {
+		(0..self.paths.len()).all(|path_idx| self.blocked_paths.contains(&path_idx))
 	}
 
-	fn add_pending(
-		&mut self, payment_id: PaymentId, payment_hash: PaymentHash,
-		first_persisted_manager_generation: u64,
-	) {
-		self.pending.push(PendingPayment {
-			payment_id,
-			payment_hash,
-			first_persisted_manager_generation,
-		});
-	}
-
-	fn mark_sent(&mut self, sent_id: PaymentId, payment_hash: PaymentHash) {
-		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == sent_id);
-		if let Some(idx) = idx_opt {
-			self.pending.remove(idx);
-			self.resolved.insert(sent_id, Some(payment_hash));
-		} else {
-			assert!(self.resolved.contains_key(&sent_id));
-		}
-	}
-
-	fn mark_resolved_without_hash(&mut self, payment_id: PaymentId) {
-		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
-		if let Some(idx) = idx_opt {
-			self.pending.remove(idx);
-			self.resolved.insert(payment_id, None);
-		} else if !self.resolved.contains_key(&payment_id) {
-			// Some resolutions can arrive immediately, before the send helper records
-			// the payment as pending. Track them so later duplicate events are accepted.
-			self.resolved.insert(payment_id, None);
-		}
-	}
-
-	fn mark_successful_probe(&mut self, payment_id: PaymentId) {
-		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
-		if let Some(idx) = idx_opt {
-			self.pending.remove(idx);
-			self.resolved.insert(payment_id, None);
-		} else {
-			assert!(self.resolved.contains_key(&payment_id));
-		}
-	}
-
-	fn sync_pending_with_manager_generation(
-		&mut self, loaded_manager_generation: u64,
-	) -> Vec<PaymentHash> {
-		let mut rolled_back_payment_hashes = Vec::new();
-		let pending = mem::take(&mut self.pending);
-		for pending_payment in pending {
-			if pending_payment.first_persisted_manager_generation > loaded_manager_generation {
-				rolled_back_payment_hashes.push(pending_payment.payment_hash);
-			} else {
-				self.pending.push(pending_payment);
-			}
-		}
-		rolled_back_payment_hashes
+	fn all_paths_finished(&self) -> bool {
+		(0..self.paths.len()).all(|path_idx| {
+			self.blocked_paths.contains(&path_idx) || self.failed_paths.contains(&path_idx)
+		})
 	}
 }
 
 struct PaymentTracker {
-	nodes: [NodePayments; 3],
-	claimed_payment_hashes: HashSet<PaymentHash>,
-	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 	payment_ctr: u64,
+	records_by_id: HashMap<PaymentId, PendingPayment>,
+	ids_by_hash: HashMap<PaymentHash, PaymentId>,
+	// Preimages are deterministic so fabricated fuzz inputs can replay the same
+	// high-level scenario without relying on randomness.
+	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
 }
 
 impl PaymentTracker {
 	fn new() -> Self {
 		Self {
-			nodes: [NodePayments::new(), NodePayments::new(), NodePayments::new()],
-			claimed_payment_hashes: HashSet::new(),
-			payment_preimages: new_hash_map(),
 			payment_ctr: 0,
+			records_by_id: new_hash_map(),
+			ids_by_hash: new_hash_map(),
+			payment_preimages: new_hash_map(),
 		}
 	}
 
-	// Returns a bool indicating whether the payment failed.
+	// Starts tracking a successfully accepted outbound payment under both its
+	// id and hash.
+	fn register_payment(
+		&mut self, source_idx: usize, payment_id: PaymentId, payment_hash: PaymentHash,
+		payment_paths: Vec<PaymentPath>, first_persisted_manager_generation: u64,
+	) {
+		assert!(!payment_paths.is_empty(), "tracked payment must have at least one path");
+		assert!(
+			self.ids_by_hash.insert(payment_hash, payment_id).is_none(),
+			"duplicate payment_hash {:?}",
+			payment_hash
+		);
+		let record = PendingPayment {
+			source_idx,
+			payment_id,
+			payment_hash,
+			first_persisted_manager_generation,
+			paths: payment_paths,
+			blocked_paths: HashSet::new(),
+			failed_paths: HashSet::new(),
+			status: PaymentStatus::Pending,
+			sender_outcome: None,
+			receiver_claimed: false,
+			claim_funds_called: false,
+		};
+		assert!(
+			self.records_by_id.insert(payment_id, record).is_none(),
+			"duplicate payment_id {:?}",
+			payment_id
+		);
+	}
+
+	fn record_for_hash(&self, hash: &PaymentHash) -> Option<&PendingPayment> {
+		let payment_id = self.ids_by_hash.get(hash)?;
+		self.records_by_id.get(payment_id)
+	}
+
+	fn record_for_hash_mut(&mut self, hash: &PaymentHash) -> Option<&mut PendingPayment> {
+		let payment_id = self.ids_by_hash.get(hash).copied()?;
+		self.records_by_id.get_mut(&payment_id)
+	}
+
+	// Marks payments forgotten by a stale manager reload as rolled back.
+	fn sync_pending_with_manager_generation(
+		&mut self, node_idx: usize, loaded_manager_generation: u64,
+	) -> Vec<PaymentHash> {
+		// Reloading from a stale ChannelManager snapshot can roll back a payment
+		// that was sent after the persisted generation. Such a payment may still
+		// have monitor or peer artifacts, but the reloaded manager cannot be
+		// expected to emit its original sender-side completion event.
+		let mut rolled_back_payment_hashes = Vec::new();
+		for record in self.records_by_id.values_mut() {
+			if record.source_idx == node_idx
+				&& record.status == PaymentStatus::Pending
+				&& record.first_persisted_manager_generation > loaded_manager_generation
+			{
+				record.status = PaymentStatus::RolledBack;
+				rolled_back_payment_hashes.push(record.payment_hash);
+			}
+		}
+		rolled_back_payment_hashes
+	}
+
+	// Reports whether any claim_funds call still needs receiver or sender-side
+	// accounting.
+	fn has_unfinished_claims(&self) -> bool {
+		self.records_by_id.values().any(|record| {
+			record.claim_funds_called
+				&& (!record.receiver_claimed
+					|| (record.sender_outcome.is_none() && !record.all_paths_blocked()))
+		})
+	}
+
+	// Reports whether payment state can still make cleanup progress.
+	fn has_live_payment_work(&self) -> bool {
+		self.records_by_id
+			.values()
+			.any(|record| record.status == PaymentStatus::Pending && !record.all_paths_finished())
+			|| self.has_unfinished_claims()
+	}
+
+	fn claim_funds_called(&self, hash: &PaymentHash) -> bool {
+		self.record_for_hash(hash).map(|record| record.claim_funds_called).unwrap_or(false)
+	}
+
+	// Clears the claim_funds obligation when LDK rejects the local claim before
+	// PaymentClaimed, or when a stale manager reload means the reloaded node can
+	// no longer emit that event.
+	fn clear_claim(&mut self, hash: &PaymentHash) {
+		if let Some(record) = self.record_for_hash_mut(hash) {
+			record.claim_funds_called = false;
+		}
+	}
+
+	// Blocks tracked paths for one payment that used a closed channel, for
+	// HTLC-timeout close events that identify the affected hash.
+	fn block_paths_containing_channel(&mut self, hash: &PaymentHash, channel_id: ChannelId) {
+		if let Some(record) = self.record_for_hash_mut(hash) {
+			for path_idx in 0..record.paths.len() {
+				let path_contains_channel =
+					record.paths[path_idx].iter().any(|(chan_id, _, _)| *chan_id == channel_id);
+				if path_contains_channel {
+					record.blocked_paths.insert(path_idx);
+				}
+			}
+		}
+	}
+
+	// Blocks dust-sized path parts through a closed channel. Dust HTLCs have no
+	// commitment output, so once the channel closes they can never resolve
+	// through an on-chain claim.
+	fn block_dust_paths_containing_channel(&mut self, channel_id: ChannelId, dust_limit_msat: u64) {
+		for record in self.records_by_id.values_mut() {
+			for path_idx in 0..record.paths.len() {
+				if record.blocked_paths.contains(&path_idx) {
+					continue;
+				}
+				let path_contains_dust_part =
+					record.paths[path_idx].iter().any(|(chan_id, part_amt, _)| {
+						*chan_id == channel_id && *part_amt < dust_limit_msat
+					});
+				if path_contains_dust_part {
+					record.blocked_paths.insert(path_idx);
+				}
+			}
+		}
+	}
+
+	// Blocks pending paths through closing channels: once cleanup ends they are
+	// unresolvable. The close invariant separately checks that each tracked
+	// close was expected.
+	fn block_unresolvable_closed_paths(&mut self, close_tracker: &ChannelCloseTracker) {
+		for record in self.records_by_id.values_mut() {
+			if record.status != PaymentStatus::Pending {
+				continue;
+			}
+			for path_idx in 0..record.paths.len() {
+				let path_finished = record.blocked_paths.contains(&path_idx)
+					|| record.failed_paths.contains(&path_idx);
+				let path_contains_closed_channel = record.paths[path_idx]
+					.iter()
+					.any(|(chan_id, _, _)| close_tracker.is_closed_or_closing(chan_id));
+				if path_finished || !path_contains_closed_channel {
+					continue;
+				}
+				record.blocked_paths.insert(path_idx);
+			}
+		}
+	}
+
+	// Records a path-level failure event against a tracked payment, for MPP
+	// accounting where individual paths can fail before the payment resolves.
+	fn mark_path_failed(
+		&mut self, node_idx: usize, payment_id: Option<PaymentId>, failed_path: &Path,
+	) {
+		// PaymentPathFailed may omit a payment id for events not tracked by
+		// this harness. When it has one, match by SCID sequence, which is the
+		// common representation shared between the original Route and the event.
+		let Some(payment_id) = payment_id else { return };
+		let Some(record) = self.records_by_id.get_mut(&payment_id) else { return };
+		assert_eq!(record.source_idx, node_idx);
+		if record.status != PaymentStatus::Pending {
+			return;
+		}
+		if let Some((path_idx, _)) = record.paths.iter().enumerate().find(|(path_idx, path)| {
+			!record.blocked_paths.contains(path_idx)
+				&& !record.failed_paths.contains(path_idx)
+				&& path.len() == failed_path.hops.len()
+				&& path
+					.iter()
+					.zip(failed_path.hops.iter())
+					.all(|((_, _, scid), hop)| *scid == hop.short_channel_id)
+		}) {
+			record.failed_paths.insert(path_idx);
+		}
+	}
+
+	fn mark_receiver_claimed(&mut self, hash: PaymentHash) {
+		if let Some(record) = self.record_for_hash_mut(&hash) {
+			record.receiver_claimed = true;
+		}
+	}
+
+	// Asserts no live pending payments remain: every path resolved, failed, or
+	// was blocked by a close or dust.
+	fn assert_no_pending(&self, context: &str) {
+		let mut pending_ids = [Vec::new(), Vec::new(), Vec::new()];
+		for record in self.records_by_id.values().filter(|record| {
+			record.status == PaymentStatus::Pending && !record.all_paths_finished()
+		}) {
+			pending_ids[record.source_idx].push(record.payment_id);
+		}
+		for (idx, ids) in pending_ids.iter().enumerate() {
+			assert!(
+				ids.is_empty(),
+				"Node {} has {} stuck pending payments {}: ids={:?}",
+				idx,
+				ids.len(),
+				context,
+				ids,
+			);
+		}
+	}
+
+	// Asserts claim_funds calls reached valid outcomes: the receiver saw
+	// PaymentClaimed, and the sender either learned success or failed only
+	// after every path was blocked.
+	fn assert_claims_resolved(&self) {
+		for record in self.records_by_id.values().filter(|record| record.claim_funds_called) {
+			assert!(
+				record.receiver_claimed,
+				"Payment {:?} was claimed with claim_funds but receiver never got PaymentClaimed",
+				record.payment_hash,
+			);
+			let all_paths_blocked = record.all_paths_blocked();
+			match record.sender_outcome {
+				Some(SenderOutcome::Sent) => {},
+				Some(SenderOutcome::Failed) => assert!(
+					all_paths_blocked,
+					"claimed payment {:?} failed sender-side without every path blocked: \
+					 blocked={:?}, failed={:?}, paths={:?}",
+					record.payment_hash, record.blocked_paths, record.failed_paths, record.paths,
+				),
+				None => assert!(
+					all_paths_blocked,
+					"claimed payment {:?} never resolved sender-side: blocked={:?}, \
+					 failed={:?}, paths={:?}",
+					record.payment_hash, record.blocked_paths, record.failed_paths, record.paths,
+				),
+			}
+		}
+	}
+
+	// Checks whether LDK kept outbound state for a send attempt. A payment can
+	// exhaust retries immediately while committed HTLCs still need later
+	// accounting.
 	fn check_payment_send_events(source: &ChanMan, sent_payment_id: PaymentId) -> bool {
 		for payment in source.list_recent_payments() {
 			match payment {
@@ -1588,10 +2290,13 @@ impl PaymentTracker {
 				{
 					return true;
 				},
-				RecentPaymentDetails::Abandoned { payment_id, .. }
-					if payment_id == sent_payment_id =>
+				RecentPaymentDetails::Abandoned { payment_id, payment_hash, .. }
+					if payment_id == sent_payment_id
+						&& Self::has_pending_outbound_htlc(source, payment_hash) =>
 				{
-					return false;
+					// Retries may already be exhausted even though committed HTLCs are still
+					// in flight and will later resolve with PaymentFailed.
+					return true;
 				},
 				_ => {},
 			}
@@ -1599,6 +2304,17 @@ impl PaymentTracker {
 		return false;
 	}
 
+	// Detects whether a payment hash still has committed outbound HTLCs, to
+	// keep exhausted-retry payments tracked until those HTLCs resolve.
+	fn has_pending_outbound_htlc(source: &ChanMan, payment_hash: PaymentHash) -> bool {
+		source.list_channels().iter().any(|chan| {
+			chan.pending_outbound_htlcs.iter().any(|htlc| htlc.payment_hash == payment_hash)
+		})
+	}
+
+	// Creates counter-derived payment material so hand-built fuzz inputs replay
+	// the same scenario. The receiver registers the hash, which yields a real
+	// PaymentSecret accepted by LDK.
 	fn next_payment(&mut self, dest: &ChanMan) -> (PaymentSecret, PaymentHash, PaymentId) {
 		self.payment_ctr += 1;
 		let mut payment_preimage = PaymentPreimage([0; 32]);
@@ -1613,10 +2329,16 @@ impl PaymentTracker {
 		(secret, hash, id)
 	}
 
+	// Sends a single-hop payment and records it only if LDK kept outbound state.
 	fn send(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
-		dest_chan_id: ChannelId, amt: u64,
+		dest_chan_id: ChannelId, amt: u64, close_tracker: &ChannelCloseTracker,
 	) -> bool {
+		if close_tracker.is_closed_or_closing(&dest_chan_id) {
+			// Sending over a known-closing channel would test route construction
+			// failure, not force-close cleanup.
+			return false;
+		}
 		let source = &nodes[source_idx];
 		let dest = &nodes[dest_idx];
 		let (secret, hash, id) = self.next_payment(dest);
@@ -1633,7 +2355,7 @@ impl PaymentTracker {
 			})
 			.unwrap_or((0, 0, 0));
 		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+			PaymentParameters::from_node_id(source.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
 			amt,
 		);
 		let route = Route {
@@ -1644,13 +2366,14 @@ impl PaymentTracker {
 					short_channel_id: dest_scid,
 					channel_features: dest.channel_features(),
 					fee_msat: amt,
-					cltv_expiry_delta: 200,
+					cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
 					maybe_announced_channel: true,
 				}],
 				blinded_tail: None,
 			}],
 			route_params: Some(route_params.clone()),
 		};
+		let payment_paths = vec![vec![(dest_chan_id, amt, dest_scid)]];
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -1665,19 +2388,31 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].add_pending(
+			self.register_payment(
+				source_idx,
 				id,
 				hash,
+				payment_paths,
 				source.next_manager_persistence_generation(),
 			);
 		}
 		succeeded
 	}
 
+	// Sends a two-hop payment through the middle node to cover forwarded HTLC
+	// cleanup.
 	fn send_hop(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, middle_idx: usize,
 		middle_chan_id: ChannelId, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
+		close_tracker: &ChannelCloseTracker,
 	) {
+		if close_tracker.is_closed_or_closing(&middle_chan_id)
+			|| close_tracker.is_closed_or_closing(&dest_chan_id)
+		{
+			// Once either hop closes, cleanup should account for the existing
+			// payment, not create a new one over the closed path.
+			return;
+		}
 		let source = &nodes[source_idx];
 		let middle = &nodes[middle_idx];
 		let dest = &nodes[dest_idx];
@@ -1694,15 +2429,20 @@ impl PaymentTracker {
 				)
 			})
 			.unwrap_or((0, 0, 0));
-		let dest_scid = dest
+		let Some(dest_scid) = dest
 			.list_channels()
 			.iter()
 			.find(|chan| chan.channel_id == dest_chan_id)
 			.and_then(|chan| chan.short_channel_id)
-			.unwrap_or(0);
+		else {
+			// The destination channel can already have disappeared due to a
+			// close observed by the destination before the close tracker records
+			// the topology change. Treat that as a no-op send attempt.
+			return;
+		};
 		let first_hop_fee = 50_000;
 		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
+			PaymentParameters::from_node_id(source.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
 			amt,
 		);
 		let route = Route {
@@ -1714,7 +2454,7 @@ impl PaymentTracker {
 						short_channel_id: middle_scid,
 						channel_features: middle.channel_features(),
 						fee_msat: first_hop_fee,
-						cltv_expiry_delta: 100,
+						cltv_expiry_delta: FUZZ_FORWARD_CLTV_DELTA,
 						maybe_announced_channel: true,
 					},
 					RouteHop {
@@ -1723,7 +2463,7 @@ impl PaymentTracker {
 						short_channel_id: dest_scid,
 						channel_features: dest.channel_features(),
 						fee_msat: amt,
-						cltv_expiry_delta: 200,
+						cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
 						maybe_announced_channel: true,
 					},
 				],
@@ -1731,6 +2471,10 @@ impl PaymentTracker {
 			}],
 			route_params: Some(route_params.clone()),
 		};
+		let payment_paths = vec![vec![
+			(middle_chan_id, amt + first_hop_fee, middle_scid),
+			(dest_chan_id, amt, dest_scid),
+		]];
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -1746,173 +2490,77 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].add_pending(
+			self.register_payment(
+				source_idx,
 				id,
 				hash,
+				payment_paths,
 				source.next_manager_persistence_generation(),
 			);
 		}
 	}
 
-	fn send_noret(
-		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
-		dest_chan_id: ChannelId, amt: u64,
-	) {
-		self.send(nodes, source_idx, dest_idx, dest_chan_id, amt);
-	}
-
-	// Direct MPP payment (no hop)
+	// Sends a direct MPP payment split across the destination channels still
+	// considered live, so coverage of partially-closed MPP destinations remains.
 	fn send_mpp_direct(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
-		dest_chan_ids: &[ChannelId], amt: u64,
+		dest_chan_ids: &[ChannelId], amt: u64, close_tracker: &ChannelCloseTracker,
 	) {
 		let source = &nodes[source_idx];
 		let dest = &nodes[dest_idx];
-		let (secret, hash, id) = self.next_payment(dest);
-		let num_paths = dest_chan_ids.len();
-		if num_paths == 0 {
-			return;
-		}
-
-		let amt_per_path = amt / num_paths as u64;
-		let mut paths = Vec::with_capacity(num_paths);
-
-		let dest_chans = dest.list_channels();
-		let dest_scids = dest_chan_ids.iter().map(|chan_id| {
-			dest_chans
-				.iter()
-				.find(|chan| chan.channel_id == *chan_id)
-				.and_then(|chan| chan.short_channel_id)
-				.unwrap()
-		});
-
-		for (i, dest_scid) in dest_scids.enumerate() {
-			let path_amt = if i == num_paths - 1 {
-				amt - amt_per_path * (num_paths as u64 - 1)
-			} else {
-				amt_per_path
-			};
-
-			paths.push(Path {
-				hops: vec![RouteHop {
-					pubkey: dest.get_our_node_id(),
-					node_features: dest.node_features(),
-					short_channel_id: dest_scid,
-					channel_features: dest.channel_features(),
-					fee_msat: path_amt,
-					cltv_expiry_delta: 200,
-					maybe_announced_channel: true,
-				}],
-				blinded_tail: None,
-			});
-		}
-
-		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
-			amt,
-		);
-		let route = Route { paths, route_params: Some(route_params) };
-		let onion = RecipientOnionFields::secret_only(secret, amt);
-		let res = source.send_payment_with_route(route, hash, onion, id);
-		let succeeded = match res {
-			Err(_) => false,
-			Ok(()) => Self::check_payment_send_events(source, id),
-		};
-		if succeeded {
-			self.nodes[source_idx].add_pending(
-				id,
-				hash,
-				source.next_manager_persistence_generation(),
-			);
-		}
-	}
-
-	// MPP payment via hop - splits payment across multiple channels on either or both hops
-	fn send_mpp_hop(
-		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, middle_idx: usize,
-		middle_chan_ids: &[ChannelId], dest_idx: usize, dest_chan_ids: &[ChannelId], amt: u64,
-	) {
-		let source = &nodes[source_idx];
-		let middle = &nodes[middle_idx];
-		let dest = &nodes[dest_idx];
-		let (secret, hash, id) = self.next_payment(dest);
-		// Create paths by pairing middle_scids with dest_scids.
-		let num_paths = middle_chan_ids.len().max(dest_chan_ids.len());
-		if num_paths == 0 {
-			return;
-		}
-
-		let first_hop_fee = 50_000;
-		let amt_per_path = amt / num_paths as u64;
-		let fee_per_path = first_hop_fee / num_paths as u64;
-		let mut paths = Vec::with_capacity(num_paths);
-
-		let middle_chans = middle.list_channels();
-		let middle_scids: Vec<_> = middle_chan_ids
-			.iter()
-			.map(|chan_id| {
-				middle_chans
-					.iter()
-					.find(|chan| chan.channel_id == *chan_id)
-					.and_then(|chan| chan.short_channel_id)
-					.unwrap()
-			})
-			.collect();
-
 		let dest_chans = dest.list_channels();
 		let dest_scids: Vec<_> = dest_chan_ids
 			.iter()
-			.map(|chan_id| {
+			.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
+			.filter_map(|chan_id| {
 				dest_chans
 					.iter()
 					.find(|chan| chan.channel_id == *chan_id)
 					.and_then(|chan| chan.short_channel_id)
-					.unwrap()
+					.map(|scid| (*chan_id, scid))
 			})
 			.collect();
-
-		for i in 0..num_paths {
-			let middle_scid = middle_scids[i % middle_scids.len()];
-			let dest_scid = dest_scids[i % dest_scids.len()];
-
-			let path_amt = if i == num_paths - 1 {
-				amt - amt_per_path * (num_paths as u64 - 1)
-			} else {
-				amt_per_path
-			};
-			let path_fee = if i == num_paths - 1 {
-				first_hop_fee - fee_per_path * (num_paths as u64 - 1)
-			} else {
-				fee_per_path
-			};
-
-			paths.push(Path {
-				hops: vec![
-					RouteHop {
-						pubkey: middle.get_our_node_id(),
-						node_features: middle.node_features(),
-						short_channel_id: middle_scid,
-						channel_features: middle.channel_features(),
-						fee_msat: path_fee,
-						cltv_expiry_delta: 100,
-						maybe_announced_channel: true,
-					},
-					RouteHop {
+		let num_paths = dest_scids.len();
+		if num_paths == 0 {
+			return;
+		}
+		let (secret, hash, id) = self.next_payment(dest);
+		let amt_per_path = amt / num_paths as u64;
+		// Build the tracked paths first and derive the Route from them so the
+		// two cannot drift apart.
+		let payment_paths: Vec<PaymentPath> = dest_scids
+			.iter()
+			.enumerate()
+			.map(|(i, (chan_id, dest_scid))| {
+				// The last path receives the rounding remainder.
+				let path_amt = if i == num_paths - 1 {
+					amt - amt_per_path * (num_paths as u64 - 1)
+				} else {
+					amt_per_path
+				};
+				vec![(*chan_id, path_amt, *dest_scid)]
+			})
+			.collect();
+		let paths = payment_paths
+			.iter()
+			.map(|payment_path| {
+				let (_, path_amt, dest_scid) = payment_path[0];
+				Path {
+					hops: vec![RouteHop {
 						pubkey: dest.get_our_node_id(),
 						node_features: dest.node_features(),
 						short_channel_id: dest_scid,
 						channel_features: dest.channel_features(),
 						fee_msat: path_amt,
-						cltv_expiry_delta: 200,
+						cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
 						maybe_announced_channel: true,
-					},
-				],
-				blinded_tail: None,
-			});
-		}
-
+					}],
+					blinded_tail: None,
+				}
+			})
+			.collect();
 		let route_params = RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
+			PaymentParameters::from_node_id(dest.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
 			amt,
 		);
 		let route = Route { paths, route_params: Some(route_params) };
@@ -1923,50 +2571,205 @@ impl PaymentTracker {
 			Ok(()) => Self::check_payment_send_events(source, id),
 		};
 		if succeeded {
-			self.nodes[source_idx].add_pending(
+			self.register_payment(
+				source_idx,
 				id,
 				hash,
+				payment_paths,
 				source.next_manager_persistence_generation(),
 			);
 		}
 	}
 
+	// Sends a two-hop MPP payment split across the live channels on one or both
+	// links. The path count is the larger live channel count; the shorter side
+	// is reused round-robin so paths can be blocked independently by either hop.
+	fn send_mpp_hop(
+		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, middle_idx: usize,
+		middle_chan_ids: &[ChannelId], dest_idx: usize, dest_chan_ids: &[ChannelId], amt: u64,
+		close_tracker: &ChannelCloseTracker,
+	) {
+		let source = &nodes[source_idx];
+		let middle = &nodes[middle_idx];
+		let dest = &nodes[dest_idx];
+		let middle_chans = middle.list_channels();
+		let middle_scids: Vec<_> = middle_chan_ids
+			.iter()
+			.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
+			.filter_map(|chan_id| {
+				middle_chans
+					.iter()
+					.find(|chan| chan.channel_id == *chan_id)
+					.and_then(|chan| chan.short_channel_id)
+					.map(|scid| (*chan_id, scid))
+			})
+			.collect();
+		let dest_chans = dest.list_channels();
+		let dest_scids: Vec<_> = dest_chan_ids
+			.iter()
+			.filter(|chan_id| !close_tracker.is_closed_or_closing(chan_id))
+			.filter_map(|chan_id| {
+				dest_chans
+					.iter()
+					.find(|chan| chan.channel_id == *chan_id)
+					.and_then(|chan| chan.short_channel_id)
+					.map(|scid| (*chan_id, scid))
+			})
+			.collect();
+		if middle_scids.is_empty() || dest_scids.is_empty() {
+			return;
+		}
+		let num_paths = middle_scids.len().max(dest_scids.len());
+		let (secret, hash, id) = self.next_payment(dest);
+		let first_hop_fee = 50_000;
+		let amt_per_path = amt / num_paths as u64;
+		let fee_per_path = first_hop_fee / num_paths as u64;
+		// Build the tracked paths first and derive the Route from them so the
+		// two cannot drift apart.
+		let payment_paths: Vec<PaymentPath> = (0..num_paths)
+			.map(|i| {
+				let (middle_chan_id, middle_scid) = middle_scids[i % middle_scids.len()];
+				let (dest_chan_id, dest_scid) = dest_scids[i % dest_scids.len()];
+				// The last path receives the rounding remainders.
+				let path_amt = if i == num_paths - 1 {
+					amt - amt_per_path * (num_paths as u64 - 1)
+				} else {
+					amt_per_path
+				};
+				let path_fee = if i == num_paths - 1 {
+					first_hop_fee - fee_per_path * (num_paths as u64 - 1)
+				} else {
+					fee_per_path
+				};
+				vec![
+					(middle_chan_id, path_amt + path_fee, middle_scid),
+					(dest_chan_id, path_amt, dest_scid),
+				]
+			})
+			.collect();
+		let paths = payment_paths
+			.iter()
+			.map(|payment_path| {
+				let (_, middle_amt, middle_scid) = payment_path[0];
+				let (_, path_amt, dest_scid) = payment_path[1];
+				Path {
+					hops: vec![
+						RouteHop {
+							pubkey: middle.get_our_node_id(),
+							node_features: middle.node_features(),
+							short_channel_id: middle_scid,
+							channel_features: middle.channel_features(),
+							fee_msat: middle_amt - path_amt,
+							cltv_expiry_delta: FUZZ_FORWARD_CLTV_DELTA,
+							maybe_announced_channel: true,
+						},
+						RouteHop {
+							pubkey: dest.get_our_node_id(),
+							node_features: dest.node_features(),
+							short_channel_id: dest_scid,
+							channel_features: dest.channel_features(),
+							fee_msat: path_amt,
+							cltv_expiry_delta: FUZZ_FINAL_CLTV_DELTA,
+							maybe_announced_channel: true,
+						},
+					],
+					blinded_tail: None,
+				}
+			})
+			.collect();
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(dest.get_our_node_id(), FUZZ_FINAL_CLTV_DELTA),
+			amt,
+		);
+		let route = Route { paths, route_params: Some(route_params) };
+		let onion = RecipientOnionFields::secret_only(secret, amt);
+		let res = source.send_payment_with_route(route, hash, onion, id);
+		let succeeded = match res {
+			Err(_) => false,
+			Ok(()) => Self::check_payment_send_events(source, id),
+		};
+		if succeeded {
+			self.register_payment(
+				source_idx,
+				id,
+				hash,
+				payment_paths,
+				source.next_manager_persistence_generation(),
+			);
+		}
+	}
+
+	// Claims or fails a receive-side payment event.
 	fn claim_payment(&mut self, node: &HarnessNode<'_>, payment_hash: PaymentHash, fail: bool) {
 		if fail {
+			// Fuzz bytes can choose to fail claimable payments backward,
+			// preserving coverage where payments are rejected rather than
+			// claimed.
 			node.fail_htlc_backwards(&payment_hash);
 		} else {
+			// The preimage was generated by next_payment, so a missing entry
+			// means LDK produced a claimable event for a payment outside the
+			// harness accounting model.
 			let payment_preimage = *self
 				.payment_preimages
 				.get(&payment_hash)
 				.expect("PaymentClaimable for unknown payment hash");
 			node.claim_funds(payment_preimage);
-			self.claimed_payment_hashes.insert(payment_hash);
+			self.record_for_hash_mut(&payment_hash)
+				.expect("PaymentClaimable for unknown payment record")
+				.claim_funds_called = true;
 		}
 	}
 
-	fn assert_all_resolved(&self) {
-		for (idx, node) in self.nodes.iter().enumerate() {
-			assert!(
-				node.pending.is_empty(),
-				"Node {} has {} stuck pending payments after settling all state",
-				idx,
-				node.pending.len()
-			);
+	// Records sender-side payment success and resolves the pending record.
+	fn mark_sent(&mut self, node_idx: usize, sent_id: PaymentId, payment_hash: PaymentHash) {
+		if let Some(record) = self.record_for_hash_mut(&payment_hash) {
+			assert_ne!(record.sender_outcome, Some(SenderOutcome::Failed));
+			record.sender_outcome = Some(SenderOutcome::Sent);
 		}
+		self.mark_resolved_payment(node_idx, sent_id, true);
 	}
 
-	fn assert_claims_reported(&self) {
-		for hash in self.claimed_payment_hashes.iter() {
-			let found = self
-				.nodes
-				.iter()
-				.any(|node| node.resolved.values().any(|h| h.as_ref() == Some(hash)));
-			assert!(
-				found,
-				"Payment {:?} was claimed by receiver but sender never got PaymentSent",
-				hash
-			);
+	// Records sender-side payment failure and resolves the pending record.
+	fn mark_failed(
+		&mut self, node_idx: usize, payment_id: PaymentId, payment_hash: Option<PaymentHash>,
+	) {
+		// PaymentFailed may carry the hash, but older or probe-like paths can
+		// resolve by id only. Look up the hash from the record when possible so
+		// sender_outcome remains tied to the same receiver-side record.
+		let payment_hash = payment_hash
+			.or_else(|| self.records_by_id.get(&payment_id).map(|record| record.payment_hash));
+		if let Some(payment_hash) = payment_hash {
+			if let Some(record) = self.record_for_hash_mut(&payment_hash) {
+				assert_ne!(record.sender_outcome, Some(SenderOutcome::Sent));
+				record.sender_outcome = Some(SenderOutcome::Failed);
+			}
 		}
+		self.mark_resolved_payment(node_idx, payment_id, false);
+	}
+
+	fn mark_resolved_without_hash(&mut self, node_idx: usize, payment_id: PaymentId) {
+		self.mark_resolved_payment(node_idx, payment_id, false);
+	}
+
+	// Moves a tracked payment id out of Pending. With assert_already_resolved,
+	// a duplicate resolution must be Resolved rather than RolledBack.
+	fn mark_resolved_payment(
+		&mut self, node_idx: usize, payment_id: PaymentId, assert_already_resolved: bool,
+	) {
+		// Some events can arrive before the send helper records the payment,
+		// especially when the payment is immediately rejected. Ignore those
+		// unknown ids, except for PaymentSent where an unknown id would be a
+		// tracker bug.
+		let Some(record) = self.records_by_id.get_mut(&payment_id) else {
+			assert!(!assert_already_resolved);
+			return;
+		};
+		assert_eq!(record.source_idx, node_idx);
+		if assert_already_resolved && record.status != PaymentStatus::Pending {
+			assert_eq!(record.status, PaymentStatus::Resolved);
+		}
+		record.status = PaymentStatus::Resolved;
 	}
 }
 
@@ -1979,11 +2782,16 @@ struct Harness<'a, Out: Output + MaybeSend + MaybeSync> {
 	bc_link: PeerLink,
 	queues: EventQueues,
 	payments: PaymentTracker,
+	close_tracker: ChannelCloseTracker,
 }
 
 fn build_node_config(chan_type: ChanType) -> UserConfig {
 	let mut config = UserConfig::default();
 	config.channel_config.forwarding_fee_proportional_millionths = 0;
+	// Tight CLTV deltas make timeout-driven force closes reachable with short
+	// fuzz inputs. These are still LDK-supported minimums, not arbitrary
+	// test-only values.
+	config.channel_config.cltv_expiry_delta = MIN_CLTV_EXPIRY_DELTA;
 	config.channel_handshake_config.announce_for_forwarding = true;
 	config.reject_inbound_splices = false;
 	match chan_type {
@@ -2003,15 +2811,29 @@ fn build_node_config(chan_type: ChanType) -> UserConfig {
 	config
 }
 
-fn assert_test_invariants(nodes: &[HarnessNode<'_>; 3]) {
-	assert_eq!(nodes[0].list_channels().len(), 3);
-	assert_eq!(nodes[1].list_channels().len(), 6);
-	assert_eq!(nodes[2].list_channels().len(), 3);
+// Checks topology and broadcast invariants that should hold after cleanup.
+fn assert_test_invariants(nodes: &[HarnessNode<'_>; 3], has_closed_channels: bool) {
+	let channel_counts = [
+		nodes[0].list_channels().len(),
+		nodes[1].list_channels().len(),
+		nodes[2].list_channels().len(),
+	];
+	if has_closed_channels {
+		// Once a close is tracked, some channels may legitimately be absent from
+		// list_channels. Still assert that no node ever gains channels, which
+		// would indicate the harness lost track of topology.
+		assert!(channel_counts[0] <= 3);
+		assert!(channel_counts[1] <= 6);
+		assert!(channel_counts[2] <= 3);
+	} else {
+		assert_eq!(channel_counts, [3, 6, 3]);
+	}
 
-	// All broadcasters should be empty. Broadcast transactions are handled explicitly.
-	assert!(nodes[0].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[1].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[2].broadcaster.txn_broadcasted.borrow().is_empty());
+	// All broadcasters should be empty because broadcast transactions only enter
+	// the modeled mempool through explicit relay commands or finish cleanup.
+	for node in nodes {
+		assert!(node.broadcaster.txn_broadcasted.borrow().is_empty());
+	}
 }
 
 fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
@@ -2108,6 +2930,9 @@ fn make_channel(
 			..
 		} = events.pop().unwrap()
 		{
+			// Funding transactions are synthetic no-input transactions. The
+			// version number is varied per test channel solely to make txids and
+			// funding outpoints distinct.
 			let tx = Transaction {
 				version: Version(chan_id),
 				lock_time: LockTime::ZERO,
@@ -2124,7 +2949,10 @@ fn make_channel(
 					tx.clone(),
 				)
 				.unwrap();
-			chain_state.confirm_tx(tx);
+			// Mine through the chain model instead of directly notifying nodes,
+			// so the setup path and later force-close path share the same block
+			// representation.
+			chain_state.mine_setup_tx_to_depth(tx, ANTI_REORG_DELAY);
 		} else {
 			panic!("Wrong event type");
 		}
@@ -2241,24 +3069,30 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			config_byte & 0b1000_0000 != 0,
 		];
 
-		let wallet_a = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
-		let wallet_b = TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap());
-		let wallet_c = TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap());
-		let wallets = [&wallet_a, &wallet_b, &wallet_c];
-		let coinbase_tx = bitcoin::Transaction {
-			version: bitcoin::transaction::Version::TWO,
-			lock_time: bitcoin::absolute::LockTime::ZERO,
-			input: vec![bitcoin::TxIn { ..Default::default() }],
-			output: wallets
-				.iter()
-				.map(|wallet| TxOut {
-					value: Amount::from_sat(100_000),
-					script_pubkey: wallet.get_change_script().unwrap(),
-				})
-				.collect(),
-		};
-		for (idx, wallet) in wallets.iter().enumerate() {
-			wallet.add_utxo(coinbase_tx.clone(), idx as u32);
+		let wallet_a = Arc::new(TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap()));
+		let wallet_b = Arc::new(TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap()));
+		let wallet_c = Arc::new(TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap()));
+		let wallets = [wallet_a.as_ref(), wallet_b.as_ref(), wallet_c.as_ref()];
+		let mut chain_state = ChainState::new();
+		for wallet in wallets {
+			// Seed each wallet generously; anchor and splice flows need fresh
+			// inputs long after setup, and an exhausted wallet would obscure the
+			// close behavior under test.
+			let coinbase_tx = bitcoin::Transaction {
+				version: bitcoin::transaction::Version::TWO,
+				lock_time: bitcoin::absolute::LockTime::ZERO,
+				input: vec![bitcoin::TxIn { ..Default::default() }],
+				output: (0..NUM_WALLET_UTXOS)
+					.map(|_| TxOut {
+						value: Amount::from_sat(100_000),
+						script_pubkey: wallet.get_change_script().unwrap(),
+					})
+					.collect(),
+			};
+			for vout in 0..NUM_WALLET_UTXOS {
+				wallet.add_utxo(coinbase_tx.clone(), vout);
+			}
+			chain_state.mine_setup_tx_to_depth(coinbase_tx, ANTI_REORG_DELAY);
 		}
 
 		let fee_est_a = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
@@ -2273,7 +3107,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let mut nodes = [
 			HarnessNode::new(
 				0,
-				wallet_a,
+				Arc::clone(&wallet_a),
 				Arc::clone(&fee_est_a),
 				Arc::clone(&broadcast_a),
 				persistence_styles[0],
@@ -2284,7 +3118,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			),
 			HarnessNode::new(
 				1,
-				wallet_b,
+				Arc::clone(&wallet_b),
 				Arc::clone(&fee_est_b),
 				Arc::clone(&broadcast_b),
 				persistence_styles[1],
@@ -2295,7 +3129,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			),
 			HarnessNode::new(
 				2,
-				wallet_c,
+				Arc::clone(&wallet_c),
 				Arc::clone(&fee_est_c),
 				Arc::clone(&broadcast_c),
 				persistence_styles[2],
@@ -2305,7 +3139,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				chan_type,
 			),
 		];
-		let mut chain_state = ChainState::new();
 
 		// Connect peers first, then create channels.
 		connect_peers(&nodes[0], &nodes[1]);
@@ -2327,16 +3160,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		make_channel(&mut nodes, 1, 2, 5, set_0reserve, false, &mut chain_state);
 		make_channel(&mut nodes, 1, 2, 6, false, false, &mut chain_state);
 
-		// Wipe the transactions-broadcasted set to make sure we don't broadcast
-		// any transactions during normal operation after setup.
-		nodes[0].broadcaster.txn_broadcasted.borrow_mut().clear();
-		nodes[1].broadcaster.txn_broadcasted.borrow_mut().clear();
-		nodes[2].broadcaster.txn_broadcasted.borrow_mut().clear();
-
-		// Sync all nodes to tip to lock the funding.
-		nodes[0].sync_with_chain_state(&chain_state, None);
-		nodes[1].sync_with_chain_state(&chain_state, None);
-		nodes[2].sync_with_chain_state(&chain_state, None);
+		// Wipe setup-time broadcasts so normal operation starts with an empty
+		// relay queue; the setup funding is already represented in ChainState.
+		for node in &nodes {
+			node.broadcaster.txn_broadcasted.borrow_mut().clear();
+		}
+		for node in &mut nodes {
+			// Sync every node to the funding depth before channel_ready exchange
+			// so all channels start from the same confirmed chain view.
+			node.sync_with_chain_state(&chain_state, None);
+		}
 
 		lock_fundings(&nodes);
 
@@ -2364,6 +3197,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			bc_link: PeerLink::new(1, 2, chan_bc_ids),
 			queues: EventQueues::new(),
 			payments: PaymentTracker::new(),
+			close_tracker: ChannelCloseTracker::new(),
 		}
 	}
 
@@ -2375,8 +3209,28 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.bc_link.first_channel_id()
 	}
 
-	fn finish(&self) {
-		assert_test_invariants(&self.nodes);
+	// Runs end-of-input cleanup by relaying and mining remaining broadcasts.
+	// Final invariants should not depend on the input ending with explicit relay
+	// and mining bytes.
+	fn finish(&mut self) {
+		self.mine_relayed_txs_until_quiet("finish");
+		self.record_disappeared_channels();
+		self.assert_no_unexpected_channel_closes();
+		let has_closed_channels = self.close_tracker.has_closed_channels();
+		assert_test_invariants(&self.nodes, has_closed_channels);
+	}
+
+	// Checks both peer links for unintended sibling-channel closes.
+	fn assert_no_unexpected_channel_closes(&self) {
+		self.ab_link.assert_no_unexpected_channel_closes(&self.nodes, &self.close_tracker);
+		self.bc_link.assert_no_unexpected_channel_closes(&self.nodes, &self.close_tracker);
+	}
+
+	// Records closes visible only as channels missing from list_channels, which
+	// can happen before, or instead of, ChannelClosed event processing.
+	fn record_disappeared_channels(&mut self) {
+		self.ab_link.record_disappeared_channels(&self.nodes, &mut self.close_tracker);
+		self.bc_link.record_disappeared_channels(&self.nodes, &mut self.close_tracker);
 	}
 
 	fn link_between(&self, source_idx: usize, dest_idx: usize) -> &PeerLink {
@@ -2397,15 +3251,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.link_between(source_idx, dest_idx).first_channel_id()
 	}
 
-	fn send_on_channel(
-		&mut self, source_idx: usize, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
-	) -> bool {
-		self.payments.send(&self.nodes, source_idx, dest_idx, dest_chan_id, amt)
-	}
-
 	fn send(&mut self, source_idx: usize, dest_idx: usize, amt: u64) {
 		let dest_chan_id = self.first_channel_id_between(source_idx, dest_idx);
-		self.payments.send_noret(&self.nodes, source_idx, dest_idx, dest_chan_id, amt);
+		self.payments.send(
+			&self.nodes,
+			source_idx,
+			dest_idx,
+			dest_chan_id,
+			amt,
+			&self.close_tracker,
+		);
 	}
 
 	fn send_hop(&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, amt: u64) {
@@ -2419,6 +3274,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			dest_idx,
 			dest_chan_id,
 			amt,
+			&self.close_tracker,
 		);
 	}
 
@@ -2434,6 +3290,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					dest_idx,
 					&dest_chan_ids,
 					amt,
+					&self.close_tracker,
 				);
 			},
 			MppDirectChannels::RepeatedFirst => {
@@ -2445,6 +3302,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					dest_idx,
 					&dest_chan_ids,
 					amt,
+					&self.close_tracker,
 				);
 			},
 		}
@@ -2469,6 +3327,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					dest_idx,
 					&dest_chan_ids,
 					amt,
+					&self.close_tracker,
 				);
 			},
 			MppHopChannels::BothHops => {
@@ -2480,6 +3339,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					dest_idx,
 					&dest_chan_ids,
 					amt,
+					&self.close_tracker,
 				);
 			},
 			MppHopChannels::SecondHop => {
@@ -2492,6 +3352,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					dest_idx,
 					&dest_chan_ids,
 					amt,
+					&self.close_tracker,
 				);
 			},
 		}
@@ -2606,7 +3467,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn process_msg_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, event: MessageSendEvent,
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
-			out: &Out,
+			close_tracker: &ChannelCloseTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
 			match event {
 				MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
@@ -2629,6 +3490,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					None
 				},
 				MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
+					if close_tracker.is_closed_or_closing(&msg.channel_id) {
+						// A delayed reestablish for a closing channel is stale
+						// traffic that would only manufacture a second error path
+						// for the same close.
+						return None;
+					}
 					let dest_idx =
 						log_peer_message(node_idx, node_id, nodes, out, "channel_reestablish");
 					nodes[dest_idx].handle_channel_reestablish(source_node_id, msg);
@@ -2701,15 +3568,32 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					nodes[dest_idx].handle_splice_locked(source_node_id, msg);
 					None
 				},
-				MessageSendEvent::HandleError { ref action, ref node_id, .. } => {
-					let (msg, is_quiescent) = assert_disconnect_action(action);
-					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "warning");
-					if is_quiescent {
-						nodes[node_idx].node.exit_quiescence(node_id, &msg.channel_id).unwrap();
-						nodes[dest_idx]
-							.node
-							.exit_quiescence(&source_node_id, &msg.channel_id)
-							.unwrap();
+				MessageSendEvent::HandleError { ref action, ref node_id } => {
+					close_tracker.assert_expected_control_error_action(action);
+					match action {
+						msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
+							let dest_idx =
+								log_peer_message(node_idx, node_id, nodes, out, "warning");
+							if is_quiescent_disconnect_warning(msg) {
+								// Splice quiescence warnings are recovery signals,
+								// not closes; exit quiescence on both peers.
+								nodes[node_idx]
+									.node
+									.exit_quiescence(node_id, &msg.channel_id)
+									.unwrap();
+								nodes[dest_idx]
+									.node
+									.exit_quiescence(&source_node_id, &msg.channel_id)
+									.unwrap();
+							}
+						},
+						msgs::ErrorAction::SendErrorMessage { msg } => {
+							// Deliver the error so the counterparty observes the
+							// close the same way it would over the wire.
+							let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "error");
+							nodes[dest_idx].handle_error(source_node_id, msg);
+						},
+						_ => unreachable!(),
 					}
 					None
 				},
@@ -2731,6 +3615,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let nodes = &self.nodes;
 		let out = &self.out;
 		let queues = &mut self.queues;
+		let close_tracker = &self.close_tracker;
 		let mut events = queues.take_for_node(node_idx);
 		let mut new_events = Vec::new();
 		if limit_events != ProcessMessages::OnePendingMessage {
@@ -2749,6 +3634,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				corrupt_forward,
 				limit_events,
 				nodes,
+				close_tracker,
 				out,
 			);
 			if limit_events != ProcessMessages::AllMessages {
@@ -2757,7 +3643,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		if node_idx == 1 {
 			let remaining = extra_ev.into_iter().chain(events_iter).collect::<Vec<_>>();
-			queues.route_from_middle(remaining, None, nodes);
+			queues.route_from_middle(remaining, None, nodes, close_tracker);
 		} else if node_idx == 0 {
 			if let Some(ev) = extra_ev {
 				queues.push_for_node(0, ev);
@@ -2772,10 +3658,11 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		had_events
 	}
 
+	// Drains user-facing events from one node and updates harness accounting.
 	fn process_events(&mut self, node_idx: usize, fail: bool) -> bool {
 		let nodes = &self.nodes;
-		let chain_state = &mut self.chain_state;
 		let payments = &mut self.payments;
+		let close_tracker = &mut self.close_tracker;
 		// Multiple HTLCs can resolve for the same payment hash, so deduplicate
 		// claim/fail handling per event batch.
 		let mut claim_set = new_hash_map();
@@ -2783,29 +3670,52 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let mut had_events = !events.is_empty();
 		for event in events.drain(..) {
 			match event {
-				events::Event::PaymentClaimable { payment_hash, .. } => {
+				events::Event::PaymentClaimable { payment_hash, claim_deadline, .. } => {
+					if claim_deadline
+						.map_or(false, |deadline| nodes[node_idx].manager_height() >= deadline)
+					{
+						// Past the claim_deadline, claim_funds is outside its API
+						// contract; let LDK's timeout fail-back resolve the payment.
+						continue;
+					}
 					if claim_set.insert(payment_hash.0, ()).is_none() {
 						payments.claim_payment(&nodes[node_idx], payment_hash, fail);
 					}
 				},
 				events::Event::PaymentSent { payment_id, payment_hash, .. } => {
-					payments.nodes[node_idx].mark_sent(payment_id.unwrap(), payment_hash);
+					payments.mark_sent(node_idx, payment_id.unwrap(), payment_hash);
 				},
 				// Even though we don't explicitly send probes, because probes are detected based on
 				// hashing the payment hash+preimage, it is rather trivial for the fuzzer to build
 				// payments that accidentally end up looking like probes.
 				events::Event::ProbeSuccessful { payment_id, .. } => {
-					payments.nodes[node_idx].mark_successful_probe(payment_id);
+					payments.mark_resolved_without_hash(node_idx, payment_id);
 				},
-				events::Event::PaymentFailed { payment_id, .. }
-				| events::Event::ProbeFailed { payment_id, .. } => {
-					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
+				events::Event::PaymentFailed { payment_id, payment_hash, .. } => {
+					payments.mark_failed(node_idx, payment_id, payment_hash);
 				},
-				events::Event::PaymentClaimed { .. } => {},
+				events::Event::ProbeFailed { payment_id, .. } => {
+					payments.mark_resolved_without_hash(node_idx, payment_id);
+				},
+				events::Event::PaymentClaimed { payment_hash, .. } => {
+					payments.mark_receiver_claimed(payment_hash);
+				},
 				events::Event::PaymentPathSuccessful { .. } => {},
-				events::Event::PaymentPathFailed { .. } => {},
+				events::Event::PaymentPathFailed { payment_id, path, .. } => {
+					payments.mark_path_failed(node_idx, payment_id, &path);
+				},
 				events::Event::PaymentForwarded { .. } if node_idx == 1 => {},
 				events::Event::ChannelReady { .. } => {},
+				events::Event::HTLCHandlingFailed {
+					failure_type: events::HTLCHandlingFailureType::Receive { payment_hash },
+					..
+				} => {
+					assert!(
+						!payments.claim_funds_called(&payment_hash),
+						"Payment {:?} hit HTLCHandlingFailed::Receive after claim_funds",
+						payment_hash,
+					);
+				},
 				events::Event::HTLCHandlingFailed { .. } => {},
 				events::Event::FundingTransactionReadyForSigning {
 					channel_id,
@@ -2818,19 +3728,37 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 						.funding_transaction_signed(&channel_id, &counterparty_node_id, signed_tx)
 						.unwrap();
 				},
-				events::Event::SpliceNegotiated { new_funding_txo, .. } => {
-					let mut txs = nodes[node_idx].broadcaster.txn_broadcasted.borrow_mut();
-					assert!(txs.len() >= 1);
-					let splice_tx = txs.remove(0);
-					assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
-					chain_state.add_pending_tx(splice_tx);
+				events::Event::SpliceNegotiated { .. } => {
+					// LDK already broadcast the new funding transaction; relay and
+					// mining commands decide when it confirms.
 				},
 				events::Event::SpliceNegotiationFailed { .. } => {},
-				events::Event::DiscardFunding {
-					funding_info:
-						events::FundingInfo::Contribution { .. } | events::FundingInfo::Tx { .. },
-					..
-				} => {},
+				events::Event::ChannelClosed { channel_id, reason, .. } => {
+					close_tracker.record_channel_closed_event(channel_id, &reason);
+					// Dust HTLCs on the closed channel can never produce an
+					// on-chain claim, so block their paths up front.
+					payments.block_dust_paths_containing_channel(
+						channel_id,
+						MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS as u64 * 1000,
+					);
+					if let events::ClosureReason::HTLCsTimedOut {
+						payment_hash: Some(payment_hash),
+					} = reason
+					{
+						// The timeout close names the affected payment, so only
+						// its paths through the closed channel are blocked.
+						payments.block_paths_containing_channel(&payment_hash, channel_id);
+					}
+				},
+				events::Event::DiscardFunding { .. } => {},
+				events::Event::SpendableOutputs { .. } => {
+					// This target tracks wallet UTXOs from confirmed
+					// wallet-owned transaction outputs. It does not sweep LDK
+					// spendable outputs.
+				},
+				events::Event::BumpTransaction(bump) => {
+					nodes[node_idx].bump_tx_handler.handle_event(&bump);
+				},
 				_ => panic!("Unhandled event: {:?}", event),
 			}
 		}
@@ -2851,117 +3779,115 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.process_events(node_idx, fail);
 	}
 
+	// Drives event and message processing until the harness is quiet.
 	fn process_all_events(&mut self) {
-		let mut last_pass_no_updates = false;
-		for i in 0..std::usize::MAX {
-			if i == 100 {
-				panic!(
-					"It may take may iterations to settle the state, but it should not take forever"
-				);
+		let settled = self.progress_until_quiet(100);
+		assert!(settled, "process_all_events exceeded settle budget");
+	}
+
+	// Finds the earliest loaded monitor height for a node. Startup sync uses it
+	// as ChainMonitor's start height so raw monitors loaded below the manager's
+	// best block still see every block and transaction they missed.
+	fn oldest_monitor_height_for_node(&self, node_idx: usize) -> u32 {
+		let node = &self.nodes[node_idx];
+		let mut min_monitor_height = node.manager_height();
+		for chan_id in node.monitor.list_monitors() {
+			if let Ok(mon) = node.monitor.get_monitor(chan_id) {
+				min_monitor_height = cmp::min(min_monitor_height, mon.current_best_block().height);
 			}
-			let mut made_progress = self.checkpoint_manager_persistences();
-			// Next, make sure no monitor completion callbacks are pending.
-			made_progress |= self.ab_link.complete_all_monitor_updates(&self.nodes);
-			made_progress |= self.bc_link.complete_all_monitor_updates(&self.nodes);
-			// Then, make sure any current forwards make their way to their destination.
-			if self.process_msg_events(0, false, ProcessMessages::AllMessages) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_msg_events(1, false, ProcessMessages::AllMessages) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_msg_events(2, false, ProcessMessages::AllMessages) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			// ...making sure any payments are claimed.
-			if self.process_events(0, false) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_events(1, false) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if self.process_events(2, false) {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if made_progress {
-				last_pass_no_updates = false;
-				continue;
-			}
-			if last_pass_no_updates {
-				// In some cases, we may generate a message to send in
-				// `process_msg_events`, but block sending until
-				// `complete_all_monitor_updates` gets called on the next
-				// iteration.
-				//
-				// Thus, we only exit if we manage two iterations with no messages
-				// or events to process.
-				break;
-			}
-			last_pass_no_updates = true;
 		}
+		min_monitor_height
 	}
 
-	fn disconnect_ab(&mut self) {
-		self.ab_link.disconnect(&self.nodes, &mut self.queues);
-	}
-
-	fn disconnect_bc(&mut self) {
-		self.bc_link.disconnect(&self.nodes, &mut self.queues);
-	}
-
-	fn reconnect_ab(&mut self) {
-		self.ab_link.reconnect(&self.nodes);
-	}
-
-	fn reconnect_bc(&mut self) {
-		self.bc_link.reconnect(&self.nodes);
-	}
-
+	// Restarts one node from a fuzz-selected persisted state, updating payment
+	// records the reloaded manager can no longer remember.
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
 		if !self.nodes[node_idx].deferred {
 			self.nodes[node_idx].checkpoint_manager_persistence();
 		}
 		match node_idx {
 			0 => {
-				self.ab_link.disconnect_for_reload(0, &self.nodes, &mut self.queues);
+				self.ab_link.disconnect_for_reload(
+					0,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			1 => {
-				self.ab_link.disconnect_for_reload(1, &self.nodes, &mut self.queues);
-				self.bc_link.disconnect_for_reload(1, &self.nodes, &mut self.queues);
+				self.ab_link.disconnect_for_reload(
+					1,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
+				self.bc_link.disconnect_for_reload(
+					1,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			2 => {
-				self.bc_link.disconnect_for_reload(2, &self.nodes, &mut self.queues);
+				self.bc_link.disconnect_for_reload(
+					2,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			_ => panic!("invalid node index"),
 		}
 		let loaded_manager_generation =
 			self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
-		let rolled_back_payment_hashes = self.payments.nodes[node_idx]
-			.sync_pending_with_manager_generation(loaded_manager_generation);
+		let monitor_start_height = self.oldest_monitor_height_for_node(node_idx);
+		let manager_start_height = self.nodes[node_idx].manager_height();
+		// Startup sync is part of LDK's deserialization contract.
+		self.nodes[node_idx].connect_chain_range(
+			&self.chain_state,
+			monitor_start_height,
+			manager_start_height,
+			self.chain_state.tip_height(),
+		);
+		assert_eq!(
+			self.nodes[node_idx].manager_height(),
+			self.chain_state.tip_height(),
+			"reloaded node {} must sync to the harness tip before normal operation resumes",
+			node_idx
+		);
+		let rolled_back_payment_hashes =
+			self.payments.sync_pending_with_manager_generation(node_idx, loaded_manager_generation);
 		for payment_hash in rolled_back_payment_hashes {
-			self.payments.claimed_payment_hashes.remove(&payment_hash);
+			// If a reload rolled back a manager past claim_funds, the harness
+			// must not require the reloaded manager to later report
+			// PaymentClaimed for that claim.
+			self.payments.clear_claim(&payment_hash);
 		}
 	}
 
+	// Drives the whole harness toward settlement and checks final invariants.
 	fn settle_all(&mut self) {
-		// First, make sure peers are all connected to each other
+		// The cleanup invariants are about eventual resolution, so undo any
+		// fuzzer-selected disconnections first.
 		self.reconnect_ab();
 		self.reconnect_bc();
 
 		for op in SUPPORTED_SIGNER_OPS {
+			// Re-enable all signer ops so failures after this point indicate
+			// missing event, chain, or accounting progress rather than an
+			// intentionally blocked signer.
 			self.nodes[0].keys_manager.enable_op_for_all_signers(op);
 			self.nodes[1].keys_manager.enable_op_for_all_signers(op);
 			self.nodes[2].keys_manager.enable_op_for_all_signers(op);
 		}
+		// Live-channel signer work retries through the manager, while
+		// on-chain holder claims retry through the chain monitor.
 		self.nodes[0].signer_unblocked(None);
 		self.nodes[1].signer_unblocked(None);
 		self.nodes[2].signer_unblocked(None);
+		self.nodes[0].monitor.signer_unblocked(None);
+		self.nodes[1].monitor.signer_unblocked(None);
+		self.nodes[2].monitor.signer_unblocked(None);
 
 		self.process_all_events();
 
@@ -2973,21 +3899,84 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		self.process_all_events();
 
-		// Verify no payments are stuck - all should have resolved
-		self.payments.assert_all_resolved();
-		// Verify that every payment claimed by a receiver resulted in a
-		// PaymentSent event at the sender.
-		self.payments.assert_claims_reported();
+		if self.close_tracker.has_closed_channels() {
+			for _ in 0..FORCE_CLOSE_CLEANUP_ROUNDS {
+				// Force-close cleanup alternates between event/message progress
+				// and height progress. This mirrors real nodes, where blocks
+				// trigger monitor claims, those claims broadcast transactions,
+				// and later blocks confirm the resulting transactions.
+				self.flush_progress(QUIESCENCE_ROUNDS);
+				for node in self.nodes.iter() {
+					node.timer_tick_occurred();
+				}
+				self.flush_progress(QUIESCENCE_ROUNDS);
+				let balances = self.claimable_balances();
+				let has_pending_htlcs = self.has_pending_htlcs();
+				// Payment work can be waiting in the tracker or still committed
+				// in live channel HTLC state. Chain work can be waiting in
+				// claimable balances, broadcasts, the mempool, monitor updates,
+				// or those same HTLCs. Keep the two signals separate so the loop
+				// mines only when there is both something to finish and some
+				// modeled mechanism that could still advance it.
+				let needs_payment_completion =
+					self.payments.has_live_payment_work() || has_pending_htlcs;
+				let has_cleanup_balances = !balances.is_empty();
+				let can_drive_more_cleanup =
+					has_cleanup_balances || self.has_pending_work() || has_pending_htlcs;
+				let next_claimed_htlc_boundary = self.next_claimed_htlc_boundary(&balances);
+				// This only gates the explicit height advance below; progress
+				// rounds can still mine to confirm transactions already in the
+				// mempool.
+				let can_advance_without_claimed_expiry = next_claimed_htlc_boundary
+					.map_or(true, |boundary| {
+						self.chain_state.tip_height().saturating_add(1) < boundary
+					});
+				if !needs_payment_completion || !can_drive_more_cleanup {
+					// Either all payment work is accounted for, or there is no
+					// remaining event, transaction, balance, or HTLC state that
+					// could make another cleanup round useful.
+					break;
+				}
+				if self.payments.has_unfinished_claims() && !can_advance_without_claimed_expiry {
+					// Stop before mining across a claimed HTLC expiry that
+					// still needs sender-side resolution. Crossing that boundary
+					// would turn a useful payment-accounting invariant into a
+					// race against this final cleanup driver.
+					break;
+				}
+				self.mine_blocks(1);
+				self.flush_progress(QUIESCENCE_ROUNDS);
+			}
+		}
+
+		self.payments.block_unresolvable_closed_paths(&self.close_tracker);
+		self.payments.assert_no_pending("after settling all state");
+		self.payments.assert_claims_resolved();
 
 		// All HTLCs should have been claimed or failed once we reach quiescence.
 		for (idx, node) in self.nodes.iter().enumerate() {
 			for chan in node.list_channels() {
+				if self.close_tracker.is_closed_or_closing(&chan.channel_id) {
+					continue;
+				}
+				let inbound_hashes = chan
+					.pending_inbound_htlcs
+					.iter()
+					.map(|htlc| htlc.payment_hash)
+					.collect::<Vec<_>>();
+				let outbound_hashes = chan
+					.pending_outbound_htlcs
+					.iter()
+					.map(|htlc| htlc.payment_hash)
+					.collect::<Vec<_>>();
 				assert!(
 					chan.pending_inbound_htlcs.is_empty() && chan.pending_outbound_htlcs.is_empty(),
 					"Node {} channel {:?} has stuck HTLCs after settling all state: \
-					 {} inbound {:?}, {} outbound {:?}",
+					 inbound_hashes={:?}, outbound_hashes={:?}, {} inbound {:?}, {} outbound {:?}",
 					idx,
 					chan.channel_id,
+					inbound_hashes,
+					outbound_hashes,
 					chan.pending_inbound_htlcs.len(),
 					chan.pending_inbound_htlcs,
 					chan.pending_outbound_htlcs.len(),
@@ -2996,21 +3985,30 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			}
 		}
 
-		// Finally, make sure that at least one end of each channel can make a substantial payment.
-		let chan_ab_ids = self.ab_link.channel_ids().clone();
-		let chan_bc_ids = self.bc_link.channel_ids().clone();
-		for chan_id in chan_ab_ids {
-			assert!(
-				self.send_on_channel(0, 1, chan_id, 10_000_000)
-					|| self.send_on_channel(1, 0, chan_id, 10_000_000)
-			);
+		self.ab_link.complete_all_monitor_updates(&self.nodes);
+		self.bc_link.complete_all_monitor_updates(&self.nodes);
+		self.record_disappeared_channels();
+		// Check both close-tracker and topology-level invariants. The close
+		// tracker verifies every observed close became expected; the peer links
+		// verify every non-closed sibling channel is still listed by both peers.
+		self.close_tracker.assert_no_unexpected_channel_closes();
+		self.assert_no_unexpected_channel_closes();
+
+		// Every still-open channel must be able to send in at least one
+		// direction; closed channels are validated by close accounting instead.
+		for (node_a, node_b, channel_ids) in
+			[(0, 1, *self.ab_link.channel_ids()), (1, 2, *self.bc_link.channel_ids())]
+		{
+			for chan_id in channel_ids {
+				if self.close_tracker.is_closed_or_closing(&chan_id) {
+					continue;
+				}
+				self.assert_sendable_after_settle(node_a, node_b, chan_id);
+			}
 		}
-		for chan_id in chan_bc_ids {
-			assert!(
-				self.send_on_channel(1, 2, chan_id, 10_000_000)
-					|| self.send_on_channel(2, 1, chan_id, 10_000_000)
-			);
-		}
+
+		self.process_all_events();
+		self.payments.assert_no_pending("after settle probes");
 
 		self.nodes[0].record_last_htlc_clear_fee();
 		self.nodes[1].record_last_htlc_clear_fee();
@@ -3023,6 +4021,370 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			made_progress |= node.checkpoint_manager_persistence();
 		}
 		made_progress
+	}
+
+	// Relays one node's broadcasts into the mempool. Per-node relay lets fuzz
+	// inputs model partial propagation before a block is mined.
+	fn relay_broadcasts_for_node(&mut self, node_idx: usize) {
+		let txs = self.nodes[node_idx]
+			.broadcaster
+			.txn_broadcasted
+			.borrow_mut()
+			.drain(..)
+			.collect::<Vec<_>>();
+		self.chain_state.relay_transactions(txs);
+	}
+
+	// Relays every node's pending broadcasts into the modeled mempool. Cleanup
+	// uses this when it should not depend on which peer fuzz bytes propagate.
+	// The bool reports whether any broadcasts were drained, not whether they
+	// were all admitted.
+	fn relay_all_broadcasts(&mut self) -> bool {
+		let mut txs = Vec::new();
+		for node in &self.nodes {
+			txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
+		}
+		self.chain_state.relay_transactions(txs)
+	}
+
+	// Mines blocks through ChainState, applies confirmed transactions to the
+	// wallets, and syncs node chain listeners.
+	fn mine_blocks(&mut self, count: u32) {
+		assert!(count > 0, "mining zero blocks should not be requested");
+
+		let confirmed_txs = self.chain_state.mine_blocks(count);
+		let wallets = [
+			self.nodes[0].wallet.as_ref(),
+			self.nodes[1].wallet.as_ref(),
+			self.nodes[2].wallet.as_ref(),
+		];
+		for tx in &confirmed_txs {
+			for wallet in wallets.iter().copied() {
+				let change_script = wallet.get_change_script().unwrap();
+				for input in &tx.input {
+					// The test wallet is a simple UTXO source. When one of its
+					// outputs is spent by a confirmed transaction, remove it so
+					// later funding or bump attempts cannot double-spend it.
+					wallet.remove_utxo(input.previous_output);
+				}
+				for (vout, output) in tx.output.iter().enumerate() {
+					if output.script_pubkey == change_script {
+						// Confirmed wallet-owned outputs become new wallet
+						// inputs, letting anchor and splice flows reuse change
+						// through later fuzz commands.
+						wallet.add_utxo(tx.clone(), vout as u32);
+					}
+				}
+			}
+		}
+		self.sync_all_nodes_with_chain_state();
+	}
+
+	// Repeatedly relays broadcasts and mines pending transactions to depth, for
+	// finish and settle paths where confirmed claims may broadcast child
+	// transactions that also need confirmation.
+	fn mine_relayed_txs_until_quiet(&mut self, context: &str) {
+		for _ in 0..QUIESCENCE_ROUNDS {
+			self.relay_all_broadcasts();
+			if !self.chain_state.has_pending_txs() {
+				return;
+			}
+			self.mine_blocks(ANTI_REORG_DELAY);
+		}
+		assert!(
+			!self.nodes.iter().any(|node| !node.broadcaster.txn_broadcasted.borrow().is_empty())
+				&& !self.chain_state.has_pending_txs(),
+			"{context} tx mining loop failed to quiesce",
+		);
+	}
+
+	// Collects claimable balances from the monitors of closed channels, to know
+	// when on-chain funds still require more blocks, transactions, or monitor
+	// work.
+	fn claimable_balances(&self) -> Vec<Balance> {
+		// get_claimable_balances skips monitors whose channel appears in the
+		// ignored list, so passing every open channel returns balances only for
+		// closed channels.
+		let open_channels = self.nodes[0]
+			.node
+			.list_channels()
+			.iter()
+			.chain(self.nodes[1].node.list_channels().iter())
+			.chain(self.nodes[2].node.list_channels().iter())
+			.cloned()
+			.collect::<Vec<_>>();
+		let open_refs: Vec<_> = open_channels.iter().collect();
+		self.nodes.iter().flat_map(|node| node.monitor.get_claimable_balances(&open_refs)).collect()
+	}
+
+	// Reports whether any monitor persistence completion is still pending; these
+	// can block claim generation even when no peer messages are queued.
+	fn has_pending_monitor_updates(&self) -> bool {
+		self.nodes.iter().any(|node| {
+			node.persister
+				.latest_monitors
+				.lock()
+				.unwrap()
+				.values()
+				.any(|state| !state.pending_monitor_completions.is_empty())
+		})
+	}
+
+	// Finds the nearest HTLC claim or expiry boundary for a claim that still
+	// needs sender-side resolution. Crossing such a boundary can change the
+	// failure mode the harness observes, so settlement stops mining before it.
+	fn next_claimed_htlc_boundary(&self, balances: &[Balance]) -> Option<u32> {
+		balances
+			.iter()
+			.filter_map(|balance| {
+				let (height, payment_hash) = match balance {
+					Balance::ContentiousClaimable { timeout_height, payment_hash, .. } => {
+						(*timeout_height, payment_hash)
+					},
+					Balance::MaybeTimeoutClaimableHTLC {
+						claimable_height, payment_hash, ..
+					} => (*claimable_height, payment_hash),
+					Balance::MaybePreimageClaimableHTLC { expiry_height, payment_hash, .. } => {
+						(*expiry_height, payment_hash)
+					},
+					_ => return None,
+				};
+				// Boundaries only matter for claims whose sender side has not
+				// resolved and whose paths are not all already blocked.
+				let claim_needs_sender_resolution = self
+					.payments
+					.record_for_hash(payment_hash)
+					.map(|record| {
+						record.claim_funds_called
+							&& record.sender_outcome.is_none()
+							&& !record.all_paths_blocked()
+					})
+					.unwrap_or(false);
+				claim_needs_sender_resolution.then_some(height)
+			})
+			.min()
+	}
+
+	// Checks whether any modeled subsystem still has work to do: queued
+	// messages, broadcasts, mempool entries, monitor updates, or claimable
+	// balances.
+	fn has_pending_work(&self) -> bool {
+		!self.queues.ab.is_empty()
+			|| !self.queues.ba.is_empty()
+			|| !self.queues.bc.is_empty()
+			|| !self.queues.cb.is_empty()
+			|| self.chain_state.has_pending_txs()
+			|| self.nodes.iter().any(|node| !node.broadcaster.txn_broadcasted.borrow().is_empty())
+			|| self.has_pending_monitor_updates()
+			|| !self.claimable_balances().is_empty()
+	}
+
+	// Checks live channels for unresolved HTLCs.
+	fn has_pending_htlcs(&self) -> bool {
+		self.nodes.iter().any(|node| {
+			node.list_channels().iter().any(|chan| {
+				!chan.pending_inbound_htlcs.is_empty() || !chan.pending_outbound_htlcs.is_empty()
+			})
+		})
+	}
+
+	// Completes any deferred monitor updates so fuzzed persistence delay does
+	// not block cleanup.
+	fn complete_pending_monitor_updates(&self) -> bool {
+		let mut completed_monitor_update = false;
+		for id in self.ab_link.channel_ids() {
+			completed_monitor_update |= self.nodes[0].complete_all_monitor_updates(id);
+			completed_monitor_update |= self.nodes[1].complete_all_monitor_updates(id);
+		}
+		for id in self.bc_link.channel_ids() {
+			completed_monitor_update |= self.nodes[1].complete_all_monitor_updates(id);
+			completed_monitor_update |= self.nodes[2].complete_all_monitor_updates(id);
+		}
+		completed_monitor_update
+	}
+
+	// Syncs every harness node to the current ChainState tip.
+	fn sync_all_nodes_with_chain_state(&mut self) {
+		for idx in 0..self.nodes.len() {
+			self.sync_node_with_chain_state(idx, None);
+		}
+	}
+
+	// Syncs one node toward the ChainState tip, first pre-authorizing the
+	// timeout closes LDK may perform while connecting the blocks.
+	fn sync_node_with_chain_state(&mut self, node_idx: usize, num_blocks: Option<u32>) {
+		let target_height = if let Some(num_blocks) = num_blocks {
+			std::cmp::min(
+				self.nodes[node_idx].manager_height().saturating_add(num_blocks),
+				self.chain_state.tip_height(),
+			)
+		} else {
+			self.chain_state.tip_height()
+		};
+		self.allow_htlc_timeout_closes_for_node(node_idx, target_height);
+		self.nodes[node_idx].sync_with_chain_state(&self.chain_state, num_blocks);
+	}
+
+	// Marks channels whose HTLCs allow LDK to force-close at the target height,
+	// mirroring the monitor's timeout conditions: an outbound HTLC past expiry
+	// by the grace period, or an inbound HTLC near expiry whose preimage the
+	// node may have learned through a claim. The monitor only knows a preimage
+	// after claim_funds, so checking the claim keeps this allowance close to
+	// what LDK can actually do.
+	fn allow_htlc_timeout_closes_for_node(&mut self, node_idx: usize, target_height: u32) {
+		for chan in self.nodes[node_idx].list_channels() {
+			let outbound_timed_out = chan.pending_outbound_htlcs.iter().any(|htlc| {
+				htlc.cltv_expiry.saturating_add(HTLC_TIMEOUT_GRACE_BLOCKS) <= target_height
+			});
+			let inbound_timed_out = chan.pending_inbound_htlcs.iter().any(|htlc| {
+				htlc.cltv_expiry <= target_height.saturating_add(HTLC_CLAIM_BUFFER_BLOCKS)
+					&& self.payments.claim_funds_called(&htlc.payment_hash)
+			});
+			if outbound_timed_out || inbound_timed_out {
+				self.close_tracker.expect_channel_close(chan.channel_id);
+			}
+		}
+	}
+
+	// Drains monitor-generated events on every node; monitors can enqueue claim
+	// work independently of peer messages.
+	fn process_monitor_pending_events(&self) {
+		for node in &self.nodes {
+			node.process_monitor_pending_events();
+		}
+	}
+
+	// Runs one cleanup pass and reports whether anything advanced.
+	fn progress_round(&mut self) -> bool {
+		let made_progress = self.checkpoint_manager_persistences();
+		let completed_monitor_update = self.complete_pending_monitor_updates();
+		let mut had_msg_or_ev = false;
+		for node_idx in 0..3 {
+			if self.process_msg_events(node_idx, false, ProcessMessages::AllMessages) {
+				had_msg_or_ev = true;
+			}
+		}
+		for node_idx in 0..3 {
+			if self.process_events(node_idx, false) {
+				had_msg_or_ev = true;
+			}
+		}
+		let relayed_before_mining = self.relay_all_broadcasts();
+		let mined_txs = self.chain_state.has_pending_txs();
+		if mined_txs {
+			// Mine mempool transactions deeply enough for confirmation-sensitive
+			// logic to run in the same progress round.
+			self.mine_blocks(ANTI_REORG_DELAY);
+		}
+		self.process_monitor_pending_events();
+		let relayed_after_mining = self.relay_all_broadcasts();
+		made_progress
+			|| completed_monitor_update
+			|| relayed_before_mining
+			|| relayed_after_mining
+			|| mined_txs || had_msg_or_ev
+	}
+
+	// Repeats progress rounds until two consecutive quiet passes, since one
+	// drain can expose work that is only visible on the next pass.
+	fn progress_until_quiet(&mut self, max_iters: usize) -> bool {
+		let mut last_pass_no_updates = false;
+		for _ in 0..max_iters {
+			if self.progress_round() {
+				last_pass_no_updates = false;
+				continue;
+			}
+			if last_pass_no_updates {
+				return true;
+			}
+			last_pass_no_updates = true;
+		}
+		false
+	}
+
+	// Drains immediately processable work and asserts if that work keeps making
+	// progress past the iteration budget. Height-gated work may remain for the
+	// caller to handle by mining another block.
+	fn flush_progress(&mut self, max_iters: usize) {
+		let settled = self.progress_until_quiet(max_iters);
+		let pending_work = self.has_pending_work();
+		assert!(
+			!pending_work || settled,
+			"flush_progress exhausted {max_iters} iterations without quiescing",
+		);
+	}
+
+	fn disconnect_ab(&mut self) {
+		self.ab_link.disconnect(&self.nodes, &mut self.queues, &self.close_tracker);
+	}
+
+	fn disconnect_bc(&mut self) {
+		self.bc_link.disconnect(&self.nodes, &mut self.queues, &self.close_tracker);
+	}
+
+	fn reconnect_ab(&mut self) {
+		self.ab_link.reconnect(&self.nodes);
+	}
+
+	fn reconnect_bc(&mut self) {
+		self.bc_link.reconnect(&self.nodes);
+	}
+
+	// Force-closes one channel, recording the expected close before calling
+	// into LDK so the invariants reject any other channel loss.
+	fn force_close(
+		&mut self, closer_idx: usize, channel_id: ChannelId, counterparty_idx: usize, reason: &str,
+	) {
+		self.close_tracker.expect_channel_close(channel_id);
+		let _ = self.nodes[closer_idx].node.force_close_broadcasting_latest_txn(
+			&channel_id,
+			&self.nodes[counterparty_idx].get_our_node_id(),
+			reason.to_string(),
+		);
+	}
+
+	// Chooses a post-settle probe amount for one direction, clamping the
+	// historical 10_000_000 msat probe into the channel's current sendable
+	// range after fees, reserves, or force-close cleanup changed it.
+	fn probe_amount_for_direction(
+		&self, source_idx: usize, dest_chan_id: ChannelId,
+	) -> Option<u64> {
+		self.nodes[source_idx]
+			.node
+			.list_usable_channels()
+			.iter()
+			.find(|chan| chan.channel_id == dest_chan_id)
+			.and_then(|chan| {
+				let probe_amt = cmp::max(
+					cmp::min(10_000_000, chan.next_outbound_htlc_limit_msat),
+					chan.next_outbound_htlc_minimum_msat,
+				);
+				if probe_amt == 0 || probe_amt > chan.next_outbound_htlc_limit_msat {
+					None
+				} else {
+					Some(probe_amt)
+				}
+			})
+	}
+
+	// Asserts a surviving channel can still route a payment in at least one
+	// direction after settlement.
+	fn assert_sendable_after_settle(&mut self, node_a: usize, node_b: usize, chan_id: ChannelId) {
+		let sent =
+			[(node_a, node_b), (node_b, node_a)].into_iter().any(|(source_idx, dest_idx)| {
+				let Some(amt) = self.probe_amount_for_direction(source_idx, chan_id) else {
+					return false;
+				};
+				self.payments.send(
+					&self.nodes,
+					source_idx,
+					dest_idx,
+					chan_id,
+					amt,
+					&self.close_tracker,
+				)
+			});
+		assert!(sent, "channel {:?} cannot send in either direction after settling", chan_id);
 	}
 }
 
@@ -3200,65 +4562,71 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			},
 
 			0xa0 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[0].splice_in(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa1 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[0].get_our_node_id();
 				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa2 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[2].get_our_node_id();
 				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_b_id());
 			},
 			0xa3 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[2].splice_in(&cp_node_id, &harness.chan_b_id());
 			},
 
 			0xa4 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[0].splice_out(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa5 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[0].get_our_node_id();
 				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_a_id());
 			},
 			0xa6 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[2].get_our_node_id();
 				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_b_id());
 			},
 			0xa7 => {
+				if !cfg!(splicing) {
+					break 'fuzz_loop;
+				}
 				let cp_node_id = harness.nodes[1].get_our_node_id();
 				harness.nodes[2].splice_out(&cp_node_id, &harness.chan_b_id());
 			},
 
-			// Sync node by 1 block to cover confirmation of a transaction.
-			0xa8 => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[0].sync_with_chain_state(&harness.chain_state, Some(1));
-			},
-			0xa9 => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[1].sync_with_chain_state(&harness.chain_state, Some(1));
-			},
-			0xaa => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[2].sync_with_chain_state(&harness.chain_state, Some(1));
-			},
-			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
-			0xab => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[0].sync_with_chain_state(&harness.chain_state, None);
-			},
-			0xac => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[1].sync_with_chain_state(&harness.chain_state, None);
-			},
-			0xad => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[2].sync_with_chain_state(&harness.chain_state, None);
-			},
+			// Sync node by 1 block.
+			0xa8 => harness.sync_node_with_chain_state(0, Some(1)),
+			0xa9 => harness.sync_node_with_chain_state(1, Some(1)),
+			0xaa => harness.sync_node_with_chain_state(2, Some(1)),
+			// Sync node to chain tip.
+			0xab => harness.sync_node_with_chain_state(0, None),
+			0xac => harness.sync_node_with_chain_state(1, None),
+			0xad => harness.sync_node_with_chain_state(2, None),
 
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among persisted and in-flight `ChannelMonitor`
@@ -3383,6 +4751,26 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					.enable_op_for_all_signers(SignerOp::SignSpliceSharedInput);
 				harness.nodes[2].signer_unblocked(None);
 			},
+			// The harness toggles signer availability at node granularity, not
+			// per channel, so each byte re-enables both holder claim ops and
+			// asks that node's monitors to retry.
+			0xd3 => harness.nodes[0].enable_holder_signer_ops(),
+			0xd4 => harness.nodes[1].enable_holder_signer_ops(),
+			0xd5 => harness.nodes[2].enable_holder_signer_ops(),
+			0xd6 => harness.relay_broadcasts_for_node(0),
+			0xd7 => harness.relay_broadcasts_for_node(1),
+			0xd8 => harness.relay_broadcasts_for_node(2),
+			0xd9..=0xe0 => {
+				let count = MINE_BLOCK_COUNTS[(v - 0xd9) as usize];
+				harness.mine_blocks(count);
+			},
+			// Explicit force closes cover both directions on both peer links.
+			// Each command records exactly one expected channel close before
+			// calling into LDK.
+			0xe1 => harness.force_close(0, harness.chan_a_id(), 1, FORCE_CLOSE_ERROR_MESSAGES[0]),
+			0xe2 => harness.force_close(1, harness.chan_b_id(), 2, FORCE_CLOSE_ERROR_MESSAGES[1]),
+			0xe3 => harness.force_close(1, harness.chan_a_id(), 0, FORCE_CLOSE_ERROR_MESSAGES[2]),
+			0xe4 => harness.force_close(2, harness.chan_b_id(), 1, FORCE_CLOSE_ERROR_MESSAGES[3]),
 
 			0xf0 => harness.ab_link.complete_monitor_updates_for_node(
 				0,
