@@ -930,7 +930,8 @@ pub enum Event {
 		/// If the recipient or an intermediate node misbehaves and gives us free money, this may
 		/// overstate the amount paid, though this is unlikely.
 		///
-		/// This is only `None` for payments initiated on LDK versions prior to 0.0.103.
+		/// This is only `None` for payments abandoned but ultimately claimed when using LDK versions
+		/// prior to 0.3, 0.2.3, or 0.1.10.
 		///
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
