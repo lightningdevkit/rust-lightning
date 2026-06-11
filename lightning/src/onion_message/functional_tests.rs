@@ -1178,7 +1178,8 @@ fn intercept_offline_peer_oms() {
 	let mut events = release_events(&nodes[1]);
 	assert_eq!(events.len(), 1);
 	let onion_message = match events.remove(0) {
-		Event::OnionMessageIntercepted { next_hop, message } => {
+		Event::OnionMessageIntercepted { prev_hop, next_hop, message } => {
+			assert_eq!(prev_hop, Some(nodes[0].node_id));
 			if let NextMessageHop::NodeId(peer_node_id) = next_hop {
 				assert_eq!(peer_node_id, final_node_vec[0].node_id);
 				message
@@ -1265,7 +1266,8 @@ fn intercept_unknown_scid_oms() {
 	let mut events = release_events(&nodes[1]);
 	assert_eq!(events.len(), 1);
 	let onion_message = match events.remove(0) {
-		Event::OnionMessageIntercepted { next_hop, message } => {
+		Event::OnionMessageIntercepted { prev_hop, next_hop, message } => {
+			assert_eq!(prev_hop, Some(nodes[0].node_id));
 			if let NextMessageHop::ShortChannelId(intercepted_scid) = next_hop {
 				assert_eq!(intercepted_scid, scid);
 				message
