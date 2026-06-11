@@ -1856,6 +1856,17 @@ pub enum Event {
 	///
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessageIntercepted {
+		/// The node id of the peer that sent the message, if known.
+		///
+		/// This is `None` when the message is sent with
+		/// [`MessageSendInstructions::ForwardedMessage`] (e.g., when calling
+		/// [`OffersMessageFlow::enqueue_invoice_request_to_forward`]) rather than forwarded
+		/// internally by the `OnionMessenger`, as well as for events serialized prior to LDK 0.3.
+		/// Otherwise it is the node we received the message from.
+		///
+		/// [`MessageSendInstructions::ForwardedMessage`]: crate::onion_message::messenger::MessageSendInstructions::ForwardedMessage
+		/// [`OffersMessageFlow::enqueue_invoice_request_to_forward`]: crate::offers::flow::OffersMessageFlow::enqueue_invoice_request_to_forward
+		prev_hop: Option<PublicKey>,
 		/// The next hop (offline peer or unknown SCID).
 		next_hop: NextMessageHop,
 		/// The onion message intended to be forwarded to the offline peer or via the unknown
@@ -2441,25 +2452,20 @@ impl Writeable for Event {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
 			},
-			&Event::OnionMessageIntercepted { ref next_hop, ref message } => {
+			&Event::OnionMessageIntercepted { ref prev_hop, ref next_hop, ref message } => {
 				37u8.write(writer)?;
-				match next_hop {
-					NextMessageHop::NodeId(peer_node_id) => {
-						// If we have the node_id, we keep writing it for backwards compatibility.
-						write_tlv_fields!(writer, {
-							(0, peer_node_id, required),
-							(1, next_hop, required),
-							(2, message, required),
-						});
-					},
-					NextMessageHop::ShortChannelId(_) => {
-						write_tlv_fields!(writer, {
-							// 0 used to be peer_node_id in LDK v0.2 and prior.
-							(1, next_hop, required),
-							(2, message, required),
-						});
-					},
-				}
+				// 0 used to be peer_node_id in LDK v0.2 and prior; we keep writing it when the next
+				// hop is a node id for backwards compatibility.
+				let legacy_peer_node_id = match next_hop {
+					NextMessageHop::NodeId(node_id) => Some(node_id),
+					NextMessageHop::ShortChannelId(_) => None,
+				};
+				write_tlv_fields!(writer, {
+					(0, legacy_peer_node_id, option),
+					(1, next_hop, required),
+					(2, message, required),
+					(3, prev_hop, option),
+				});
 			},
 			&Event::OnionMessagePeerConnected { ref peer_node_id } => {
 				39u8.write(writer)?;
@@ -3090,12 +3096,14 @@ impl MaybeReadable for Event {
 						(0, peer_node_id, option),
 						(1, next_hop, option),
 						(2, message, required),
+						(3, prev_hop, option),
 					});
 
 					let next_hop = next_hop
 						.or(peer_node_id.map(NextMessageHop::NodeId))
 						.ok_or(msgs::DecodeError::InvalidValue)?;
 					Ok(Some(Event::OnionMessageIntercepted {
+						prev_hop,
 						next_hop,
 						message: message.0.unwrap(),
 					}))

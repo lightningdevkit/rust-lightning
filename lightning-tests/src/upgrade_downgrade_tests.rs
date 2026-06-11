@@ -761,7 +761,9 @@ fn test_onion_message_intercepted_upgrade_from_0_2() {
 	let deserialized = <Event as MaybeReadable>::read(&mut reader).unwrap().unwrap();
 
 	match deserialized {
-		Event::OnionMessageIntercepted { next_hop, message } => {
+		Event::OnionMessageIntercepted { prev_hop, next_hop, message } => {
+			// LDK 0.2 did not write a `prev_hop`, so it must default to `None`.
+			assert_eq!(prev_hop, None);
 			assert_eq!(next_hop, NextMessageHop::NodeId(pubkey));
 			assert_eq!(message, dummy_onion_message());
 		},
@@ -773,11 +775,14 @@ fn test_onion_message_intercepted_upgrade_from_0_2() {
 fn test_onion_message_intercepted_node_id_downgrade_to_0_2() {
 	// Ensure that an `Event::OnionMessageIntercepted` with a `NodeId` next hop serialized by
 	// the current version can be deserialized by LDK 0.2 (which expects `peer_node_id` in TLV
-	// field 0).
+	// field 0 and ignores the newer `prev_hop` in TLV field 3).
 	let pubkey =
 		PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[42; 32]).unwrap());
+	let prev_hop =
+		PublicKey::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[43; 32]).unwrap());
 
 	let event = Event::OnionMessageIntercepted {
+		prev_hop: Some(prev_hop),
 		next_hop: NextMessageHop::NodeId(pubkey),
 		message: dummy_onion_message(),
 	};
@@ -802,6 +807,7 @@ fn test_onion_message_intercepted_scid_downgrade_to_0_2() {
 	// serialized by the current version cannot be deserialized by LDK 0.2, since the
 	// `peer_node_id` field (0) is not written for SCID variants and LDK 0.2 requires it.
 	let event = Event::OnionMessageIntercepted {
+		prev_hop: None,
 		next_hop: NextMessageHop::ShortChannelId(42),
 		message: dummy_onion_message(),
 	};
