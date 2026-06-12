@@ -2556,12 +2556,15 @@ impl FundingScope {
 			.funding_pubkey = counterparty_funding_pubkey;
 
 		// New reserve values are based on the new channel value and are v2-specific
-		let counterparty_selected_channel_reserve_satoshis =
-			Some(get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS));
+		let counterparty_selected_channel_reserve_satoshis = Some(
+			get_v2_channel_reserve_satoshis(post_channel_value, context.holder_dust_limit_satoshis)
+				.expect("We ran this exact function in `validate_splice_contributions`"),
+		);
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
 			post_channel_value,
 			context.counterparty_dust_limit_satoshis,
-		);
+		)
+		.expect("We ran this exact function in `validate_splice_contributions`");
 
 		Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
@@ -2985,6 +2988,9 @@ where
 	/// We use this to close if funding is never broadcasted.
 	pub(super) channel_creation_height: u32,
 
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(crate) counterparty_dust_limit_satoshis: u64,
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	counterparty_dust_limit_satoshis: u64,
 
 	#[cfg(any(test, feature = "_test_utils"))]
@@ -6442,14 +6448,23 @@ fn get_holder_max_htlc_value_in_flight_msat(
 ///
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`.
+///
+/// Returns `Err` if `channel_value_satoshis` is smaller than
+/// `MIN_THEIR_CHAN_RESERVE_SATOSHIS`.
 pub(crate) fn get_holder_selected_channel_reserve_satoshis(
 	channel_value_satoshis: u64, config: &UserConfig,
-) -> u64 {
-	let counterparty_chan_reserve_prop_mil =
-		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64;
+) -> Result<u64, ()> {
+	if channel_value_satoshis < MIN_THEIR_CHAN_RESERVE_SATOSHIS {
+		return Err(());
+	}
+	// As described in the `ChannelHandshakeConfig` docs, we cap this value at 1_000_000.
+	let counterparty_chan_reserve_prop_mil = cmp::min(
+		config.channel_handshake_config.their_channel_reserve_proportional_millionths as u64,
+		1_000_000,
+	);
 	let calculated_reserve =
 		channel_value_satoshis.saturating_mul(counterparty_chan_reserve_prop_mil) / 1_000_000;
-	cmp::min(channel_value_satoshis, cmp::max(calculated_reserve, MIN_THEIR_CHAN_RESERVE_SATOSHIS))
+	Ok(cmp::max(calculated_reserve, MIN_THEIR_CHAN_RESERVE_SATOSHIS))
 }
 
 /// This is for legacy reasons, present for forward-compatibility.
@@ -6466,14 +6481,21 @@ pub(crate) fn get_legacy_default_holder_selected_channel_reserve_satoshis(
 /// Returns a minimum channel reserve value each party needs to maintain, fixed in the spec to a
 /// default of 1% of the total channel value.
 ///
-/// Guaranteed to return a value no larger than channel_value_satoshis
+/// Guaranteed to return a value no larger than `channel_value_satoshis`
 ///
 /// This is used both for outbound and inbound channels and has lower bound
 /// of `dust_limit_satoshis`.
-fn get_v2_channel_reserve_satoshis(channel_value_satoshis: u64, dust_limit_satoshis: u64) -> u64 {
+///
+/// Returns `Err` if `channel_value_satoshis` is smaller than `dust_limit_satoshis`.
+fn get_v2_channel_reserve_satoshis(
+	channel_value_satoshis: u64, dust_limit_satoshis: u64,
+) -> Result<u64, ()> {
+	if channel_value_satoshis < dust_limit_satoshis {
+		return Err(());
+	}
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
-	cmp::min(channel_value_satoshis, cmp::max(q, dust_limit_satoshis))
+	Ok(cmp::max(q, dust_limit_satoshis))
 }
 
 fn check_splice_contribution_sufficient(
@@ -12163,12 +12185,23 @@ where
 			their_funding_contribution.to_sat(),
 		);
 		let counterparty_selected_channel_reserve = Amount::from_sat(
-			get_v2_channel_reserve_satoshis(post_channel_value, MIN_CHAN_DUST_LIMIT_SATOSHIS),
+			get_v2_channel_reserve_satoshis(
+				post_channel_value,
+				self.context.holder_dust_limit_satoshis
+			).map_err(|()| format!(
+				"The post-splice channel value {post_channel_value} is smaller than our dust limit {}",
+				self.context.holder_dust_limit_satoshis,
+			))?
 		);
-		let holder_selected_channel_reserve = Amount::from_sat(get_v2_channel_reserve_satoshis(
-			post_channel_value,
-			self.context.counterparty_dust_limit_satoshis,
-		));
+		let holder_selected_channel_reserve = Amount::from_sat(
+			get_v2_channel_reserve_satoshis(
+				post_channel_value,
+				self.context.counterparty_dust_limit_satoshis,
+			).map_err(|()| format!(
+				"The post-splice channel value {post_channel_value} is smaller than their dust limit {}",
+				self.context.counterparty_dust_limit_satoshis,
+			))?
+		);
 
 		// We allow parties to draw from their previous reserve, as long as they satisfy their v2 reserve
 
@@ -13370,7 +13403,8 @@ where
 	      F::Target: FeeEstimator,
 	      L::Target: Logger,
 	{
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config);
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(channel_value_satoshis, config)
+			.map_err(|()| APIError::APIMisuseError { err: format!("The channel value {channel_value_satoshis} is smaller than {MIN_THEIR_CHAN_RESERVE_SATOSHIS}")})?;
 		if holder_selected_channel_reserve_satoshis < MIN_CHAN_DUST_LIMIT_SATOSHIS {
 			// Protocol level safety check in place, although it should never happen because
 			// of `MIN_THEIR_CHAN_RESERVE_SATOSHIS`
@@ -13742,7 +13776,8 @@ where
 		// support this channel type.
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
-		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config);
+		let holder_selected_channel_reserve_satoshis = get_holder_selected_channel_reserve_satoshis(msg.common_fields.funding_satoshis, config)
+			.map_err(|()| ChannelError::close(format!("The channel value {} is smaller than {MIN_THEIR_CHAN_RESERVE_SATOSHIS}", msg.common_fields.funding_satoshis)))?;
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: msg.common_fields.funding_pubkey,
 			revocation_basepoint: RevocationBasepoint::from(msg.common_fields.revocation_basepoint),
@@ -13984,7 +14019,10 @@ where
 		});
 
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+			funding_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS
+		).map_err(|()| APIError::APIMisuseError { err: format!(
+			"The channel value {funding_satoshis} is smaller than their dust limit {MIN_CHAN_DUST_LIMIT_SATOSHIS}",
+		)})?;
 
 		let funding_feerate_sat_per_1000_weight = fee_estimator.bounded_sat_per_1000_weight(funding_confirmation_target);
 		let funding_tx_locktime = LockTime::from_height(current_chain_height)
@@ -14131,9 +14169,15 @@ where
 		let channel_value_satoshis =
 			our_funding_contribution_sats.saturating_add(msg.common_fields.funding_satoshis);
 		let counterparty_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, msg.common_fields.dust_limit_satoshis);
+			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS).map_err(|()| ChannelError::close(format!(
+				"The channel value {channel_value_satoshis} is smaller than our dust limit {MIN_CHAN_DUST_LIMIT_SATOSHIS}"
+		)))?;
+		let their_dust_limit_satoshis = msg.common_fields.dust_limit_satoshis;
 		let holder_selected_channel_reserve_satoshis = get_v2_channel_reserve_satoshis(
-			channel_value_satoshis, MIN_CHAN_DUST_LIMIT_SATOSHIS);
+			channel_value_satoshis, their_dust_limit_satoshis
+		).map_err(|()| ChannelError::close(format!(
+			"The channel value {channel_value_satoshis} is smaller than their dust limit {their_dust_limit_satoshis}"
+		)))?;
 
 		let channel_type = channel_type_from_open_channel(&msg.common_fields, our_supported_features)?;
 
@@ -16187,6 +16231,10 @@ mod tests {
 		// to channel value
 		test_self_and_counterparty_channel_reserve(10_000_000, 0.50, 0.50);
 		test_self_and_counterparty_channel_reserve(10_000_000, 0.60, 0.50);
+
+		// Make sure we correctly handle reserves greater than the channel value
+		test_self_and_counterparty_channel_reserve(100_000, 1.1, 0.30);
+		test_self_and_counterparty_channel_reserve(100_000, 0.30, 1.1);
 	}
 
 	#[rustfmt::skip]
@@ -16206,7 +16254,19 @@ mod tests {
 		outbound_node_config.channel_handshake_config.their_channel_reserve_proportional_millionths = (outbound_selected_channel_reserve_perc * 1_000_000.0) as u32;
 		let mut chan = OutboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, outbound_node_id, &channelmanager::provided_init_features(&outbound_node_config), channel_value_satoshis, 100_000, 42, &outbound_node_config, 0, 42, None, &logger).unwrap();
 
-		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * outbound_selected_channel_reserve_perc) as u64);
+		let outbound_capped_reserve_perc = if outbound_selected_channel_reserve_perc.lt(&1.0) {
+			outbound_selected_channel_reserve_perc
+		} else {
+			1.0
+		};
+
+		let inbound_capped_reserve_perc = if inbound_selected_channel_reserve_perc.lt(&1.0) {
+			inbound_selected_channel_reserve_perc
+		} else {
+			1.0
+		};
+
+		let expected_outbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * outbound_capped_reserve_perc) as u64);
 		assert_eq!(chan.funding.holder_selected_channel_reserve_satoshis, expected_outbound_selected_chan_reserve);
 
 		let chan_open_channel_msg = chan.get_open_channel(ChainHash::using_genesis_block(network), &&logger).unwrap();
@@ -16216,7 +16276,7 @@ mod tests {
 		if outbound_selected_channel_reserve_perc + inbound_selected_channel_reserve_perc < 1.0 {
 			let chan_inbound_node = InboundV1Channel::<&TestKeysInterface>::new(&&fee_est, &&keys_provider, &&keys_provider, inbound_node_id, &channelmanager::provided_channel_type_features(&inbound_node_config), &channelmanager::provided_init_features(&outbound_node_config), &chan_open_channel_msg, 7, &inbound_node_config, 0, &&logger, /*is_0conf=*/false).unwrap();
 
-			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * inbound_selected_channel_reserve_perc) as u64);
+			let expected_inbound_selected_chan_reserve = cmp::max(MIN_THEIR_CHAN_RESERVE_SATOSHIS, (chan.funding.get_value_satoshis() as f64 * inbound_capped_reserve_perc) as u64);
 
 			assert_eq!(chan_inbound_node.funding.holder_selected_channel_reserve_satoshis, expected_inbound_selected_chan_reserve);
 			assert_eq!(chan_inbound_node.funding.counterparty_selected_channel_reserve_satoshis.unwrap(), expected_outbound_selected_chan_reserve);
