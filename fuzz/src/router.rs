@@ -257,6 +257,7 @@ pub fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 							pending_inbound_htlcs: Vec::new(),
 							pending_outbound_htlcs: Vec::new(),
 							current_dust_exposure_msat: None,
+							splice_details: None,
 						});
 					}
 					Some(&$first_hops_vec[..])

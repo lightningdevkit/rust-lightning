@@ -47,8 +47,9 @@ use crate::ln::chan_utils::{
 	EMPTY_SCRIPT_SIG_WEIGHT, FUNDING_TRANSACTION_WITNESS_WEIGHT,
 };
 use crate::ln::channel_state::{
-	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
-	OutboundHTLCDetails, OutboundHTLCStateDetails,
+	ChannelShutdownState, ConfirmedSpliceCandidate, CounterpartyForwardingInfo, InboundHTLCDetails,
+	InboundHTLCStateDetails, OutboundHTLCDetails, OutboundHTLCStateDetails, SpliceCandidateDetails,
+	SpliceCandidateStatus, SpliceDetails,
 };
 use crate::ln::channelmanager::{
 	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
@@ -3358,6 +3359,88 @@ impl PendingFunding {
 		self.negotiation_contribution.as_ref().or_else(|| {
 			self.negotiated_candidates.last().and_then(|candidate| candidate.contribution.as_ref())
 		})
+	}
+
+	fn to_details<SP: SignerProvider>(
+		&self, context: &ChannelContext<SP>, best_block_height: u32,
+	) -> SpliceDetails {
+		let mut candidates: Vec<SpliceCandidateDetails> = self
+			.negotiated_candidates
+			.iter()
+			.map(|candidate| SpliceCandidateDetails {
+				contribution: candidate.contribution.clone(),
+				status: SpliceCandidateStatus::Negotiated {
+					txid: candidate
+						.funding
+						.get_funding_txid()
+						.expect("negotiated candidates should have a funding txid"),
+					new_channel_value_satoshis: candidate.funding.get_value_satoshis(),
+				},
+			})
+			.collect();
+
+		// The round currently under negotiation, if any, follows the negotiated candidates.
+		if let Some(funding_negotiation) = self.funding_negotiation.as_ref() {
+			let is_initiator = funding_negotiation.is_initiator();
+			let funding_feerate_sat_per_1000_weight =
+				funding_negotiation.funding_feerate_sat_per_1000_weight();
+			let status = match funding_negotiation {
+				FundingNegotiation::AwaitingAck { .. } => SpliceCandidateStatus::AwaitingAck {
+					is_initiator,
+					funding_feerate_sat_per_1000_weight,
+				},
+				FundingNegotiation::ConstructingTransaction { funding, .. } => {
+					SpliceCandidateStatus::ConstructingTransaction {
+						is_initiator,
+						funding_feerate_sat_per_1000_weight,
+						new_channel_value_satoshis: funding.get_value_satoshis(),
+					}
+				},
+				FundingNegotiation::AwaitingSignatures { funding, .. } => {
+					SpliceCandidateStatus::AwaitingSignatures {
+						is_initiator,
+						funding_feerate_sat_per_1000_weight,
+						new_channel_value_satoshis: funding.get_value_satoshis(),
+						txid: funding
+							.get_funding_txid()
+							.expect("a splice awaiting signatures should have a funding txid"),
+					}
+				},
+			};
+			candidates.push(SpliceCandidateDetails {
+				contribution: self.negotiation_contribution.clone(),
+				status,
+			});
+		}
+		// At most one candidate can confirm, as they all double-spend the same input. A zero-conf
+		// splice is locked (we send `splice_locked`) before it has any confirmations, so also report
+		// a candidate we have locked even at zero confirmations.
+		let confirmed_candidate = self.negotiated_candidates.iter().find_map(|candidate| {
+			let confirmations = candidate.funding.get_funding_tx_confirmations(best_block_height);
+			let txid = candidate
+				.funding
+				.get_funding_txid()
+				.expect("negotiated candidates should have a funding txid");
+			// The `splice_locked` we sent always refers to the confirmed candidate, as it is
+			// cleared if that candidate is ever unconfirmed by a reorg.
+			let splice_locked_sent = self.sent_funding_txid == Some(txid);
+			if confirmations == 0 && !splice_locked_sent {
+				return None;
+			}
+			Some(ConfirmedSpliceCandidate {
+				txid,
+				confirmations,
+				confirmations_required: context
+					.minimum_depth(&candidate.funding)
+					.expect("set for a ready channel"),
+				splice_locked_sent,
+			})
+		});
+		SpliceDetails {
+			candidates,
+			confirmed_candidate,
+			received_splice_locked_txid: self.received_funding_txid,
+		}
 	}
 
 	fn check_get_splice_locked<SP: SignerProvider>(
@@ -7453,6 +7536,46 @@ where
 				.iter_mut()
 				.map(|candidate| &mut candidate.funding),
 		)
+	}
+
+	/// Returns details about any pending splice attempts for inclusion in
+	/// [`crate::ln::channel_state::ChannelDetails`].
+	pub fn pending_splice_details(&self, best_block_height: u32) -> Option<SpliceDetails> {
+		let mut details = self
+			.pending_splice
+			.as_ref()
+			.map(|pending_splice| pending_splice.to_details(&self.context, best_block_height));
+
+		// A contribution committed via `funding_contributed` sits in `quiescent_action` until
+		// quiescence is reached and it begins negotiating; surface it as the last candidate, in a
+		// `WaitingOn*` status describing what it is waiting on.
+		if let Some(contribution) = self.queued_funding_contribution() {
+			// It begins negotiating at the next quiescence if there is no pending candidate or it can
+			// replace one via RBF; otherwise it must wait for the pending candidate to lock.
+			let status = if self.pending_splice.is_none()
+				|| self.queued_contribution_can_rbf(contribution)
+			{
+				SpliceCandidateStatus::WaitingOnQuiescence
+			} else {
+				SpliceCandidateStatus::WaitingOnLock
+			};
+			let candidate =
+				SpliceCandidateDetails { contribution: Some(contribution.clone()), status };
+			match &mut details {
+				Some(details) => details.candidates.push(candidate),
+				// No `PendingFunding` yet (a first splice still awaiting quiescence), but the queued
+				// contribution is still worth surfacing.
+				None => {
+					details = Some(SpliceDetails {
+						candidates: vec![candidate],
+						confirmed_candidate: None,
+						received_splice_locked_txid: None,
+					});
+				},
+			}
+		}
+
+		details
 	}
 
 	fn has_pending_splice_awaiting_signatures(&self) -> bool {
@@ -12869,6 +12992,38 @@ where
 		Ok(())
 	}
 
+	/// Whether a committed-but-not-yet-negotiating contribution can replace the pending candidate
+	/// via RBF, rather than having to wait for that candidate to lock. Used to classify a queued
+	/// contribution's status while it awaits quiescence.
+	fn queued_contribution_can_rbf(&self, contribution: &FundingContribution) -> bool {
+		let pending_splice = match &self.pending_splice {
+			Some(pending_splice) => pending_splice,
+			None => return false,
+		};
+		// A zero-conf channel can never RBF, and a candidate that is already locking can no longer
+		// be replaced.
+		if self.is_rbf_compatible().is_err() {
+			return false;
+		}
+		if pending_splice.sent_funding_txid.is_some()
+			|| pending_splice.received_funding_txid.is_some()
+		{
+			return false;
+		}
+		// The replacement must pay a higher feerate than the most recent round: the one currently
+		// under negotiation if any (which is the candidate we would replace once it signs),
+		// otherwise the most recently negotiated candidate. The in-flight feerate is fixed when the
+		// round starts, so affordability is determinable even before it signs.
+		let prev_feerate = match pending_splice.funding_negotiation.as_ref() {
+			Some(funding_negotiation) => funding_negotiation.funding_feerate_sat_per_1000_weight(),
+			None => match pending_splice.last_funding_feerate_sat_per_1000_weight {
+				Some(prev_feerate) => prev_feerate,
+				None => return false,
+			},
+		};
+		contribution.feerate() >= min_rbf_feerate(prev_feerate)
+	}
+
 	fn can_initiate_rbf(&self) -> Result<FeeRate, String> {
 		self.is_rbf_compatible()?;
 
@@ -13074,6 +13229,18 @@ where
 		} else {
 			contribution
 		};
+
+		// A queued splice never coexists with a negotiation we initiated: we return early above if
+		// one is already in flight, and a queued action is cleared the moment it becomes our
+		// negotiation at quiescence. It may coexist with a counterparty-initiated negotiation (e.g.
+		// queuing our own contribution while accepting their splice), so we only rule out our own.
+		debug_assert!(
+			self.pending_splice
+				.as_ref()
+				.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
+				.map_or(true, |funding_negotiation| !funding_negotiation.is_initiator()),
+			"A queued splice must not coexist with a funding negotiation we initiated",
+		);
 
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
 	}
