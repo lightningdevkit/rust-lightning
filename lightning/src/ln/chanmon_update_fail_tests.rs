@@ -4924,6 +4924,50 @@ fn test_single_channel_multiple_mpp() {
 	check_added_monitors(&nodes[7], 1);
 }
 
+#[cfg(feature = "_test_utils")]
+#[test]
+fn async_persister_new_test_works_with_test_chain_monitor() {
+	let logger = Arc::new(test_utils::TestLogger::new());
+	let keys_manager = Arc::new(test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet));
+	let tx_broadcaster = Arc::new(test_utils::TestBroadcaster::new(Network::Testnet));
+	let fee_estimator = Arc::new(test_utils::TestFeeEstimator::new(253));
+	let kv_store = Arc::new(test_utils::TestStore::new(false));
+	let persist_futures = Arc::new(FutureQueue::new());
+	let native_async_persister = MonitorUpdatingPersisterAsync::new(
+		Arc::clone(&kv_store),
+		Arc::clone(&persist_futures),
+		Arc::clone(&logger),
+		42,
+		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
+		Arc::clone(&tx_broadcaster),
+		Arc::clone(&fee_estimator),
+	);
+	let event_notifier = Arc::new(crate::util::wakers::Notifier::new());
+	let async_persister = crate::chain::chainmonitor::AsyncPersister::new_test(
+		native_async_persister,
+		Arc::clone(&event_notifier),
+	);
+	assert_eq!(Arc::strong_count(&event_notifier), 2);
+
+	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
+	let test_chain_monitor = test_utils::TestChainMonitor::new_with_event_notifier(
+		Some(&chain_source),
+		tx_broadcaster.as_ref(),
+		logger.as_ref(),
+		fee_estimator.as_ref(),
+		&async_persister,
+		keys_manager.as_ref(),
+		Arc::clone(&event_notifier),
+	);
+	assert_eq!(Arc::strong_count(&event_notifier), 3);
+
+	let update_future = test_chain_monitor.chain_monitor.get_update_future();
+	assert!(!update_future.poll_is_complete());
+	event_notifier.notify();
+	assert!(update_future.poll_is_complete());
+}
+
 #[test]
 fn native_async_persist() {
 	// Test ChainMonitor::new_async_beta and the backing MonitorUpdatingPersisterAsync.
