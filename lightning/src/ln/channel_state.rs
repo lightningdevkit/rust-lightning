@@ -12,10 +12,12 @@
 use alloc::vec::Vec;
 
 use bitcoin::secp256k1::PublicKey;
+use bitcoin::Txid;
 
 use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::OutPoint;
 use crate::ln::channel::Channel;
+use crate::ln::funding::FundingContribution;
 use crate::ln::types::ChannelId;
 use crate::sign::SignerProvider;
 use crate::types::features::{ChannelTypeFeatures, InitFeatures};
@@ -494,6 +496,11 @@ pub struct ChannelDetails {
 	///
 	/// [`ChannelConfig::max_dust_htlc_exposure`]: crate::util::config::ChannelConfig::max_dust_htlc_exposure
 	pub current_dust_exposure_msat: Option<u64>,
+	/// Details of any pending splice attempts on this channel, or `None` if no splice is pending.
+	///
+	/// See [`SpliceDetails`] for what is included. This will be `None` for objects serialized with
+	/// LDK versions prior to 0.3.
+	pub splice_details: Option<SpliceDetails>,
 }
 
 impl ChannelDetails {
@@ -619,6 +626,9 @@ impl ChannelDetails {
 			pending_inbound_htlcs: context.get_pending_inbound_htlc_details(funding),
 			pending_outbound_htlcs: context.get_pending_outbound_htlc_details(funding),
 			current_dust_exposure_msat: Some(balance.dust_exposure_msat),
+			splice_details: channel
+				.as_funded()
+				.and_then(|chan| chan.pending_splice_details(best_block_height)),
 		}
 	}
 }
@@ -661,9 +671,174 @@ impl_ser_tlv_based!(ChannelDetails, {
 	(45, pending_outbound_htlcs, optional_vec),
 	(47, funding_redeem_script, option),
 	(49, current_dust_exposure_msat, option),
+	(51, splice_details, option),
 	(_unused, user_channel_id, (static_value,
 		_user_channel_id_low.unwrap_or(0) as u128 | ((_user_channel_id_high.unwrap_or(0) as u128) << 64)
 	)),
+});
+
+/// Details of pending splice attempts on a channel, as returned in
+/// [`ChannelDetails::splice_details`].
+///
+/// This includes a contribution we have committed but not yet begun negotiating, any splice
+/// currently under negotiation with the counterparty, and any negotiated splice or RBF attempts
+/// waiting on sufficient on-chain confirmations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpliceDetails {
+	/// A splice or RBF attempt currently being negotiated with the counterparty, if any.
+	///
+	/// Note that a negotiation which has not yet reached
+	/// [`SpliceNegotiationStatus::AwaitingSignatures`] does not survive a restart, so this only
+	/// reflects in-memory negotiation state.
+	pub negotiation: Option<SpliceNegotiationDetails>,
+	/// Our contribution committed via [`ChannelManager::funding_contributed`] that has not yet begun
+	/// negotiating (it is awaiting quiescence with the counterparty), if any.
+	///
+	/// Like the in-flight [`negotiation`] state, this does not survive a restart.
+	///
+	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+	/// [`negotiation`]: Self::negotiation
+	pub queued_contribution: Option<FundingContribution>,
+	/// Negotiated splice transactions that have not yet reached sufficient confirmations by both
+	/// counterparties to have exchanged `splice_locked`, in order: the original negotiation
+	/// followed by any RBF replacements.
+	///
+	/// More than one entry indicates the use of RBF; at most one of these candidates will
+	/// ultimately confirm.
+	pub candidates: Vec<SpliceCandidateDetails>,
+	/// The negotiated candidate that has confirmed on-chain (or, on a zero-conf channel, that we
+	/// have locked at zero confirmations), if any, along with its confirmation progress.
+	///
+	/// At most one candidate can confirm, as the candidates all double-spend the same input, so
+	/// this identifies the single confirming candidate rather than tracking confirmations on each.
+	pub confirmed_candidate: Option<ConfirmedSpliceCandidate>,
+	/// The txid announced in the `splice_locked` received from the counterparty, i.e., the
+	/// candidate that they consider to have sufficient confirmations.
+	///
+	/// Unlike the `splice_locked` we sent (see [`ConfirmedSpliceCandidate::splice_locked_sent`]),
+	/// this need not match [`confirmed_candidate`]: during a reorg, our counterparty may observe a
+	/// different candidate confirm.
+	///
+	/// [`confirmed_candidate`]: Self::confirmed_candidate
+	pub received_splice_locked_txid: Option<Txid>,
+}
+
+impl_ser_tlv_based!(SpliceDetails, {
+	(1, negotiation, option),
+	(3, queued_contribution, option),
+	(5, candidates, required_vec),
+	(7, confirmed_candidate, option),
+	(9, received_splice_locked_txid, option),
+});
+
+/// Details of a splice or RBF attempt currently being negotiated with the counterparty.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpliceNegotiationDetails {
+	/// How far the negotiation has progressed.
+	pub status: SpliceNegotiationStatus,
+	/// Whether we initiated the negotiation.
+	pub is_initiator: bool,
+	/// The feerate of the splice transaction under negotiation, denominated in satoshi per 1000
+	/// weight units.
+	pub funding_feerate_sat_per_1000_weight: u32,
+	/// The value, in satoshis, of the channel once the splice transaction under negotiation
+	/// confirms and is promoted.
+	///
+	/// This will be `None` while [`SpliceNegotiationStatus::AwaitingAck`], as the value is not
+	/// known until both counterparties' contributions have been exchanged.
+	pub new_channel_value_satoshis: Option<u64>,
+	/// The txid of the splice transaction under negotiation.
+	///
+	/// This will be `None` until [`SpliceNegotiationStatus::AwaitingSignatures`], as the txid is
+	/// not known until the transaction has been fully constructed.
+	pub txid: Option<Txid>,
+	/// Our contribution to the splice under negotiation, or `None` if we are not contributing.
+	///
+	/// Note that for a counterparty-initiated RBF attempt, this is the prior round's contribution
+	/// adjusted to the new feerate.
+	pub contribution: Option<FundingContribution>,
+}
+
+impl_ser_tlv_based!(SpliceNegotiationDetails, {
+	(1, status, required),
+	(3, is_initiator, required),
+	(5, funding_feerate_sat_per_1000_weight, required),
+	(7, new_channel_value_satoshis, option),
+	(9, txid, option),
+	(11, contribution, option),
+});
+
+/// The status of a splice or RBF negotiation in progress with the counterparty.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpliceNegotiationStatus {
+	/// We sent `splice_init` or `tx_init_rbf` and are awaiting the counterparty's acknowledgement.
+	AwaitingAck,
+	/// The splice transaction is being interactively constructed.
+	ConstructingTransaction,
+	/// The splice transaction has been negotiated and is awaiting signatures from both
+	/// counterparties.
+	AwaitingSignatures,
+}
+
+impl_ser_tlv_based_enum!(SpliceNegotiationStatus,
+	(0, AwaitingAck) => {},
+	(2, ConstructingTransaction) => {},
+	(4, AwaitingSignatures) => {},
+);
+
+/// Details of a negotiated splice transaction that has not yet reached sufficient confirmations
+/// by both counterparties to have exchanged `splice_locked`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpliceCandidateDetails {
+	/// The txid of the splice transaction.
+	pub txid: Txid,
+	/// The value, in satoshis, of the channel once this candidate confirms and is promoted.
+	pub new_channel_value_satoshis: u64,
+	/// Our contribution to this candidate, or `None` if we did not contribute.
+	///
+	/// Once a candidate includes our contribution, every later candidate does as well: RBF
+	/// attempts carry the contribution forward (possibly adjusted to a new feerate) rather than
+	/// dropping it, preserving the splice intention.
+	///
+	/// Note that [`FundingContribution::feerate`] is the feerate used when selecting the
+	/// contribution's inputs, which is not necessarily the exact feerate of the negotiated
+	/// transaction.
+	pub contribution: Option<FundingContribution>,
+}
+
+impl_ser_tlv_based!(SpliceCandidateDetails, {
+	(1, txid, required),
+	(3, new_channel_value_satoshis, required),
+	(5, contribution, option),
+});
+
+/// The confirmation progress of the negotiated splice candidate that has confirmed on-chain, as
+/// exposed in [`SpliceDetails::confirmed_candidate`].
+///
+/// At most one candidate can confirm, as the candidates all double-spend the same input, so this
+/// identifies the single confirming candidate by its txid.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConfirmedSpliceCandidate {
+	/// The txid of the candidate that has confirmed on-chain. This matches the [`txid`] of one of
+	/// the [`SpliceDetails::candidates`].
+	///
+	/// [`txid`]: SpliceCandidateDetails::txid
+	pub txid: Txid,
+	/// The current number of confirmations of the candidate's transaction.
+	pub confirmations: u32,
+	/// The number of confirmations required before `splice_locked` can be sent for the candidate.
+	pub confirmations_required: u32,
+	/// Whether we have sent `splice_locked` for this candidate, i.e., we consider it to have
+	/// sufficient confirmations. The `splice_locked` we sent always refers to this confirmed
+	/// candidate, so it is tracked here rather than as a separate txid.
+	pub splice_locked_sent: bool,
+}
+
+impl_ser_tlv_based!(ConfirmedSpliceCandidate, {
+	(1, txid, required),
+	(3, confirmations, required),
+	(5, confirmations_required, required),
+	(7, splice_locked_sent, required),
 });
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -718,7 +893,10 @@ mod tests {
 		},
 	};
 
-	use super::{ChannelCounterparty, ChannelDetails, ChannelShutdownState};
+	use super::{
+		ChannelCounterparty, ChannelDetails, ChannelShutdownState, ConfirmedSpliceCandidate,
+		SpliceCandidateDetails, SpliceDetails, SpliceNegotiationDetails, SpliceNegotiationStatus,
+	};
 
 	#[test]
 	fn test_channel_details_serialization() {
@@ -783,6 +961,29 @@ mod tests {
 				is_dust: false,
 			}],
 			current_dust_exposure_msat: Some(150_000),
+			splice_details: Some(SpliceDetails {
+				negotiation: Some(SpliceNegotiationDetails {
+					status: SpliceNegotiationStatus::ConstructingTransaction,
+					is_initiator: true,
+					funding_feerate_sat_per_1000_weight: 1000,
+					new_channel_value_satoshis: Some(70_000),
+					txid: None,
+					contribution: None,
+				}),
+				queued_contribution: None,
+				candidates: vec![SpliceCandidateDetails {
+					txid: bitcoin::Txid::from_slice(&[7; 32]).unwrap(),
+					new_channel_value_satoshis: 60_000,
+					contribution: None,
+				}],
+				confirmed_candidate: Some(ConfirmedSpliceCandidate {
+					txid: bitcoin::Txid::from_slice(&[7; 32]).unwrap(),
+					confirmations: 3,
+					confirmations_required: 6,
+					splice_locked_sent: false,
+				}),
+				received_splice_locked_txid: Some(bitcoin::Txid::from_slice(&[7; 32]).unwrap()),
+			}),
 		};
 		let mut buffer = Vec::new();
 		channel_details.write(&mut buffer).unwrap();
