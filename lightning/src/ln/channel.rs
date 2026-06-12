@@ -48,7 +48,8 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channel_state::{
 	ChannelShutdownState, CounterpartyForwardingInfo, InboundHTLCDetails, InboundHTLCStateDetails,
-	OutboundHTLCDetails, OutboundHTLCStateDetails,
+	OutboundHTLCDetails, OutboundHTLCStateDetails, SpliceCandidateDetails, SpliceDetails,
+	SpliceNegotiationDetails, SpliceNegotiationStatus,
 };
 use crate::ln::channelmanager::{
 	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
@@ -3332,6 +3333,53 @@ impl PendingFunding {
 		self.negotiation_contribution.as_ref().or_else(|| {
 			self.negotiated_candidates.last().and_then(|candidate| candidate.contribution.as_ref())
 		})
+	}
+
+	fn details<SP: SignerProvider>(
+		&self, context: &ChannelContext<SP>, best_block_height: u32,
+	) -> SpliceDetails {
+		let negotiation = self.funding_negotiation.as_ref().map(|negotiation| {
+			let status = match negotiation {
+				FundingNegotiation::AwaitingAck { .. } => SpliceNegotiationStatus::AwaitingAck,
+				FundingNegotiation::ConstructingTransaction { .. } => {
+					SpliceNegotiationStatus::ConstructingTransaction
+				},
+				FundingNegotiation::AwaitingSignatures { .. } => {
+					SpliceNegotiationStatus::AwaitingSignatures
+				},
+			};
+			SpliceNegotiationDetails {
+				status,
+				is_initiator: negotiation.is_initiator(),
+				funding_feerate_sat_per_1000_weight: negotiation
+					.funding_feerate_sat_per_1000_weight(),
+				new_channel_value_satoshis: negotiation
+					.as_funding()
+					.map(|funding| funding.get_value_satoshis()),
+				txid: negotiation.as_funding().and_then(|funding| funding.get_funding_txid()),
+				contribution: self.negotiation_contribution.clone(),
+			}
+		});
+		let candidates = self
+			.negotiated_candidates
+			.iter()
+			.map(|candidate| SpliceCandidateDetails {
+				txid: candidate
+					.funding
+					.get_funding_txid()
+					.expect("negotiated candidates should have a funding txid"),
+				new_channel_value_satoshis: candidate.funding.get_value_satoshis(),
+				contribution: candidate.contribution.clone(),
+				confirmations: candidate.funding.get_funding_tx_confirmations(best_block_height),
+				confirmations_required: context.minimum_depth(&candidate.funding),
+			})
+			.collect();
+		SpliceDetails {
+			negotiation,
+			candidates,
+			sent_splice_locked_txid: self.sent_funding_txid,
+			received_splice_locked_txid: self.received_funding_txid,
+		}
 	}
 
 	fn check_get_splice_locked<SP: SignerProvider>(
@@ -7435,6 +7483,14 @@ where
 				.iter_mut()
 				.map(|candidate| &mut candidate.funding),
 		)
+	}
+
+	/// Returns details about any pending splice attempts for inclusion in
+	/// [`crate::ln::channel_state::ChannelDetails`].
+	pub fn pending_splice_details(&self, best_block_height: u32) -> Option<SpliceDetails> {
+		self.pending_splice
+			.as_ref()
+			.map(|pending_splice| pending_splice.details(&self.context, best_block_height))
 	}
 
 	fn has_pending_splice_awaiting_signatures(&self) -> bool {
