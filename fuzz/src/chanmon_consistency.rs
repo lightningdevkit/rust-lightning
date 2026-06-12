@@ -3396,6 +3396,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		}
 
 		harness.checkpoint_manager_persistences();
+
+		// Compute `ChannelDetails` for every channel after each step (ignoring the result) so the
+		// fuzzer exercises the splice-details derivation in `to_details` across as many states as
+		// possible.
+		for node in harness.nodes.iter() {
+			let _ = node.list_channels();
+		}
 	}
 	harness.finish();
 }
