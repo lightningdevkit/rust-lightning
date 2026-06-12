@@ -3291,9 +3291,13 @@ pub enum RecentPaymentDetails {
 		/// Hash of the payment that is currently being sent but has yet to be fulfilled or
 		/// abandoned.
 		payment_hash: PaymentHash,
-		/// Total amount (in msat, excluding fees) across all paths for this payment,
+		/// Total amount (excluding fees) across all paths for this payment,
 		/// not just the amount currently inflight.
 		total_msat: u64,
+		/// Total routing fees of the HTLCs currently in-flight for this payment.
+		///
+		/// `None` for payments serialized by LDK versions prior to 0.0.103.
+		pending_fee_msat: Option<u64>,
 		/// Whether this payment is a liquidity probe.
 		is_probe: bool,
 	},
@@ -3310,6 +3314,13 @@ pub enum RecentPaymentDetails {
 		/// Hash of the payment that was claimed. `None` for serializations of [`ChannelManager`]
 		/// made before LDK version 0.0.104.
 		payment_hash: Option<PaymentHash>,
+		/// Total routing fees paid for this payment, as also reported via the `fee_paid_msat`
+		/// field of [`Event::PaymentSent`].
+		///
+		/// `None` for payments serialized by LDK versions prior to 0.3.0.
+		///
+		/// [`Event::PaymentSent`]: events::Event::PaymentSent
+		fee_paid_msat: Option<u64>,
 	},
 	/// After a payment's retries are exhausted per the provided [`Retry`], or it is explicitly
 	/// abandoned via [`ChannelManager::abandon_payment`], it is marked as abandoned until all
@@ -4118,12 +4129,13 @@ impl<
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
-				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
+				PendingOutboundPayment::Retryable { payment_hash, total_msat, pending_fee_msat, .. } => {
 					let is_probe = outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret);
 					Some(RecentPaymentDetails::Pending {
 						payment_id: *payment_id,
 						payment_hash: *payment_hash,
 						total_msat: *total_msat,
+						pending_fee_msat: *pending_fee_msat,
 						is_probe,
 					})
 				},
@@ -4135,8 +4147,12 @@ impl<
 						is_probe,
 					})
 				},
-				PendingOutboundPayment::Fulfilled { payment_hash, .. } => {
-					Some(RecentPaymentDetails::Fulfilled { payment_id: *payment_id, payment_hash: *payment_hash })
+				PendingOutboundPayment::Fulfilled { payment_hash, fee_paid_msat, .. } => {
+					Some(RecentPaymentDetails::Fulfilled {
+						payment_id: *payment_id,
+						payment_hash: *payment_hash,
+						fee_paid_msat: *fee_paid_msat,
+					})
 				},
 				PendingOutboundPayment::Legacy { .. } => None
 			})

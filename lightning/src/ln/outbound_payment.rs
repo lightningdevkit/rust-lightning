@@ -152,6 +152,8 @@ pub(crate) enum PendingOutboundPayment {
 		timer_ticks_without_htlcs: u8,
 		/// The total payment amount across all paths, used to be able to issue `PaymentSent`.
 		total_msat: Option<u64>,
+		/// Total routing fees paid, as reported in `PaymentSent::fee_paid_msat`.
+		fee_paid_msat: Option<u64>,
 	},
 	/// When we've decided to give up retrying a payment, we mark it as abandoned so we can eventually
 	/// generate a `PaymentFailed` event when all HTLCs have irrevocably failed.
@@ -256,6 +258,7 @@ impl PendingOutboundPayment {
 		match self {
 			PendingOutboundPayment::Retryable { pending_fee_msat, .. } => pending_fee_msat.clone(),
 			PendingOutboundPayment::Abandoned { pending_fee_msat, .. } => pending_fee_msat.clone(),
+			PendingOutboundPayment::Fulfilled { fee_paid_msat, .. } => fee_paid_msat.clone(),
 			_ => None,
 		}
 	}
@@ -298,7 +301,8 @@ impl PendingOutboundPayment {
 		});
 		let payment_hash = self.payment_hash();
 		let total_msat = self.total_msat();
-		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0, total_msat };
+		let fee_paid_msat = self.get_pending_fee_msat();
+		*self = PendingOutboundPayment::Fulfilled { session_privs, payment_hash, timer_ticks_without_htlcs: 0, total_msat, fee_paid_msat };
 	}
 
 	#[rustfmt::skip]
@@ -2743,6 +2747,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(1, payment_hash, option),
 		(3, timer_ticks_without_htlcs, (default_value, 0)),
 		(5, total_msat, option),
+		(7, fee_paid_msat, option),
 	},
 	(2, Retryable) => {
 		(0, session_privs, required),
