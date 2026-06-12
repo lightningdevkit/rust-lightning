@@ -102,6 +102,7 @@ use std::sync::atomic;
 use std::sync::{Arc, Mutex};
 
 const MAX_FEE: u32 = 10_000;
+const MAX_SETTLE_ITERATIONS: usize = 256;
 struct FuzzEstimator {
 	ret_val: atomic::AtomicU32,
 }
@@ -2814,9 +2815,20 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					..
 				} => {
 					let signed_tx = nodes[node_idx].wallet.sign_tx(unsigned_transaction).unwrap();
-					nodes[node_idx]
-						.funding_transaction_signed(&channel_id, &counterparty_node_id, signed_tx)
-						.unwrap();
+					match nodes[node_idx].funding_transaction_signed(
+						&channel_id,
+						&counterparty_node_id,
+						signed_tx,
+					) {
+						Ok(()) => {},
+						Err(APIError::APIMisuseError { ref err })
+							if err.contains("not expecting funding signatures") =>
+						{
+							// A queued signing event can be invalidated by a later `tx_abort`
+							// before the application handles it.
+						},
+						Err(e) => panic!("{e:?}"),
+					}
 				},
 				events::Event::SpliceNegotiated { new_funding_txo, .. } => {
 					let mut txs = nodes[node_idx].broadcaster.txn_broadcasted.borrow_mut();
@@ -2854,9 +2866,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	fn process_all_events(&mut self) {
 		let mut last_pass_no_updates = false;
 		for i in 0..std::usize::MAX {
-			if i == 100 {
+			if i == MAX_SETTLE_ITERATIONS {
 				panic!(
-					"It may take may iterations to settle the state, but it should not take forever"
+					"It may take many iterations to settle the state, but it should not take forever"
 				);
 			}
 			let mut made_progress = self.checkpoint_manager_persistences();
