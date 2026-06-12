@@ -19,10 +19,11 @@ use core::ops::Deref;
 use core::pin::pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task;
+use core::time::Duration;
 
 use crate::events::EventQueue;
 use crate::lsps0::ser::{
-	LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
+	LSPSDateTime, LSPSMessage, LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError,
 	JSONRPC_INTERNAL_ERROR_ERROR_CODE, JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE,
 	LSPS0_CLIENT_REJECTED_ERROR_CODE,
 };
@@ -39,6 +40,7 @@ use crate::prelude::hash_map::Entry;
 use crate::prelude::{new_hash_map, HashMap};
 use crate::sync::{Arc, Mutex, MutexGuard, RwLock};
 use crate::utils::async_poll::dummy_waker;
+use crate::utils::time::TimeProvider;
 
 use lightning::chain::chaininterface::{BroadcasterInterface, TransactionType};
 use lightning::events::HTLCHandlingFailureType;
@@ -497,6 +499,11 @@ struct OutboundJITChannel {
 	opening_fee_params: LSPS2OpeningFeeParams,
 	payment_size_msat: Option<u64>,
 	trust_model: TrustModel,
+	/// The time at which the JIT channel was created (i.e., the buy request was accepted).
+	///
+	/// `None` for channels deserialized from data written before this field was introduced;
+	/// those channels are treated as having an unknown age by [`PeerState::prune_terminal_channels`].
+	created_at: Option<LSPSDateTime>,
 }
 
 impl_ser_tlv_based!(OutboundJITChannel, {
@@ -505,12 +512,13 @@ impl_ser_tlv_based!(OutboundJITChannel, {
 	(4, opening_fee_params, required),
 	(6, payment_size_msat, option),
 	(8, trust_model, required),
+	(10, created_at, option),
 });
 
 impl OutboundJITChannel {
 	fn new(
 		payment_size_msat: Option<u64>, opening_fee_params: LSPS2OpeningFeeParams,
-		user_channel_id: u128, client_trusts_lsp: bool,
+		user_channel_id: u128, client_trusts_lsp: bool, created_at: Option<LSPSDateTime>,
 	) -> Self {
 		Self {
 			user_channel_id,
@@ -518,6 +526,7 @@ impl OutboundJITChannel {
 			opening_fee_params,
 			payment_size_msat,
 			trust_model: TrustModel::new(client_trusts_lsp),
+			created_at,
 		}
 	}
 
@@ -658,6 +667,50 @@ impl PeerState {
 		// Return whether the entire state is empty.
 		self.pending_requests.is_empty() && self.outbound_channels_by_intercept_scid.is_empty()
 	}
+
+	/// Removes all channels in the [`PaymentForwarded`] terminal state whose `created_at`
+	/// timestamp is at least `max_age` old. Passing [`Duration::ZERO`] removes all terminal
+	/// channels regardless of age.
+	///
+	/// Channels with no `created_at` (deserialized from data written before the field was
+	/// introduced) have an unknown age and are only removed when `max_age` is
+	/// [`Duration::ZERO`]; they are skipped by any age-based filter.
+	///
+	/// Cleans up the intra-peer auxiliary maps for each removed channel and returns the
+	/// `(intercept_scid, channel_id)` pairs so the caller can remove them from the
+	/// handler-level peer lookup maps.
+	///
+	/// [`PaymentForwarded`]: OutboundJITChannelState::PaymentForwarded
+	/// [`Duration::ZERO`]: core::time::Duration::ZERO
+	fn prune_terminal_channels(
+		&mut self, now: &LSPSDateTime, max_age: Duration,
+	) -> Vec<(u64, ChannelId)> {
+		let mut removed = Vec::new();
+		self.outbound_channels_by_intercept_scid.retain(|scid, channel| {
+			if let OutboundJITChannelState::PaymentForwarded { channel_id } = &channel.state {
+				let should_prune = if max_age == Duration::ZERO {
+					true
+				} else {
+					// Channels without a created_at (pre-upgrade legacy data) have an unknown
+					// age and are excluded from age-based filtering.
+					channel
+						.created_at
+						.as_ref()
+						.map(|ts| now.duration_since(ts) >= max_age)
+						.unwrap_or(false)
+				};
+				if should_prune {
+					removed.push((*scid, *channel_id));
+					self.intercept_scid_by_channel_id.retain(|_, iscid| iscid != scid);
+					self.intercept_scid_by_user_channel_id.retain(|_, iscid| iscid != scid);
+					self.needs_persist = true;
+					return false;
+				}
+			}
+			true
+		});
+		removed
+	}
 }
 
 impl_ser_tlv_based!(PeerState, {
@@ -702,9 +755,14 @@ macro_rules! get_or_insert_peer_state_entry {
 }
 
 /// The main object allowing to send and receive bLIP-52 / LSPS2 messages.
-pub struct LSPS2ServiceHandler<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface>
-where
+pub struct LSPS2ServiceHandler<
+	CM: Deref,
+	K: KVStore + Clone,
+	T: BroadcasterInterface,
+	TP: Deref + Clone,
+> where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	channel_manager: CM,
 	kv_store: K,
@@ -717,17 +775,20 @@ where
 	total_pending_requests: AtomicUsize,
 	config: LSPS2ServiceConfig,
 	persistence_in_flight: AtomicUsize,
+	time_provider: TP,
 }
 
-impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPS2ServiceHandler<CM, K, T>
+impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone, TP: Deref + Clone>
+	LSPS2ServiceHandler<CM, K, T, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	/// Constructs a `LSPS2ServiceHandler`.
 	pub(crate) fn new(
 		per_peer_state: HashMap<PublicKey, Mutex<PeerState>>, pending_messages: Arc<MessageQueue>,
 		pending_events: Arc<EventQueue<K>>, channel_manager: CM, kv_store: K, tx_broadcaster: T,
-		config: LSPS2ServiceConfig,
+		config: LSPS2ServiceConfig, time_provider: TP,
 	) -> Result<Self, lightning::io::Error> {
 		let mut peer_by_intercept_scid = new_hash_map();
 		let mut peer_by_channel_id = new_hash_map();
@@ -768,6 +829,7 @@ where
 			kv_store,
 			tx_broadcaster,
 			config,
+			time_provider,
 		})
 	}
 
@@ -921,11 +983,15 @@ where
 							peer_by_intercept_scid.insert(intercept_scid, *counterparty_node_id);
 						}
 
+						let created_at = Some(LSPSDateTime::new_from_duration_since_epoch(
+							self.time_provider.duration_since_epoch(),
+						));
 						let outbound_jit_channel = OutboundJITChannel::new(
 							buy_request.payment_size_msat,
 							buy_request.opening_fee_params,
 							user_channel_id,
 							client_trusts_lsp,
+							created_at,
 						);
 
 						peer_state_lock
@@ -1250,6 +1316,67 @@ where
 		}
 
 		Ok(())
+	}
+
+	/// Prunes completed JIT channels from state for all peers, freeing memory.
+	///
+	/// Removes all channels in the `PaymentForwarded` terminal state whose `created_at`
+	/// timestamp is at least `max_age` old. Pass [`Duration::ZERO`] to prune all terminal
+	/// channels regardless of age.
+	///
+	/// Channels loaded from persisted data written before the `created_at` field was introduced
+	/// have an unknown creation time. They are only pruned when `max_age` is [`Duration::ZERO`];
+	/// any positive `max_age` leaves them untouched.
+	///
+	/// All associated state is cleaned up for each removed channel, including the per-peer
+	/// `intercept_scid_by_channel_id` and `intercept_scid_by_user_channel_id` maps as well as
+	/// the handler-level `peer_by_intercept_scid` and `peer_by_channel_id` lookups.
+	///
+	/// Returns the total number of channels pruned across all peers.
+	///
+	/// [`Duration::ZERO`]: core::time::Duration::ZERO
+	pub async fn prune_channels(&self, max_age: Duration) -> Result<usize, APIError> {
+		let now =
+			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
+
+		let all_removed: Vec<(PublicKey, Vec<(u64, ChannelId)>)> = {
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+			outer_state_lock
+				.iter()
+				.filter_map(|(node_id, inner_lock)| {
+					let mut peer_state = inner_lock.lock().unwrap();
+					let removed = peer_state.prune_terminal_channels(&now, max_age);
+					if !removed.is_empty() {
+						Some((*node_id, removed))
+					} else {
+						None
+					}
+				})
+				.collect()
+		};
+
+		let total: usize = all_removed.iter().map(|(_, v)| v.len()).sum();
+
+		if total > 0 {
+			{
+				let mut peer_by_intercept_scid = self.peer_by_intercept_scid.write().unwrap();
+				let mut peer_by_channel_id = self.peer_by_channel_id.write().unwrap();
+				for (_, removed) in &all_removed {
+					for (scid, channel_id) in removed {
+						peer_by_intercept_scid.remove(scid);
+						peer_by_channel_id.remove(channel_id);
+					}
+				}
+			}
+
+			for (node_id, _) in &all_removed {
+				self.persist_peer_state(*node_id).await.map_err(|e| APIError::APIMisuseError {
+					err: format!("Failed to persist peer state for {}: {}", node_id, e),
+				})?;
+			}
+		}
+
+		Ok(total)
 	}
 
 	/// Abandons a pending JIT‐open flow for `user_channel_id`, removing all local state.
@@ -2048,10 +2175,11 @@ where
 	}
 }
 
-impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone> LSPSProtocolMessageHandler
-	for LSPS2ServiceHandler<CM, K, T>
+impl<CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone, TP: Deref + Clone>
+	LSPSProtocolMessageHandler for LSPS2ServiceHandler<CM, K, T, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
 	type ProtocolMessage = LSPS2Message;
 	const PROTOCOL_NUMBER: Option<u16> = Some(2);
@@ -2126,18 +2254,21 @@ pub struct LSPS2ServiceHandlerSync<
 	CM: Deref,
 	K: KVStore + Clone,
 	T: BroadcasterInterface + Clone,
+	TP: Deref + Clone,
 > where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
-	inner: &'a LSPS2ServiceHandler<CM, K, T>,
+	inner: &'a LSPS2ServiceHandler<CM, K, T, TP>,
 }
 
-impl<'a, CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone>
-	LSPS2ServiceHandlerSync<'a, CM, K, T>
+impl<'a, CM: Deref, K: KVStore + Clone, T: BroadcasterInterface + Clone, TP: Deref + Clone>
+	LSPS2ServiceHandlerSync<'a, CM, K, T, TP>
 where
 	CM::Target: AChannelManager,
+	TP::Target: TimeProvider,
 {
-	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K, T>) -> Self {
+	pub(crate) fn from_inner(inner: &'a LSPS2ServiceHandler<CM, K, T, TP>) -> Self {
 		Self { inner }
 	}
 
@@ -2323,6 +2454,22 @@ where
 			task::Poll::Ready(result) => result,
 			task::Poll::Pending => {
 				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Prunes completed JIT channels from state for all peers, freeing memory.
+	///
+	/// Wraps [`LSPS2ServiceHandler::prune_channels`].
+	pub fn prune_channels(&self, max_age: Duration) -> Result<usize, APIError> {
+		let mut fut = pin!(self.inner.prune_channels(max_age));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
 				unreachable!("Should not be pending in a sync context");
 			},
 		}
@@ -2783,6 +2930,7 @@ mod tests {
 			opening_fee_params.clone(),
 			user_channel_id,
 			true,
+			Some(LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap()),
 		);
 
 		let opening_payment_hash = PaymentHash([42; 32]);
@@ -2861,5 +3009,154 @@ mod tests {
 			broadcast_allowed,
 			"Broadcast was not allowed even though all the skimmed fees were collected"
 		);
+	}
+
+	fn make_test_opening_fee_params() -> LSPS2OpeningFeeParams {
+		LSPS2OpeningFeeParams {
+			min_fee_msat: 1000,
+			proportional: 100,
+			valid_until: LSPSDateTime::from_str("2035-01-01T00:00:00Z").unwrap(),
+			min_lifetime: 144,
+			max_client_to_self_delay: 128,
+			min_payment_size_msat: 1,
+			max_payment_size_msat: 10_000_000_000,
+			promise: "ignore".to_string(),
+		}
+	}
+
+	#[test]
+	fn test_outbound_jit_channel_created_at_stored() {
+		let created_at = LSPSDateTime::from_str("2024-06-15T12:00:00Z").unwrap();
+		let channel = OutboundJITChannel::new(
+			Some(1_000_000),
+			make_test_opening_fee_params(),
+			1u128,
+			true,
+			Some(created_at),
+		);
+		assert_eq!(channel.created_at, Some(created_at));
+	}
+
+	#[test]
+	fn test_outbound_jit_channel_created_at_round_trips() {
+		use lightning::util::ser::{Readable, Writeable};
+
+		let created_at = LSPSDateTime::from_str("2024-06-15T12:00:00Z").unwrap();
+		let channel = OutboundJITChannel::new(
+			Some(1_000_000),
+			make_test_opening_fee_params(),
+			1u128,
+			true,
+			Some(created_at),
+		);
+
+		let mut buf = Vec::new();
+		channel.write(&mut buf).unwrap();
+
+		let decoded = <OutboundJITChannel as Readable>::read(&mut &buf[..]).unwrap();
+		assert_eq!(decoded.created_at, Some(created_at));
+	}
+
+	// Verify that data written before the `created_at` field existed deserializes with
+	// `created_at = None`, keeping backwards compatibility.
+	#[test]
+	fn test_outbound_jit_channel_created_at_defaults_for_old_data() {
+		use lightning::util::ser::{Readable, Writeable};
+
+		// Serialize a channel that has no created_at (simulated by None).
+		let channel = OutboundJITChannel::new(
+			Some(1_000_000),
+			make_test_opening_fee_params(),
+			1u128,
+			false,
+			None,
+		);
+
+		let mut buf = Vec::new();
+		channel.write(&mut buf).unwrap();
+
+		// A channel serialized with created_at = None must not write TLV 10,
+		// and must round-trip as None.
+		let decoded = <OutboundJITChannel as Readable>::read(&mut &buf[..]).unwrap();
+		assert_eq!(decoded.created_at, None);
+	}
+
+	// Verify that prune_terminal_channels removes a PaymentForwarded channel and cleans up
+	// all auxiliary lookup maps.
+	#[test]
+	fn test_peer_state_prune_payment_forwarded_channel() {
+		let intercept_scid = 42u64;
+		let user_channel_id = 1u128;
+		let channel_id = ChannelId([1; 32]);
+		let created_at = Some(LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap());
+
+		let mut jit_channel = OutboundJITChannel::new(
+			Some(1_000_000),
+			make_test_opening_fee_params(),
+			user_channel_id,
+			false,
+			created_at,
+		);
+
+		// Drive the channel through to PaymentForwarded state.
+		let htlc = InterceptedHTLC {
+			intercept_id: InterceptId([0; 32]),
+			expected_outbound_amount_msat: 1_000_000,
+			payment_hash: PaymentHash([1; 32]),
+		};
+		let action = jit_channel.htlc_intercepted(htlc).unwrap();
+		assert!(matches!(action, Some(HTLCInterceptedAction::OpenChannel(_))));
+		jit_channel.channel_ready(channel_id).unwrap();
+		// Provide enough fee to transition to PaymentForwarded.
+		jit_channel.payment_forwarded(1_000).unwrap();
+
+		// Build a minimal PeerState with the channel and auxiliary maps.
+		let mut peer_state = PeerState::new();
+		peer_state.outbound_channels_by_intercept_scid.insert(intercept_scid, jit_channel);
+		peer_state.intercept_scid_by_user_channel_id.insert(user_channel_id, intercept_scid);
+		peer_state.intercept_scid_by_channel_id.insert(channel_id, intercept_scid);
+
+		// Confirm the channel is in PaymentForwarded state.
+		assert!(matches!(
+			peer_state.outbound_channels_by_intercept_scid.get(&intercept_scid).unwrap().state,
+			OutboundJITChannelState::PaymentForwarded { .. }
+		));
+
+		let now = LSPSDateTime::from_str("2026-01-01T00:00:00Z").unwrap();
+		let removed = peer_state.prune_terminal_channels(&now, Duration::ZERO);
+
+		// The channel and both auxiliary maps must be fully cleaned up.
+		assert_eq!(removed, vec![(intercept_scid, channel_id)]);
+		assert!(peer_state.outbound_channels_by_intercept_scid.is_empty());
+		assert!(peer_state.intercept_scid_by_channel_id.is_empty());
+		assert!(peer_state.intercept_scid_by_user_channel_id.is_empty());
+		assert!(peer_state.needs_persist);
+	}
+
+	// Verify that prune_terminal_channels leaves non-terminal channels untouched.
+	#[test]
+	fn test_peer_state_prune_channel_non_terminal_rejected() {
+		let intercept_scid = 99u64;
+		let user_channel_id = 2u128;
+		let created_at = Some(LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap());
+		let jit_channel = OutboundJITChannel::new(
+			Some(500_000),
+			make_test_opening_fee_params(),
+			user_channel_id,
+			false,
+			created_at,
+		);
+
+		// Channel is in PendingInitialPayment — a non-terminal state.
+		assert!(matches!(jit_channel.state, OutboundJITChannelState::PendingInitialPayment { .. }));
+
+		let mut peer_state = PeerState::new();
+		peer_state.outbound_channels_by_intercept_scid.insert(intercept_scid, jit_channel);
+
+		let now = LSPSDateTime::from_str("2026-01-01T00:00:00Z").unwrap();
+		let removed = peer_state.prune_terminal_channels(&now, Duration::ZERO);
+
+		assert!(removed.is_empty(), "PendingInitialPayment must not be pruned");
+		assert!(!peer_state.outbound_channels_by_intercept_scid.is_empty());
 	}
 }

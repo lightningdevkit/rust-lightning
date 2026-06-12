@@ -256,10 +256,14 @@ impl LSPSDateTime {
 		now_seconds_since_epoch > datetime_seconds_since_epoch
 	}
 
-	/// Returns the absolute difference between two datetimes as a `Duration`.
+	/// Returns how long ago `other` occurred relative to `self`, saturating at zero.
+	///
+	/// Returns [`Duration::ZERO`] when `self <= other` (e.g. clock skew pushed `other` into
+	/// the apparent future), so callers treating the result as an age never get a spuriously
+	/// large value.
 	pub fn duration_since(&self, other: &Self) -> Duration {
-		let diff_secs = self.0.timestamp().abs_diff(other.0.timestamp());
-		Duration::from_secs(diff_secs)
+		let diff_secs = self.0.timestamp().saturating_sub(other.0.timestamp());
+		Duration::from_secs(diff_secs.max(0) as u64)
 	}
 
 	/// Returns the time in seconds since the unix epoch.
@@ -980,5 +984,21 @@ mod tests {
 		expected_datetime.write(&mut buf).unwrap();
 		let decoded_datetime: LSPSDateTime = Readable::read(&mut Cursor::new(buf)).unwrap();
 		assert_eq!(expected_datetime, decoded_datetime);
+	}
+
+	#[test]
+	fn datetime_duration_since_normal() {
+		let earlier = LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap();
+		let later = LSPSDateTime::from_str("2024-01-01T01:00:00Z").unwrap();
+		assert_eq!(later.duration_since(&earlier), Duration::from_secs(3600));
+	}
+
+	#[test]
+	fn datetime_duration_since_clock_skew_saturates_to_zero() {
+		// When `other` is in the apparent future relative to `self` (clock skew),
+		// duration_since must return Duration::ZERO rather than an erroneously large value.
+		let earlier = LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap();
+		let later = LSPSDateTime::from_str("2024-01-01T01:00:00Z").unwrap();
+		assert_eq!(earlier.duration_since(&later), Duration::ZERO);
 	}
 }

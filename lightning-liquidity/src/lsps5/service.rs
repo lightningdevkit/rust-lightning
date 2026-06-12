@@ -31,6 +31,7 @@ use lightning::impl_ser_tlv_based;
 use lightning::ln::channelmanager::AChannelManager;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::NodeSigner;
+use lightning::util::errors::APIError;
 use lightning::util::logger::Level;
 use lightning::util::persist::KVStore;
 use lightning::util::ser::Writeable;
@@ -593,6 +594,38 @@ where
 		self.send_notifications_to_client_webhooks(client_id, notification)
 	}
 
+	/// Removes a specific webhook registration for a client.
+	///
+	/// This can be used to prune webhook state for a client that is no longer active or whose
+	/// webhooks are no longer relevant, complementing the automatic 30-day stale webhook pruning.
+	/// The state change will be persisted on the next call to [`LiquidityManager::persist`].
+	///
+	/// Returns an [`APIError::APIMisuseError`] if the client has no registered state or no
+	/// webhook with the given `app_name` is registered for that client.
+	///
+	/// [`LiquidityManager::persist`]: crate::LiquidityManager::persist
+	pub fn prune_webhook(
+		&self, counterparty_node_id: PublicKey, app_name: &LSPS5AppName,
+	) -> Result<(), APIError> {
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		match outer_state_lock.get_mut(&counterparty_node_id) {
+			Some(peer_state) => {
+				if !peer_state.remove_webhook(app_name) {
+					return Err(APIError::APIMisuseError {
+						err: format!(
+							"No webhook with app_name '{}' registered for counterparty {}",
+							app_name, counterparty_node_id
+						),
+					});
+				}
+				Ok(())
+			},
+			None => Err(APIError::APIMisuseError {
+				err: format!("No existing state with counterparty {}", counterparty_node_id),
+			}),
+		}
+	}
+
 	fn send_notifications_to_client_webhooks(
 		&self, client_id: PublicKey, notification: WebhookNotification,
 	) -> Result<(), LSPS5ProtocolError> {
@@ -799,7 +832,9 @@ impl PeerState {
 				false
 			}
 		});
-		self.needs_persist |= true;
+		if removed {
+			self.needs_persist = true;
+		}
 		removed
 	}
 
