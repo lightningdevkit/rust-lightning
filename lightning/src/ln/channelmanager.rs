@@ -15075,13 +15075,13 @@ impl<
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		self.flow.enqueue_invoice_request(
-			invoice_request.clone(), payment_id, nonce,
+			invoice_request.clone(), payment_id,
 			self.get_peers_for_blinded_path()
 		)?;
 
 		let retryable_invoice_request = RetryableInvoiceRequest {
 			invoice_request: invoice_request.clone(),
-			nonce,
+			nonce: Some(nonce),
 			needs_retry: true,
 		};
 
@@ -17231,11 +17231,11 @@ impl<
 		for (payment_id, retryable_invoice_request) in
 			self.pending_outbound_payments.release_invoice_requests_awaiting_invoice()
 		{
-			let RetryableInvoiceRequest { invoice_request, nonce, .. } = retryable_invoice_request;
+			let RetryableInvoiceRequest { invoice_request, .. } = retryable_invoice_request;
 
 			let peers = self.get_peers_for_blinded_path();
 			let enqueue_invreq_res =
-				self.flow.enqueue_invoice_request(invoice_request, payment_id, nonce, peers);
+				self.flow.enqueue_invoice_request(invoice_request, payment_id, peers);
 			if enqueue_invreq_res.is_err() {
 				log_warn!(
 					self.logger,
