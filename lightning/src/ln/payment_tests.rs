@@ -4189,6 +4189,7 @@ fn test_threaded_payment_retries() {
 		payment_params,
 		final_value_msat: amt_msat,
 		max_total_routing_fee_msat: Some(500_000),
+		background_probe: false,
 	};
 
 	let mut route = Route {
@@ -5944,6 +5945,7 @@ fn bolt11_multi_node_mpp_with_retry() {
 		final_value_msat: node_a_payment_amt,
 		payment_params: retry_payment_params,
 		max_total_routing_fee_msat: route_params.max_total_routing_fee_msat,
+		background_probe: false,
 	};
 	route.route_params = Some(retry_route_params.clone());
 	nodes[0].router.expect_find_route(retry_route_params, Ok(route));

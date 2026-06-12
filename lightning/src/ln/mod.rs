@@ -106,6 +106,9 @@ mod payment_tests;
 #[allow(unused_mut)]
 mod priv_short_conf_tests;
 #[cfg(test)]
+#[allow(unused_mut)]
+mod probing_tests;
+#[cfg(test)]
 mod quiescence_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
