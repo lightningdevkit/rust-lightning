@@ -1309,6 +1309,7 @@ fn creates_and_pays_for_offer_with_retry() {
 
 /// Checks that a deferred invoice can be paid asynchronously from an Event::InvoiceReceived.
 #[test]
+#[allow(deprecated)] // Tests the deprecated send_payment_for_bolt12_invoice.
 fn pays_bolt12_invoice_asynchronously() {
 	let mut manually_pay_cfg = test_default_channel_config();
 	manually_pay_cfg.manually_handle_bolt12_invoices = true;
@@ -2675,4 +2676,262 @@ fn creates_and_pays_for_phantom_offer() {
 		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).is_none());
 		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).is_none());
 	}
+}
+
+/// Checks that a BOLT 12 invoice can be paid via [`ChannelManager::pay_for_bolt12_invoice`]
+/// without requiring a prior LDK-managed payment request.
+#[test]
+fn pay_for_bolt12_invoice_with_fresh_payment_id() {
+	let mut manually_pay_cfg = test_default_channel_config();
+	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_pay_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	// Use the standard offer flow to obtain an invoice, but pay it via the new API with a
+	// fresh payment_id rather than the one from the original request.
+	let orig_payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+	});
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let invoice = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { invoice, .. } => invoice,
+		_ => panic!("Expected InvoiceReceived"),
+	};
+
+	// Abandon the original payment since we're paying via a fresh payment_id below.
+	bob.node.abandon_payment(orig_payment_id);
+	get_event!(bob, Event::PaymentFailed);
+
+	let payment_id = PaymentId([2; 32]);
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks error cases for [`ChannelManager::pay_for_bolt12_invoice`]:
+/// zero amount and overpaying return [`Bolt12PaymentError::InvalidAmount`], re-using a
+/// payment_id returns [`Bolt12PaymentError::DuplicateInvoice`].
+#[test]
+fn pay_for_bolt12_invoice_error_cases() {
+	let mut manually_pay_cfg = test_default_channel_config();
+	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_pay_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	let orig_payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
+
+	let invoice_request_onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &invoice_request_onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &invoice_request_onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: InvoiceRequestFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+	});
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let invoice = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { invoice, .. } => invoice,
+		_ => panic!("Expected InvoiceReceived"),
+	};
+
+	bob.node.abandon_payment(orig_payment_id);
+	get_event!(bob, Event::PaymentFailed);
+
+	let payment_id = PaymentId([2; 32]);
+
+	// Zero amount is rejected.
+	let zero_amount_params = channelmanager::OptionalBolt12PaymentParams {
+		amount_msats: Some(0),
+		..Default::default()
+	};
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, zero_amount_params),
+		Err(Bolt12PaymentError::InvalidAmount),
+	);
+
+	// Overpaying is rejected before any state is inserted.
+	let overpay_params = channelmanager::OptionalBolt12PaymentParams {
+		amount_msats: Some(invoice.amount_msats() + 1),
+		..Default::default()
+	};
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, overpay_params),
+		Err(Bolt12PaymentError::InvalidAmount),
+	);
+
+	// First call succeeds and starts the payment.
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Default::default()).unwrap();
+
+	// Re-using the same payment_id is rejected.
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Default::default()),
+		Err(Bolt12PaymentError::DuplicateInvoice),
+	);
+
+	// Creating an invoice with unknown required features should be rejected.
+	let expanded_key = alice.keys_manager.get_expanded_key();
+	let secp_ctx = Secp256k1::new();
+	let created_at = alice.node.duration_since_epoch();
+	let nonce = extract_offer_nonce(alice, &invoice_request_onion_message);
+	let verified_invoice_request = invoice_request
+		.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx).unwrap();
+
+	let unknown_features_invoice = match verified_invoice_request {
+		InvoiceRequestVerifiedFromOffer::DerivedKeys(request) => {
+			request.respond_using_derived_keys_no_std(invoice.payment_paths().to_vec(), invoice.payment_hash(), created_at).unwrap()
+				.features_unchecked(Bolt12InvoiceFeatures::unknown())
+				.build_and_sign(&secp_ctx).unwrap()
+		},
+		InvoiceRequestVerifiedFromOffer::ExplicitKeys(_) => {
+			panic!("Expected invoice request with keys");
+		},
+	};
+
+	let unknown_features_payment_id = PaymentId([3; 32]);
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&unknown_features_invoice, unknown_features_payment_id, Default::default()),
+		Err(Bolt12PaymentError::UnknownRequiredFeatures),
+	);
+
+	route_bolt12_payment(bob, &[alice], &invoice);
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that pay_for_bolt12_invoice with a partial amount routes an HTLC for the partial
+/// amount while setting total_mpp_amount_msat to the full invoice amount in the onion, so the
+/// recipient holds the HTLC awaiting additional parts until the full amount arrives.
+#[test]
+fn pay_for_bolt12_invoice_partial_amount() {
+	let mut manually_pay_cfg = test_default_channel_config();
+	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(manually_pay_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let invoice_amount = 10_000_000u64;
+	let partial_amount = 5_000_000u64;
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(invoice_amount)
+		.build().unwrap();
+
+	let orig_payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let invoice = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { invoice, .. } => invoice,
+		_ => panic!("Expected InvoiceReceived"),
+	};
+
+	bob.node.abandon_payment(orig_payment_id);
+	get_event!(bob, Event::PaymentFailed);
+
+	let payment_hash = invoice.payment_hash();
+	let payment_id = PaymentId([2; 32]);
+
+	let params = channelmanager::OptionalBolt12PaymentParams {
+		amount_msats: Some(partial_amount),
+		retry_strategy: Retry::Attempts(0),
+		..Default::default()
+	};
+	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, params).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	check_added_monitors(bob, 1);
+	let mut events = bob.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&alice_id, &mut events);
+
+	// The HTLC carries the partial amount, not the full invoice amount.
+	if let crate::ln::msgs::MessageSendEvent::UpdateHTLCs { ref updates, .. } = ev {
+		assert_eq!(updates.update_add_htlcs[0].amount_msat, partial_amount);
+	} else {
+		panic!("Expected UpdateHTLCs");
+	}
+
+	do_pass_along_path(
+		PassAlongPathArgs::new(bob, &[alice], partial_amount, payment_hash, ev)
+			.without_clearing_recipient_events()
+			.without_claimable_event()
+			.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS])
+	);
+
+	// Alice has not emitted PaymentClaimable: total_mpp_amount_msat in the onion equals the
+	// full invoice amount (10M), so she waits for the remaining 5M before settling.
+	assert!(alice.node.get_and_clear_pending_events().is_empty());
 }

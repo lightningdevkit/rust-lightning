@@ -757,6 +757,41 @@ impl Default for OptionalBolt11PaymentParams {
 	}
 }
 
+/// Optional arguments to [`ChannelManager::pay_for_bolt12_invoice`].
+///
+/// These fields will often not need to be set, and the provided [`Self::default`] can be used.
+pub struct OptionalBolt12PaymentParams {
+	/// The amount this node contributes to the payment. Set to `None` to pay the full invoice
+	/// amount.
+	///
+	/// For payments split across multiple senders, provide a partial amount here — the onion total
+	/// is always set to the full invoice amount so that the recipient can correctly validate the
+	/// payment.
+	pub amount_msats: Option<u64>,
+	/// Pathfinding options which tweak how the path is constructed to the recipient.
+	pub route_params_config: RouteParametersConfig,
+	/// The number of tries or time during which we'll retry this payment if some paths to the
+	/// recipient fail.
+	///
+	/// Once the retry limit is reached, further path failures will not be retried and the payment
+	/// will ultimately fail once all pending paths have failed (generating an
+	/// [`Event::PaymentFailed`]).
+	pub retry_strategy: Retry,
+}
+
+impl Default for OptionalBolt12PaymentParams {
+	fn default() -> Self {
+		Self {
+			amount_msats: None,
+			route_params_config: Default::default(),
+			#[cfg(feature = "std")]
+			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
+			#[cfg(not(feature = "std"))]
+			retry_strategy: Retry::Attempts(3),
+		}
+	}
+}
+
 /// Optional arguments to [`ChannelManager::pay_for_offer`].
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
@@ -5819,6 +5854,10 @@ impl<
 	/// whether or not the payment was successful.
 	///
 	/// [timer tick]: Self::timer_tick_occurred
+	#[deprecated(
+		since = "0.3.0",
+		note = "Use ChannelManager::pay_for_bolt12_invoice instead, providing a fresh payment_id and verifying the invoice yourself."
+	)]
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
@@ -5837,6 +5876,47 @@ impl<
 		self.pending_outbound_payments.send_payment_for_bolt12_invoice(
 			invoice,
 			payment_id,
+			&self.router,
+			self.list_usable_channels(),
+			features,
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			&self,
+			&self.secp_ctx,
+			best_block_height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+			&WithContext::for_payment(&self.logger, None, None, None, payment_id),
+		)
+	}
+
+	/// Pays a [`Bolt12Invoice`] without requiring it to have been requested through LDK.
+	///
+	/// Unlike [`ChannelManager::send_payment_for_bolt12_invoice`], this method does not verify
+	/// that the invoice was previously requested. The caller is responsible for invoice
+	/// verification and for providing a unique `payment_id`.
+	///
+	/// The amount this node contributes to the payment can be set via
+	/// [`OptionalBolt12PaymentParams::amount_msats`], which defaults to the full invoice amount.
+	///
+	/// Returns [`Bolt12PaymentError::DuplicateInvoice`] if a payment with the given `payment_id`
+	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if the requested amount is zero
+	/// or exceeds the invoice amount.
+	///
+	/// Either [`Event::PaymentSent`] or [`Event::PaymentFailed`] will be generated once the
+	/// payment completes.
+	pub fn pay_for_bolt12_invoice(
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
+		optional_params: OptionalBolt12PaymentParams,
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let features = self.bolt12_invoice_features();
+		self.pending_outbound_payments.pay_for_bolt12_invoice(
+			invoice,
+			payment_id,
+			optional_params,
 			&self.router,
 			self.list_usable_channels(),
 			features,
@@ -17281,6 +17361,11 @@ impl<
 						let err_msg = "Failed to create a blinded path back to ourselves";
 						log_trace!($logger, "{}", err_msg);
 						InvoiceError::from_string(err_msg.to_string())
+					},
+					Err(Bolt12PaymentError::InvalidAmount) => {
+						debug_assert!(false, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
+						log_error!($logger, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
+						return None
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)

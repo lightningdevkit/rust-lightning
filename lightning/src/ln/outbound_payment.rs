@@ -18,8 +18,8 @@ use crate::blinded_path::{IntroductionNode, NodeIdLookUp};
 use crate::events::{self, PaidBolt12Invoice, PaymentFailureReason};
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::channelmanager::{
-	EventCompletionAction, HTLCSource, OptionalBolt11PaymentParams, PaymentCompleteUpdate,
-	PaymentId,
+	EventCompletionAction, HTLCSource, OptionalBolt11PaymentParams, OptionalBolt12PaymentParams,
+	PaymentCompleteUpdate, PaymentId,
 };
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
@@ -663,6 +663,12 @@ pub enum Bolt12PaymentError {
 	DuplicateInvoice,
 	/// The invoice was valid for the corresponding [`PaymentId`], but required unknown features.
 	UnknownRequiredFeatures,
+	/// Incorrect amount was provided to [`ChannelManager::pay_for_bolt12_invoice`].
+	///
+	/// This occurs when `amount_msats` is zero or exceeds the invoice amount.
+	///
+	/// [`ChannelManager::pay_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt12_invoice
+	InvalidAmount,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
 	/// Failed to create a blinded path back to ourselves.
@@ -1130,9 +1136,70 @@ impl OutboundPayments {
 		}
 		let invoice = PaidBolt12Invoice::Bolt12Invoice(invoice.clone());
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy, false, router,
-			first_hops, inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx,
+			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy, false, None,
+			router, first_hops, inflight_htlcs, entropy_source, node_signer, node_id_lookup, secp_ctx,
 			best_block_height, pending_events, send_payment_along_path, logger,
+		)
+	}
+
+	#[rustfmt::skip]
+	pub(super) fn pay_for_bolt12_invoice<
+		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP, L: Logger,
+	>(
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
+		optional_params: OptionalBolt12PaymentParams,
+		router: &R, first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
+		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP, logger: &WithContext<L>,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
+		let OptionalBolt12PaymentParams { amount_msats, retry_strategy, route_params_config } = optional_params;
+
+		let invoice_amount = invoice.amount_msats();
+		let send_amount = amount_msats.unwrap_or(invoice_amount);
+
+		if send_amount == 0 || send_amount > invoice_amount {
+			return Err(Bolt12PaymentError::InvalidAmount);
+		}
+
+		if invoice.invoice_features().requires_unknown_bits_from(&features) {
+			return Err(Bolt12PaymentError::UnknownRequiredFeatures);
+		}
+
+		let payment_hash = invoice.payment_hash();
+
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(_) => return Err(Bolt12PaymentError::DuplicateInvoice),
+			hash_map::Entry::Vacant(entry) => {
+				entry.insert(PendingOutboundPayment::InvoiceReceived {
+					payment_hash,
+					retry_strategy,
+					route_params_config,
+				});
+			},
+		}
+
+		let mut route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_bolt12_invoice(invoice)
+				.with_user_config_ignoring_fee_limit(route_params_config),
+			send_amount,
+		);
+		if let Some(max_fee_msat) = route_params_config.max_total_routing_fee_msat {
+			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+		}
+		// The onion total must always reflect the full invoice amount so that the recipient can
+		// correctly validate MPP payments, including when this node pays only a partial amount.
+		let invoice = PaidBolt12Invoice::Bolt12Invoice(invoice.clone());
+		self.send_payment_for_bolt12_invoice_internal(
+			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy,
+			false, Some(invoice_amount), router, first_hops, inflight_htlcs,
+			entropy_source, node_signer, node_id_lookup, secp_ctx, best_block_height,
+			pending_events, send_payment_along_path, logger,
 		)
 	}
 
@@ -1143,7 +1210,8 @@ impl OutboundPayments {
 		&self, payment_id: PaymentId, payment_hash: PaymentHash,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<&InvoiceRequest>,
 		bolt12_invoice: PaidBolt12Invoice,
-		mut route_params: RouteParameters, retry_strategy: Retry, hold_htlcs_at_next_hop: bool, router: &R,
+		mut route_params: RouteParameters, retry_strategy: Retry, hold_htlcs_at_next_hop: bool,
+		total_mpp_amount_msat_override: Option<u64>, router: &R,
 		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
 		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
@@ -1175,7 +1243,7 @@ impl OutboundPayments {
 			payment_secret: None,
 			payment_metadata: None,
 			custom_tlvs: vec![],
-			total_mpp_amount_msat: route_params.final_value_msat,
+			total_mpp_amount_msat: total_mpp_amount_msat_override.unwrap_or(route_params.final_value_msat),
 		};
 		let route = match self.find_initial_route(
 			payment_id, payment_hash, &recipient_onion, keysend_preimage, invoice_request,
@@ -1411,6 +1479,7 @@ impl OutboundPayments {
 			route_params,
 			retry_strategy,
 			hold_htlcs_at_next_hop,
+			None,
 			router,
 			first_hops,
 			inflight_htlcs,
