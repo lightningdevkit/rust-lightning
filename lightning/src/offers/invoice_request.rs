@@ -78,7 +78,7 @@ use crate::offers::merkle::{
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
 	Amount, ExperimentalOfferTlvStream, ExperimentalOfferTlvStreamRef, Offer, OfferContents,
-	OfferId, OfferTlvStream, OfferTlvStreamRef, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+	OfferId, OfferTlvStream, OfferTlvStreamRef, Recurrence, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 };
 use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::{PayerContents, PayerTlvStream, PayerTlvStreamRef};
@@ -91,10 +91,13 @@ use crate::util::ser::{
 	CursorReadable, HighZeroBytesDroppedBigSize, LengthLimitedRead, LengthReadable, Readable,
 	WithoutLength, Writeable, Writer,
 };
+
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{self, Keypair, PublicKey, Secp256k1};
+
+use core::time::Duration;
 
 #[cfg(not(c_bindings))]
 use crate::offers::invoice::InvoiceBuilder;
@@ -183,10 +186,11 @@ macro_rules! invoice_request_builder_methods { (
 	#[cfg_attr(c_bindings, allow(dead_code))]
 	fn create_contents(offer: &Offer, metadata: Metadata) -> InvoiceRequestContentsWithoutPayerSigningPubkey {
 		let offer = offer.contents.clone();
+
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
-			offer_from_hrn: None,
+			offer_from_hrn: None, invoice_request_recurrence: None,
 			#[cfg(test)]
 			experimental_bar: None,
 		}
@@ -255,6 +259,18 @@ macro_rules! invoice_request_builder_methods { (
 		$return_value
 	}
 
+	/// Sets all recurrence-related fields for this invoice request in one call.
+	///
+	/// `invoice_request_recurrence` must match the offer's recurrence configuration. Use
+	/// [`InvoiceRequestRecurrence::WithOfferBasetime`] for offers with an explicit recurrence
+	/// basetime and [`InvoiceRequestRecurrence::WithoutOfferBasetime`] otherwise.
+	///
+	/// Successive calls override the previous setting.
+	pub fn set_invoice_request_recurrence($($self_mut)* $self: $self_type, invoice_request_recurrence: InvoiceRequestRecurrence) -> $return_type {
+		$self.invoice_request.invoice_request_recurrence = Some(invoice_request_recurrence);
+		$return_value
+	}
+
 	fn build_with_checks($($self_mut)* $self: $self_type) -> Result<
 		(UnsignedInvoiceRequest, Option<Keypair>, Option<&'b Secp256k1<$secp_context>>),
 		Bolt12SemanticError
@@ -276,6 +292,25 @@ macro_rules! invoice_request_builder_methods { (
 
 		if $self.offer.amount().is_none() && $self.invoice_request.amount_msats.is_none() {
 			return Err(Bolt12SemanticError::MissingAmount);
+		}
+
+		// Ensure the invoice request recurrence form matches the offer's recurrence configuration.
+		match ($self.offer.offer_recurrence(), &$self.invoice_request.invoice_request_recurrence) {
+			(None, None) => (),
+			(
+				Some(Recurrence::Compulsory { base: Some(_), .. }),
+				Some(InvoiceRequestRecurrence::WithOfferBasetime { .. })
+			) => (),
+			(
+				Some(Recurrence::Compulsory { base: None, .. }),
+				Some(InvoiceRequestRecurrence::WithoutOfferBasetime { .. })
+			) => (),
+			(
+				Some(Recurrence::Optional { .. }),
+				None | Some(InvoiceRequestRecurrence::WithoutOfferBasetime { .. })
+			) => (),
+
+			_ => return Err(Bolt12SemanticError::InvalidRecurrence),
 		}
 
 		$self.invoice_request.offer.check_quantity($self.invoice_request.quantity)?;
@@ -609,6 +644,8 @@ pub struct VerifiedInvoiceRequest<S: SigningPubkeyStrategy> {
 	/// The verified request.
 	pub(crate) inner: InvoiceRequest,
 
+	pub(crate) resolved_basetime: Option<u64>,
+
 	/// Keys for signing a [`Bolt12Invoice`] for the request.
 	///
 	#[cfg_attr(
@@ -675,6 +712,94 @@ pub(super) struct InvoiceRequestContents {
 	payer_signing_pubkey: PublicKey,
 }
 
+/// Recurrence-specific fields carried by an [`InvoiceRequest`].
+///
+/// These fields identify which recurring request this is and, when present, echo opaque
+/// payee-authored state from previous invoice into next recurring request.
+///
+/// `counter` always identifies payer's own recurring request number. When offer has explicit
+/// basetime, schedule period index is:
+///     period_index = start + counter
+///
+/// `token`, when present, is exact byte string chosen by payee in previous invoice and echoed
+/// back unchanged by payer. Payer must not interpret or modify it.
+///
+/// `cancel` marks request as recurrence cancellation and is invalid on first recurring request
+/// (`counter = 0`).
+///
+/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum InvoiceRequestRecurrence {
+	/// Recurrence fields for offers with an explicit recurrence basetime.
+	WithOfferBasetime(WithOfferBasetimeRecurrence),
+	/// Recurrence fields for offers without an explicit recurrence basetime.
+	WithoutOfferBasetime(WithoutOfferBasetimeRecurrence),
+}
+
+/// Recurrence fields for invoice requests whose offer recurrence is anchored to an explicit
+/// basetime.
+///
+/// `counter` identifies which recurring request this is in the payer's sequence. `start`
+/// identifies the schedule period where the payer began recurring payments. `token`, when
+/// present, is the opaque recurrence token echoed from the previous invoice. `cancel`, when
+/// present, marks the request as a recurrence cancellation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithOfferBasetimeRecurrence {
+	counter: u32,
+	start: u32,
+	token: Option<Vec<u8>>,
+	cancel: Option<()>,
+}
+
+/// Recurrence fields for invoice requests whose offer recurrence is anchored to the first
+/// successful payment instead of an explicit basetime.
+///
+/// `counter` identifies which recurring request this is in the payer's sequence. `token`, when
+/// present, is the opaque recurrence token echoed from the previous invoice. `cancel`, when
+/// present, marks the request as a recurrence cancellation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WithoutOfferBasetimeRecurrence {
+	counter: u32,
+	token: Option<Vec<u8>>,
+	cancel: Option<()>,
+}
+
+impl InvoiceRequestRecurrence {
+	pub(crate) fn new(
+		recurrence_counter: Option<u32>, recurrence_start: Option<u32>,
+		recurrence_token: Option<Vec<u8>>, recurrence_cancel: Option<()>,
+	) -> Result<Option<Self>, ()> {
+		match (recurrence_counter, recurrence_start, recurrence_token, recurrence_cancel) {
+			(None, None, None, None) => Ok(None),
+			// Primary invoice requests (counter 0) cannot include token or cancellation state.
+			(Some(0), _, Some(_), _) | (Some(0), _, _, Some(_)) => Err(()),
+			(Some(counter), Some(start), token, cancel) => {
+				let inner = WithOfferBasetimeRecurrence { counter, start, token, cancel };
+				Ok(Some(Self::WithOfferBasetime(inner)))
+			},
+			(Some(counter), None, token, cancel) => {
+				let inner = WithoutOfferBasetimeRecurrence { counter, token, cancel };
+				Ok(Some(Self::WithoutOfferBasetime(inner)))
+			},
+			_ => Err(()),
+		}
+	}
+
+	pub(crate) fn fields(&self) -> (Option<u32>, Option<u32>, Option<&Vec<u8>>, Option<&()>) {
+		match self {
+			Self::WithOfferBasetime(inner) => (
+				Some(inner.counter),
+				Some(inner.start),
+				inner.token.as_ref(),
+				inner.cancel.as_ref(),
+			),
+			Self::WithoutOfferBasetime(inner) => {
+				(Some(inner.counter), None, inner.token.as_ref(), inner.cancel.as_ref())
+			},
+		}
+	}
+}
+
 #[derive(Clone, Debug)]
 #[cfg_attr(test, derive(PartialEq))]
 pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
@@ -686,6 +811,22 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	quantity: Option<u64>,
 	payer_note: Option<String>,
 	offer_from_hrn: Option<HumanReadableName>,
+	/// Recurrence fields for this invoice request.
+	///
+	/// `counter` identifies which recurring invoice request this is in the payer's own sequence.
+	/// It does not necessarily equal the schedule period index.
+	///
+	/// When `start` is present, the schedule period index is:
+	///     period_index = recurrence_start + recurrence_counter
+	///
+	/// `start` is only meaningful when the offer defines an explicit recurrence basetime. For
+	/// example, a monthly schedule anchored on January 1st would use `start = 3` to begin on April
+	/// 1st.
+	///
+	/// `cancel` marks this as a recurrence cancellation request. It is invalid on the first
+	/// recurring request (`counter = 0`). `token` is a speculative opaque echo field from the
+	/// previous invoice and is likewise invalid on the first recurring request.
+	invoice_request_recurrence: Option<InvoiceRequestRecurrence>,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
 }
@@ -736,6 +877,11 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 		$contents.payer_signing_pubkey()
 	}
 
+	/// Recurrence fields copied from this invoice request, if it belongs to a recurring offer.
+	pub fn invoice_request_recurrence(&$self) -> &Option<InvoiceRequestRecurrence> {
+		$contents.invoice_request_recurrence()
+	}
+
 	/// A payer-provided note which will be seen by the recipient and reflected back in the invoice
 	/// response.
 	pub fn payer_note(&$self) -> Option<PrintableString<'_>> {
@@ -754,8 +900,42 @@ impl UnsignedInvoiceRequest {
 	invoice_request_accessors!(self, self.contents);
 }
 
+macro_rules! invoice_request_recurrence_methods { (
+	$self: ident, $contents: expr
+) => {
+		pub(crate) fn recurrence_basetime(
+			&$self, created_at: Duration, resolved_basetime: Option<u64>,
+		) -> Result<Option<u64>, Bolt12SemanticError> {
+			let offer_recurrence = match $self.offer_recurrence() {
+				Some(offer_recurrence) => offer_recurrence,
+				None => return Ok(None),
+			};
+
+			let offer_base = match offer_recurrence {
+				Recurrence::Optional { .. } => None,
+				Recurrence::Compulsory { base, .. } => base,
+			};
+
+			let recurrence_counter = $contents
+				.invoice_request_recurrence()
+				.as_ref()
+				.and_then(|recurrence| recurrence.fields().0);
+
+			match (offer_base, recurrence_counter) {
+				(Some(base), _) => Ok(Some(base.basetime)),
+				(None, Some(0)) => Ok(Some(created_at.as_secs())),
+				(None, Some(_)) => {
+					resolved_basetime
+						.map(Some)
+						.ok_or(Bolt12SemanticError::InvalidMetadata)
+				},
+				(None, None) => Ok(Some(created_at.as_secs())),
+			}
+		}
+}; }
+
 macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
-	$self: ident, $contents: expr, $builder: ty
+	$self: ident, $contents: expr, $basetime: expr, $builder: ty
 ) => {
 	/// Creates an [`InvoiceBuilder`] for the request with the given required fields and using the
 	/// [`Duration`] since [`std::time::SystemTime::UNIX_EPOCH`] as the creation time.
@@ -813,7 +993,9 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		};
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		let recurrence_basetime = $self.recurrence_basetime(created_at, $basetime)?;
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, recurrence_basetime, payment_hash, signing_pubkey)
 	}
 
 	#[cfg(test)]
@@ -828,14 +1010,34 @@ macro_rules! invoice_request_respond_with_explicit_signing_pubkey_methods { (
 			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
 		}
 
-		<$builder>::for_offer(&$contents, payment_paths, created_at, payment_hash, signing_pubkey)
+		let recurrence_basetime = $self.recurrence_basetime(created_at, $basetime)?;
+
+		<$builder>::for_offer(&$contents, payment_paths, created_at, recurrence_basetime, payment_hash, signing_pubkey)
 	}
 } }
 
 macro_rules! invoice_request_verify_method {
 	($self: ident, $self_type: ty) => {
+		/// Verifies the speculative recurrence token echoed by the payer and resolves the recurrence
+		/// basetime to reuse for subsequent invoices.
+		///
+		/// Returns `Ok(None)` when the request carries no recurrence token.
+		// Token validation and basetime recovery for token-carrying requests are deferred to follow-up work.
+		pub(crate) fn verify_recurrence_token(
+			$self: &$self_type, _key: &ExpandedKey,
+		) -> Result<Option<u64>, ()> {
+			let recurrence_token =
+				$self.invoice_request_recurrence().as_ref().and_then(|rec| rec.fields().2);
+
+			if recurrence_token.is_some() {
+				// TODO: "Token verification and basetime resolve logic to be implemented in follow-up commits."
+				Err(())
+			} else {
+				Ok(None)
+			}
+		}
 /// Verifies that the request was for an offer created using the given key by checking the
-	/// metadata from the offer.
+			/// metadata from the offer.
 	///
 	/// Returns the verified request which contains the derived keys needed to sign a
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
@@ -861,15 +1063,19 @@ macro_rules! invoice_request_verify_method {
 			{ $self.clone() }
 		};
 
+		let resolved_basetime = inner.verify_recurrence_token(key)?;
+
 		let verified = match keys {
 			None => InvoiceRequestVerifiedFromOffer::ExplicitKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: ExplicitSigningPubkey {},
 			}),
 			Some(keys) => InvoiceRequestVerifiedFromOffer::DerivedKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: DerivedSigningPubkey(keys),
 			}),
 		};
@@ -878,7 +1084,7 @@ macro_rules! invoice_request_verify_method {
 	}
 
 /// Verifies that the request was for an offer created using the given key by checking a nonce
-	/// included with the [`BlindedMessagePath`] for which the request was sent through.
+			/// included with the [`BlindedMessagePath`] for which the request was sent through.
 	///
 	/// Returns the verified request which contains the derived keys needed to sign a
 	/// [`Bolt12Invoice`] for the request if they could be extracted from the metadata.
@@ -906,15 +1112,19 @@ macro_rules! invoice_request_verify_method {
 			{ $self.clone() }
 		};
 
+		let resolved_basetime = inner.verify_recurrence_token(key)?;
+
 		let verified = match keys {
 			None => InvoiceRequestVerifiedFromOffer::ExplicitKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: ExplicitSigningPubkey {},
 			}),
 			Some(keys) => InvoiceRequestVerifiedFromOffer::DerivedKeys(VerifiedInvoiceRequest {
 				offer_id,
 				inner,
+				resolved_basetime,
 				keys: DerivedSigningPubkey(keys),
 			}),
 		};
@@ -928,9 +1138,12 @@ macro_rules! invoice_request_verify_method {
 impl InvoiceRequest {
 	offer_accessors!(self, self.contents.inner.offer);
 	invoice_request_accessors!(self, self.contents);
+	invoice_request_recurrence_methods!(self, self.contents);
+
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self,
+		None,
 		InvoiceBuilder<'_, ExplicitSigningPubkey>
 	);
 	invoice_request_verify_method!(self, Self);
@@ -945,9 +1158,12 @@ impl InvoiceRequest {
 impl InvoiceRequest {
 	offer_accessors!(self, self.contents.inner.offer);
 	invoice_request_accessors!(self, self.contents);
+	invoice_request_recurrence_methods!(self, self.contents);
+
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self,
+		None,
 		InvoiceWithExplicitSigningPubkeyBuilder
 	);
 	invoice_request_verify_method!(self, &Self);
@@ -987,7 +1203,7 @@ impl InvoiceRequest {
 }
 
 macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
-	$self: ident, $contents: expr, $builder: ty
+	$self: ident, $contents: expr, $basetime: expr, $builder: ty
 ) => {
 	/// Creates an [`InvoiceBuilder`] for the request using the given required fields and that uses
 	/// derived signing keys from the originating [`Offer`] to sign the [`Bolt12Invoice`]. Must use
@@ -1029,8 +1245,10 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 			None => return Err(Bolt12SemanticError::MissingIssuerSigningPubkey),
 		}
 
+		let recurrence_basetime = $self.recurrence_basetime(created_at, $basetime)?;
+
 		<$builder>::for_offer_using_keys(
-			&$self.inner, payment_paths, created_at, payment_hash, keys
+			&$self.inner, payment_paths, created_at, recurrence_basetime, payment_hash, keys
 		)
 	}
 } }
@@ -1050,6 +1268,7 @@ macro_rules! fields_accessor {
 				inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
 					quantity,
 					payer_note,
+					invoice_request_recurrence,
 					..
 				},
 			} = &$inner;
@@ -1063,6 +1282,7 @@ macro_rules! fields_accessor {
 					// down to the nearest valid UTF-8 code point boundary.
 					.map(|s| UntrustedString(string_truncate_safe(s, PAYER_NOTE_LIMIT))),
 				human_readable_name: $self.offer_from_hrn().clone(),
+				invoice_request_recurrence: invoice_request_recurrence.clone(),
 			}
 		}
 	};
@@ -1073,16 +1293,20 @@ impl VerifiedInvoiceRequest<DerivedSigningPubkey> {
 	invoice_request_accessors!(self, self.inner.contents);
 	fields_accessor!(self, self.inner.contents);
 
+	invoice_request_recurrence_methods!(self, self.inner.contents);
+
 	#[cfg(not(c_bindings))]
 	invoice_request_respond_with_derived_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceBuilder<'_, DerivedSigningPubkey>
 	);
 	#[cfg(c_bindings)]
 	invoice_request_respond_with_derived_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceWithDerivedSigningPubkeyBuilder
 	);
 }
@@ -1092,16 +1316,20 @@ impl VerifiedInvoiceRequest<ExplicitSigningPubkey> {
 	invoice_request_accessors!(self, self.inner.contents);
 	fields_accessor!(self, self.inner.contents);
 
+	invoice_request_recurrence_methods!(self, self.inner.contents);
+
 	#[cfg(not(c_bindings))]
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceBuilder<'_, ExplicitSigningPubkey>
 	);
 	#[cfg(c_bindings)]
 	invoice_request_respond_with_explicit_signing_pubkey_methods!(
 		self,
 		self.inner,
+		self.resolved_basetime,
 		InvoiceWithExplicitSigningPubkeyBuilder
 	);
 }
@@ -1171,6 +1399,10 @@ impl InvoiceRequestContents {
 		self.payer_signing_pubkey
 	}
 
+	pub(super) fn invoice_request_recurrence(&self) -> &Option<InvoiceRequestRecurrence> {
+		&self.inner.invoice_request_recurrence
+	}
+
 	pub(super) fn payer_note(&self) -> Option<PrintableString<'_>> {
 		self.inner.payer_note.as_ref().map(|payer_note| PrintableString(payer_note.as_str()))
 	}
@@ -1213,6 +1445,12 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 			}
 		};
 
+		let (recurrence_counter, recurrence_start, recurrence_token, recurrence_cancel) =
+			match self.invoice_request_recurrence.as_ref() {
+				None => (None, None, None, None),
+				Some(rec) => rec.fields(),
+			};
+
 		let invoice_request = InvoiceRequestTlvStreamRef {
 			chain: self.chain.as_ref(),
 			amount: self.amount_msats,
@@ -1222,6 +1460,10 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer_note: self.payer_note.as_ref(),
 			offer_from_hrn: self.offer_from_hrn.as_ref(),
 			paths: None,
+			recurrence_counter,
+			recurrence_start,
+			recurrence_cancel,
+			recurrence_token,
 		};
 
 		let experimental_invoice_request = ExperimentalInvoiceRequestTlvStreamRef {
@@ -1282,6 +1524,12 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef<'a>, INVOICE_REQ
 	// Only used for Refund since the onion message of an InvoiceRequest has a reply path.
 	(90, paths: (Vec<BlindedMessagePath>, WithoutLength)),
 	(91, offer_from_hrn: HumanReadableName),
+	(92, recurrence_counter: (u32, HighZeroBytesDroppedBigSize)),
+	(93, recurrence_start: (u32, HighZeroBytesDroppedBigSize)),
+	(94, recurrence_cancel: ()),
+	// Speculative recurrence-token TLV pending upstream BOLT12 assignment. Type 95 is provisional
+	// and may change when the proposal is merged into the spec.
+	(95, recurrence_token: (Vec<u8>, WithoutLength)),
 });
 
 /// Valid type range for experimental invoice_request TLV records.
@@ -1434,6 +1682,10 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				payer_note,
 				paths,
 				offer_from_hrn,
+				recurrence_counter,
+				recurrence_start,
+				recurrence_cancel,
+				recurrence_token,
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceRequestTlvStream {
@@ -1470,21 +1722,48 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 			return Err(Bolt12SemanticError::UnexpectedPaths);
 		}
 
-		Ok(InvoiceRequestContents {
-			inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
-				payer,
-				offer,
-				chain,
-				amount_msats: amount,
-				features,
-				quantity,
-				payer_note,
-				offer_from_hrn,
-				#[cfg(test)]
-				experimental_bar,
-			},
-			payer_signing_pubkey,
-		})
+		let invoice_request_recurrence = InvoiceRequestRecurrence::new(
+			recurrence_counter,
+			recurrence_start,
+			recurrence_token,
+			recurrence_cancel,
+		)
+		.map_err(|_| Bolt12SemanticError::InvalidRecurrence)?;
+
+		// Recurrence sanity check
+		match (offer.offer_recurrence(), &invoice_request_recurrence) {
+			(None, None) => (),
+			(
+				Some(Recurrence::Compulsory { base: Some(_), .. }),
+				Some(InvoiceRequestRecurrence::WithOfferBasetime { .. }),
+			) => (),
+			(
+				Some(Recurrence::Compulsory { base: None, .. }),
+				Some(InvoiceRequestRecurrence::WithoutOfferBasetime { .. }),
+			) => (),
+			(
+				Some(Recurrence::Optional { .. }),
+				None | Some(InvoiceRequestRecurrence::WithoutOfferBasetime { .. }),
+			) => (),
+
+			_ => return Err(Bolt12SemanticError::InvalidRecurrence),
+		}
+
+		let inner = InvoiceRequestContentsWithoutPayerSigningPubkey {
+			payer,
+			offer,
+			chain,
+			amount_msats: amount,
+			features,
+			quantity,
+			payer_note,
+			offer_from_hrn,
+			invoice_request_recurrence,
+			#[cfg(test)]
+			experimental_bar,
+		};
+
+		Ok(InvoiceRequestContents { inner, payer_signing_pubkey })
 	}
 }
 
@@ -1505,6 +1784,15 @@ pub struct InvoiceRequestFields {
 
 	/// The Human Readable Name which the sender indicated they were paying to.
 	pub human_readable_name: Option<HumanReadableName>,
+
+	/// Recurrence fields copied from the invoice request when the request belongs to a recurring
+	/// offer.
+	///
+	/// `counter` identifies the payer's recurring request number, `start` identifies the schedule
+	/// offset when the offer has an explicit basetime, `cancel` distinguishes cancellation
+	/// requests from normal recurring requests, and the speculative `token` echoes opaque bytes
+	/// from the previous invoice.
+	pub invoice_request_recurrence: Option<InvoiceRequestRecurrence>,
 }
 
 /// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
@@ -1517,11 +1805,22 @@ pub const PAYER_NOTE_LIMIT: usize = 8;
 
 impl Writeable for InvoiceRequestFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let (recurrence_counter, recurrence_start, recurrence_token, recurrence_cancel) =
+			match self.invoice_request_recurrence.as_ref() {
+				None => (None, None, None, None),
+				Some(rec) => rec.fields(),
+			};
+
 		write_tlv_fields!(writer, {
 			(0, self.payer_signing_pubkey, required),
 			(1, self.human_readable_name, option),
 			(2, self.quantity.map(|v| HighZeroBytesDroppedBigSize(v)), option),
 			(4, self.payer_note_truncated.as_ref().map(|s| WithoutLength(&s.0)), option),
+			(6, recurrence_counter.map(HighZeroBytesDroppedBigSize), option),
+			(8, recurrence_start.map(HighZeroBytesDroppedBigSize), option),
+			(10, recurrence_cancel, option),
+			// Speculative request-side recurrence token, distinct from the future invoice-side token.
+			(12, recurrence_token.map(|token| WithoutLength(token)), option),
 		});
 		Ok(())
 	}
@@ -1534,13 +1833,26 @@ impl Readable for InvoiceRequestFields {
 			(1, human_readable_name, option),
 			(2, quantity, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
+			(6, recurrence_counter, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
+			(8, recurrence_start, (option, encoding: (u32, HighZeroBytesDroppedBigSize))),
+			(10, recurrence_cancel, option),
+			(12, recurrence_token, (option, encoding: (Vec<u8>, WithoutLength))),
 		});
+
+		let invoice_request_recurrence = InvoiceRequestRecurrence::new(
+			recurrence_counter,
+			recurrence_start,
+			recurrence_token,
+			recurrence_cancel,
+		)
+		.map_err(|_| DecodeError::InvalidValue)?;
 
 		Ok(InvoiceRequestFields {
 			payer_signing_pubkey: payer_signing_pubkey.0.unwrap(),
 			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
 			human_readable_name,
+			invoice_request_recurrence,
 		})
 	}
 }
@@ -1549,8 +1861,9 @@ impl Readable for InvoiceRequestFields {
 mod tests {
 	use super::{
 		ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequest, InvoiceRequestFields,
-		InvoiceRequestTlvStreamRef, UnsignedInvoiceRequest, EXPERIMENTAL_INVOICE_REQUEST_TYPES,
-		INVOICE_REQUEST_TYPES, PAYER_NOTE_LIMIT, SIGNATURE_TAG,
+		InvoiceRequestRecurrence, InvoiceRequestTlvStreamRef, PartialInvoiceRequestTlvStreamRef,
+		UnsignedInvoiceRequest, WithOfferBasetimeRecurrence, WithoutOfferBasetimeRecurrence,
+		EXPERIMENTAL_INVOICE_REQUEST_TYPES, INVOICE_REQUEST_TYPES, PAYER_NOTE_LIMIT, SIGNATURE_TAG,
 	};
 
 	use crate::ln::channelmanager::PaymentId;
@@ -1565,7 +1878,8 @@ mod tests {
 	#[cfg(c_bindings)]
 	use crate::offers::offer::OfferWithExplicitMetadataBuilder as OfferBuilder;
 	use crate::offers::offer::{
-		Amount, CurrencyCode, ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, Quantity,
+		Amount, CurrencyCode, ExperimentalOfferTlvStreamRef, Offer, OfferTlvStreamRef, Quantity,
+		RecurrenceBase, RecurrencePeriod,
 	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
@@ -1579,6 +1893,26 @@ mod tests {
 	use core::num::NonZeroU64;
 	#[cfg(feature = "std")]
 	use core::time::Duration;
+
+	trait ToBytes {
+		fn to_bytes(&self) -> Vec<u8>;
+	}
+
+	impl<'a> ToBytes for (OfferTlvStreamRef<'a>, ExperimentalOfferTlvStreamRef) {
+		fn to_bytes(&self) -> Vec<u8> {
+			let mut buffer = Vec::new();
+			self.write(&mut buffer).unwrap();
+			buffer
+		}
+	}
+
+	impl<'a> ToBytes for PartialInvoiceRequestTlvStreamRef<'a> {
+		fn to_bytes(&self) -> Vec<u8> {
+			let mut buffer = Vec::new();
+			self.write(&mut buffer).unwrap();
+			buffer
+		}
+	}
 
 	#[test]
 	fn builds_invoice_request_with_defaults() {
@@ -1647,6 +1981,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: Some(&recipient_pubkey()),
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1657,6 +1996,10 @@ mod tests {
 					payer_note: None,
 					paths: None,
 					offer_from_hrn: None,
+					recurrence_counter: None,
+					recurrence_start: None,
+					recurrence_cancel: None,
+					recurrence_token: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice_request.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
@@ -2934,6 +3277,143 @@ mod tests {
 	}
 
 	#[test]
+	fn parses_invoice_request_with_recurrence() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let recurrence_period = RecurrencePeriod::Months(3);
+		let recurrence_base = RecurrenceBase { proportional: true, basetime: 123_456 };
+
+		let offer = OfferBuilder::new(recipient_pubkey()).build().unwrap();
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_compulsory = Some(&recurrence_period);
+		tlv_stream.0.recurrence_base = Some(&recurrence_base);
+		let offer = Offer::try_from(tlv_stream.to_bytes()).unwrap();
+
+		let recurrence = InvoiceRequestRecurrence::WithOfferBasetime(WithOfferBasetimeRecurrence {
+			counter: 3,
+			start: 2,
+			token: Some(vec![1, 2, 3]),
+			cancel: Some(()),
+		});
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.amount_msats(1000)
+			.unwrap()
+			.set_invoice_request_recurrence(recurrence.clone())
+			.build_and_sign()
+			.unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(invoice_request) => {
+				assert_eq!(invoice_request.invoice_request_recurrence(), &Some(recurrence));
+			},
+			Err(e) => panic!("error parsing invoice_request: {:?}", e),
+		}
+
+		let offer = OfferBuilder::new(recipient_pubkey()).build().unwrap();
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_optional = Some(&recurrence_period);
+		let offer = Offer::try_from(tlv_stream.to_bytes()).unwrap();
+
+		let recurrence =
+			InvoiceRequestRecurrence::WithoutOfferBasetime(WithoutOfferBasetimeRecurrence {
+				counter: 2,
+				token: Some(vec![4, 5, 6]),
+				cancel: Some(()),
+			});
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.amount_msats(1000)
+			.unwrap()
+			.set_invoice_request_recurrence(recurrence.clone())
+			.build_and_sign()
+			.unwrap();
+
+		let mut buffer = Vec::new();
+		invoice_request.write(&mut buffer).unwrap();
+
+		match InvoiceRequest::try_from(buffer) {
+			Ok(invoice_request) => {
+				assert_eq!(invoice_request.invoice_request_recurrence(), &Some(recurrence));
+			},
+			Err(e) => panic!("error parsing invoice_request: {:?}", e),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_request_with_invalid_recurrence() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+		let recurrence_period = RecurrencePeriod::Months(1);
+		let recurrence_base = RecurrenceBase { proportional: false, basetime: 123_456 };
+
+		let offer = OfferBuilder::new(recipient_pubkey()).build().unwrap();
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_compulsory = Some(&recurrence_period);
+		tlv_stream.0.recurrence_base = Some(&recurrence_base);
+		let offer = Offer::try_from(tlv_stream.to_bytes()).unwrap();
+
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.amount_msats(1000)
+			.unwrap()
+			.set_invoice_request_recurrence(InvoiceRequestRecurrence::WithOfferBasetime(
+				WithOfferBasetimeRecurrence { counter: 1, start: 1, token: None, cancel: None },
+			))
+			.build_and_sign()
+			.unwrap();
+		let recurrence_token = vec![42; 3];
+		let mut tlv_stream = invoice_request.contents.as_tlv_stream();
+		tlv_stream.2.recurrence_counter = Some(0);
+		tlv_stream.2.recurrence_start = Some(1);
+		tlv_stream.2.recurrence_token = Some(&recurrence_token);
+
+		match InvoiceRequest::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidRecurrence)
+			),
+		}
+
+		let offer = OfferBuilder::new(recipient_pubkey()).build().unwrap();
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_optional = Some(&recurrence_period);
+		let offer = Offer::try_from(tlv_stream.to_bytes()).unwrap();
+
+		let invoice_request = offer
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.amount_msats(1000)
+			.unwrap()
+			.build_and_sign()
+			.unwrap();
+		let mut tlv_stream = invoice_request.contents.as_tlv_stream();
+		tlv_stream.2.recurrence_counter = Some(1);
+		tlv_stream.2.recurrence_start = Some(0);
+
+		match InvoiceRequest::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidRecurrence)
+			),
+		}
+	}
+
+	#[test]
 	fn parses_invoice_request_with_experimental_tlv_records() {
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let entropy = FixedEntropy {};
@@ -3131,6 +3611,7 @@ mod tests {
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString(expected_payer_note)),
 						human_readable_name: None,
+						invoice_request_recurrence: None,
 					}
 				);
 

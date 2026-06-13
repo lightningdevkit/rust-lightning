@@ -247,6 +247,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 					paths: None,
 					supported_quantity: Quantity::One,
 					issuer_signing_pubkey: Some(signing_pubkey),
+					offer_recurrence: None,
 					#[cfg(test)]
 					experimental_foo: None,
 				},
@@ -301,6 +302,7 @@ macro_rules! offer_derived_metadata_builder_methods {
 					paths: None,
 					supported_quantity: Quantity::One,
 					issuer_signing_pubkey: Some(node_id),
+					offer_recurrence: None,
 					#[cfg(test)]
 					experimental_foo: None,
 				},
@@ -632,8 +634,344 @@ pub(super) struct OfferContents {
 	paths: Option<Vec<BlindedMessagePath>>,
 	supported_quantity: Quantity,
 	issuer_signing_pubkey: Option<PublicKey>,
+	offer_recurrence: Option<Recurrence>,
 	#[cfg(test)]
 	experimental_foo: Option<u64>,
+}
+
+/// Represents the recurrence period as `(time_unit, count)`.
+///
+/// The full duration of a recurrence period is defined by combining
+/// [`time_unit`](Self::time_unit) with [`period`](Self::period).
+///
+/// For example, `TimeUnit::Days` with `period = 7` represents a recurrence
+/// every seven days.
+//
+// Implementation Note:
+// The current spec design feels a bit non-optimal, as it requires both
+// an enum and a struct to represent what is conceptually a single "period".
+// Might revisit once the spec stabilizes.
+//
+// Spec Commentary:
+// The naming around "period" and "time_unit" is slightly confusing.
+// For example, `period means count_of_units`, while the actual recurrence
+// "period" is `(period * time_unit)`.
+//
+// It may help the final spec to create clearer names for each variable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecurrencePeriod {
+	/// A recurrence period measured in whole seconds.
+	Seconds(u32),
+	/// A recurrence period measured in whole days.
+	Days(u32),
+	/// A recurrence period measured in whole calendar months.
+	Months(u32),
+}
+
+impl RecurrencePeriod {
+	const SECONDS_PER_DAY: u64 = 86_400;
+
+	fn start_time(self, basetime: u64, period_count: u32) -> Result<u64, ()> {
+		match self {
+			RecurrencePeriod::Seconds(seconds) => {
+				let offset = u64::from(seconds).checked_mul(period_count.into()).ok_or(())?;
+				basetime.checked_add(offset).ok_or(())
+			},
+
+			RecurrencePeriod::Days(days) => {
+				let days_since_epoch = basetime / Self::SECONDS_PER_DAY;
+				let seconds = basetime % Self::SECONDS_PER_DAY;
+
+				let offset_days = u64::from(days).checked_mul(period_count.into()).ok_or(())?;
+				let start_day = days_since_epoch.checked_add(offset_days).ok_or(())?;
+
+				start_day
+					.checked_mul(Self::SECONDS_PER_DAY)
+					.and_then(|day_seconds| day_seconds.checked_add(seconds))
+					.ok_or(())
+			},
+
+			RecurrencePeriod::Months(months) => {
+				let days_since_epoch = basetime / Self::SECONDS_PER_DAY;
+				let seconds = basetime % Self::SECONDS_PER_DAY;
+
+				let (year, month, day) = civil_from_days(days_since_epoch as i128);
+
+				let offset_months = i128::from(months).checked_mul(period_count.into()).ok_or(())?;
+
+				let total_months = year
+					.checked_mul(12)
+					.and_then(|year_in_months| year_in_months.checked_add(month as i128 - 1))
+					.and_then(|base_month| base_month.checked_add(offset_months))
+					.ok_or(())?;
+
+				let target_year = total_months.div_euclid(12);
+				let target_month = total_months.rem_euclid(12) + 1;
+				let target_day = day.min(days_in_month(target_year, target_month as u64));
+
+				let start_day = days_from_civil(target_year, target_month as u64, target_day);
+
+				u64::try_from(start_day)
+					.ok()
+					.and_then(|start_day| start_day.checked_mul(Self::SECONDS_PER_DAY))
+					.and_then(|day_seconds| day_seconds.checked_add(seconds))
+					.ok_or(())
+			},
+		}
+	}
+}
+
+fn is_leap_year(year: i128) -> bool {
+	(year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+}
+
+fn days_in_month(year: i128, month: u64) -> u64 {
+	match month {
+		1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+		4 | 6 | 9 | 11 => 30,
+		2 if is_leap_year(year) => 29,
+		2 => 28,
+		_ => panic!("invalid month"),
+	}
+}
+
+fn days_from_civil(year: i128, month: u64, day: u64) -> i128 {
+	assert!((1..=12).contains(&month));
+	assert!((1..=days_in_month(year, month)).contains(&day));
+
+	let mut y = year;
+	let m = month as i128;
+	let d = day as i128;
+
+	if m <= 2 {
+		y -= 1;
+	}
+
+	let era = y.div_euclid(400);
+	let yoe = y - era * 400;
+	let mp = m + if m > 2 { -3 } else { 9 };
+	let doy = (153 * mp + 2) / 5 + d - 1;
+	let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+
+	era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(days: i128) -> (i128, u64, u64) {
+	let z = days + 719_468;
+	let era = z.div_euclid(146_097);
+	let doe = z - era * 146_097;
+	let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+	let mut year = yoe + era * 400;
+	let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	let mp = (5 * doy + 2) / 153;
+	let day = doy - (153 * mp + 2) / 5 + 1;
+	let month = mp + if mp < 10 { 3 } else { -9 };
+
+	if month <= 2 {
+		year += 1;
+	}
+
+	(year, month as u64, day as u64)
+}
+
+impl Writeable for RecurrencePeriod {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let (tag, period) = match self {
+			RecurrencePeriod::Seconds(p) => (0u8, p),
+			RecurrencePeriod::Days(p) => (1u8, p),
+			RecurrencePeriod::Months(p) => (2u8, p),
+		};
+
+		tag.write(writer)?;
+		HighZeroBytesDroppedBigSize(*period).write(writer)
+	}
+}
+
+impl Readable for RecurrencePeriod {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let time_unit_byte: u8 = Readable::read(r)?;
+		let period: HighZeroBytesDroppedBigSize<u32> = Readable::read(r)?;
+
+		if period.0 == 0 {
+			return Err(DecodeError::InvalidValue);
+		}
+
+		match time_unit_byte {
+			0 => Ok(Self::Seconds(period.0)),
+			1 => Ok(Self::Days(period.0)),
+			2 => Ok(Self::Months(period.0)),
+			_ => Err(DecodeError::InvalidValue),
+		}
+	}
+}
+
+/// Represents the base time from which recurrence periods are anchored.
+///
+/// Example:
+/// If an offer sets its basetime to Jan 1st, then the first recurrence
+/// period is defined as starting on Jan 1st.  
+/// A payer starting on April 1st would begin at offset 3.
+///
+/// If this field is absent from the offer, the protocol defines the start of
+/// period 0 using the `invoice_created_at` timestamp of the first invoice in
+/// the recurrence series.
+//
+// Spec Commentary:
+// The presence of `proportional` here feels conceptually odd.
+// It mixes two different ideas:
+//   1. The *start anchor* of the recurrence schedule (`basetime`)
+//   2. A *pricing policy* based on how far into the period the payer is
+//
+// It also raises questions:
+// - Why is proportionality tied to basetime?
+// - Why can’t proportional pricing exist without an explicit basetime?
+// 	(It would make sense from the second period onward, where the
+// 	schedule is already well-defined.)
+//
+// Might be worth revisiting the grouping of these fields in the final spec.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecurrenceBase {
+	/// If true, price is proportional to how much of the period has passed.
+	///
+	/// Example:
+	/// For a 30-day period, paying 3 days after the start yields ~10% discount.
+	pub proportional: bool,
+
+	/// Basetime expressed in UNIX seconds.
+	pub basetime: u64,
+}
+
+impl Writeable for RecurrenceBase {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		(self.proportional as u8).write(writer)?;
+		HighZeroBytesDroppedBigSize(self.basetime).write(writer)
+	}
+}
+
+impl Readable for RecurrenceBase {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let proportional_byte: u8 = Readable::read(r)?;
+		let proportional = match proportional_byte {
+			0 => false,
+			1 => true,
+			_ => return Err(DecodeError::InvalidValue),
+		};
+
+		let basetime: HighZeroBytesDroppedBigSize<u64> = Readable::read(r)?;
+
+		Ok(RecurrenceBase { proportional, basetime: basetime.0 })
+	}
+}
+
+/// Acceptance paywindow for a recurrence period.
+/// Defines the time around the *start of a period* during which a payer's
+/// payment SHOULD (not MUST) be accepted.
+///
+/// If this field is absent, the default window is:
+///     - the entire previous period, PLUS
+///     - the entire current period being paid for.
+//
+// Spec Commentary:
+// The use of SHOULD (instead of MUST) is unclear.
+// What specific flexibility is intended here, and what behavior is expected
+// from implementations outside the window?
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecurrencePaywindow {
+	/// Seconds *before* the period starts in which a payment SHOULD be allowed.
+	pub seconds_before: u32,
+	/// Seconds *after* the period starts in which a payment SHOULD be allowed.
+	pub seconds_after: u32,
+}
+
+impl Writeable for RecurrencePaywindow {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		self.seconds_before.write(writer)?;
+		self.seconds_after.write(writer)
+	}
+}
+
+impl Readable for RecurrencePaywindow {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let before = Readable::read(r)?;
+		let after = Readable::read(r)?;
+		Ok(RecurrencePaywindow { seconds_before: before, seconds_after: after })
+	}
+}
+
+/// Maximum number of recurrence periods allowed for this offer.
+///
+/// Counting always begins from the offer’s recurrence start:
+/// - If `recurrence_base` is set, counting starts from that basetime.
+/// - If it is not set, counting starts from the time the first invoice is created.
+///
+/// This value is a count, not a zero-based index. For example, `RecurrenceLimit(5)` permits
+/// period indices `0..=4` and rejects period index `5`.
+///
+/// After this limit is reached, further payments MUST NOT be accepted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecurrenceLimit(pub u32);
+
+impl Writeable for RecurrenceLimit {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		HighZeroBytesDroppedBigSize(self.0).write(writer)
+	}
+}
+
+impl Readable for RecurrenceLimit {
+	fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
+		let value: HighZeroBytesDroppedBigSize<u32> = Readable::read(r)?;
+		if value.0 == 0 {
+			return Err(DecodeError::InvalidValue);
+		}
+		Ok(RecurrenceLimit(value.0))
+	}
+}
+
+/// Represents the recurrence-related fields in an Offer.
+///
+/// The recurrence schedule itself is shared by both wire variants:
+/// `offer_recurrence_optional` and `offer_recurrence_compulsory`.
+/// `RecurrenceType` preserves which variant the offer used, while
+/// `recurrence_paywindow` and `recurrence_limit` apply to either form.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecurrenceFields {
+	/// The recurrence schedule: period length and unit.
+	pub recurrence_period: RecurrencePeriod,
+	/// The allowed early/late window for paying a given period.
+	pub recurrence_paywindow: Option<RecurrencePaywindow>,
+	/// Maximum number of periods allowed for this Offer.
+	pub recurrence_limit: Option<RecurrenceLimit>,
+}
+
+/// Encodes the recurrence schedule and whether recurrence is optional or compulsory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Recurrence {
+	/// Recurrence is required, optionally anchored by an explicit period-0 base.
+	Compulsory {
+		/// Explicit base time for period 0 when the offer defines one.
+		base: Option<RecurrenceBase>,
+		/// Fields shared by both recurrence encodings.
+		fields: RecurrenceFields,
+	},
+
+	/// Recurrence is supported but not required for payment.
+	Optional {
+		/// Fields shared by both recurrence encodings.
+		fields: RecurrenceFields,
+	},
+}
+
+/// Encodes whether a recurring offer is optional or compulsory for the payer.
+///
+/// Compulsory recurrence may optionally define an explicit period-0 basetime.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecurrenceType {
+	/// Recurrence is optional, so pre-recurrence payers may still attempt a
+	/// single payment.
+	Optional,
+	/// Recurrence is required for this offer. The optional basetime anchors
+	/// period 0 when the offer defines one explicitly.
+	Compulsory(Option<RecurrenceBase>),
 }
 
 macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
@@ -707,6 +1045,11 @@ macro_rules! offer_accessors { ($self: ident, $contents: expr) => {
 	/// [`Bolt12Invoice::signing_pubkey`]: crate::offers::invoice::Bolt12Invoice::signing_pubkey
 	pub fn issuer_signing_pubkey(&$self) -> Option<bitcoin::secp256k1::PublicKey> {
 		$contents.issuer_signing_pubkey()
+	}
+
+	/// Returns the recurrence fields for the offer.
+	pub fn offer_recurrence(&$self) -> Option<$crate::offers::offer::Recurrence> {
+		$contents.offer_recurrence()
 	}
 } }
 
@@ -993,6 +1336,10 @@ impl OfferContents {
 		self.issuer_signing_pubkey
 	}
 
+	pub fn offer_recurrence(&self) -> Option<Recurrence> {
+		self.offer_recurrence
+	}
+
 	pub(super) fn verify_using_metadata<T: secp256k1::Signing>(
 		&self, bytes: &[u8], key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
 	) -> Result<(OfferId, Option<Keypair>), ()> {
@@ -1060,6 +1407,31 @@ impl OfferContents {
 			}
 		};
 
+		let (
+			recurrence_compulsory,
+			recurrence_optional,
+			recurrence_base,
+			recurrence_paywindow,
+			recurrence_limit,
+		) = match &self.offer_recurrence {
+			None => (None, None, None, None, None),
+
+			Some(Recurrence::Compulsory { base, fields }) => (
+				Some(&fields.recurrence_period),
+				None,
+				base.as_ref(),
+				fields.recurrence_paywindow.as_ref(),
+				fields.recurrence_limit.as_ref(),
+			),
+			Some(Recurrence::Optional { fields }) => (
+				None,
+				Some(&fields.recurrence_period),
+				None,
+				fields.recurrence_paywindow.as_ref(),
+				fields.recurrence_limit.as_ref(),
+			),
+		};
+
 		let offer = OfferTlvStreamRef {
 			chains: self.chains.as_ref(),
 			metadata: self.metadata(),
@@ -1072,6 +1444,11 @@ impl OfferContents {
 			issuer: self.issuer.as_ref(),
 			quantity_max: self.supported_quantity.to_tlv_record(),
 			issuer_id: self.issuer_signing_pubkey.as_ref(),
+			recurrence_compulsory,
+			recurrence_optional,
+			recurrence_base,
+			recurrence_paywindow,
+			recurrence_limit,
 		};
 
 		let experimental_offer = ExperimentalOfferTlvStreamRef {
@@ -1226,6 +1603,38 @@ tlv_stream!(OfferTlvStream, OfferTlvStreamRef<'a>, OFFER_TYPES, {
 	(18, issuer: (String, WithoutLength)),
 	(20, quantity_max: (u64, HighZeroBytesDroppedBigSize)),
 	(OFFER_ISSUER_ID_TYPE, issuer_id: PublicKey),
+
+	// --- Recurrence Fields (as described in BOLT12 recurrence) ---
+	// These comments are for implementation clarity and will be refined later.
+
+	// (24) `recurrence_compulsory`
+	// Offer *requires* recurrence.
+	// Payer must understand and follow the recurrence schedule.
+	// Encodes the recurrence period (monthly, weekly, etc).
+	(24, recurrence_compulsory: RecurrencePeriod),
+
+	// (25) `recurrence_optional`
+	// Offer *supports* recurrence but doesn't require it.
+	// Payers without recurrence support can treat it as a single-payment offer.
+	// Encodes the recurrence period.
+	(25, recurrence_optional: RecurrencePeriod),
+
+	// (26) `recurrence_base`
+	// Start anchor ("base time") for the recurrence schedule.
+	// If absent: defaults to timestamp of the first invoice creation.
+	// Only meaningful when recurrence is compulsory.
+	(26, recurrence_base: RecurrenceBase),
+
+	// (27) `recurrence_paywindow`
+	// Window around each period’s due time in which the payer SHOULD pay.
+	// If absent: default window is previous period + current period.
+	// Useful for handling early/late payments reliably.
+	(27, recurrence_paywindow: RecurrencePaywindow),
+
+	// (29) `recurrence_limit`
+	// Maximum number of periods this offer can be paid for.
+	// Caps the total count of recurring payments.
+	(29, recurrence_limit: RecurrenceLimit),
 });
 
 /// Valid type range for experimental offer TLV records.
@@ -1295,6 +1704,11 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 				issuer,
 				quantity_max,
 				issuer_id,
+				recurrence_compulsory,
+				recurrence_optional,
+				recurrence_base,
+				recurrence_paywindow,
+				recurrence_limit,
 			},
 			ExperimentalOfferTlvStream {
 				#[cfg(test)]
@@ -1342,6 +1756,33 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 			(issuer_id, paths) => (issuer_id, paths),
 		};
 
+		let offer_recurrence = match (recurrence_compulsory, recurrence_optional, recurrence_base) {
+			(None, None, None) => {
+				if recurrence_paywindow.is_some() || recurrence_limit.is_some() {
+					return Err(Bolt12SemanticError::InvalidRecurrence);
+				}
+				None
+			},
+			(Some(recurrence_period), None, base) => Some(Recurrence::Compulsory {
+				base,
+				fields: RecurrenceFields {
+					recurrence_period,
+					recurrence_paywindow,
+					recurrence_limit,
+				},
+			}),
+
+			(None, Some(recurrence_period), None) => Some(Recurrence::Optional {
+				fields: RecurrenceFields {
+					recurrence_period,
+					recurrence_paywindow,
+					recurrence_limit,
+				},
+			}),
+
+			_ => return Err(Bolt12SemanticError::InvalidRecurrence),
+		};
+
 		Ok(OfferContents {
 			chains,
 			metadata,
@@ -1353,6 +1794,7 @@ impl TryFrom<FullOfferTlvStream> for OfferContents {
 			paths,
 			supported_quantity,
 			issuer_signing_pubkey,
+			offer_recurrence,
 			#[cfg(test)]
 			experimental_foo,
 		})
@@ -1386,8 +1828,9 @@ mod tests {
 	#[cfg(c_bindings)]
 	use super::OfferWithExplicitMetadataBuilder as OfferBuilder;
 	use super::{
-		Amount, ExperimentalOfferTlvStreamRef, Offer, OfferTlvStreamRef, Quantity,
-		EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
+		days_from_civil, Amount, ExperimentalOfferTlvStreamRef, FullOfferTlvStreamRef, Offer,
+		OfferTlvStreamRef, Quantity, Recurrence, RecurrenceBase, RecurrenceFields, RecurrenceLimit,
+		RecurrencePaywindow, RecurrencePeriod, EXPERIMENTAL_OFFER_TYPES, OFFER_TYPES,
 	};
 
 	use crate::blinded_path::message::BlindedMessagePath;
@@ -1407,6 +1850,27 @@ mod tests {
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
+
+	trait ToBytes {
+		fn to_bytes(&self) -> Vec<u8>;
+	}
+
+	impl<'a> ToBytes for FullOfferTlvStreamRef<'a> {
+		fn to_bytes(&self) -> Vec<u8> {
+			let mut buffer = Vec::new();
+			self.write(&mut buffer).unwrap();
+			buffer
+		}
+	}
+
+	fn unix_time(year: i128, month: u64, day: u64, hour: u64, minute: u64, second: u64) -> u64 {
+		let days_since_epoch = days_from_civil(year, month, day);
+		u64::try_from(days_since_epoch)
+			.unwrap()
+			.checked_mul(RecurrencePeriod::SECONDS_PER_DAY)
+			.and_then(|days| days.checked_add(hour * 3600 + minute * 60 + second))
+			.unwrap()
+	}
 
 	#[test]
 	fn builds_offer_with_defaults() {
@@ -1430,6 +1894,7 @@ mod tests {
 		assert_eq!(offer.supported_quantity(), Quantity::One);
 		assert!(!offer.expects_quantity());
 		assert_eq!(offer.issuer_signing_pubkey(), Some(pubkey(42)));
+		assert_eq!(offer.offer_recurrence(), None);
 
 		assert_eq!(
 			offer.as_tlv_stream(),
@@ -1446,6 +1911,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: Some(&pubkey(42)),
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
 			),
@@ -1454,6 +1924,109 @@ mod tests {
 		if let Err(e) = Offer::try_from(buffer) {
 			panic!("error parsing offer: {:?}", e);
 		}
+	}
+
+	#[test]
+	fn parses_offer_with_compulsory_recurrence() {
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let recurrence_period = RecurrencePeriod::Months(3);
+		let recurrence_base = RecurrenceBase { proportional: true, basetime: 123_456 };
+		let recurrence_paywindow =
+			RecurrencePaywindow { seconds_before: 3600, seconds_after: 7200 };
+		let recurrence_limit = RecurrenceLimit(24);
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_compulsory = Some(&recurrence_period);
+		tlv_stream.0.recurrence_base = Some(&recurrence_base);
+		tlv_stream.0.recurrence_paywindow = Some(&recurrence_paywindow);
+		tlv_stream.0.recurrence_limit = Some(&recurrence_limit);
+
+		match Offer::try_from(tlv_stream.to_bytes()) {
+			Ok(parsed_offer) => {
+				assert_eq!(
+					parsed_offer.offer_recurrence(),
+					Some(Recurrence::Compulsory {
+						base: Some(recurrence_base),
+						fields: RecurrenceFields {
+							recurrence_period,
+							recurrence_paywindow: Some(recurrence_paywindow),
+							recurrence_limit: Some(recurrence_limit),
+						},
+					}),
+				);
+			},
+			Err(e) => panic!("error parsing offer: {:?}", e),
+		}
+	}
+
+	#[test]
+	fn parses_offer_with_optional_recurrence() {
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let recurrence_period = RecurrencePeriod::Days(14);
+		let recurrence_paywindow =
+			RecurrencePaywindow { seconds_before: 1800, seconds_after: 5400 };
+		let recurrence_limit = RecurrenceLimit(12);
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_optional = Some(&recurrence_period);
+		tlv_stream.0.recurrence_paywindow = Some(&recurrence_paywindow);
+		tlv_stream.0.recurrence_limit = Some(&recurrence_limit);
+
+		match Offer::try_from(tlv_stream.to_bytes()) {
+			Ok(parsed_offer) => {
+				assert_eq!(
+					parsed_offer.offer_recurrence(),
+					Some(Recurrence::Optional {
+						fields: RecurrenceFields {
+							recurrence_period,
+							recurrence_paywindow: Some(recurrence_paywindow),
+							recurrence_limit: Some(recurrence_limit),
+						},
+					}),
+				);
+			},
+			Err(e) => panic!("error parsing offer: {:?}", e),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_offer_with_invalid_recurrence_fields() {
+		let offer = OfferBuilder::new(pubkey(42)).build().unwrap();
+		let recurrence_compulsory = RecurrencePeriod::Months(1);
+		let recurrence_optional = RecurrencePeriod::Days(7);
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_compulsory = Some(&recurrence_compulsory);
+		tlv_stream.0.recurrence_optional = Some(&recurrence_optional);
+
+		match Offer::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::InvalidRecurrence)
+				);
+			},
+		}
+	}
+
+	#[test]
+	fn calculates_recurrence_start_time_for_seconds() {
+		let start_time = RecurrencePeriod::Seconds(600).start_time(1_234, 3);
+		assert_eq!(start_time, Ok(3_034));
+	}
+
+	#[test]
+	fn calculates_recurrence_start_time_for_days() {
+		let basetime = unix_time(2024, 1, 15, 1, 2, 3);
+		let start_time = RecurrencePeriod::Days(2).start_time(basetime, 3);
+
+		assert_eq!(start_time, Ok(unix_time(2024, 1, 21, 1, 2, 3)));
+	}
+
+	#[test]
+	fn calculates_recurrence_start_time_for_months() {
+		let basetime = unix_time(2024, 1, 15, 1, 2, 3);
+		let start_time = RecurrencePeriod::Months(1).start_time(basetime, 2);
+
+		assert_eq!(start_time, Ok(unix_time(2024, 3, 15, 1, 2, 3)));
 	}
 
 	#[test]
