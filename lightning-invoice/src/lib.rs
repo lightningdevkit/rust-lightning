@@ -196,26 +196,26 @@ impl Checksum for Bolt11Bech32 {
 /// # #[cfg(feature = "std")]
 /// # fn main() {
 /// let private_key = SecretKey::from_slice(
-///		&[
-///			0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f,
-///			0xe2, 0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04,
-/// 		0xa8, 0xca, 0x3b, 0x2d, 0xb7, 0x34
-/// 	][..]
-///	).unwrap();
+///    &[
+///        0xe1, 0x26, 0xf6, 0x8f, 0x7e, 0xaf, 0xcc, 0x8b, 0x74, 0xf5, 0x4d, 0x26, 0x9f,
+///        0xe2, 0x06, 0xbe, 0x71, 0x50, 0x00, 0xf9, 0x4d, 0xac, 0x06, 0x7d, 0x1c, 0x04,
+///        0xa8, 0xca, 0x3b, 0x2d, 0xb7, 0x34
+///    ][..]
+/// ).unwrap();
 ///
 /// let payment_hash = PaymentHash([0; 32]);
 /// let payment_secret = PaymentSecret([42u8; 32]);
 ///
 /// let invoice = InvoiceBuilder::new(Currency::Bitcoin)
-/// 	.description("Coins pls!".into())
-/// 	.payment_hash(payment_hash)
-/// 	.payment_secret(payment_secret)
-/// 	.current_timestamp()
-/// 	.min_final_cltv_expiry_delta(144)
-/// 	.build_signed(|hash| {
-/// 		Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
-/// 	})
-/// 	.unwrap();
+///    .description("Coins pls!".into())
+///    .payment_hash(payment_hash)
+///    .payment_secret(payment_secret)
+///    .current_timestamp()
+///    .min_final_cltv_expiry_delta(144)
+///    .build_signed(|hash| {
+///        Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)
+///    })
+///    .unwrap();
 ///
 /// assert!(invoice.to_string().starts_with("lnbc1"));
 /// # }
@@ -325,10 +325,10 @@ pub struct SignedRawBolt11Invoice {
 	/// Hash of the [`RawBolt11Invoice`] that will be used to check the signature.
 	///
 	/// * if the `SignedRawBolt11Invoice` was deserialized the hash is of from the original encoded form,
-	/// since it's not guaranteed that encoding it again will lead to the same result since integers
-	/// could have been encoded with leading zeroes etc.
+	///   since it's not guaranteed that encoding it again will lead to the same result since integers
+	///   could have been encoded with leading zeroes etc.
 	/// * if the `SignedRawBolt11Invoice` was constructed manually the hash will be the calculated hash
-	/// from the [`RawBolt11Invoice`]
+	///   from the [`RawBolt11Invoice`]
 	hash: [u8; 32],
 
 	/// signature of the payment request
@@ -368,7 +368,7 @@ impl RawHrp {
 	/// Convert to bech32::Hrp
 	pub fn to_hrp(&self) -> bech32::Hrp {
 		let hrp_str = self.to_string();
-		let s = core::str::from_utf8(&hrp_str.as_bytes()).expect("HRP bytes should be ASCII");
+		let s = core::str::from_utf8(hrp_str.as_bytes()).expect("HRP bytes should be ASCII");
 		debug_assert!(bech32::Hrp::parse(s).is_ok(), "We should always build BIP 173-valid HRPs");
 		bech32::Hrp::parse_unchecked(s)
 	}
@@ -736,11 +736,8 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 
 		let timestamp = self.timestamp.expect("ensured to be Some(t) by type T");
 
-		let tagged_fields = self
-			.tagged_fields
-			.into_iter()
-			.map(|tf| RawTaggedField::KnownSemantics(tf))
-			.collect::<Vec<_>>();
+		let tagged_fields =
+			self.tagged_fields.into_iter().map(RawTaggedField::KnownSemantics).collect::<Vec<_>>();
 
 		let data = RawDataPart { timestamp, tagged_fields };
 
@@ -1037,8 +1034,8 @@ impl SignedRawBolt11Invoice {
 ///
 /// ```ignore
 /// enum Enum {
-/// 	A(u8),
-/// 	B(u16)
+///    A(u8),
+///    B(u16)
 /// }
 ///
 /// let elements = vec![Enum::A(1), Enum::A(2), Enum::B(3), Enum::A(4)];
@@ -1058,15 +1055,15 @@ macro_rules! find_extract {
 ///
 /// ```ignore
 /// enum Enum {
-/// 	A(u8),
-/// 	B(u16)
+///    A(u8),
+///    B(u16)
 /// }
 ///
 /// let elements = vec![Enum::A(1), Enum::A(2), Enum::B(3), Enum::A(4)];
 ///
 /// assert_eq!(
-/// 	find_all_extract!(elements.iter(), Enum::A(x), x).collect::<Vec<u8>>(),
-/// 	vec![1u8, 2u8, 4u8]
+///    find_all_extract!(elements.iter(), Enum::A(x), x).collect::<Vec<u8>>(),
+///    vec![1u8, 2u8, 4u8]
 /// );
 /// ```
 macro_rules! find_all_extract {
@@ -1144,6 +1141,7 @@ impl RawBolt11Invoice {
 	/// Returns an iterator over all tagged fields with known semantics.
 	///
 	/// This is not exported to bindings users as there is not yet a manual mapping for a FilterMap
+	#[allow(clippy::type_complexity)]
 	pub fn known_tagged_fields(
 		&self,
 	) -> FilterMap<Iter<'_, RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
@@ -1313,13 +1311,8 @@ impl Bolt11Invoice {
 	/// Check that all mandatory fields are present
 	fn check_field_counts(&self) -> Result<(), Bolt11SemanticError> {
 		// "A writer MUST include exactly one p field […]."
-		let payment_hash_cnt = self
-			.tagged_fields()
-			.filter(|&tf| match *tf {
-				TaggedField::PaymentHash(_) => true,
-				_ => false,
-			})
-			.count();
+		let payment_hash_cnt =
+			self.tagged_fields().filter(|&tf| matches!(*tf, TaggedField::PaymentHash(_))).count();
 		if payment_hash_cnt < 1 {
 			return Err(Bolt11SemanticError::NoPaymentHash);
 		} else if payment_hash_cnt > 1 {
@@ -1329,9 +1322,8 @@ impl Bolt11Invoice {
 		// "A writer MUST include either exactly one d or exactly one h field."
 		let description_cnt = self
 			.tagged_fields()
-			.filter(|&tf| match *tf {
-				TaggedField::Description(_) | TaggedField::DescriptionHash(_) => true,
-				_ => false,
+			.filter(|&tf| {
+				matches!(*tf, TaggedField::Description(_) | TaggedField::DescriptionHash(_))
 			})
 			.count();
 		if description_cnt < 1 {
@@ -1348,13 +1340,8 @@ impl Bolt11Invoice {
 	/// Checks that there is exactly one payment secret field
 	fn check_payment_secret(&self) -> Result<(), Bolt11SemanticError> {
 		// "A writer MUST include exactly one `s` field."
-		let payment_secret_count = self
-			.tagged_fields()
-			.filter(|&tf| match *tf {
-				TaggedField::PaymentSecret(_) => true,
-				_ => false,
-			})
-			.count();
+		let payment_secret_count =
+			self.tagged_fields().filter(|&tf| matches!(*tf, TaggedField::PaymentSecret(_))).count();
 		if payment_secret_count < 1 {
 			return Err(Bolt11SemanticError::NoPaymentSecret);
 		} else if payment_secret_count > 1 {
@@ -1381,16 +1368,11 @@ impl Bolt11Invoice {
 		// "A writer MUST set an s field if and only if the payment_secret feature is set."
 		// (this requirement has been since removed, and we now require the payment secret
 		// feature bit always).
-		let features = self.tagged_fields().find(|&tf| match *tf {
-			TaggedField::Features(_) => true,
-			_ => false,
-		});
+		let features = self.tagged_fields().find(|&tf| matches!(*tf, TaggedField::Features(_)));
 		match features {
 			None => Err(Bolt11SemanticError::InvalidFeatures),
 			Some(TaggedField::Features(features)) => {
-				if features.requires_unknown_bits() {
-					Err(Bolt11SemanticError::InvalidFeatures)
-				} else if !features.supports_payment_secret() {
+				if features.requires_unknown_bits() || !features.supports_payment_secret() {
 					Err(Bolt11SemanticError::InvalidFeatures)
 				} else {
 					Ok(())
@@ -1455,6 +1437,7 @@ impl Bolt11Invoice {
 	/// Returns an iterator over all tagged fields of this `Bolt11Invoice`.
 	///
 	/// This is not exported to bindings users as there is not yet a manual mapping for a FilterMap
+	#[allow(clippy::type_complexity)]
 	pub fn tagged_fields(
 		&self,
 	) -> FilterMap<Iter<'_, RawTaggedField>, fn(&RawTaggedField) -> Option<&TaggedField>> {
@@ -1553,7 +1536,7 @@ impl Bolt11Invoice {
 	/// Returns the Duration remaining until the invoice expires given the current time.
 	/// `time` is the timestamp as a duration since the Unix epoch.
 	pub fn expiration_remaining_from_epoch(&self, time: Duration) -> Duration {
-		self.expires_at().map(|x| x.checked_sub(time)).flatten().unwrap_or(Duration::from_nanos(0))
+		self.expires_at().and_then(|x| x.checked_sub(time)).unwrap_or(Duration::from_nanos(0))
 	}
 
 	/// Returns whether the expiry time would pass at the given point in time.
@@ -1561,7 +1544,7 @@ impl Bolt11Invoice {
 	pub fn would_expire(&self, at_time: Duration) -> bool {
 		self.duration_since_epoch()
 			.checked_add(self.expiry_time())
-			.unwrap_or_else(|| Duration::new(u64::max_value(), 1_000_000_000 - 1))
+			.unwrap_or_else(|| Duration::new(u64::MAX, 1_000_000_000 - 1))
 			< at_time
 	}
 
@@ -1586,7 +1569,7 @@ impl Bolt11Invoice {
 		let filter_fn = |fallback: &&Fallback| {
 			let address = match fallback {
 				Fallback::SegWitProgram { version, program } => {
-					match WitnessProgram::new(*version, &program) {
+					match WitnessProgram::new(*version, program) {
 						Ok(witness_program) => {
 							Address::from_witness_program(witness_program, self.network())
 						},
