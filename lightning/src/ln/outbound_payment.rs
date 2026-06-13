@@ -1470,6 +1470,7 @@ impl OutboundPayments {
 									payment_params: params.clone(),
 									max_total_routing_fee_msat:
 										*remaining_max_total_routing_fee_msat,
+									background_probe: false,
 								},
 							));
 							break;
@@ -3389,6 +3390,7 @@ mod tests {
 			payment_params: PaymentParameters::from_bolt12_invoice(&invoice),
 			final_value_msat: invoice.amount_msats(),
 			max_total_routing_fee_msat: Some(1234),
+			background_probe: false,
 		};
 		router.expect_find_route(
 			route_params.clone(),
@@ -3489,6 +3491,7 @@ mod tests {
 			payment_params,
 			final_value_msat: 0,
 			max_total_routing_fee_msat: None,
+			background_probe: false,
 		};
 		let payment_hash = PaymentHash([0; 32]);
 		let outbound = PendingOutboundPayment::StaticInvoiceReceived {
@@ -3539,6 +3542,7 @@ mod tests {
 			payment_params,
 			final_value_msat: 0,
 			max_total_routing_fee_msat: None,
+			background_probe: false,
 		};
 		let payment_hash = PaymentHash([0; 32]);
 		let outbound = PendingOutboundPayment::StaticInvoiceReceived {

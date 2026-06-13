@@ -3604,6 +3604,35 @@ fn create_htlc_intercepted_event(
 	})
 }
 
+/// Trims likely-unannounced last hops from a probe path and ensures it has at least two hops.
+///
+/// Used by pre-flight and background probe sending. Returns `None` if fewer than two hops remain
+/// after trimming.
+pub(crate) fn trim_unannounced_probe_last_hops<L: Logger>(
+	mut path: Path, logger: &L,
+) -> Option<Path> {
+	while let Some(last_hop) = path.hops.last() {
+		if last_hop.maybe_announced_channel {
+			break;
+		}
+		log_debug!(
+			logger,
+			"Avoided sending payment probe all the way to last hop {} as it is likely unannounced.",
+			last_hop.short_channel_id
+		);
+		let final_value_msat = path.final_value_msat();
+		path.hops.pop();
+		if let Some(new_last) = path.hops.last_mut() {
+			new_last.fee_msat += final_value_msat;
+		}
+	}
+	if path.hops.len() < 2 {
+		None
+	} else {
+		Some(path)
+	}
+}
+
 /// Sets the features of the accepted channel in [`ChannelManager::accept_inbound_channel_from_trusted_peer`]
 #[derive(Clone, Copy)]
 pub enum TrustedChannelFeatures {
@@ -6144,6 +6173,62 @@ impl<
 		)
 	}
 
+	/// Finds a single probe-optimised path to `target_node_id` and sends a background liquidity probe
+	/// over it.
+	///
+	/// Unlike [`Self::send_spontaneous_preflight_probes`], which sends probes over all paths of a
+	/// payment route to train the scorer before an imminent payment, tries to avoid saturating
+	/// liquidity immediately before the payment is sent, and uses payment-oriented route parameters,
+	/// this method sends exactly one probe with uncapped routing fees. It is intended for ongoing
+	/// background exploration unrelated to any specific payment.
+	///
+	/// When using [`DefaultRouter`], diversity scoring is applied automatically via
+	/// [`ScoreLookUp::params_for_probe`](crate::routing::scoring::ScoreLookUp::params_for_probe)
+	/// because [`RouteParameters::from_probe_target`] marks the lookup as a background probe.
+	/// Custom [`Router`] implementations must apply probe score-param tuning themselves if desired.
+	///
+	/// Returns [`ProbeSendFailure::RouteNotFound`] when path finding fails, including for unreachable
+	/// or unannounced targets, routing to self, zero amounts, or when no valid multi-hop path
+	/// remains after trimming likely-unannounced last hops.
+	pub fn send_probe_to_node(
+		&self, target_node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32,
+	) -> Result<(PaymentHash, PaymentId), ProbeSendFailure> {
+		let payer = self.get_our_node_id();
+		let usable_channels = self.list_usable_channels();
+		let first_hops = usable_channels.iter().collect::<Vec<_>>();
+		let inflight_htlcs = self.compute_inflight_htlcs();
+
+		let route_params = RouteParameters::from_probe_target(
+			target_node_id,
+			amount_msat,
+			final_cltv_expiry_delta,
+		);
+		let route = self
+			.router
+			.find_route(&payer, &route_params, Some(&first_hops), inflight_htlcs)
+			.map_err(|e| {
+				log_error!(self.logger, "Failed to find path for background probe: {:?}", e);
+				ProbeSendFailure::RouteNotFound
+			})?;
+
+		if route.paths.is_empty() {
+			debug_assert!(false, "find_route returned Ok with no paths — router bug");
+			log_error!(self.logger, "Router returned no paths for background probe.");
+			return Err(ProbeSendFailure::RouteNotFound);
+		}
+		let path = route.paths.into_iter().next().unwrap();
+
+		let path = trim_unannounced_probe_last_hops(path, &self.logger).ok_or_else(|| {
+			log_debug!(
+				self.logger,
+				"Skipped background probe: path has fewer than 2 hops after trimming."
+			);
+			ProbeSendFailure::RouteNotFound
+		})?;
+
+		self.send_probe(path)
+	}
+
 	/// Returns whether a payment with the given [`PaymentHash`] and [`PaymentId`] is, in fact, a
 	/// payment probe.
 	#[cfg(test)]
@@ -6205,35 +6290,17 @@ impl<
 
 		let mut res = Vec::new();
 
-		for mut path in route.paths {
-			// If the last hop is probably an unannounced channel we refrain from probing all the
-			// way through to the end and instead probe up to the second-to-last channel.
-			while let Some(last_path_hop) = path.hops.last() {
-				if last_path_hop.maybe_announced_channel {
-					// We found a potentially announced last hop.
-					break;
-				} else {
-					// Drop the last hop, as it's likely unannounced.
+		for path in route.paths {
+			let path = match trim_unannounced_probe_last_hops(path, &self.logger) {
+				Some(p) => p,
+				None => {
 					log_debug!(
 						self.logger,
-						"Avoided sending payment probe all the way to last hop {} as it is likely unannounced.",
-						last_path_hop.short_channel_id
+						"Skipped sending payment probe over path with less than two hops."
 					);
-					let final_value_msat = path.final_value_msat();
-					path.hops.pop();
-					if let Some(new_last) = path.hops.last_mut() {
-						new_last.fee_msat += final_value_msat;
-					}
-				}
-			}
-
-			if path.hops.len() < 2 {
-				log_debug!(
-					self.logger,
-					"Skipped sending payment probe over path with less than two hops."
-				);
-				continue;
-			}
+					continue;
+				},
+			};
 
 			if let Some(first_path_hop) = path.hops.first() {
 				if let Some(first_hop) = first_hops.iter().find(|h| {
