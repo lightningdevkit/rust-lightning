@@ -85,6 +85,7 @@ pub(crate) enum PendingOutboundPayment {
 		retry_strategy: Retry,
 		route_params_config: RouteParametersConfig,
 		retryable_invoice_request: Option<RetryableInvoiceRequest>,
+		expecting_bolt11_invoice: bool,
 	},
 	// Represents the state after the invoice has been received, transitioning from the corresponding
 	// `AwaitingInvoice` state.
@@ -1136,6 +1137,143 @@ impl OutboundPayments {
 		)
 	}
 
+	pub(super) fn send_payment_for_bolt11_invoice_from_offer<
+		R: Router,
+		ES: EntropySource,
+		NS: NodeSigner,
+		IH,
+		SP,
+		L: Logger,
+	>(
+		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, router: &R,
+		first_hops: Vec<ChannelDetails>, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
+		best_block_height: u32,
+		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
+		send_payment_along_path: SP, logger: &WithContext<L>,
+	) -> Result<(), Bolt12PaymentError>
+	where
+		IH: Fn() -> InFlightHtlcs,
+		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
+	{
+		let payment_hash = invoice.payment_hash();
+		let amount_msats =
+			invoice.amount_milli_satoshis().ok_or(Bolt12PaymentError::UnexpectedInvoice)?;
+		let (marked_payment_hash, retry_strategy, params_config, _) =
+			self.mark_bolt11_invoice_received_and_get_details(invoice, payment_id)?;
+		if payment_hash != marked_payment_hash {
+			return Err(Bolt12PaymentError::UnexpectedInvoice);
+		}
+
+		let mut recipient_onion =
+			RecipientOnionFields::secret_only(*invoice.payment_secret(), amount_msats);
+		recipient_onion.payment_metadata = invoice.payment_metadata().map(|v| v.clone());
+
+		let payment_params = PaymentParameters::from_bolt11_invoice(invoice)
+			.with_user_config_ignoring_fee_limit(params_config);
+		let mut route_params =
+			RouteParameters::from_payment_params_and_value(payment_params, amount_msats);
+		if let Some(max_fee_msat) = params_config.max_total_routing_fee_msat {
+			route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+		}
+
+		let route = match self.find_initial_route(
+			payment_id,
+			payment_hash,
+			&recipient_onion,
+			None,
+			None,
+			&mut route_params,
+			router,
+			&first_hops,
+			&inflight_htlcs,
+			node_signer,
+			best_block_height,
+			logger,
+		) {
+			Ok(route) => route,
+			Err(e) => {
+				let reason = match e {
+					RetryableSendFailure::PaymentExpired => PaymentFailureReason::PaymentExpired,
+					RetryableSendFailure::RouteNotFound => PaymentFailureReason::RouteNotFound,
+					RetryableSendFailure::DuplicatePayment => PaymentFailureReason::UnexpectedError,
+					RetryableSendFailure::OnionPacketSizeExceeded => {
+						PaymentFailureReason::UnexpectedError
+					},
+				};
+				self.abandon_payment(payment_id, reason, pending_events);
+				return Err(Bolt12PaymentError::SendingFailed(e));
+			},
+		};
+
+		let payment_params = Some(route_params.payment_params.clone());
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		let onion_session_privs = match outbounds.entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::InvoiceReceived { .. } => {
+					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
+						payment_hash,
+						recipient_onion.clone(),
+						None,
+						None,
+						None,
+						&route,
+						Some(retry_strategy),
+						payment_params,
+						entropy_source,
+						best_block_height,
+					);
+					*entry.into_mut() = retryable_payment;
+					onion_session_privs
+				},
+				_ => return Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => return Err(Bolt12PaymentError::UnexpectedInvoice),
+		};
+		core::mem::drop(outbounds);
+
+		let result = self.pay_route_internal(
+			&route,
+			payment_hash,
+			&recipient_onion,
+			None,
+			None,
+			None,
+			payment_id,
+			&onion_session_privs,
+			false,
+			node_signer,
+			best_block_height,
+			&send_payment_along_path,
+		);
+		log_info!(
+			logger,
+			"Sending payment with id {} and hash {} returned {:?}",
+			payment_id,
+			payment_hash,
+			result
+		);
+		if let Err(e) = result {
+			self.handle_pay_route_err(
+				e,
+				payment_id,
+				payment_hash,
+				route,
+				route_params,
+				onion_session_privs,
+				router,
+				first_hops,
+				&inflight_htlcs,
+				entropy_source,
+				node_signer,
+				best_block_height,
+				pending_events,
+				&send_payment_along_path,
+				logger,
+			);
+		}
+		Ok(())
+	}
+
 	#[rustfmt::skip]
 	fn send_payment_for_bolt12_invoice_internal<
 		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP, L: Logger,
@@ -2044,6 +2182,36 @@ impl OutboundPayments {
 		route_params_config: RouteParametersConfig,
 		retryable_invoice_request: Option<RetryableInvoiceRequest>,
 	) -> Result<(), ()> {
+		self.add_new_awaiting_invoice_internal(
+			payment_id,
+			expiration,
+			retry_strategy,
+			route_params_config,
+			retryable_invoice_request,
+			false,
+		)
+	}
+
+	pub(super) fn add_new_awaiting_bolt11_invoice(
+		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
+		route_params_config: RouteParametersConfig,
+		retryable_invoice_request: Option<RetryableInvoiceRequest>,
+	) -> Result<(), ()> {
+		self.add_new_awaiting_invoice_internal(
+			payment_id,
+			expiration,
+			retry_strategy,
+			route_params_config,
+			retryable_invoice_request,
+			true,
+		)
+	}
+
+	fn add_new_awaiting_invoice_internal(
+		&self, payment_id: PaymentId, expiration: StaleExpiration, retry_strategy: Retry,
+		route_params_config: RouteParametersConfig,
+		retryable_invoice_request: Option<RetryableInvoiceRequest>, expecting_bolt11_invoice: bool,
+	) -> Result<(), ()> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
 		match pending_outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(_) => Err(()),
@@ -2056,6 +2224,7 @@ impl OutboundPayments {
 					retry_strategy,
 					route_params_config,
 					retryable_invoice_request,
+					expecting_bolt11_invoice,
 				});
 
 				Ok(())
@@ -2103,6 +2272,45 @@ impl OutboundPayments {
 					retry_strategy, route_params_config, ..
 				} => {
 					Ok((invoice.payment_hash(), *retry_strategy, *route_params_config, false))
+				},
+				_ => Err(Bolt12PaymentError::DuplicateInvoice),
+			},
+			hash_map::Entry::Vacant(_) => Err(Bolt12PaymentError::UnexpectedInvoice),
+		}
+	}
+
+	fn mark_bolt11_invoice_received_and_get_details(
+		&self, invoice: &Bolt11Invoice, payment_id: PaymentId,
+	) -> Result<(PaymentHash, Retry, RouteParametersConfig, bool), Bolt12PaymentError> {
+		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
+			hash_map::Entry::Occupied(entry) => match entry.get() {
+				PendingOutboundPayment::AwaitingInvoice {
+					expecting_bolt11_invoice: true,
+					retry_strategy: retry,
+					route_params_config,
+					..
+				} => {
+					let payment_hash = invoice.payment_hash();
+					let retry = *retry;
+					let config = *route_params_config;
+					*entry.into_mut() = PendingOutboundPayment::InvoiceReceived {
+						payment_hash,
+						retry_strategy: retry,
+						route_params_config: config,
+					};
+
+					Ok((payment_hash, retry, config, true))
+				},
+				PendingOutboundPayment::AwaitingInvoice {
+					expecting_bolt11_invoice: false, ..
+				} => Err(Bolt12PaymentError::UnexpectedInvoice),
+				PendingOutboundPayment::InvoiceReceived {
+					payment_hash,
+					retry_strategy,
+					route_params_config,
+					..
+				} if *payment_hash == invoice.payment_hash() => {
+					Ok((*payment_hash, *retry_strategy, *route_params_config, false))
 				},
 				_ => Err(Bolt12PaymentError::DuplicateInvoice),
 			},
@@ -2802,6 +3010,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 				|fee_msat| RouteParametersConfig::default().with_max_total_routing_fee_msat(fee_msat)
 			)
 		))),
+		(9, expecting_bolt11_invoice, (default_value, false)),
 	},
 	(7, InvoiceReceived) => {
 		(0, payment_hash, required),

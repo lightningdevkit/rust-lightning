@@ -23,6 +23,8 @@ use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use core::fmt;
 use core::ops::Deref;
+use core::str::FromStr;
+use lightning_invoice::Bolt11Invoice;
 
 use crate::prelude::*;
 
@@ -32,6 +34,7 @@ const INVOICE_TLV_TYPE: u64 = 66;
 const INVOICE_ERROR_TLV_TYPE: u64 = 68;
 // Spec'd in https://github.com/lightning/bolts/pull/1149.
 const STATIC_INVOICE_TLV_TYPE: u64 = 70;
+const BOLT11_INVOICE_TLV_TYPE: u64 = 72;
 
 /// A handler for an [`OnionMessage`] containing a BOLT 12 Offers message as its payload.
 ///
@@ -93,6 +96,9 @@ pub enum OffersMessage {
 	/// A [`StaticInvoice`] sent in response to an [`InvoiceRequest`].
 	StaticInvoice(StaticInvoice),
 
+	/// A [`Bolt11Invoice`] sent in response to an [`InvoiceRequest`].
+	Bolt11Invoice(Bolt11Invoice),
+
 	/// An error from handling an [`OffersMessage`].
 	InvoiceError(InvoiceError),
 }
@@ -104,7 +110,8 @@ impl OffersMessage {
 			INVOICE_REQUEST_TLV_TYPE
 			| INVOICE_TLV_TYPE
 			| INVOICE_ERROR_TLV_TYPE
-			| STATIC_INVOICE_TLV_TYPE => true,
+			| STATIC_INVOICE_TLV_TYPE
+			| BOLT11_INVOICE_TLV_TYPE => true,
 			_ => false,
 		}
 	}
@@ -114,6 +121,14 @@ impl OffersMessage {
 			INVOICE_REQUEST_TLV_TYPE => Ok(Self::InvoiceRequest(InvoiceRequest::try_from(bytes)?)),
 			INVOICE_TLV_TYPE => Ok(Self::Invoice(Bolt12Invoice::try_from(bytes)?)),
 			STATIC_INVOICE_TLV_TYPE => Ok(Self::StaticInvoice(StaticInvoice::try_from(bytes)?)),
+			BOLT11_INVOICE_TLV_TYPE => {
+				let invoice = String::from_utf8(bytes)
+					.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?;
+				Ok(Self::Bolt11Invoice(
+					Bolt11Invoice::from_str(&invoice)
+						.map_err(|_| Bolt12ParseError::Decode(DecodeError::InvalidValue))?,
+				))
+			},
 			_ => Err(Bolt12ParseError::Decode(DecodeError::InvalidValue)),
 		}
 	}
@@ -123,6 +138,7 @@ impl OffersMessage {
 			OffersMessage::InvoiceRequest(_) => "Invoice Request",
 			OffersMessage::Invoice(_) => "Invoice",
 			OffersMessage::StaticInvoice(_) => "Static Invoice",
+			OffersMessage::Bolt11Invoice(_) => "BOLT 11 Invoice",
 			OffersMessage::InvoiceError(_) => "Invoice Error",
 		}
 	}
@@ -140,6 +156,9 @@ impl fmt::Debug for OffersMessage {
 			OffersMessage::StaticInvoice(message) => {
 				write!(f, "{:?}", message)
 			},
+			OffersMessage::Bolt11Invoice(message) => {
+				write!(f, "{:?}", message)
+			},
 			OffersMessage::InvoiceError(message) => {
 				write!(f, "{:?}", message)
 			},
@@ -153,6 +172,7 @@ impl OnionMessageContents for OffersMessage {
 			OffersMessage::InvoiceRequest(_) => INVOICE_REQUEST_TLV_TYPE,
 			OffersMessage::Invoice(_) => INVOICE_TLV_TYPE,
 			OffersMessage::StaticInvoice(_) => STATIC_INVOICE_TLV_TYPE,
+			OffersMessage::Bolt11Invoice(_) => BOLT11_INVOICE_TLV_TYPE,
 			OffersMessage::InvoiceError(_) => INVOICE_ERROR_TLV_TYPE,
 		}
 	}
@@ -172,6 +192,7 @@ impl Writeable for OffersMessage {
 			OffersMessage::InvoiceRequest(message) => message.write(w),
 			OffersMessage::Invoice(message) => message.write(w),
 			OffersMessage::StaticInvoice(message) => message.write(w),
+			OffersMessage::Bolt11Invoice(message) => w.write_all(message.to_string().as_bytes()),
 			OffersMessage::InvoiceError(message) => message.write(w),
 		}
 	}
