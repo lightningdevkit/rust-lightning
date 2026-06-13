@@ -6191,3 +6191,127 @@ fn bolt11_multi_node_mpp_with_retry() {
 		panic!("{payment_sent_b:?}");
 	}
 }
+
+#[test]
+fn test_circular_payment_rebalance() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let _chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+	let chan_3 = create_announced_chan_between_nodes(&nodes, 2, 0);
+
+	let out_chan_id = chan_1.2;
+	let in_chan_id = chan_3.2;
+
+	let amount_msat = 10_000;
+
+	// Test 1: Same channel for both in/out
+	let same_chan_err = nodes[0].node.send_circular_payment(
+		out_chan_id,
+		out_chan_id,
+		amount_msat,
+		PaymentId([1; 32]),
+	);
+	assert_eq!(same_chan_err.unwrap_err(), RetryableSendFailure::RouteNotFound);
+
+	// Test 2: Channel not found
+	let fake_chan_id = ChannelId([99; 32]);
+	let missing_chan_err = nodes[0].node.send_circular_payment(
+		fake_chan_id,
+		in_chan_id,
+		amount_msat,
+		PaymentId([2; 32]),
+	);
+	assert_eq!(missing_chan_err.unwrap_err(), RetryableSendFailure::RouteNotFound);
+
+	let missing_chan_err2 = nodes[0].node.send_circular_payment(
+		out_chan_id,
+		fake_chan_id,
+		amount_msat,
+		PaymentId([3; 32]),
+	);
+	assert_eq!(missing_chan_err2.unwrap_err(), RetryableSendFailure::RouteNotFound);
+
+	// Test 3: Happy path
+	let payment_id = PaymentId([42; 32]);
+	let _hash = nodes[0]
+		.node
+		.send_circular_payment(out_chan_id, in_chan_id, amount_msat, payment_id)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	// Route should be 0 -> 1 -> 2 -> 0.
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+
+	// Forward 0 -> 1
+	let node_1_msgs = remove_first_msg_event_to_node(&node_b_id, &mut events);
+	let send_event_1 = SendEvent::from_event(node_1_msgs);
+	nodes[1].node.handle_update_add_htlc(node_a_id, &send_event_1.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event_1.commitment_msg, false, true);
+
+	// Forward 1 -> 2
+	expect_and_process_pending_htlcs(&nodes[1], false);
+	check_added_monitors(&nodes[1], 1);
+	let mut events_1 = nodes[1].node.get_and_clear_pending_msg_events();
+	let node_2_msgs = remove_first_msg_event_to_node(&node_c_id, &mut events_1);
+	let send_event_2 = SendEvent::from_event(node_2_msgs);
+	nodes[2].node.handle_update_add_htlc(node_b_id, &send_event_2.msgs[0]);
+	do_commitment_signed_dance(&nodes[2], &nodes[1], &send_event_2.commitment_msg, false, true);
+
+	// Forward 2 -> 0
+	expect_and_process_pending_htlcs(&nodes[2], false);
+	check_added_monitors(&nodes[2], 1);
+	let mut events_2 = nodes[2].node.get_and_clear_pending_msg_events();
+	let node_0_msgs = remove_first_msg_event_to_node(&node_a_id, &mut events_2);
+	let send_event_3 = SendEvent::from_event(node_0_msgs);
+	nodes[0].node.handle_update_add_htlc(node_c_id, &send_event_3.msgs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[2], &send_event_3.commitment_msg, false, true);
+
+	// Now node 0 should process it and claim it.
+	expect_and_process_pending_htlcs(&nodes[0], false);
+	let claim_events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(claim_events.len(), 1);
+	let preimage = if let Event::PaymentClaimable {
+		purpose: PaymentPurpose::SpontaneousPayment(preimage),
+		..
+	} = claim_events[0]
+	{
+		preimage
+	} else {
+		panic!("Expected PaymentClaimable SpontaneousPayment");
+	};
+
+	let route: &[&[&Node]] = &[&[&nodes[1], &nodes[2], &nodes[0]]];
+	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], route, preimage));
+}
+
+#[test]
+fn test_circular_payment_no_route() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 0, 2);
+
+	let out_chan_id = chan_1.2;
+	let in_chan_id = chan_2.2;
+
+	let amount_msat = 10_000;
+	let no_route_err = nodes[0].node.send_circular_payment(
+		out_chan_id,
+		in_chan_id,
+		amount_msat,
+		PaymentId([5; 32]),
+	);
+	assert_eq!(no_route_err.unwrap_err(), RetryableSendFailure::RouteNotFound);
+}
