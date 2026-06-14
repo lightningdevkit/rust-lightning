@@ -1280,6 +1280,11 @@ enum BackgroundEvent {
 		channel_id: ChannelId,
 		highest_update_id_completed: u64,
 	},
+	/// A channel had blocked monitor updates waiting on startup. If the updates were blocked on
+	/// an MPP claim blocker not written to disk, we may be able to unblock them now.
+	///
+	/// This event is never written to disk.
+	AttemptUnblockMonitorUpdates { counterparty_node_id: PublicKey, channel_id: ChannelId },
 }
 
 /// A pointer to a channel that is unblocked when an event is surfaced
@@ -8074,6 +8079,12 @@ where
 						&counterparty_node_id,
 					);
 				},
+				BackgroundEvent::AttemptUnblockMonitorUpdates {
+					counterparty_node_id,
+					channel_id,
+				} => {
+					self.handle_monitor_update_release(counterparty_node_id, channel_id, None);
+				},
 			}
 		}
 		NotifyOption::DoPersist
@@ -8357,26 +8368,23 @@ where
 						debug_assert!(false);
 						return false;
 					}
-					if let OnionPayload::Invoice { .. } = payment.htlcs[0].onion_payload {
-						// Check if we've received all the parts we need for an MPP (the value of the parts adds to total_msat).
-						// In this case we're not going to handle any timeouts of the parts here.
-						// This condition determining whether the MPP is complete here must match
-						// exactly the condition used in `process_pending_htlc_forwards`.
-						let htlc_total_msat =
-							payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
-						if payment.htlcs[0].total_msat <= htlc_total_msat {
-							return true;
-						} else if payment.htlcs.iter_mut().any(|htlc| {
-							htlc.timer_ticks += 1;
-							return htlc.timer_ticks >= MPP_TIMEOUT_TICKS;
-						}) {
-							let htlcs = payment
-								.htlcs
-								.drain(..)
-								.map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash));
-							timed_out_mpp_htlcs.extend(htlcs);
-							return false;
-						}
+					// Check if we've received all the parts we need for an MPP.
+					// This condition determining whether the MPP is complete here must match
+					// exactly the condition used in `process_pending_htlc_forwards`.
+					let htlc_total_msat =
+						payment.htlcs.iter().map(|h| h.sender_intended_value).sum();
+					if payment.htlcs[0].total_msat <= htlc_total_msat {
+						return true;
+					} else if payment.htlcs.iter_mut().any(|htlc| {
+						htlc.timer_ticks += 1;
+						return htlc.timer_ticks >= MPP_TIMEOUT_TICKS;
+					}) {
+						let htlcs = payment
+							.htlcs
+							.drain(..)
+							.map(|htlc: ClaimableHTLC| (htlc.prev_hop, *payment_hash));
+						timed_out_mpp_htlcs.extend(htlcs);
+						return false;
 					}
 					true
 				},
@@ -9077,12 +9085,12 @@ where
 							{
 								if let Some(peer_state_mtx) = per_peer_state.get(&node_id) {
 									let mut peer_state = peer_state_mtx.lock().unwrap();
-									if let Some(blockers) = peer_state
+									let entry = peer_state
 										.actions_blocking_raa_monitor_updates
-										.get_mut(&channel_id)
-									{
+										.entry(channel_id);
+									if let btree_map::Entry::Occupied(mut entry) = entry {
 										let mut found_blocker = false;
-										blockers.retain(|iter| {
+										entry.get_mut().retain(|iter| {
 											// Note that we could actually be blocked, in
 											// which case we need to only remove the one
 											// blocker which was added duplicatively.
@@ -9092,6 +9100,9 @@ where
 											}
 											*iter != blocker || !first_blocker
 										});
+										if entry.get().is_empty() {
+											entry.remove();
+										}
 										debug_assert!(found_blocker);
 									}
 								} else {
@@ -9359,6 +9370,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 												channel_id, ..
 											} =>
 												*channel_id == prev_channel_id,
+											BackgroundEvent::AttemptUnblockMonitorUpdates { .. } => false,
 										}
 									});
 								assert!(
@@ -13587,10 +13599,12 @@ where
 				let peer_state = &mut *peer_state_lck;
 				if let Some(blocker) = completed_blocker.take() {
 					// Only do this on the first iteration of the loop.
-					if let Some(blockers) = peer_state.actions_blocking_raa_monitor_updates
-						.get_mut(&channel_id)
-					{
-						blockers.retain(|iter| iter != &blocker);
+					let entry = peer_state.actions_blocking_raa_monitor_updates.entry(channel_id);
+					if let btree_map::Entry::Occupied(mut entry) = entry {
+						entry.get_mut().retain(|iter| iter != &blocker);
+						if entry.get().is_empty() {
+							entry.remove();
+						}
 					}
 				}
 
@@ -17365,6 +17379,14 @@ where
 						log_error!(logger, " Without the latest ChannelMonitor we cannot continue without risking funds.");
 						log_error!(logger, " Please ensure the chain::Watch API requirements are met and file a bug report at https://github.com/lightningdevkit/rust-lightning");
 						return Err(DecodeError::DangerousValue);
+					}
+					if funded_chan.blocked_monitor_updates_pending() > 0 {
+						pending_background_events.push(
+							BackgroundEvent::AttemptUnblockMonitorUpdates {
+								counterparty_node_id: *counterparty_id,
+								channel_id: *chan_id,
+							},
+						);
 					}
 				} else {
 					// We shouldn't have persisted (or read) any unfunded channel types so none should have been
