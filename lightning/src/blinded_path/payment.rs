@@ -522,7 +522,7 @@ pub(crate) fn amt_to_forward_msat(inbound_amt_msat: u64, payment_relay: &Payment
 		(post_base_fee_inbound_amt * 1_000_000 + 1_000_000 + prop - 1) / (prop + 1_000_000);
 
 	let fee = ((amt_to_forward * prop) / 1_000_000) + base;
-	if inbound_amt - fee < amt_to_forward {
+	if inbound_amt.checked_sub(fee)? < amt_to_forward {
 		// Rounding up the forwarded amount resulted in underpaying this node, so take an extra 1 msat
 		// in fee to compensate.
 		amt_to_forward -= 1;
@@ -916,5 +916,20 @@ mod tests {
 
 		let blinded_payinfo = super::compute_payinfo(&intermediate_nodes[..], &recv_tlvs, 10_000, TEST_FINAL_CLTV as u16).unwrap();
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, 3997);
+	}
+
+	#[test]
+	fn amt_to_forward_msat_underflow() {
+		// `amt_to_forward_msat` is documented to return `None` if underflow occurs, but the
+		// `inbound_amt - fee` subtraction was previously unguarded. With a high proportional fee
+		// and a small inbound amount, rounding the forwarded amount up leaves `fee` larger than
+		// `inbound_amt`, so the subtraction underflows (panicking in debug builds and returning a
+		// nonsensical result in release). Ensure we instead return `None`.
+		let payment_relay = PaymentRelay {
+			cltv_expiry_delta: 0,
+			fee_proportional_millionths: u32::MAX,
+			fee_base_msat: 1,
+		};
+		assert!(super::amt_to_forward_msat(2, &payment_relay).is_none());
 	}
 }
