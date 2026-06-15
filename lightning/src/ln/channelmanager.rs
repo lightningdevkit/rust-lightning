@@ -26,7 +26,7 @@ use bitcoin::transaction::Transaction;
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::hmac::Hmac;
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::{Hash, HashEngine, HmacEngine};
+use bitcoin::hashes::{Hash as CryptoHash, HashEngine, HmacEngine};
 
 use bitcoin::secp256k1::Secp256k1;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
@@ -174,6 +174,7 @@ use crate::ln::script::ShutdownScript;
 use core::borrow::Borrow;
 use core::cell::RefCell;
 use core::convert::Infallible;
+use core::hash::{Hash, Hasher};
 use core::ops::Deref;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use core::time::Duration;
@@ -619,7 +620,7 @@ impl Ord for ClaimableHTLC {
 /// a payment and ensure idempotency in LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct PaymentId(pub [u8; Self::LENGTH]);
 
 impl PaymentId {
@@ -651,6 +652,13 @@ impl Borrow<[u8]> for PaymentId {
 	}
 }
 
+impl Hash for PaymentId {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		let slice: &[u8] = self.borrow();
+		Hash::hash(slice, state);
+	}
+}
+
 impl_fmt_traits! {
 	impl fmt_traits for PaymentId {
 		const LENGTH: usize = 32;
@@ -673,7 +681,7 @@ impl Readable for PaymentId {
 /// An identifier used to uniquely identify an intercepted HTLC to LDK.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 pub struct InterceptId(pub [u8; 32]);
 
 impl InterceptId {
@@ -693,6 +701,14 @@ impl Borrow<[u8]> for InterceptId {
 		&self.0[..]
 	}
 }
+
+impl Hash for InterceptId {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		let slice: &[u8] = self.borrow();
+		Hash::hash(slice, state);
+	}
+}
+
 impl_fmt_traits! {
 	impl fmt_traits for InterceptId {
 		const LENGTH: usize = 32;
@@ -941,7 +957,7 @@ pub use self::fuzzy_channelmanager::*;
 pub(crate) use self::fuzzy_channelmanager::*;
 
 #[allow(clippy::derive_hash_xor_eq)] // Our Hash is faithful to the data, we just don't have SecretKey::hash
-impl core::hash::Hash for HTLCSource {
+impl Hash for HTLCSource {
 	fn hash<H: core::hash::Hasher>(&self, hasher: &mut H) {
 		match self {
 			HTLCSource::PreviousHopData(prev_hop_data) => {
@@ -7915,7 +7931,8 @@ impl<
 								Ok(res) => res,
 								Err(onion_utils::OnionDecodeErr::Malformed { err_msg, reason }) => {
 									let sha256_of_onion =
-										Sha256::hash(&onion_packet.hop_data).to_byte_array();
+										<Sha256 as CryptoHash>::hash(&onion_packet.hop_data)
+											.to_byte_array();
 									// In this scenario, the phantom would have sent us an
 									// `update_fail_malformed_htlc`, meaning here we encrypt the error as
 									// if it came from us (the second-to-last hop) but contains the sha256
@@ -9485,7 +9502,7 @@ impl<
 	}
 
 	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
-		let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
+		let payment_hash: PaymentHash = payment_preimage.into();
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
@@ -10098,7 +10115,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				let derived_key;
 				let session_priv = if path.has_trampoline_hops() {
 					let session_priv_hash =
-						Sha256::hash(&session_priv.secret_bytes()).to_byte_array();
+						<Sha256 as CryptoHash>::hash(&session_priv.secret_bytes()).to_byte_array();
 					derived_key = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
 					&derived_key
 				} else {

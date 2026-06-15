@@ -20,10 +20,11 @@ use crate::util::ser::{Readable, Writeable, Writer};
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _, HashEngine as _};
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash as CryptoHash, HashEngine as _};
 use bitcoin::hex::display::impl_fmt_traits;
 
 use core::borrow::Borrow;
+use core::hash::{Hash, Hasher};
 
 /// A unique 32-byte identifier for a channel.
 /// Depending on how the ID is generated, several varieties are distinguished
@@ -33,7 +34,7 @@ use core::borrow::Borrow;
 /// A _temporary_ ID is generated randomly.
 /// (Later revocation-point-based _v2_ is a possibility.)
 /// The variety (context) is not stored, it is relevant only at creation.
-#[derive(Clone, Copy, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ChannelId(pub [u8; 32]);
 
 impl ChannelId {
@@ -93,7 +94,8 @@ impl ChannelId {
 		our_revocation_basepoint: &RevocationBasepoint,
 	) -> Self {
 		let our_revocation_point_bytes = our_revocation_basepoint.0.serialize();
-		Self(Sha256::hash(&[[0u8; 33], our_revocation_point_bytes].concat()).to_byte_array())
+		let hash_input = &[[0u8; 33], our_revocation_point_bytes].concat();
+		Self(<Sha256 as CryptoHash>::hash(hash_input).to_byte_array())
 	}
 
 	/// Indicates whether this is a V2 channel ID for the given local and remote revocation basepoints.
@@ -120,6 +122,13 @@ impl Readable for ChannelId {
 impl Borrow<[u8]> for ChannelId {
 	fn borrow(&self) -> &[u8] {
 		&self.0[..]
+	}
+}
+
+impl Hash for ChannelId {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		let slice: &[u8] = self.borrow();
+		Hash::hash(slice, state);
 	}
 }
 
