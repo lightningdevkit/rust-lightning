@@ -25,6 +25,7 @@ pub mod merkle;
 pub mod nonce;
 pub mod parse;
 mod payer;
+pub mod payer_proof;
 pub mod refund;
 pub mod selective_disclosure;
 pub(crate) mod signer;
