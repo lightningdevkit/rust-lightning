@@ -682,10 +682,7 @@ pub struct Route {
 	/// The `route_params` parameter passed to [`find_route`].
 	///
 	/// This is used by `ChannelManager` to track information which may be required for retries.
-	///
-	/// Will be `None` for objects serialized with LDK versions prior to 0.0.117. This field will
-	/// soon move to being required and must always be set.
-	pub route_params: Option<RouteParameters>,
+	pub route_params: RouteParameters,
 }
 
 impl Route {
@@ -698,8 +695,8 @@ impl Route {
 	/// [`htlc_minimum_msat`]: https://github.com/lightning/bolts/blob/master/07-routing-gossip.md#the-channel_update-message
 	#[rustfmt::skip]
 	pub fn get_total_fees(&self) -> u64 {
-		let overpaid_value_msat = self.route_params.as_ref()
-			.map_or(0, |p| self.get_total_amount().saturating_sub(p.final_value_msat));
+		let overpaid_value_msat =
+			self.get_total_amount().saturating_sub(self.route_params.final_value_msat);
 		overpaid_value_msat + self.paths.iter().map(|path| path.fee_msat()).sum::<u64>()
 	}
 
@@ -714,105 +711,102 @@ impl Route {
 	}
 
 	pub(crate) fn debug_assert_route_meets_params<L: Logger>(&self, logger: L) -> Result<(), ()> {
-		if let Some(route_params) = self.route_params.as_ref() {
-			// Check that we actually pay less than the max fee we set.
-			if let Some(max_total_fee) = route_params.max_total_routing_fee_msat {
-				let total_fee = self.get_total_fees();
-				if total_fee > max_total_fee {
-					let err = format!("Router returned an attempt to pay with a higher fee ({total_fee}msat) than we allowed ({max_total_fee}msat). Your router is critically buggy!");
-					debug_assert!(false, "{}", err);
-					log_error!(logger, "{}", err);
-					return Err(());
-				}
+		let route_params = &self.route_params;
+		// Check that we actually pay less than the max fee we set.
+		if let Some(max_total_fee) = route_params.max_total_routing_fee_msat {
+			let total_fee = self.get_total_fees();
+			if total_fee > max_total_fee {
+				let err = format!("Router returned an attempt to pay with a higher fee ({total_fee}msat) than we allowed ({max_total_fee}msat). Your router is critically buggy!");
+				debug_assert!(false, "{}", err);
+				log_error!(logger, "{}", err);
+				return Err(());
 			}
+		}
 
-			if self.paths.is_empty() {
-				let err = "Selected route had no paths. Your router is buggy!";
+		if self.paths.is_empty() {
+			let err = "Selected route had no paths. Your router is buggy!";
+			debug_assert!(false, "{}", err);
+			log_error!(logger, "{}", err);
+			return Err(());
+		}
+
+		for path in self.paths.iter() {
+			if path.hops.is_empty() {
+				let err = "Unusable path in route (path.hops.len() must be at least 1)";
 				debug_assert!(false, "{}", err);
 				log_error!(logger, "{}", err);
 				return Err(());
 			}
 
-			for path in self.paths.iter() {
-				if path.hops.is_empty() {
-					let err = "Unusable path in route (path.hops.len() must be at least 1)";
-					debug_assert!(false, "{}", err);
-					log_error!(logger, "{}", err);
-					return Err(());
-				}
-
-				let total_cltv_delta = path.total_cltv_expiry_delta();
-				if total_cltv_delta > route_params.payment_params.max_total_cltv_expiry_delta {
-					let err = format!(
-						"Path had a total CLTV of {total_cltv_delta} which is greater than the maximum we're allowed {}",
-						route_params.payment_params.max_total_cltv_expiry_delta,
-					);
-					debug_assert!(false, "{}", err);
-					log_error!(logger, "{}", err);
-					return Err(());
-				}
-
-				if path.hops.len() > route_params.payment_params.max_path_length.into() {
-					let err = format!(
-						"Path had a length of {}, which is greater than the maximum we're allowed ({})",
-						path.hops.len(),
-						route_params.payment_params.max_path_length,
-					);
-					#[cfg(any(test, feature = "_test_utils"))]
-					debug_assert!(false, "{}", err);
-					log_error!(logger, "{}", err);
-					// This is a bug, but there's not a material safety risk to making this
-					// payment, so we don't bother to error here.
-				}
-
-				if let Some(tail) = &path.blinded_tail {
-					let trampoline_cltv_sum: u32 =
-						tail.trampoline_hops.iter().map(|hop| hop.cltv_expiry_delta).sum();
-					let last_hop_cltv_delta = path.hops.last().unwrap().cltv_expiry_delta;
-					if !tail.trampoline_hops.is_empty()
-						&& trampoline_cltv_sum != last_hop_cltv_delta
-					{
-						let err = format!(
-							"Path had a total trampoline CLTV of {trampoline_cltv_sum}, which is not equal to the total last-hop CLTV delta of {last_hop_cltv_delta}"
-						);
-						debug_assert!(false, "{}", err);
-						log_error!(logger, "{}", err);
-					}
-					let last_trampoline_cltv_opt =
-						tail.trampoline_hops.last().map(|h| h.cltv_expiry_delta);
-					let last_trampoline_cltv = last_trampoline_cltv_opt.unwrap_or(u32::MAX);
-					if tail.excess_final_cltv_expiry_delta > last_trampoline_cltv {
-						let err = format!(
-							"Last trampoline CLTV of {last_trampoline_cltv} is less than the excess blinded path cltv of {}",
-							tail.excess_final_cltv_expiry_delta
-						);
-						debug_assert!(false, "{}", err);
-						log_error!(logger, "{}", err);
-					}
-					if tail.excess_final_cltv_expiry_delta > last_hop_cltv_delta {
-						let err = format!(
-							"Last path hop CLTV of {last_hop_cltv_delta} is less than the excess blinded path cltv of {}",
-							tail.excess_final_cltv_expiry_delta
-						);
-						debug_assert!(false, "{}", err);
-						log_error!(logger, "{}", err);
-					}
-				}
-			}
-
-			// Test that we don't contain any "extra" MPP parts - while we're allowed to overshoot
-			// the `final_value_msat` specified in the `route_params`, we aren't allowed to have
-			// any MPP parts which aren't needed to meet `route_params.final_value_msat`.
-			let min_mpp_part = self.paths.iter().map(|h| h.final_value_msat()).min().unwrap_or(0);
-			if self.get_total_amount() - min_mpp_part >= route_params.final_value_msat {
+			let total_cltv_delta = path.total_cltv_expiry_delta();
+			if total_cltv_delta > route_params.payment_params.max_total_cltv_expiry_delta {
 				let err = format!(
-					"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
-					route_params.final_value_msat
+					"Path had a total CLTV of {total_cltv_delta} which is greater than the maximum we're allowed {}",
+					route_params.payment_params.max_total_cltv_expiry_delta,
 				);
 				debug_assert!(false, "{}", err);
 				log_error!(logger, "{}", err);
 				return Err(());
 			}
+
+			if path.hops.len() > route_params.payment_params.max_path_length.into() {
+				let err = format!(
+					"Path had a length of {}, which is greater than the maximum we're allowed ({})",
+					path.hops.len(),
+					route_params.payment_params.max_path_length,
+				);
+				#[cfg(any(test, feature = "_test_utils"))]
+				debug_assert!(false, "{}", err);
+				log_error!(logger, "{}", err);
+				// This is a bug, but there's not a material safety risk to making this
+				// payment, so we don't bother to error here.
+			}
+
+			if let Some(tail) = &path.blinded_tail {
+				let trampoline_cltv_sum: u32 =
+					tail.trampoline_hops.iter().map(|hop| hop.cltv_expiry_delta).sum();
+				let last_hop_cltv_delta = path.hops.last().unwrap().cltv_expiry_delta;
+				if !tail.trampoline_hops.is_empty() && trampoline_cltv_sum != last_hop_cltv_delta {
+					let err = format!(
+						"Path had a total trampoline CLTV of {trampoline_cltv_sum}, which is not equal to the total last-hop CLTV delta of {last_hop_cltv_delta}"
+					);
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+				}
+				let last_trampoline_cltv_opt =
+					tail.trampoline_hops.last().map(|h| h.cltv_expiry_delta);
+				let last_trampoline_cltv = last_trampoline_cltv_opt.unwrap_or(u32::MAX);
+				if tail.excess_final_cltv_expiry_delta > last_trampoline_cltv {
+					let err = format!(
+						"Last trampoline CLTV of {last_trampoline_cltv} is less than the excess blinded path cltv of {}",
+						tail.excess_final_cltv_expiry_delta
+					);
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+				}
+				if tail.excess_final_cltv_expiry_delta > last_hop_cltv_delta {
+					let err = format!(
+						"Last path hop CLTV of {last_hop_cltv_delta} is less than the excess blinded path cltv of {}",
+						tail.excess_final_cltv_expiry_delta
+					);
+					debug_assert!(false, "{}", err);
+					log_error!(logger, "{}", err);
+				}
+			}
+		}
+
+		// Test that we don't contain any "extra" MPP parts - while we're allowed to overshoot
+		// the `final_value_msat` specified in the `route_params`, we aren't allowed to have
+		// any MPP parts which aren't needed to meet `route_params.final_value_msat`.
+		let min_mpp_part = self.paths.iter().map(|h| h.final_value_msat()).min().unwrap_or(0);
+		if self.get_total_amount() - min_mpp_part >= route_params.final_value_msat {
+			let err = format!(
+				"Router returned an attempt to include more MPP parts than needed. The smallest MPP part ({min_mpp_part}msat) was not needed for a payment of {}msat. Your router is critically buggy!",
+				route_params.final_value_msat
+			);
+			debug_assert!(false, "{}", err);
+			log_error!(logger, "{}", err);
+			return Err(());
 		}
 
 		Ok(())
@@ -850,12 +844,10 @@ impl Writeable for Route {
 			} else if !blinded_tails.is_empty() { blinded_tails.push(None); }
 		}
 		write_tlv_fields!(writer, {
-			// For compatibility with LDK versions prior to 0.0.117, we take the individual
-			// RouteParameters' fields and reconstruct them on read.
-			(1, self.route_params.as_ref().map(|p| &p.payment_params), option),
+			(1, self.route_params.payment_params, required),
 			(2, blinded_tails, optional_vec),
-			(3, self.route_params.as_ref().map(|p| p.final_value_msat), option),
-			(5, self.route_params.as_ref().and_then(|p| p.max_total_routing_fee_msat), option),
+			(3, self.route_params.final_value_msat, required),
+			(5, self.route_params.max_total_routing_fee_msat, option),
 		});
 		Ok(())
 	}
@@ -881,9 +873,9 @@ impl Readable for Route {
 			paths.push(Path { hops, blinded_tail: None });
 		}
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
-			(1, payment_params, (option: ReadableArgs, min_final_cltv_expiry_delta)),
+			(1, payment_params, (required: ReadableArgs, min_final_cltv_expiry_delta)),
 			(2, blinded_tails, optional_vec),
-			(3, final_value_msat, option),
+			(3, final_value_msat, required),
 			(5, max_total_routing_fee_msat, option)
 		});
 		let blinded_tails = blinded_tails.unwrap_or(Vec::new());
@@ -894,12 +886,10 @@ impl Readable for Route {
 			}
 		}
 
-		// If we previously wrote the corresponding fields, reconstruct RouteParameters.
-		let route_params = match (payment_params, final_value_msat) {
-			(Some(payment_params), Some(final_value_msat)) => {
-				Some(RouteParameters { payment_params, final_value_msat, max_total_routing_fee_msat })
-			}
-			_ => None,
+		let route_params = RouteParameters {
+			payment_params: payment_params.0.unwrap(),
+			final_value_msat: final_value_msat.0.unwrap(),
+			max_total_routing_fee_msat,
 		};
 
 		Ok(Route { paths, route_params })
@@ -3908,7 +3898,7 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 		}
 	}
 
-	let route = Route { paths, route_params: Some(route_params.clone()) };
+	let route = Route { paths, route_params: route_params.clone() };
 
 	// Make sure we would never create a route whose total fees exceed max_total_routing_fee_msat.
 	if let Some(max_total_routing_fee_msat) = route_params.max_total_routing_fee_msat {
@@ -7504,7 +7494,7 @@ mod tests {
 					short_channel_id: 0, fee_msat: 225, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }],
-			route_params: None,
+			route_params: RouteParameters::from_payment_params_and_value(PaymentParameters::from_node_id(ln_test_utils::pubkey(42), 0), 225),
 		};
 
 		assert_eq!(route.get_total_fees(), 250);
@@ -7537,7 +7527,7 @@ mod tests {
 					short_channel_id: 0, fee_msat: 150, cltv_expiry_delta: 0, maybe_announced_channel: true,
 				},
 			], blinded_tail: None }],
-			route_params: None,
+			route_params: RouteParameters::from_payment_params_and_value(PaymentParameters::from_node_id(ln_test_utils::pubkey(42), 0), 300),
 		};
 
 		assert_eq!(route.get_total_fees(), 200);
@@ -7549,7 +7539,13 @@ mod tests {
 		// In an earlier version of `Route::get_total_fees` and `Route::get_total_amount`, they
 		// would both panic if the route was completely empty. We test to ensure they return 0
 		// here, even though its somewhat nonsensical as a route.
-		let route = Route { paths: Vec::new(), route_params: None };
+		let route = Route {
+			paths: Vec::new(),
+			route_params: RouteParameters::from_payment_params_and_value(
+				PaymentParameters::from_node_id(ln_test_utils::pubkey(42), 0),
+				0,
+			),
+		};
 
 		assert_eq!(route.get_total_fees(), 0);
 		assert_eq!(route.get_total_amount(), 0);
@@ -8144,7 +8140,7 @@ mod tests {
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: true,
 			}], blinded_tail: None }],
-			route_params: None,
+			route_params: RouteParameters::from_payment_params_and_value(PaymentParameters::from_node_id(ln_test_utils::pubkey(42), 0), 200),
 		};
 		let encoded_route = route.encode();
 		let decoded_route: Route = Readable::read(&mut Cursor::new(&encoded_route[..])).unwrap();
@@ -8340,7 +8336,7 @@ mod tests {
 				excess_final_cltv_expiry_delta: 0,
 				final_value_msat: 200,
 			}),
-		}], route_params: None};
+		}], route_params: RouteParameters::from_payment_params_and_value(PaymentParameters::from_node_id(ln_test_utils::pubkey(42), 0), 200)};
 
 		let payment_params = PaymentParameters::from_node_id(ln_test_utils::pubkey(47), 18);
 		let (_, network_graph, _, _, _) = build_line_graph();

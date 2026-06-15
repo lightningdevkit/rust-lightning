@@ -1866,7 +1866,7 @@ impl PaymentTracker {
 				}],
 				blinded_tail: None,
 			}],
-			route_params: Some(route_params.clone()),
+			route_params: route_params.clone(),
 		};
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
@@ -1946,7 +1946,7 @@ impl PaymentTracker {
 				],
 				blinded_tail: None,
 			}],
-			route_params: Some(route_params.clone()),
+			route_params: route_params.clone(),
 		};
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
@@ -2028,7 +2028,7 @@ impl PaymentTracker {
 			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
 			amt,
 		);
-		let route = Route { paths, route_params: Some(route_params) };
+		let route = Route { paths, route_params };
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2132,7 +2132,7 @@ impl PaymentTracker {
 			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
 			amt,
 		);
-		let route = Route { paths, route_params: Some(route_params) };
+		let route = Route { paths, route_params };
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {

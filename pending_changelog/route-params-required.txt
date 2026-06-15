@@ -1,0 +1,4 @@
+# Backwards Compatibility
+ * `Route`s serialized by LDK versions prior to 0.0.117 can no longer be
+   deserialized, as parts of the now-required `Route::route_params` were not
+   written by those versions.

@@ -3034,7 +3034,7 @@ mod tests {
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::msgs::{self, UpdateFailHTLC};
 	use crate::ln::types::ChannelId;
-	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop};
+	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, RouteParameters};
 	use crate::types::features::{ChannelFeatures, NodeFeatures};
 	use crate::types::payment::PaymentHash;
 	use crate::util::ser::{VecWriter, Writeable, Writer};
@@ -3142,7 +3142,10 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 
 		let path = build_test_path();
-		let route = Route { paths: vec![path], route_params: None };
+		let payment_params = PaymentParameters::from_node_id(path.hops.last().unwrap().pubkey, 0);
+		let route_params =
+			RouteParameters::from_payment_params_and_value(payment_params, path.final_value_msat());
+		let route = Route { paths: vec![path], route_params };
 
 		let onion_keys =
 			super::construct_onion_keys(&secp_ctx, &route.paths[0], &get_test_session_key());

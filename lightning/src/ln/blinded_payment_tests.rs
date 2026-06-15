@@ -2093,6 +2093,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
 
 	let amt_msat = 1000;
+	let carol_cltv_expiry_delta = 24 + 39;
 	let (payment_preimage, payment_hash, _) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 
 	// We need the session priv to construct an invalid onion packet later.
@@ -2148,7 +2149,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
 					fee_msat: 0,
-					cltv_expiry_delta: 24 + 39,
+					cltv_expiry_delta: carol_cltv_expiry_delta,
 					maybe_announced_channel: false,
 				}
 			],
@@ -2159,7 +2160,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 24 + 39,
+						cltv_expiry_delta: carol_cltv_expiry_delta,
 					},
 				],
 				hops: carol_blinded_hops,
@@ -2168,7 +2169,10 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 				final_value_msat: amt_msat,
 			})
 		}],
-		route_params: None,
+		route_params: RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(carol_node_id, carol_cltv_expiry_delta),
+			amt_msat,
+		),
 	};
 
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0)).unwrap();
@@ -2279,6 +2283,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
 
 	let amt_msat = 1000;
+	let carol_cltv_expiry_delta = 104 + 39;
 	let (payment_preimage, payment_hash, payment_secret) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 
 	// Create a 1-hop blinded path for Carol.
@@ -2314,7 +2319,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
 					fee_msat: 0,
-					cltv_expiry_delta: 104 + 39,
+					cltv_expiry_delta: carol_cltv_expiry_delta,
 					maybe_announced_channel: false,
 				}
 			],
@@ -2325,7 +2330,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 						pubkey: carol_node_id,
 						node_features: Features::empty(),
 						fee_msat: amt_msat,
-						cltv_expiry_delta: 104 + 39,
+						cltv_expiry_delta: carol_cltv_expiry_delta,
 					},
 				],
 				hops: blinded_path.blinded_hops().to_vec(),
@@ -2334,7 +2339,10 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 				final_value_msat: amt_msat,
 			})
 		}],
-		route_params: None,
+		route_params: RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(carol_node_id, carol_cltv_expiry_delta),
+			amt_msat,
+		),
 	};
 
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0)).unwrap();
@@ -2618,7 +2626,13 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 				original_amt_msat,
 			)),
 		}],
-		route_params: None,
+		route_params: RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(
+				carol_node_id,
+				original_trampoline_cltv + excess_final_cltv,
+			),
+			original_amt_msat,
+		),
 	};
 
 	nodes[0]
@@ -2753,6 +2767,7 @@ fn test_trampoline_forward_rejection() {
 	let bob_carol_scid = nodes[1].node().list_channels().iter().find(|c| c.channel_id == chan_id_bob_carol).unwrap().short_channel_id.unwrap();
 
 	let amt_msat = 1000;
+	let carol_cltv_expiry_delta = 24 + 24 + 39;
 	let (payment_preimage, payment_hash, _) = get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
 
 	let route = Route {
@@ -2776,7 +2791,7 @@ fn test_trampoline_forward_rejection() {
 					short_channel_id: bob_carol_scid,
 					channel_features: ChannelFeatures::empty(),
 					fee_msat: 0,
-					cltv_expiry_delta: 24 + 24 + 39,
+					cltv_expiry_delta: carol_cltv_expiry_delta,
 					maybe_announced_channel: false,
 				}
 			],
@@ -2808,7 +2823,10 @@ fn test_trampoline_forward_rejection() {
 				final_value_msat: amt_msat,
 			})
 		}],
-		route_params: None,
+		route_params: RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(carol_node_id, carol_cltv_expiry_delta),
+			amt_msat,
+		),
 	};
 
 	nodes[0].node.send_payment_with_route(route.clone(), payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0)).unwrap();

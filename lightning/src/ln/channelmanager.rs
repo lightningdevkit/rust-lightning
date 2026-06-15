@@ -5632,31 +5632,12 @@ impl<
 	/// LDK will not automatically retry this payment, though it may be manually re-sent after an
 	/// [`Event::PaymentFailed`] is generated.
 	pub fn send_payment_with_route(
-		&self, mut route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
+		&self, route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		payment_id: PaymentId,
 	) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let route_params = route.route_params.clone().unwrap_or_else(|| {
-			// Create a dummy route params since they're a required parameter but unused in this case
-			let (payee_node_id, cltv_delta) = route
-				.paths
-				.first()
-				.and_then(|path| {
-					path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32))
-				})
-				.unwrap_or_else(|| {
-					(PublicKey::from_slice(&[2; 33]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32)
-				});
-			let dummy_payment_params = PaymentParameters::from_node_id(payee_node_id, cltv_delta);
-			RouteParameters::from_payment_params_and_value(
-				dummy_payment_params,
-				route.get_total_amount(),
-			)
-		});
-		if route.route_params.is_none() {
-			route.route_params = Some(route_params.clone());
-		}
+		let route_params = route.route_params.clone();
 		let router = FixedRouter::new(route);
 		let logger =
 			WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id);
@@ -21131,7 +21112,7 @@ mod tests {
 		// Next, send a keysend payment with the same payment_hash and make sure it fails.
 		nodes[0].node.send_spontaneous_payment(
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000),
-			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
+			PaymentId(payment_preimage.0), route.route_params.clone(), Retry::Attempts(0)
 		).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -21287,7 +21268,7 @@ mod tests {
 		).unwrap();
 		let payment_hash = nodes[0].node.send_spontaneous_payment(
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000),
-			PaymentId(payment_preimage.0), route.route_params.clone().unwrap(), Retry::Attempts(0)
+			PaymentId(payment_preimage.0), route.route_params.clone(), Retry::Attempts(0)
 		).unwrap();
 	check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -21330,7 +21311,7 @@ mod tests {
 		let payment_id_1 = PaymentId([44; 32]);
 		let payment_hash = nodes[0].node.send_spontaneous_payment(
 			Some(payment_preimage), RecipientOnionFields::spontaneous_empty(100_000), payment_id_1,
-			route.route_params.clone().unwrap(), Retry::Attempts(0)
+			route.route_params.clone(), Retry::Attempts(0)
 		).unwrap();
 		check_added_monitors(&nodes[0], 1);
 		let mut events = nodes[0].node.get_and_clear_pending_msg_events();
@@ -21448,7 +21429,7 @@ mod tests {
 		route.paths[1].hops[0].pubkey = nodes[2].node.get_our_node_id();
 		route.paths[1].hops[0].short_channel_id = chan_2_id;
 		route.paths[1].hops[1].short_channel_id = chan_4_id;
-		route.route_params.as_mut().unwrap().final_value_msat *= 2;
+		route.route_params.final_value_msat *= 2;
 
 		nodes[0].node.send_payment_with_route(route, payment_hash,
 			RecipientOnionFields::spontaneous_empty(200000), PaymentId(payment_hash.0)).unwrap();

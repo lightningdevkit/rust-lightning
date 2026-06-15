@@ -985,7 +985,7 @@ impl OutboundPayments {
 fn validate_found_route<L: Logger>(
 	route: &mut Route, route_params: &RouteParameters, logger: &WithContext<L>,
 ) -> Result<(), ()> {
-	if route.route_params.as_ref() != Some(route_params) {
+	if route.route_params != *route_params {
 		debug_assert!(
 			false,
 			"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {route_params:?}",
@@ -996,7 +996,7 @@ fn validate_found_route<L: Logger>(
 			"Routers are expected to return a Route which includes the requested RouteParameters. Got {:?}, expected {route_params:?}",
 			route.route_params
 		);
-		route.route_params = Some(route_params.clone());
+		route.route_params = route_params.clone();
 	}
 
 	route.debug_assert_route_meets_params(logger)?;
@@ -1923,7 +1923,20 @@ impl OutboundPayments {
 			}))
 		}
 
-		let route = Route { paths: vec![path], route_params: None };
+		// `route_params` is a required field, but is unused when sending a probe along a fixed
+		// path. Construct dummy parameters from the path, leaving the fee budget unset to match
+		// the previous behavior of not tracking one for probes.
+		let route_params = {
+			let last_hop = path.hops.last().unwrap();
+			let payment_params =
+				PaymentParameters::from_node_id(last_hop.pubkey, last_hop.cltv_expiry_delta);
+			RouteParameters {
+				payment_params,
+				final_value_msat: path.final_value_msat(),
+				max_total_routing_fee_msat: None,
+			}
+		};
+		let route = Route { paths: vec![path], route_params };
 		let recipient_onion_fields =
 			RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
@@ -2036,8 +2049,7 @@ impl OutboundPayments {
 			starting_block_height: best_block_height,
 			total_msat: route.get_total_amount(),
 			onion_total_msat: recipient_onion.total_mpp_amount_msat,
-			remaining_max_total_routing_fee_msat:
-				route.route_params.as_ref().and_then(|p| p.max_total_routing_fee_msat),
+			remaining_max_total_routing_fee_msat: route.route_params.max_total_routing_fee_msat,
 		};
 
 		for (path, session_priv_bytes) in route.paths.iter().zip(onion_session_privs.iter()) {
@@ -2204,19 +2216,17 @@ impl OutboundPayments {
 				results,
 				payment_id,
 				failed_paths_retry: if has_unsent {
-					if let Some(route_params) = &route.route_params {
-						let mut route_params = route_params.clone();
-						// We calculate the leftover fee budget we're allowed to spend by
-						// subtracting the used fee from the total fee budget.
-						route_params.max_total_routing_fee_msat = route_params
-							.max_total_routing_fee_msat.map(|m| m.saturating_sub(total_ok_fees_msat));
+					let mut route_params = route.route_params.clone();
+					// We calculate the leftover fee budget we're allowed to spend by
+					// subtracting the used fee from the total fee budget.
+					route_params.max_total_routing_fee_msat = route_params
+						.max_total_routing_fee_msat.map(|m| m.saturating_sub(total_ok_fees_msat));
 
-						// We calculate the remaining target amount by subtracting the succeded
-						// path values.
-						route_params.final_value_msat = route_params.final_value_msat
-							.saturating_sub(total_ok_amt_sent_msat);
-						Some(route_params)
-					} else { None }
+					// We calculate the remaining target amount by subtracting the succeded
+					// path values.
+					route_params.final_value_msat = route_params.final_value_msat
+						.saturating_sub(total_ok_amt_sent_msat);
+					Some(route_params)
 				} else { None },
 			})
 		} else if has_err {
@@ -2954,7 +2964,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0),
-				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
+				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: expired_route_params.clone() },
 				Some(Retry::Attempts(1)), Some(expired_route_params.payment_params.clone()),
 				&&keys_manager, 0, None).unwrap();
 			outbound_payments.find_route_and_send_payment(
@@ -3000,7 +3010,7 @@ mod tests {
 		let pending_events = Mutex::new(VecDeque::new());
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0),
-				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: None },
+				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: route_params.clone() },
 				Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
 				&&keys_manager, 0, None).unwrap();
 			outbound_payments.find_route_and_send_payment(
@@ -3048,13 +3058,13 @@ mod tests {
 				cltv_expiry_delta: 0,
 				maybe_announced_channel: true,
 			}], blinded_tail: None }],
-			route_params: Some(route_params.clone()),
+			route_params: route_params.clone(),
 		};
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
 		let mut route_params_w_failed_scid = route_params.clone();
 		route_params_w_failed_scid.payment_params.previously_failed_channels.push(failed_scid);
 		let mut route_w_failed_scid = route.clone();
-		route_w_failed_scid.route_params = Some(route_params_w_failed_scid.clone());
+		route_w_failed_scid.route_params = route_params_w_failed_scid.clone();
 		router.expect_find_route(route_params_w_failed_scid, Ok(route_w_failed_scid));
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
 		router.expect_find_route(route_params.clone(), Ok(route.clone()));
@@ -3418,7 +3428,7 @@ mod tests {
 						blinded_tail: None,
 					}
 				],
-				route_params: Some(route_params),
+				route_params,
 			})
 		);
 

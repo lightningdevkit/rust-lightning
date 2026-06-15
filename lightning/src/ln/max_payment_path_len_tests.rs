@@ -110,7 +110,7 @@ fn large_payment_metadata() {
 		custom_tlvs: Vec::new(),
 		total_mpp_amount_msat: amt_msat,
 	};
-	let route_params = route_0_1.route_params.clone().unwrap();
+	let route_params = route_0_1.route_params.clone();
 	let id = PaymentId(payment_hash.0);
 	nodes[0]
 		.node
@@ -138,14 +138,14 @@ fn large_payment_metadata() {
 	let (payment_hash_2, _, payment_secret_2, encrypted_metadata_2) =
 		get_payment_hash!(nodes[2], payment_metadata.clone());
 	let (mut route_0_2, ..) = get_route_and_payment_hash!(&nodes[0], &nodes[2], amt_msat);
-	let mut route_params_0_2 = route_0_2.route_params.clone().unwrap();
+	let mut route_params_0_2 = route_0_2.route_params.clone();
 	route_params_0_2.payment_params.max_path_length = 1;
 	nodes[0].router.expect_find_route_query(route_params_0_2);
 	max_sized_onion.payment_secret = Some(payment_secret_2);
 	max_sized_onion.payment_metadata = Some(encrypted_metadata_2);
 
 	let id = PaymentId(payment_hash_2.0);
-	let mut route_params = route_0_2.route_params.clone().unwrap();
+	let mut route_params = route_0_2.route_params.clone();
 	let err = nodes[0]
 		.node
 		.send_payment(payment_hash_2, max_sized_onion.clone(), id, route_params, Retry::Attempts(0))
@@ -184,7 +184,7 @@ fn large_payment_metadata() {
 		_ => panic!(),
 	}
 
-	let route_params = route_0_1.route_params.clone().unwrap();
+	let route_params = route_0_1.route_params.clone();
 	let err = nodes[0]
 		.node
 		.send_payment(payment_hash_2, too_large_onion, id, route_params, Retry::Attempts(0))
@@ -202,10 +202,10 @@ fn large_payment_metadata() {
 		custom_tlvs: Vec::new(),
 		total_mpp_amount_msat: amt_msat,
 	};
-	let mut route_params_0_2 = route_0_2.route_params.clone().unwrap();
+	let mut route_params_0_2 = route_0_2.route_params.clone();
 	route_params_0_2.payment_params.max_path_length = 2;
 	nodes[0].router.expect_find_route_query(route_params_0_2);
-	let route_params = route_0_2.route_params.unwrap();
+	let route_params = route_0_2.route_params;
 	nodes[0]
 		.node
 		.send_payment(payment_hash_2, onion_allowing_2_hops, id, route_params, Retry::Attempts(0))
