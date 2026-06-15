@@ -1203,14 +1203,13 @@ impl OutboundPayments {
 			},
 		};
 
-		let payment_params = Some(route_params.payment_params.clone());
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let onion_session_privs = match outbounds.entry(payment_id) {
 			hash_map::Entry::Occupied(entry) => match entry.get() {
 				PendingOutboundPayment::InvoiceReceived { .. } => {
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 						payment_hash, recipient_onion.clone(), keysend_preimage, None, Some(bolt12_invoice.clone()), &route,
-						Some(retry_strategy), payment_params, entropy_source, best_block_height,
+						Some(retry_strategy), entropy_source, best_block_height,
 					);
 					*entry.into_mut() = retryable_payment;
 					onion_session_privs
@@ -1221,7 +1220,7 @@ impl OutboundPayments {
 					} else { unreachable!() };
 					let (retryable_payment, onion_session_privs) = Self::create_pending_payment(
 						payment_hash, recipient_onion.clone(), keysend_preimage, Some(invreq), Some(bolt12_invoice.clone()), &route,
-						Some(retry_strategy), payment_params, entropy_source, best_block_height
+						Some(retry_strategy), entropy_source, best_block_height
 					);
 					outbounds.insert(payment_id, retryable_payment);
 					onion_session_privs
@@ -1617,7 +1616,7 @@ impl OutboundPayments {
 
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
 			recipient_onion.clone(), payment_id, keysend_preimage, &route, Some(retry_strategy),
-			Some(route_params.payment_params.clone()), entropy_source, best_block_height, None)
+			entropy_source, best_block_height, None)
 			.map_err(|_| {
 				log_error!(logger, "Payment with id {} is already pending. New payment had payment hash {}",
 					payment_id, payment_hash);
@@ -1940,7 +1939,7 @@ impl OutboundPayments {
 		let recipient_onion_fields =
 			RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
 		let onion_session_privs = self.add_new_pending_payment(payment_hash,
-			recipient_onion_fields.clone(), payment_id, None, &route, None, None,
+			recipient_onion_fields.clone(), payment_id, None, &route, None,
 			entropy_source, best_block_height, None
 		).map_err(|e| {
 			debug_assert!(matches!(e, PaymentSendFailure::DuplicatePayment));
@@ -1996,14 +1995,14 @@ impl OutboundPayments {
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		route: &Route, retry_strategy: Option<Retry>, entropy_source: &ES, best_block_height: u32
 	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
-		self.add_new_pending_payment(payment_hash, recipient_onion, payment_id, None, route, retry_strategy, None, entropy_source, best_block_height, None)
+		self.add_new_pending_payment(payment_hash, recipient_onion, payment_id, None, route, retry_strategy, entropy_source, best_block_height, None)
 	}
 
 	#[rustfmt::skip]
 	pub(super) fn add_new_pending_payment<ES: EntropySource>(
 		&self, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields, payment_id: PaymentId,
 		keysend_preimage: Option<PaymentPreimage>, route: &Route, retry_strategy: Option<Retry>,
-		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32,
+		entropy_source: &ES, best_block_height: u32,
 		bolt12_invoice: Option<PaidBolt12Invoice>
 	) -> Result<Vec<[u8; 32]>, PaymentSendFailure> {
 		let mut pending_outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -2012,7 +2011,7 @@ impl OutboundPayments {
 			hash_map::Entry::Vacant(entry) => {
 				let (payment, onion_session_privs) = Self::create_pending_payment(
 					payment_hash, recipient_onion, keysend_preimage, None, bolt12_invoice, route, retry_strategy,
-					payment_params, entropy_source, best_block_height
+					entropy_source, best_block_height
 				);
 				entry.insert(payment);
 				Ok(onion_session_privs)
@@ -2025,7 +2024,7 @@ impl OutboundPayments {
 		payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
 		keysend_preimage: Option<PaymentPreimage>, invoice_request: Option<InvoiceRequest>,
 		bolt12_invoice: Option<PaidBolt12Invoice>, route: &Route, retry_strategy: Option<Retry>,
-		payment_params: Option<PaymentParameters>, entropy_source: &ES, best_block_height: u32
+		entropy_source: &ES, best_block_height: u32
 	) -> (PendingOutboundPayment, Vec<[u8; 32]>) {
 		let mut onion_session_privs = Vec::with_capacity(route.paths.len());
 		for _ in 0..route.paths.len() {
@@ -2035,7 +2034,7 @@ impl OutboundPayments {
 		let mut payment = PendingOutboundPayment::Retryable {
 			retry_strategy,
 			attempts: PaymentAttempts::new(),
-			payment_params,
+			payment_params: Some(route.route_params.payment_params.clone()),
 			session_privs: new_hash_set(),
 			pending_amt_msat: 0,
 			pending_fee_msat: Some(0),
@@ -2965,7 +2964,7 @@ mod tests {
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0),
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: expired_route_params.clone() },
-				Some(Retry::Attempts(1)), Some(expired_route_params.payment_params.clone()),
+				Some(Retry::Attempts(1)),
 				&&keys_manager, 0, None).unwrap();
 			outbound_payments.find_route_and_send_payment(
 				PaymentHash([0; 32]), PaymentId([0; 32]), expired_route_params, &&router, vec![],
@@ -3011,7 +3010,7 @@ mod tests {
 		if on_retry {
 			outbound_payments.add_new_pending_payment(PaymentHash([0; 32]), RecipientOnionFields::spontaneous_empty(0),
 				PaymentId([0; 32]), None, &Route { paths: vec![], route_params: route_params.clone() },
-				Some(Retry::Attempts(1)), Some(route_params.payment_params.clone()),
+				Some(Retry::Attempts(1)),
 				&&keys_manager, 0, None).unwrap();
 			outbound_payments.find_route_and_send_payment(
 				PaymentHash([0; 32]), PaymentId([0; 32]), route_params, &&router, vec![],
