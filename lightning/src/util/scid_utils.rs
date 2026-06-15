@@ -180,7 +180,7 @@ pub(crate) mod fake_scid {
 		let namespace = Namespace::Phantom;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
 		block_height >= segwit_activation_height(chain_hash)
-			&& valid_vout == scid_utils::vout_from_scid(scid) as u8
+			&& valid_vout as u16 == scid_utils::vout_from_scid(scid)
 	}
 
 	/// Returns whether the given fake scid falls into the intercept namespace.
@@ -192,7 +192,7 @@ pub(crate) mod fake_scid {
 		let namespace = Namespace::Intercept;
 		let valid_vout = namespace.get_encrypted_vout(block_height, tx_index, fake_scid_rand_bytes);
 		block_height >= segwit_activation_height(chain_hash)
-			&& valid_vout == scid_utils::vout_from_scid(scid) as u8
+			&& valid_vout as u16 == scid_utils::vout_from_scid(scid)
 	}
 
 	#[cfg(test)]
@@ -248,6 +248,15 @@ pub(crate) mod fake_scid {
 			assert!(is_valid_phantom(&fake_scid_rand_bytes, valid_fake_scid, &testnet_genesis));
 			let invalid_fake_scid = scid_utils::scid_from_parts(1, 0, 12).unwrap();
 			assert!(!is_valid_phantom(&fake_scid_rand_bytes, invalid_fake_scid, &testnet_genesis));
+			// A scid whose low byte matches the namespace value but whose high byte is set must be
+			// rejected (this was previously broken).
+			let high_byte_fake_scid =
+				scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64 | 0x0100).unwrap();
+			assert!(!is_valid_phantom(
+				&fake_scid_rand_bytes,
+				high_byte_fake_scid,
+				&testnet_genesis
+			));
 		}
 
 		#[test]
@@ -263,6 +272,15 @@ pub(crate) mod fake_scid {
 			assert!(!is_valid_intercept(
 				&fake_scid_rand_bytes,
 				invalid_fake_scid,
+				&testnet_genesis
+			));
+			// A scid whose low byte matches the namespace value but whose high byte is set must be
+			// rejected (this was previously broken).
+			let high_byte_fake_scid =
+				scid_utils::scid_from_parts(1, 0, valid_encrypted_vout as u64 | 0x0100).unwrap();
+			assert!(!is_valid_intercept(
+				&fake_scid_rand_bytes,
+				high_byte_fake_scid,
 				&testnet_genesis
 			));
 		}
