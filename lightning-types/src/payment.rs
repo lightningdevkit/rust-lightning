@@ -10,20 +10,28 @@
 //! Types which describe payments in lightning.
 
 use core::borrow::Borrow;
+use core::hash::{Hash, Hasher};
 
-use bitcoin::hashes::{sha256::Hash as Sha256, Hash as _};
+use bitcoin::hashes::{sha256::Hash as Sha256, Hash as CryptoHash};
 use bitcoin::hex::display::impl_fmt_traits;
 
 /// The payment hash is the hash of the [`PaymentPreimage`] which is the value used to lock funds
 /// in HTLCs while they transit the lightning network.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct PaymentHash(pub [u8; 32]);
 
 impl Borrow<[u8]> for PaymentHash {
 	fn borrow(&self) -> &[u8] {
 		&self.0[..]
+	}
+}
+
+impl Hash for PaymentHash {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		let slice: &[u8] = self.borrow();
+		Hash::hash(slice, state);
 	}
 }
 
@@ -37,12 +45,19 @@ impl_fmt_traits! {
 /// or in a lightning channel.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct PaymentPreimage(pub [u8; 32]);
 
 impl Borrow<[u8]> for PaymentPreimage {
 	fn borrow(&self) -> &[u8] {
 		&self.0[..]
+	}
+}
+
+impl Hash for PaymentPreimage {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		let slice: &[u8] = self.borrow();
+		Hash::hash(slice, state);
 	}
 }
 
@@ -55,7 +70,7 @@ impl_fmt_traits! {
 /// Converts a `PaymentPreimage` into a `PaymentHash` by hashing the preimage with SHA256.
 impl From<PaymentPreimage> for PaymentHash {
 	fn from(value: PaymentPreimage) -> Self {
-		PaymentHash(Sha256::hash(&value.0).to_byte_array())
+		PaymentHash(<Sha256 as CryptoHash>::hash(&value.0).to_byte_array())
 	}
 }
 
@@ -63,12 +78,19 @@ impl From<PaymentPreimage> for PaymentHash {
 /// multi-part HTLCs together into a single payment.
 ///
 /// This is not exported to bindings users as we just use [u8; 32] directly
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
+#[derive(Copy, Clone, PartialEq, Eq, Ord, PartialOrd)]
 pub struct PaymentSecret(pub [u8; 32]);
 
 impl Borrow<[u8]> for PaymentSecret {
 	fn borrow(&self) -> &[u8] {
 		&self.0[..]
+	}
+}
+
+impl Hash for PaymentSecret {
+	fn hash<H: Hasher>(&self, state: &mut H) {
+		let slice: &[u8] = self.borrow();
+		Hash::hash(slice, state);
 	}
 }
 
