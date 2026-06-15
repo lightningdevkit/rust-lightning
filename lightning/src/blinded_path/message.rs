@@ -471,15 +471,17 @@ pub enum OffersContext {
 	OutboundPaymentForRefund {
 		/// Payment ID used when creating a [`Refund`].
 		///
-		/// [`Refund`]: crate::offers::refund::Refund
-		payment_id: PaymentId,
-
-		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid [`Refund`] and
-		/// for deriving its signing keys.
+		/// When a [`Bolt12Invoice`] is received, the payment id recovered from its payer metadata
+		/// must equal this one, confirming the invoice arrived over the blinded path included in the
+		/// refund for this payment. Without that check, an attacker holding that path could deliver
+		/// a different payment's invoice over it, and our paying it would reveal that both payments
+		/// came from us. That the invoice is for a refund we created is verified by
+		/// [`Bolt12Invoice::verify_using_metadata`] using its payer metadata.
 		///
-		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`Refund`]: crate::offers::refund::Refund
-		nonce: Nonce,
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+		/// [`Bolt12Invoice::verify_using_metadata`]: crate::offers::invoice::Bolt12Invoice::verify_using_metadata
+		payment_id: PaymentId,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for an [`InvoiceRequest`].
 	///
@@ -492,15 +494,17 @@ pub enum OffersContext {
 	OutboundPaymentForOffer {
 		/// Payment ID used when creating an [`InvoiceRequest`].
 		///
-		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-		payment_id: PaymentId,
-
-		/// A nonce used for authenticating that a [`Bolt12Invoice`] is for a valid
-		/// [`InvoiceRequest`] and for deriving its signing keys.
+		/// When a [`Bolt12Invoice`] is received, the payment id recovered from its payer metadata
+		/// must equal this one, confirming the invoice arrived over the reply path created for this
+		/// payment. Without that check, an attacker holding this reply path could deliver a
+		/// different payment's invoice over it, and our paying it would reveal that both payments
+		/// came from us. That the invoice is for an invoice request we created is verified by
+		/// [`Bolt12Invoice::verify_using_metadata`] using its payer metadata.
 		///
-		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
 		/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
-		nonce: Nonce,
+		/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+		/// [`Bolt12Invoice::verify_using_metadata`]: crate::offers::invoice::Bolt12Invoice::verify_using_metadata
+		payment_id: PaymentId,
 	},
 	/// Context used by a [`BlindedMessagePath`] as a reply path for a [`Bolt12Invoice`].
 	///
@@ -683,7 +687,6 @@ impl_ser_tlv_based_enum!(OffersContext,
 	},
 	(1, OutboundPaymentForRefund) => {
 		(0, payment_id, required),
-		(1, nonce, required),
 	},
 	(2, InboundPayment) => {
 		(0, payment_hash, required),
@@ -695,7 +698,6 @@ impl_ser_tlv_based_enum!(OffersContext,
 	},
 	(4, OutboundPaymentForOffer) => {
 		(0, payment_id, required),
-		(1, nonce, required),
 	},
 );
 

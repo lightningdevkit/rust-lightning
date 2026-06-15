@@ -173,14 +173,18 @@ pub(crate) enum PendingOutboundPayment {
 #[derive(Clone)]
 pub(crate) struct RetryableInvoiceRequest {
 	pub(crate) invoice_request: InvoiceRequest,
-	pub(crate) nonce: Nonce,
+	// No longer used, but written so that the payment can be retried after downgrading to a
+	// version that verifies invoices using the nonce instead of the payer metadata. Set when
+	// creating an invoice request and otherwise retains the value read from disk, which may have
+	// been written by such a version.
+	pub(crate) nonce: Option<Nonce>,
 	pub(super) needs_retry: bool,
 }
 
 impl_ser_tlv_based!(RetryableInvoiceRequest, {
 	(0, invoice_request, required),
 	(1, needs_retry, (default_value, true)),
-	(2, nonce, required),
+	(2, nonce, option),
 });
 
 impl PendingOutboundPayment {
