@@ -5631,30 +5631,51 @@ impl<
 	///
 	/// LDK will not automatically retry this payment, though it may be manually re-sent after an
 	/// [`Event::PaymentFailed`] is generated.
-	#[rustfmt::skip]
 	pub fn send_payment_with_route(
 		&self, mut route: Route, payment_hash: PaymentHash, recipient_onion: RecipientOnionFields,
-		payment_id: PaymentId
+		payment_id: PaymentId,
 	) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 		let route_params = route.route_params.clone().unwrap_or_else(|| {
 			// Create a dummy route params since they're a required parameter but unused in this case
-			let (payee_node_id, cltv_delta) = route.paths.first()
-				.and_then(|path| path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32)))
-				.unwrap_or_else(|| (PublicKey::from_slice(&[2; 33]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32));
+			let (payee_node_id, cltv_delta) = route
+				.paths
+				.first()
+				.and_then(|path| {
+					path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32))
+				})
+				.unwrap_or_else(|| {
+					(PublicKey::from_slice(&[2; 33]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32)
+				});
 			let dummy_payment_params = PaymentParameters::from_node_id(payee_node_id, cltv_delta);
-			RouteParameters::from_payment_params_and_value(dummy_payment_params, route.get_total_amount())
+			RouteParameters::from_payment_params_and_value(
+				dummy_payment_params,
+				route.get_total_amount(),
+			)
 		});
-		if route.route_params.is_none() { route.route_params = Some(route_params.clone()); }
+		if route.route_params.is_none() {
+			route.route_params = Some(route_params.clone());
+		}
 		let router = FixedRouter::new(route);
 		let logger =
 			WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id);
-		self.pending_outbound_payments
-			.send_payment(payment_hash, recipient_onion, payment_id, Retry::Attempts(0),
-				route_params, &&router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
-				&self.entropy_source, &self.node_signer, best_block_height,
-				&self.pending_events, |args| self.send_payment_along_path(args), &logger)
+		self.pending_outbound_payments.send_payment(
+			payment_hash,
+			recipient_onion,
+			payment_id,
+			Retry::Attempts(0),
+			route_params,
+			&&router,
+			self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			best_block_height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+			&logger,
+		)
 	}
 
 	/// Sends a payment to the route found using the provided [`RouteParameters`], retrying failed
