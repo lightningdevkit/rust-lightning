@@ -663,7 +663,7 @@ fn clone_socket_waker(orig_ptr: *const ()) -> task::RawWaker {
 // sending thread may have already gone away due to a socket close, in which case there's nothing
 // to wake up anyway.
 fn wake_socket_waker(orig_ptr: *const ()) {
-	let sender = unsafe { &mut *(orig_ptr as *mut mpsc::Sender<()>) };
+	let sender = unsafe { &*(orig_ptr as *mut mpsc::Sender<()>) };
 	let _ = sender.try_send(());
 	drop_socket_waker(orig_ptr);
 }
