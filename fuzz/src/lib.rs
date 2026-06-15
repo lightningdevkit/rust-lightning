@@ -36,6 +36,7 @@ pub mod lsps_message;
 pub mod offer_deser;
 pub mod onion_hop_data;
 pub mod onion_message;
+pub mod payer_proof_deser;
 pub mod peer_crypt;
 pub mod process_network_graph;
 pub mod process_onion_failure;
