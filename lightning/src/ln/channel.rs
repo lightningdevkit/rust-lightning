@@ -2517,7 +2517,7 @@ impl FundingScope {
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
 		our_new_holder_keys: ChannelPublicKeys,
-	) -> Self
+	) -> Result<Self, String>
 	where
 		SP::Target: SignerProvider,
 	{
@@ -2532,9 +2532,15 @@ impl FundingScope {
 		let post_value_to_self_msat = AddSigned::checked_add_signed(
 			prev_funding.value_to_self_msat,
 			our_funding_contribution.to_sat() * 1000,
-		);
-		debug_assert!(post_value_to_self_msat.is_some());
-		let post_value_to_self_msat = post_value_to_self_msat.unwrap();
+		)
+		.ok_or_else(|| {
+			// This should have been caught in `validate_splice_contributions`
+			debug_assert!(false);
+			String::from(
+				"Adding our funding contribution to our balance overflowed. \
+				This should never happen! Please report this bug.",
+			)
+		})?;
 
 		let channel_parameters = &prev_funding.channel_transaction_parameters;
 		let mut post_channel_transaction_parameters = ChannelTransactionParameters {
@@ -2563,7 +2569,7 @@ impl FundingScope {
 			context.counterparty_dust_limit_satoshis,
 		);
 
-		Self {
+		Ok(Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
 			funding_transaction: None,
@@ -2587,7 +2593,7 @@ impl FundingScope {
 			funding_tx_confirmed_in: None,
 			minimum_depth_override: None,
 			short_channel_id: None,
-		}
+		})
 	}
 
 	/// Compute the post-splice channel value from each counterparty's contributions.
@@ -12124,14 +12130,15 @@ where
 		let mut new_keys = self.funding.get_holder_pubkeys().clone();
 		new_keys.funding_pubkey = funding_pubkey;
 
-		Ok(FundingScope::for_splice(
+		FundingScope::for_splice(
 			&self.funding,
 			&self.context,
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
 			new_keys,
-		))
+		)
+		.map_err(|e| ChannelError::WarnAndDisconnect(e))
 	}
 
 	fn validate_splice_contributions(
@@ -12385,14 +12392,15 @@ where
 		let mut new_keys = self.funding.get_holder_pubkeys().clone();
 		new_keys.funding_pubkey = *new_holder_funding_key;
 
-		Ok(FundingScope::for_splice(
+		FundingScope::for_splice(
 			&self.funding,
 			&self.context,
 			our_funding_contribution,
 			their_funding_contribution,
 			msg.funding_pubkey,
 			new_keys,
-		))
+		)
+		.map_err(|e| ChannelError::WarnAndDisconnect(e))
 	}
 
 	fn get_holder_counterparty_balances_floor_incl_fee(
