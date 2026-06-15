@@ -2892,6 +2892,7 @@ mod tests {
 	use crate::offers::invoice_request::InvoiceRequest;
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::OfferBuilder;
+	use crate::offers::payer_proof::PaidBolt12Invoice;
 	use crate::offers::test_utils::*;
 	use crate::routing::gossip::NetworkGraph;
 	use crate::routing::router::{
@@ -2902,9 +2903,12 @@ mod tests {
 	use crate::types::features::{Bolt12InvoiceFeatures, ChannelFeatures, NodeFeatures};
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::errors::APIError;
-	use crate::util::hash_tables::new_hash_map;
+	use crate::util::hash_tables::{new_hash_map, new_hash_set};
 	use crate::util::logger::WithContext;
+	use crate::util::ser::{MaybeReadable, Writeable};
 	use crate::util::test_utils;
+
+	use super::PaymentAttempts;
 
 	use alloc::collections::VecDeque;
 
@@ -3470,6 +3474,62 @@ mod tests {
 		);
 		assert!(outbound_payments.has_pending_payments());
 		assert!(pending_events.lock().unwrap().is_empty());
+	}
+
+	#[test]
+	fn retryable_payment_round_trips_bolt12_invoice() {
+		// A `Retryable` payment serializes its `bolt12_invoice` and reads it back. This guards that
+		// the paid invoice (needed to build payer proofs on retried paths) survives the round-trip.
+		let secp_ctx = Secp256k1::new();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let nonce = Nonce([7; 16]);
+		let payment_id = PaymentId([3; 32]);
+
+		let invoice = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap()
+			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.unwrap()
+			.build()
+			.unwrap()
+			.sign(recipient_sign)
+			.unwrap();
+
+		let mut session_privs = new_hash_set();
+		session_privs.insert([1; 32]);
+		let payment = PendingOutboundPayment::Retryable {
+			retry_strategy: Some(Retry::Attempts(0)),
+			attempts: PaymentAttempts::new(),
+			payment_params: None,
+			session_privs,
+			payment_hash: payment_hash(),
+			payment_secret: None,
+			payment_metadata: None,
+			keysend_preimage: None,
+			invoice_request: None,
+			bolt12_invoice: Some(PaidBolt12Invoice::Bolt12Invoice(invoice)),
+			custom_tlvs: Vec::new(),
+			pending_amt_msat: 1000,
+			pending_fee_msat: None,
+			total_msat: 1000,
+			onion_total_msat: 1000,
+			starting_block_height: 0,
+			remaining_max_total_routing_fee_msat: None,
+		};
+
+		let encoded = payment.encode();
+		let decoded = PendingOutboundPayment::read(&mut &encoded[..]).unwrap().unwrap();
+		match decoded {
+			PendingOutboundPayment::Retryable { bolt12_invoice, .. } => {
+				assert!(matches!(bolt12_invoice, Some(PaidBolt12Invoice::Bolt12Invoice(_))));
+			},
+			_ => panic!("expected a Retryable payment"),
+		}
 	}
 
 	#[rustfmt::skip]

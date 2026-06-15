@@ -64,11 +64,12 @@ use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields, Invoi
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferBuilder;
 use crate::offers::parse::Bolt12SemanticError;
+use crate::offers::payer_proof::PayerProof;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
 use crate::sign::NodeSigner;
-use crate::util::ser::Writeable;
+use crate::util::ser::{MaybeReadable, Writeable};
 
 /// This used to determine whether we built a compact path or not, but now its just a random
 /// constant we apply to blinded path expiry in these tests.
@@ -228,6 +229,22 @@ fn extract_offer_nonce<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessa
 	match node.onion_messenger.peel_onion_message(message) {
 		Ok(PeeledOnion::Offers(_, Some(OffersContext::InvoiceRequest { nonce, payment_metadata: _ }), _)) => nonce,
 		Ok(PeeledOnion::Offers(_, context, _)) => panic!("Unexpected onion message context: {:?}", context),
+		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
+		Ok(_) => panic!("Unexpected onion message"),
+		Err(e) => panic!("Failed to process onion message {:?}", e),
+	}
+}
+
+/// Extract the payer's [`PaymentId`] from an invoice onion message received by the payer.
+///
+/// When the payer receives an invoice through their reply path, the blinded path context carries
+/// the [`PaymentId`] for the payment. The payer signing key needed to build a
+/// [`PayerProof`](crate::offers::payer_proof::PayerProof) via
+/// [`PaidBolt12Invoice::prove_payer_derived`] is re-derived from the invoice's own payer metadata.
+fn extract_payer_context<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, message: &OnionMessage) -> PaymentId {
+	match node.onion_messenger.peel_onion_message(message) {
+		Ok(PeeledOnion::Offers(_, Some(OffersContext::OutboundPaymentForOffer { payment_id, .. }), _)) => payment_id,
+		Ok(PeeledOnion::Offers(_, context, _)) => panic!("Expected OutboundPaymentForOffer context, got: {:?}", context),
 		Ok(PeeledOnion::Forward(_, _)) => panic!("Unexpected onion message forward"),
 		Ok(_) => panic!("Unexpected onion message"),
 		Err(e) => panic!("Failed to process onion message {:?}", e),
@@ -2675,4 +2692,142 @@ fn creates_and_pays_for_phantom_offer() {
 		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_b_id).is_none());
 		assert!(nodes[0].onion_messenger.next_onion_message_for_peer(node_c_id).is_none());
 	}
+}
+
+/// Tests the full payer proof lifecycle: offer -> invoice_request -> invoice -> payment ->
+/// proof creation with derived key signing -> verification -> bech32 round-trip.
+///
+/// This exercises the primary API path where a wallet pays a BOLT 12 offer and then creates
+/// a payer proof using the derived signing key (same key derivation as the invoice request).
+#[test]
+fn creates_and_verifies_payer_proof_after_offer_payment() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0]; // recipient (offer creator)
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1]; // payer
+	let bob_id = bob.node.get_our_node_id();
+
+	// Alice creates an offer
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(10_000_000)
+		.build().unwrap();
+
+	// Bob initiates payment
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// Bob sends invoice request to Alice
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+
+	// Alice sends invoice back to Bob
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let (invoice, _) = extract_invoice(bob, &onion_message);
+	assert_eq!(invoice.amount_msats(), 10_000_000);
+
+	// Extract the payment_id from Bob's reply path context. In a real wallet it would be
+	// persisted alongside the payment for later payer proof creation.
+	let context_payment_id = extract_payer_context(bob, &onion_message);
+	assert_eq!(context_payment_id, payment_id);
+
+	// Route the payment
+	route_bolt12_payment(bob, &[alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	// Get the payment preimage from Alice's PaymentClaimable event and claim it.
+	// In a real wallet, the payer receives the preimage via Event::PaymentSent after the
+	// recipient claims. For the test, we extract it from the recipient's claimable event.
+	let payment_preimage = match get_event!(alice, Event::PaymentClaimable) {
+		Event::PaymentClaimable { purpose, .. } => {
+			match &purpose {
+				PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
+					assert_eq!(payment_context.offer_id, offer.id());
+					assert_eq!(
+						payment_context.invoice_request.payer_signing_pubkey,
+						invoice_request.payer_signing_pubkey(),
+					);
+				},
+				_ => panic!("Expected Bolt12OfferPayment purpose"),
+			}
+			purpose.preimage().unwrap()
+		},
+		_ => panic!("Expected Event::PaymentClaimable"),
+	};
+
+	let paid_invoice = claim_payment(bob, &[alice], payment_preimage).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+
+	// The paid invoice is carried so the payer can re-derive their signing key (from the invoice's
+	// own payer metadata) when building a payer proof.
+	assert!(paid_invoice.bolt12_invoice().is_some());
+
+	// Regression guard: the `Event::PaymentSent` container persists the paid invoice and reads it
+	// back. Round-tripping the event must preserve the invoice.
+	let payment_sent = Event::PaymentSent {
+		payment_id: Some(payment_id),
+		payment_preimage,
+		payment_hash: invoice.payment_hash(),
+		amount_msat: Some(10_000_000),
+		fee_paid_msat: None,
+		bolt12_invoice: Some(paid_invoice.clone()),
+	};
+	let encoded = payment_sent.encode();
+	let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+	assert_eq!(decoded, payment_sent);
+	match decoded {
+		Event::PaymentSent { bolt12_invoice: Some(decoded_invoice), .. } => {
+			assert!(decoded_invoice.bolt12_invoice().is_some());
+		},
+		_ => panic!("expected a PaymentSent event carrying a paid invoice"),
+	}
+
+	// --- Payer Proof Creation ---
+	// Bob (the payer) creates a proof-of-payment with selective disclosure, end to end from the
+	// invoice he actually paid. The negative paths (`PreimageMismatch`, `KeyDerivationFailed`) are
+	// covered by the unit tests in `offers::payer_proof::tests`.
+	let expanded_key = bob.keys_manager.get_expanded_key();
+	let secp_ctx = Secp256k1::new();
+	let payer_proof = paid_invoice.prove_payer_derived(
+		payment_preimage, &expanded_key, payment_id, &secp_ctx,
+	).unwrap()
+		.include_offer_description()
+		.include_invoice_amount()
+		.include_invoice_created_at()
+		.build_and_sign()
+		.unwrap();
+
+	// The proof binds the payment Bob actually made.
+	assert_eq!(payer_proof.payment_preimage(), payment_preimage);
+	assert_eq!(payer_proof.payment_hash(), invoice.payment_hash());
+
+	// Parsing the bech32 string back re-runs verification (preimage, invoice and proof signatures),
+	// just as a third-party verifier would.
+	let encoded = payer_proof.to_string();
+	let verified: PayerProof = encoded.parse().unwrap();
+	assert_eq!(verified.bytes(), payer_proof.bytes());
+	assert_eq!(verified.to_string(), encoded);
+
+	// The verified proof binds the same payment and preserves every disclosed field.
+	assert_eq!(verified.payment_preimage(), payment_preimage);
+	assert_eq!(verified.payment_hash(), invoice.payment_hash());
+	assert_eq!(verified.payer_signing_pubkey(), invoice_request.payer_signing_pubkey());
+	assert_eq!(verified.issuer_signing_pubkey(), invoice.signing_pubkey());
+	assert_eq!(verified.invoice_amount_msats(), Some(invoice.amount_msats()));
+	assert_eq!(verified.invoice_created_at(), Some(invoice.created_at()));
+	assert_eq!(
+		verified.offer_description().map(|desc| desc.to_string()),
+		offer.description().map(|desc| desc.to_string()),
+	);
 }
