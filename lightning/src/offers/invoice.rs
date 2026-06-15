@@ -984,6 +984,11 @@ impl Bolt12Invoice {
 		self.signature
 	}
 
+	/// The raw serialized bytes of the invoice.
+	pub(super) fn invoice_bytes(&self) -> &[u8] {
+		&self.bytes
+	}
+
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.tagged_hash.as_digest().as_ref().clone()
@@ -1021,13 +1026,20 @@ impl Bolt12Invoice {
 
 	/// Re-derives the payer's signing keypair for payer proof creation.
 	///
-	/// This performs the same key derivation that occurs during invoice request creation
-	/// with `deriving_signing_pubkey`, allowing the payer to recover their signing keypair.
+	/// For an invoice requested with [`Offer::request_invoice`], this performs the same key
+	/// derivation that occurs when the originating offer was created with
+	/// [`OfferBuilder::deriving_signing_pubkey`], allowing the payer to recover their signing
+	/// keypair. Likewise, for the refund flow, this performs the same key derivation used by
+	/// [`RefundBuilder::deriving_signing_pubkey`].
 	///
 	/// The keypair is derived from the invoice's own payer metadata (which embeds the payer
 	/// [`Nonce`]), so no externally-held nonce or payment id is required. In the common
-	/// proof-of-payment flow, callers can use `PaidBolt12Invoice::prove_payer_derived`.
+	/// proof-of-payment flow, callers can use [`PaidBolt12Invoice::prove_payer_derived`].
 	///
+	/// [`Offer::request_invoice`]: crate::offers::offer::Offer::request_invoice
+	/// [`OfferBuilder::deriving_signing_pubkey`]: crate::offers::offer::OfferBuilder::deriving_signing_pubkey
+	/// [`RefundBuilder::deriving_signing_pubkey`]: crate::offers::refund::RefundBuilder::deriving_signing_pubkey
+	/// [`PaidBolt12Invoice::prove_payer_derived`]: crate::offers::payer_proof::PaidBolt12Invoice::prove_payer_derived
 	/// [`Nonce`]: crate::offers::nonce::Nonce
 	pub fn derive_payer_signing_keys<T: secp256k1::Signing>(
 		&self, key: &ExpandedKey, secp_ctx: &Secp256k1<T>,
@@ -1535,22 +1547,37 @@ impl TryFrom<Vec<u8>> for Bolt12Invoice {
 /// Valid type range for invoice TLV records.
 pub(super) const INVOICE_TYPES: core::ops::Range<u64> = 160..240;
 
+/// TLV record type for the invoice creation timestamp.
+pub(super) const INVOICE_CREATED_AT_TYPE: u64 = 164;
+
+/// TLV record type for [`Bolt12Invoice::payment_hash`].
+pub(super) const INVOICE_PAYMENT_HASH_TYPE: u64 = 168;
+
+/// TLV record type for [`Bolt12Invoice::amount_msats`].
+pub(super) const INVOICE_AMOUNT_TYPE: u64 = 170;
+
+/// TLV record type for [`Bolt12Invoice::invoice_features`].
+pub(super) const INVOICE_FEATURES_TYPE: u64 = 174;
+
+/// TLV record type for [`Bolt12Invoice::signing_pubkey`].
+pub(super) const INVOICE_NODE_ID_TYPE: u64 = 176;
+
 tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(160, paths: (Vec<BlindedPath>, WithoutLength, Iterable<'a, BlindedPathIter<'a>, BlindedPath>)),
 	(162, blindedpay: (Vec<BlindedPayInfo>, WithoutLength, Iterable<'a, BlindedPayInfoIter<'a>, BlindedPayInfo>)),
-	(164, created_at: (u64, HighZeroBytesDroppedBigSize)),
+	(INVOICE_CREATED_AT_TYPE, created_at: (u64, HighZeroBytesDroppedBigSize)),
 	(166, relative_expiry: (u32, HighZeroBytesDroppedBigSize)),
-	(168, payment_hash: PaymentHash),
-	(170, amount: (u64, HighZeroBytesDroppedBigSize)),
+	(INVOICE_PAYMENT_HASH_TYPE, payment_hash: PaymentHash),
+	(INVOICE_AMOUNT_TYPE, amount: (u64, HighZeroBytesDroppedBigSize)),
 	(172, fallbacks: (Vec<FallbackAddress>, WithoutLength)),
-	(174, features: (Bolt12InvoiceFeatures, WithoutLength)),
-	(176, node_id: PublicKey),
+	(INVOICE_FEATURES_TYPE, features: (Bolt12InvoiceFeatures, WithoutLength)),
+	(INVOICE_NODE_ID_TYPE, node_id: PublicKey),
 	// Only present in `StaticInvoice`s.
 	(236, held_htlc_available_paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
 
 /// Valid type range for experimental invoice TLV records.
-pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::RangeFrom<u64> = 3_000_000_000..;
+pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::Range<u64> = 3_000_000_000..4_000_000_000;
 
 #[cfg(not(test))]
 tlv_stream!(
