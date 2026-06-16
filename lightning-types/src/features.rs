@@ -1268,6 +1268,9 @@ impl<T: sealed::Context> Features<T> {
 	fn set_bit(&mut self, bit: usize, custom: bool) -> Result<(), ()> {
 		let byte_offset = bit / 8;
 		let mask = 1 << (bit - 8 * byte_offset);
+		if byte_offset >= u16::MAX as usize {
+			return Err(());
+		}
 		if byte_offset < T::KNOWN_FEATURE_MASK.len() && custom {
 			if (T::KNOWN_FEATURE_MASK[byte_offset] & mask) != 0 {
 				return Err(());
