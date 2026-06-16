@@ -693,6 +693,64 @@ pub struct Bolt12RefundContext {
 	pub payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 }
 
+/// Common lower base fees observed in network forwarding policies.
+///
+/// An exact base fee is rounded up to the next value in this list. This hides less-common policy
+/// values among widely used ones while ensuring the blinded path still provides enough fees for
+/// forwarding.
+const BASE_FEE_BUCKETS: &[u32] = &[0, 100, 500, 1_000, 2_000, 10_000];
+
+/// Common lower proportional fees observed in network forwarding policies.
+///
+/// An exact proportional fee is rounded up to the next value in this list. This hides less-common
+/// policy values among widely used ones while ensuring the blinded path still provides enough fees
+/// for forwarding.
+const PROPORTIONAL_FEE_BUCKETS: &[u32] =
+	&[0, 1, 5, 10, 100, 200, 500, 1_000, 2_000, 2_500, 3_000, 5_000];
+
+/// Upward-rounding granularity for fees above the largest common lower-fee bucket.
+///
+/// High fees are already unusual, and rounding them into increasingly coarse buckets could add a
+/// significant forwarding cost. Rounding to the next multiple of this value retains some policy
+/// approximation while limiting the increase to at most 99 units.
+const HIGH_FEE_ROUNDING: u32 = 100;
+
+/// Common CLTV expiry delta buckets used when approximating forwarding policies.
+///
+/// Values outside the supported range are rejected.
+const CLTV_EXPIRY_DELTA_BUCKETS: &[u16] = &[40, 80, 144, 216];
+
+fn bucket_cltv_expiry_delta(cltv_expiry_delta: u16) -> Result<u16, ()> {
+	ceil_bucket(cltv_expiry_delta, CLTV_EXPIRY_DELTA_BUCKETS)
+}
+
+fn bucket_fee_base_msat(fee_base_msat: u32) -> u32 {
+	bucket_fee(fee_base_msat, BASE_FEE_BUCKETS)
+}
+
+fn bucket_fee_proportional_millionths(fee_proportional_millionths: u32) -> u32 {
+	bucket_fee(fee_proportional_millionths, PROPORTIONAL_FEE_BUCKETS)
+}
+
+/// Rounds `value` upward to the nearest bucket.
+///
+/// This is used to avoid underfunding blinded forwarding fees while avoiding exposure of unusually
+/// specific forwarding policy values.
+fn ceil_bucket<T: Copy + Ord>(value: T, buckets: &[T]) -> Result<T, ()> {
+	buckets.iter().copied().find(|&bucket| value <= bucket).ok_or(())
+}
+
+/// Rounds `fee` upward using common buckets, then high-fee granularity.
+///
+/// Retains the original fee if high-fee rounding would overflow.
+fn bucket_fee(fee: u32, buckets: &[u32]) -> u32 {
+	ceil_bucket(fee, buckets).unwrap_or_else(|_| {
+		fee.checked_add(HIGH_FEE_ROUNDING - 1)
+			.map(|fee| fee / HIGH_FEE_ROUNDING * HIGH_FEE_ROUNDING)
+			.unwrap_or(fee)
+	})
+}
+
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 	type Error = ();
 
@@ -703,14 +761,10 @@ impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 			cltv_expiry_delta,
 		} = info;
 
-		// Avoid exposing esoteric CLTV expiry deltas
-		let cltv_expiry_delta = match cltv_expiry_delta {
-			0..=40 => 40,
-			41..=80 => 80,
-			81..=144 => 144,
-			145..=216 => 216,
-			_ => return Err(()),
-		};
+		let cltv_expiry_delta = bucket_cltv_expiry_delta(cltv_expiry_delta)?;
+		let fee_base_msat = bucket_fee_base_msat(fee_base_msat);
+		let fee_proportional_millionths =
+			bucket_fee_proportional_millionths(fee_proportional_millionths);
 
 		Ok(Self { cltv_expiry_delta, fee_proportional_millionths, fee_base_msat })
 	}
@@ -1133,6 +1187,21 @@ mod tests {
 	use crate::types::features::BlindedHopFeatures;
 	use crate::types::payment::PaymentSecret;
 	use bitcoin::secp256k1::PublicKey;
+
+	use super::{bucket_fee_base_msat, bucket_fee_proportional_millionths};
+
+	#[test]
+	fn buckets_forwarding_fees() {
+		// Common fees use network-wide buckets, while high fees use finer rounding to limit cost.
+		assert_eq!(bucket_fee_base_msat(1), 100);
+		assert_eq!(bucket_fee_base_msat(125), 500);
+		assert_eq!(bucket_fee_base_msat(501), 1_000);
+		assert_eq!(bucket_fee_base_msat(10_001), 10_100);
+		assert_eq!(bucket_fee_proportional_millionths(499), 500);
+		assert_eq!(bucket_fee_proportional_millionths(501), 1_000);
+		assert_eq!(bucket_fee_proportional_millionths(5_001), 5_100);
+		assert_eq!(bucket_fee_base_msat(u32::MAX), u32::MAX);
+	}
 
 	#[test]
 	fn compute_payinfo() {
