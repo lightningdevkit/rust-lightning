@@ -11,6 +11,7 @@
 //! LDK.
 
 use lightning_0_2::commitment_signed_dance as commitment_signed_dance_0_2;
+use lightning_0_2::events::bump_transaction::sync::WalletSourceSync as WalletSourceSync_0_2;
 use lightning_0_2::events::Event as Event_0_2;
 use lightning_0_2::get_monitor as get_monitor_0_2;
 use lightning_0_2::ln::channelmanager::PaymentId as PaymentId_0_2;
@@ -818,4 +819,211 @@ fn test_onion_message_intercepted_scid_downgrade_to_0_2() {
 	let mut reader = Cursor::new(&serialized);
 	let result = <Event_0_2 as MaybeReadable_0_2>::read(&mut reader);
 	assert!(result.is_err(), "LDK 0.2 should fail to decode a ShortChannelId variant");
+}
+
+fn downgrade_setup_single_splice() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, ChannelId) {
+	// Build a current node with a single pending (negotiated, not yet locked) splice that node 0
+	// funded (so node 0 is contributory, node 1 is a non-contributory acceptor). Return both
+	// nodes' serialized ChannelManager + ChannelMonitor and the channel id.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	let node_0_ser = nodes[0].node.encode();
+	let node_1_ser = nodes[1].node.encode();
+	let mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
+	let mon_1_ser = get_monitor!(nodes[1], channel_id).encode();
+	(node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, channel_id)
+}
+
+#[test]
+fn downgrade_single_splice_loads_on_0_2() {
+	// A current node with a single pending splice serializes in a form LDK 0.2 can still read,
+	// whether or not we funded it: only odd TLVs are written (the even RBF gate is omitted for a
+	// single round), so 0.2 skips the contribution it can't track and loads the channel. RBF is
+	// the only state that blocks downgrade (see downgrade_rbf_refused_by_0_2).
+	let (node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, _) = downgrade_setup_single_splice();
+
+	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut config = lightning_0_2_utils::test_default_channel_config();
+	// The current side uses the anchors channel type by default; 0.2 only accepts a channel whose
+	// type it advertises support for, so enable anchors here too (otherwise the read is refused on
+	// the channel type, before the splice serialization is ever exercised).
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+	// Node 0 (contributory initiator): the contribution lives in an odd TLV that 0.2 skips.
+	let mgr_0 = lightning_0_2_utils::_reload_node(
+		&nodes[0],
+		config.clone(),
+		&node_0_ser,
+		&[&mon_0_ser[..]],
+	);
+	assert_eq!(mgr_0.list_channels().len(), 1);
+	// Node 1 (non-contributory acceptor): nothing 0.2 can't represent.
+	let mgr_1 =
+		lightning_0_2_utils::_reload_node(&nodes[1], config, &node_1_ser, &[&mon_1_ser[..]]);
+	assert_eq!(mgr_1.list_channels().len(), 1);
+}
+
+#[test]
+fn downgrade_rbf_refused_by_0_2() {
+	// RBF (more than one negotiation round) is the one splice state LDK 0.2 cannot operate. Current
+	// writes the even RBF-gate TLV for it, which 0.2 rejects as an unknown even (required) field,
+	// so reading the ChannelManager fails rather than silently mishandling the extra candidate.
+	let (node_0_ser, mon_0_ser);
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		let (_, _, channel_id, _) =
+			create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+		let added_value = Amount::from_sat(50_000);
+		provide_utxo_reserves(&nodes, 2, added_value * 2);
+		let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+		let (first_splice_tx, new_funding_script) =
+			splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+
+		// RBF the splice, producing a second negotiated candidate.
+		provide_utxo_reserves(&nodes, 2, added_value * 2);
+		let rbf_feerate = bitcoin::FeeRate::from_sat_per_kwu(1000);
+		let rbf_contribution =
+			do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, rbf_feerate);
+		complete_rbf_handshake(&nodes[0], &nodes[1]);
+		complete_interactive_funding_negotiation(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			rbf_contribution,
+			new_funding_script,
+		);
+		let _ = sign_interactive_funding_tx(
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+				.replacing(first_splice_tx.compute_txid()),
+		);
+		expect_splice_pending_event(&nodes[0], &node_id_1);
+		expect_splice_pending_event(&nodes[1], &node_id_0);
+
+		node_0_ser = nodes[0].node.encode();
+		mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
+	}
+
+	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut config = lightning_0_2_utils::test_default_channel_config();
+	// Match the anchors channel type used on the current side, so the manager read reaches (and
+	// fails on) the even RBF-gate TLV rather than refusing the channel type itself.
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	// _reload_node unwraps the manager read, which fails on the even RBF-gate TLV. Catch the panic
+	// here so it stays contained to the read we expect to fail.
+	let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		lightning_0_2_utils::_reload_node(&nodes[0], config, &node_0_ser, &[&mon_0_ser[..]]);
+	}))
+	.expect_err("0.2 should refuse to read the RBF splice");
+	let panic_msg = panic
+		.downcast_ref::<String>()
+		.map(String::as_str)
+		.or_else(|| panic.downcast_ref::<&str>().copied())
+		.unwrap_or("");
+	assert!(
+		panic_msg.contains("UnknownRequiredFeature"),
+		"expected an UnknownRequiredFeature decode failure, got: {panic_msg}",
+	);
+}
+
+#[test]
+fn upgrade_single_splice_from_0_2() {
+	// A pending single splice written by LDK 0.2 -- which never tracked our contribution -- is read
+	// by current: the candidate comes back via the TLV-3 fallback with `contribution: None`.
+	let (node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, chan_id_bytes);
+	{
+		let chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+		let channel_id = lightning_0_2_utils::create_announced_chan_between_nodes_with_value(
+			&nodes, 0, 1, 100_000, 0,
+		)
+		.2;
+		chan_id_bytes = channel_id.0;
+
+		let contribution = lightning_0_2::ln::funding::SpliceContribution::SpliceOut {
+			outputs: vec![bitcoin::TxOut {
+				value: bitcoin::Amount::from_sat(1_000),
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			}],
+		};
+		// 0.2 drives the splice through tx_signatures, leaving one negotiated (unlocked) candidate.
+		let _ = lightning_0_2::ln::splicing_tests::splice_channel(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			contribution,
+		);
+
+		node_0_ser = nodes[0].node.encode();
+		node_1_ser = nodes[1].node.encode();
+		mon_0_ser = get_monitor_0_2!(nodes[0], channel_id).encode();
+		mon_1_ser = get_monitor_0_2!(nodes[1], channel_id).encode();
+	}
+
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let (node_a, node_b);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let config = test_default_channel_config();
+	reload_node!(
+		nodes[0],
+		config.clone(),
+		&node_0_ser,
+		&[&mon_0_ser[..]],
+		persister_a,
+		chain_mon_a,
+		node_a
+	);
+	reload_node!(
+		nodes[1],
+		config,
+		&node_1_ser,
+		&[&mon_1_ser[..]],
+		persister_b,
+		chain_mon_b,
+		node_b
+	);
+
+	// Current reads the 0.2 splice: one negotiated candidate, no contribution recorded.
+	let channel_id = ChannelId(chan_id_bytes);
+	for node in nodes.iter() {
+		let channels = node.node.list_channels();
+		let details = channels.iter().find(|c| c.channel_id == channel_id).unwrap();
+		let splice = details.splice_details.as_ref().expect("pending splice");
+		assert_eq!(splice.candidates.len(), 1);
+		assert_eq!(splice.candidates[0].contribution, None);
+	}
 }
