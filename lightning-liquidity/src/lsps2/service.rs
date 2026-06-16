@@ -1861,6 +1861,7 @@ where
 					did_persist = true;
 				} else {
 					self.persist_peer_state(counterparty_node_id).await?;
+					did_persist = true;
 				}
 			}
 
