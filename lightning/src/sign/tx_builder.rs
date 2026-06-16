@@ -194,7 +194,6 @@ impl TxBuilder for SpecTxBuilder {
 		if channel_type.supports_anchor_zero_fee_commitments() {
 			debug_assert_eq!(feerate_per_kw, 0);
 			debug_assert_eq!(excess_feerate, 0);
-			debug_assert_eq!(addl_nondust_htlc_count, 0);
 		}
 
 		// Calculate inbound htlc count
