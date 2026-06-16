@@ -988,6 +988,16 @@ fn replay_prevention_test() {
 	assert!(replay_result.is_err(), "Immediate replay attack should be detected");
 	assert_eq!(replay_result.unwrap_err(), LSPS5ClientError::ReplayAttack);
 
+	let case_modified_signature = signature.to_ascii_uppercase();
+	assert_ne!(case_modified_signature, signature);
+	let case_modified_replay_result =
+		validator.validate(service_node_id, &timestamp, &case_modified_signature, &body);
+	assert!(
+		case_modified_replay_result.is_err(),
+		"Immediate replay attack should be detected when the signature case changes"
+	);
+	assert_eq!(case_modified_replay_result.unwrap_err(), LSPS5ClientError::ReplayAttack);
+
 	// Fill up the validator's signature cache to push out the original signature.
 	for i in 0..MAX_RECENT_SIGNATURES {
 		// Advance time, allowing for another notification
