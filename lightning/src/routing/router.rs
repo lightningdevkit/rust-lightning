@@ -683,7 +683,8 @@ pub struct Route {
 	///
 	/// This is used by `ChannelManager` to track information which may be required for retries.
 	///
-	/// Will be `None` for objects serialized with LDK versions prior to 0.0.117.
+	/// Will be `None` for objects serialized with LDK versions prior to 0.0.117. This field will
+	/// soon move to being required and must always be set.
 	pub route_params: Option<RouteParameters>,
 }
 
