@@ -8300,23 +8300,13 @@ fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 
 	// The initiator re-used the same UTXOs as round 0. Since those UTXOs are still committed
 	// to round 0's splice, they are filtered and no DiscardFunding is emitted.
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1, "{events:?}");
-	match &events[0] {
-		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
-			assert!(contribution.is_some());
-		},
-		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
-	}
+	let _ = get_event!(&nodes[0], Event::SpliceNegotiationFailed);
 
 	// The acceptor re-contributed the same UTXOs as round 0 (via prior contribution
 	// adjustment). Since those UTXOs are still committed to round 0's splice, they are
-	// filtered and no DiscardFunding is emitted. With all inputs/outputs filtered, no events
-	// are emitted for the acceptor.
-	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 0, "{events:?}");
+	// filtered and no DiscardFunding is emitted. The contribution still fails and needs a
+	// SpliceNegotiationFailed event so the wallet can resume funding.
+	let _ = get_event!(&nodes[1], Event::SpliceNegotiationFailed);
 
 	// Reconnect.
 	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);

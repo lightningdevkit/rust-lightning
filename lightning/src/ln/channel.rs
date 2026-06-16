@@ -7232,8 +7232,7 @@ impl SpliceFundingFailed {
 }
 
 macro_rules! splice_funding_failed_for {
-	($self: expr, $is_initiator: expr, $contribution: expr,
-	 $contributed_inputs: ident, $contributed_outputs: ident) => {{
+	($self: expr, $contribution: expr, $contributed_inputs: ident, $contributed_outputs: ident) => {{
 		let contribution = $contribution;
 		let existing_inputs =
 			$self.pending_splice.as_ref().into_iter().flat_map(|ps| ps.$contributed_inputs());
@@ -7242,17 +7241,16 @@ macro_rules! splice_funding_failed_for {
 		let filtered =
 			contribution.clone().into_unique_contributions(existing_inputs, existing_outputs);
 		match filtered {
-			None if !$is_initiator => None,
-			None => Some(SpliceFundingFailed {
+			None => SpliceFundingFailed {
 				contributed_inputs: vec![],
 				contributed_outputs: vec![],
 				contribution: Some(contribution),
-			}),
-			Some((contributed_inputs, contributed_outputs)) => Some(SpliceFundingFailed {
+			},
+			Some((contributed_inputs, contributed_outputs)) => SpliceFundingFailed {
 				contributed_inputs,
 				contributed_outputs,
 				contribution: Some(contribution),
-			}),
+			},
 		}
 	}};
 }
@@ -7285,14 +7283,7 @@ where
 	fn splice_funding_failed_for(&self, contribution: FundingContribution) -> SpliceFundingFailed {
 		// The contribution was never pushed to `contributions`, so `contributed_inputs()` and
 		// `contributed_outputs()` return only prior rounds' entries for filtering.
-		splice_funding_failed_for!(
-			self,
-			true,
-			contribution,
-			contributed_inputs,
-			contributed_outputs
-		)
-		.expect("is_initiator is true so this always returns Some")
+		splice_funding_failed_for!(self, contribution, contributed_inputs, contributed_outputs)
 	}
 
 	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
@@ -7434,11 +7425,7 @@ where
 			pending_splice.funding_negotiation.is_some(),
 			"reset_pending_splice_state requires an active funding negotiation"
 		);
-		let is_initiator = pending_splice
-			.funding_negotiation
-			.take()
-			.map(|negotiation| negotiation.is_initiator())
-			.unwrap_or(false);
+		pending_splice.funding_negotiation.take();
 		let contribution = pending_splice.contributions.pop();
 		if let Some(ref contribution) = contribution {
 			debug_assert!(
@@ -7452,14 +7439,8 @@ where
 
 		// After pop, `contributed_inputs()` / `contributed_outputs()` return only prior
 		// rounds for filtering.
-		let splice_funding_failed = contribution.and_then(|contribution| {
-			splice_funding_failed_for!(
-				self,
-				is_initiator,
-				contribution,
-				contributed_inputs,
-				contributed_outputs
-			)
+		let splice_funding_failed = contribution.map(|contribution| {
+			splice_funding_failed_for!(self, contribution, contributed_inputs, contributed_outputs)
 		});
 
 		if self.pending_funding().is_empty() {
@@ -7484,19 +7465,13 @@ where
 			pending_splice.funding_negotiation.is_some(),
 			"maybe_splice_funding_failed requires an active funding negotiation"
 		);
-		let is_initiator = pending_splice
-			.funding_negotiation
-			.as_ref()
-			.map(|negotiation| negotiation.is_initiator())
-			.unwrap_or(false);
 		let contribution = pending_splice.contributions.last().cloned()?;
-		splice_funding_failed_for!(
+		Some(splice_funding_failed_for!(
 			self,
-			is_initiator,
 			contribution,
 			prior_contributed_inputs,
 			prior_contributed_outputs
-		)
+		))
 	}
 
 	#[rustfmt::skip]
