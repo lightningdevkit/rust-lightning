@@ -1173,6 +1173,7 @@ impl_for_vec!(crate::blinded_path::message::BlindedMessagePath);
 impl_writeable_for_vec!(&crate::routing::router::BlindedTail);
 impl_readable_for_vec!(crate::routing::router::BlindedTail);
 impl_for_vec!(crate::routing::router::TrampolineHop);
+impl_for_vec_with_element_length_prefix!(crate::ln::channelmanager::PendingDecodeAddHTLC);
 impl_for_vec_with_element_length_prefix!(crate::ln::msgs::UpdateAddHTLC);
 impl_writeable_for_vec_with_element_length_prefix!(&crate::ln::msgs::UpdateAddHTLC);
 impl_for_vec!(u32);
