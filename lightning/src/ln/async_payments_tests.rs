@@ -1507,8 +1507,10 @@ fn amount_doesnt_match_invreq() {
 	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
 	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
 	// Make one blinded path's fees slightly higher so they are tried in a deterministic order.
+	// Use a fee that already matches a blinded relay fee bucket so the test's expected forwarding
+	// fee matches what blinded forwarding actually uses.
 	let mut higher_fee_chan_cfg = allow_priv_chan_fwds_cfg.clone();
-	higher_fee_chan_cfg.channel_config.forwarding_fee_base_msat += 5000;
+	higher_fee_chan_cfg.channel_config.forwarding_fee_base_msat = 2_000;
 	let node_chanmgrs = create_node_chanmgrs(
 		4,
 		&node_cfgs,

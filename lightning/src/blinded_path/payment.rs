@@ -693,6 +693,79 @@ pub struct Bolt12RefundContext {
 	pub payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 }
 
+/// Common network-wide base fee buckets used when approximating forwarding policies.
+const BASE_FEE_BUCKETS: &[u32] = &[
+	0,
+	500,
+	1_000,
+	2_000,
+	5_000,
+	10_000,
+	20_000,
+	50_000,
+	100_000,
+	200_000,
+	500_000,
+	1_000_000,
+	2_000_000,
+	5_000_000,
+	10_000_000,
+	20_000_000,
+	50_000_000,
+	100_000_000,
+	u32::MAX,
+];
+
+/// Common network-wide proportional fee buckets used when approximating forwarding policies.
+const PROPORTIONAL_FEE_BUCKETS: &[u32] = &[
+	0,
+	1,
+	5,
+	10,
+	20,
+	50,
+	100,
+	200,
+	500,
+	1_000,
+	2_500,
+	5_000,
+	10_000,
+	20_000,
+	50_000,
+	100_000,
+	200_000,
+	500_000,
+	1_000_000,
+	u32::MAX,
+];
+
+/// Common CLTV expiry delta buckets used when approximating forwarding policies.
+///
+/// Values outside the supported range are rejected.
+const CLTV_EXPIRY_DELTA_BUCKETS: &[u16] = &[40, 80, 144, 216];
+
+fn bucket_cltv_expiry_delta(cltv_expiry_delta: u16) -> Result<u16, ()> {
+	ceil_bucket(cltv_expiry_delta, CLTV_EXPIRY_DELTA_BUCKETS)
+}
+
+fn bucket_fee_base_msat(fee_base_msat: u32) -> u32 {
+	ceil_bucket(fee_base_msat, BASE_FEE_BUCKETS).expect("fee buckets must include an upper bound")
+}
+
+fn bucket_fee_proportional_millionths(fee_proportional_millionths: u32) -> u32 {
+	ceil_bucket(fee_proportional_millionths, PROPORTIONAL_FEE_BUCKETS)
+		.expect("fee buckets must include an upper bound")
+}
+
+/// Rounds `value` upward to the nearest bucket.
+///
+/// This is used to avoid underfunding blinded forwarding fees while avoiding exposure of unusually
+/// specific forwarding policy values.
+fn ceil_bucket<T: Copy + Ord>(value: T, buckets: &[T]) -> Result<T, ()> {
+	buckets.iter().copied().find(|&bucket| value <= bucket).ok_or(())
+}
+
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 	type Error = ();
 
@@ -703,14 +776,10 @@ impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
 			cltv_expiry_delta,
 		} = info;
 
-		// Avoid exposing esoteric CLTV expiry deltas
-		let cltv_expiry_delta = match cltv_expiry_delta {
-			0..=40 => 40,
-			41..=80 => 80,
-			81..=144 => 144,
-			145..=216 => 216,
-			_ => return Err(()),
-		};
+		let cltv_expiry_delta = bucket_cltv_expiry_delta(cltv_expiry_delta)?;
+		let fee_base_msat = bucket_fee_base_msat(fee_base_msat);
+		let fee_proportional_millionths =
+			bucket_fee_proportional_millionths(fee_proportional_millionths);
 
 		Ok(Self { cltv_expiry_delta, fee_proportional_millionths, fee_base_msat })
 	}
