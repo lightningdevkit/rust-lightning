@@ -175,23 +175,21 @@ fn config_with_min_funding_satoshis(min_funding_satoshis: u64) -> UserConfig {
 }
 
 #[cfg(test)]
-fn assert_min_funding_error<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, min_funding_satoshis: u64) {
-	let msg_events = node.node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	match &msg_events[0] {
-		MessageSendEvent::HandleError {
-			action: msgs::ErrorAction::DisconnectPeerWithWarning { msg },
-			..
-		} => {
-			assert!(
-				msg.data
-					.contains(&format!("configured min_funding_satoshis {min_funding_satoshis}")),
-				"unexpected warning: {}",
-				msg.data
-			);
-		},
-		_ => panic!("Expected HandleError with warning, got {:?}", msg_events[0]),
-	}
+fn assert_min_funding_error<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, recipient: PublicKey, min_funding_satoshis: u64,
+) {
+	let msg = get_event_msg!(node, MessageSendEvent::SendTxAbort, recipient);
+	let data = tx_abort_data(&msg);
+	assert!(
+		data.contains(&format!("configured min_funding_satoshis {min_funding_satoshis}")),
+		"unexpected tx_abort: {}",
+		data
+	);
+}
+
+#[cfg(test)]
+fn tx_abort_data(msg: &msgs::TxAbort) -> String {
+	String::from_utf8(msg.data.clone()).expect("tx_abort data should be valid UTF-8")
 }
 
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
@@ -1374,7 +1372,7 @@ fn test_min_funding_satoshis_rejects_splice_init_with_negative_counterparty_cont
 	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
 	assert!(splice_init.funding_contribution_satoshis < 0);
 	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
-	assert_min_funding_error(&nodes[1], min_funding_satoshis);
+	assert_min_funding_error(&nodes[1], node_id_0, min_funding_satoshis);
 }
 
 #[test]
@@ -1472,7 +1470,7 @@ fn test_min_funding_satoshis_rejects_splice_ack_with_negative_counterparty_contr
 	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
 	assert!(splice_ack.funding_contribution_satoshis < 0);
 	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
-	assert_min_funding_error(&nodes[0], min_funding_satoshis);
+	assert_min_funding_error(&nodes[0], node_id_1, min_funding_satoshis);
 }
 
 #[test]
@@ -1514,7 +1512,7 @@ fn test_min_funding_satoshis_rejects_tx_init_rbf_with_negative_counterparty_cont
 	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
 	assert!(tx_init_rbf.funding_output_contribution.unwrap() < 0);
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
-	assert_min_funding_error(&nodes[1], min_funding_satoshis);
+	assert_min_funding_error(&nodes[1], node_id_0, min_funding_satoshis);
 }
 
 #[test]
@@ -1571,7 +1569,7 @@ fn test_min_funding_satoshis_rejects_tx_ack_rbf_with_negative_counterparty_contr
 	let tx_ack_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxAckRbf, node_id_0);
 	assert!(tx_ack_rbf.funding_output_contribution.unwrap() < 0);
 	nodes[0].node.handle_tx_ack_rbf(node_id_1, &tx_ack_rbf);
-	assert_min_funding_error(&nodes[0], min_funding_satoshis);
+	assert_min_funding_error(&nodes[0], node_id_1, min_funding_satoshis);
 }
 
 #[test]
@@ -5880,13 +5878,14 @@ fn do_test_splice_pending_htlcs(config: UserConfig) {
 		splice_init.funding_contribution_satoshis -= 1;
 		acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
 
-		let msg = get_warning_msg(acceptor, &node_id_initiator);
+		let msg = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
 		assert_eq!(msg.channel_id, channel_id);
 		let cannot_be_spliced_out = format!(
-			"Channel {} cannot be spliced out; their post-splice channel balance {} is smaller than our selected v2 reserve {}",
-			channel_id, post_splice_reserve - Amount::ONE_SAT, post_splice_reserve
+			"Their post-splice channel balance {} is smaller than our selected v2 reserve {}",
+			post_splice_reserve - Amount::ONE_SAT,
+			post_splice_reserve
 		);
-		assert_eq!(msg.data, cannot_be_spliced_out);
+		assert_eq!(tx_abort_data(&msg), format!("Invalid contribution: {cannot_be_spliced_out}"));
 
 		acceptor.node.peer_disconnected(node_id_initiator);
 		initiator.node.peer_disconnected(node_id_acceptor);
@@ -9790,40 +9789,35 @@ fn do_test_0reserve_splice_counterparty_validation(
 			get_event_msg!(acceptor, MessageSendEvent::SendSpliceAck, node_id_initiator);
 	} else {
 		acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
-		let msg_events = acceptor.node.get_and_clear_pending_msg_events();
-		assert_eq!(msg_events.len(), 1);
-		if let MessageSendEvent::HandleError { action, .. } = &msg_events[0] {
-			assert!(matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. }));
-		} else {
-			panic!("Expected MessageSendEvent::HandleError");
-		}
+		let msg = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+		assert_eq!(msg.channel_id, channel_id);
 		let cannot_splice_out = if u64::try_from(funding_contribution_sat.abs()).unwrap()
 			> initiator_value_to_self_sat
 		{
 			// They obviously can't afford their contribution, so we fail before even
 			// querying `TxBuilder`
 			format!(
-				"Got non-closing error: Channel {channel_id} cannot be spliced; \
-				Their contribution candidate {funding_contribution_sat}sat \
+				"Their contribution candidate {funding_contribution_sat}sat \
 				is greater than their total balance in the channel {initiator_value_to_self_sat}sat"
 			)
 		} else if post_channel_value_sat < MIN_CHANNEL_VALUE_SATOSHIS {
 			// We require all spliced channels to have a value of at least 1000 satoshis after the splice
 			format!(
-				"Got non-closing error: Channel {channel_id} cannot be spliced; \
-				Spliced channel value must be at least {MIN_CHANNEL_VALUE_SATOSHIS} satoshis. \
+				"Spliced channel value must be at least {MIN_CHANNEL_VALUE_SATOSHIS} satoshis. \
 				It would be {post_channel_value_sat}"
 			)
 		} else {
 			// Last but not least, `TxBuilder` decides whether all parties can afford
 			// HTLCs, anchors, and transaction fees while retaining at least one
 			// output on the commitments
-			format!(
-				"Got non-closing error: Channel {channel_id} cannot \
-				be spliced; Balance exhausted on local commitment"
-			)
+			"Balance exhausted on local commitment".to_string()
 		};
-		acceptor.logger.assert_log("lightning::ln::channelmanager", cannot_splice_out, 1);
+		assert_eq!(tx_abort_data(&msg), format!("Invalid contribution: {cannot_splice_out}"));
+		acceptor.logger.assert_log(
+			"lightning::ln::channelmanager",
+			format!("Got non-closing error: Invalid contribution: {cannot_splice_out}"),
+			1,
+		);
 	}
 
 	channel_type
@@ -10064,18 +10058,12 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 		// balance, we previously would not complain.
 		splice_init.funding_contribution_satoshis = funding_contribution_sat;
 		acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
-		let msg_events = acceptor.node.get_and_clear_pending_msg_events();
-		assert_eq!(msg_events.len(), 1);
-		if let MessageSendEvent::HandleError { action, .. } = &msg_events[0] {
-			assert!(matches!(action, msgs::ErrorAction::DisconnectPeerWithWarning { .. }));
-		} else {
-			panic!("Expected MessageSendEvent::HandleError");
-		}
+		let msg = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+		assert_eq!(msg.channel_id, channel_id);
 		let post_splice_channel_value_sat = node_0_balance_leftover_amount.to_sat();
 		let cannot_splice_out = if matches!(acceptor_balance, AcceptorBalance::NoBalance) {
 			format!(
-				"Got non-closing error: Channel {channel_id} cannot \
-				be spliced; The post-splice channel value {post_splice_channel_value_sat} \
+				"The post-splice channel value {post_splice_channel_value_sat} \
 				is smaller than their dust limit {high_dust_limit_satoshis}"
 			)
 		} else {
@@ -10088,13 +10076,17 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 				high_dust_limit_satoshis
 			);
 			format!(
-				"Got non-closing error: Channel {channel_id} cannot \
-				be spliced out; their post-splice channel balance \
+				"Their post-splice channel balance \
 				{node_0_balance_leftover_amount} is smaller than our selected v2 reserve \
 				{v2_channel_reserve}"
 			)
 		};
-		acceptor.logger.assert_log("lightning::ln::channelmanager", cannot_splice_out, 1);
+		assert_eq!(tx_abort_data(&msg), format!("Invalid contribution: {cannot_splice_out}"));
+		acceptor.logger.assert_log(
+			"lightning::ln::channelmanager",
+			format!("Got non-closing error: Invalid contribution: {cannot_splice_out}"),
+			1,
+		);
 	}
 }
 

@@ -1134,7 +1134,7 @@ impl MsgHandleErrInternal {
 
 	fn from_chan_no_close(err: ChannelError, channel_id: ChannelId) -> Self {
 		let tx_abort = match &err {
-			&ChannelError::Abort(reason) => Some(reason.into_tx_abort_msg(channel_id)),
+			ChannelError::Abort(reason) => Some(reason.clone().into_tx_abort_msg(channel_id)),
 			_ => None,
 		};
 		let err = match err {
