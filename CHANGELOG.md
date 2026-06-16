@@ -1,3 +1,89 @@
+# 0.2.3 - Jun 18, 2026 - "Through the Loupe"
+
+## API Updates
+ * `DefaultMessageRouter` will now always generate blinded message paths that
+   provide no privacy (where our node is the introduction node) for nodes with
+   public channels. This works around an issue which will appear for any nodes
+   with LND peers that enable onion messaging - such peers will refuse to
+   forward BOLT 12 messages from unknown third parties, which most BOLT 12
+   payers rely on today (#4647).
+ * Explicit `amount_msats` of 0 is rejected in BOLT 12 `Offer`s; `OfferBuilder`
+   now maps 0-amounts to an amount of `None` (#4324).
+
+## Bug Fixes
+ * `Features::supports_zero_conf` no longer clears the `ZeroConf` features and
+   `Features::requires_zero_conf` now correctly reports required, rather than
+   supported, status (#4517).
+ * If an MPP payment is claimed but `ChannelMonitorUpdate`s for some parts are
+   still being completed asynchronously, further channel updates (e.g.
+   forwarding another payment) are pending and the node restarts, the channel
+   could have become stuck (#4520).
+ * The presence of unconfirmed transactions actually no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4590).
+ * LSPS1, LSPS2, and LSPS5 persistence will no longer get stuck and refuse to
+   persist again after a single failure from the KVStore (#4597, #4282).
+ * Dropping the future returned by
+   `OutputSweeper::regenerate_and_broadcast_spend_if_necessary` no longer
+   results in future calls to the same method being spuriously ignored (#4598).
+ * Used async-receive offers are no longer refreshed on every timer tick once
+   their refresh time is reached (#4672).
+ * `FilesystemStore::list_all_keys` will no longer fail if there are stale
+   intermediate files lying around from a previous unclean shutdown (#4618).
+ * When forwarding an HTLC while in a blinded path with proportional fees over
+   200%, LDK will no longer spuriously allow a forward that pays us 1 msat too
+   little in fees (#4697).
+ * Fixed a rare case where a channel could get stuck on reconnect when using
+   both async `ChannelMonitorUpdate` persistence and async signing (#4684).
+ * If we had exactly zero balance in a zero-fee-commitment channel, the
+   counterparty was able to splice all of their balance out, violating the
+   reserve requirements they'd otherwise be forced to keep (#4580).
+ * Providing an `Event::HTLCIntercepted` to the `LSPS2ServiceHandler` twice no
+   longer results in spuriously opening a channel early (#4656).
+ * `Event::PaymentSent::fee_paid_msat` is no longer `None` in cases where
+   `ChannelManager::abandon_payment` was called before the payment ultimately
+   completes anyway (#4651).
+ * `AnchorDescriptor::previous_utxo` now provides the correct `script_pubkey`
+   for non-zero-commitment-fee anchor channels (#4669).
+ * Syncing a `ChainMonitor` using the `Confirm` trait will no longer write some
+   full `ChannelMonitor`s to disk several times per block (#4544).
+ * `OMDomainResolver` now correctly accounts for failed queries when rate
+   limiting, ensuring we continue to respond to queries after failures (#4591).
+ * Calling `ChannelManager::send_payment_with_route` without a `route_params`
+   and with an invalid `Route` will no longer panic (#4707).
+ * `LSPS2ServiceHandler::channel_open_failed` now correctly fails intercepted
+   HTLCs rather than allowing them to fail just before expiry (#4677).
+ * `StaticInvoice::is_offer_expired` was corrected to check offer, rather than
+   static invoice, expiry (#4594).
+ * `lightning-custom-message`'s handling of `peer_connected` events now ensures
+   that sub-handlers will see a `peer_disconnected` event if a different
+   sub-handler refused the connection by `Err`ing `peer_connected` (#4595).
+ * Replay protection for LSPS5 signatures now detects replays which are only
+   different in the encoded signature's case (#4701).
+ * When `lightning-liquidity` is configured in the background processor, there
+   is no longer a stream of `Persisting LiquidityManager...` log spam (#4246).
+ * Incomplete MPP keysend payments will no longer see their HTLCs held until
+   expiry (#4558).
+ * `InvoiceRequestBuilder` will no longer accept a `quantity` of `0` for a
+   BOLT 12 `Offer`, allowing any quantity up to a bound (#4667).
+ * `lightning-custom-message` handlers that return `Ok(None)` when asked to
+   deserialize a message in their defined range no longer cause panics (#4709).
+ * Several spurious debug assertions were fixed (#4537, #4618, #4026)
+
+## Security
+0.2.3 fixes several underestimates of the anchor reserves required to ensure we
+can reliably close channels and a sanitization issue.
+ * When using the `anchor_channel_reserves` module to calculate reserves
+   required to pay for fees when closing anchor channels, zero-fee-commitment
+   channels were not considered. This could allow a counterparty to open many
+   channels, leaving us unable to properly force-close (#4592).
+ * The `anchor_channel_reserves` module overestimated the value of `Utxo`s in
+   the wallet by ignoring the `TxIn` cost to spend them (#4670).
+ * `PrintableString` did not properly sanitize unicode format characters,
+   allowing an attacker to corrupt the rendering of logs or UI (#4593, #4605).
+
+Thanks to Project Loupe for reporting most of the issues fixed in this release.
+
+
 # 0.2.2 - Feb 6, 2025 - "An Async Splicing Production"
 
 ## API Updates
