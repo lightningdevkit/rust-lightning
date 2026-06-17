@@ -13403,6 +13403,11 @@ where
 	fn validate_tx_init_rbf<F: FeeEstimator>(
 		&self, msg: &msgs::TxInitRbf, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Result<(ChannelPublicKeys, PublicKey), ChannelError> {
+		if !self.context.is_live() {
+			return Err(ChannelError::WarnAndDisconnect(
+				"RBF requested on a channel that is not live".to_owned(),
+			));
+		}
 		if !self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Quiescence needed for RBF".to_owned()));
 		}
