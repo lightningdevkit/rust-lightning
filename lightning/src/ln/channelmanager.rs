@@ -4725,7 +4725,7 @@ where
 			// Create a dummy route params since they're a required parameter but unused in this case
 			let (payee_node_id, cltv_delta) = route.paths.first()
 				.and_then(|path| path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32)))
-				.unwrap_or_else(|| (PublicKey::from_slice(&[2; 32]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32));
+				.unwrap_or_else(|| (PublicKey::from_slice(&[2; 33]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32));
 			let dummy_payment_params = PaymentParameters::from_node_id(payee_node_id, cltv_delta);
 			RouteParameters::from_payment_params_and_value(dummy_payment_params, route.get_total_amount())
 		});
