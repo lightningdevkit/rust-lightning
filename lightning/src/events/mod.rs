@@ -1651,8 +1651,12 @@ pub enum Event {
 		/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
 		last_local_balance_msat: Option<u64>,
 	},
-	/// Used to indicate that a splice for the given `channel_id` has been negotiated and its
-	/// funding transaction has been broadcast.
+	/// Used to indicate that a splice for the given `channel_id` has been negotiated, its
+	/// funding transaction has been broadcast, and local inputs or outputs were contributed to
+	/// it.
+	///
+	/// This event is not emitted if the counterparty negotiated a splice without using a local
+	/// contribution.
 	///
 	/// The splice is then considered pending until both parties have seen enough confirmations to
 	/// consider the funding locked. Once this occurs, an [`Event::ChannelReady`] will be emitted.
@@ -1683,9 +1687,9 @@ pub enum Event {
 	},
 	/// Used to indicate that a splice negotiation round for the given `channel_id` has failed.
 	///
-	/// Each splice attempt (initial or RBF) resolves to either [`Event::SpliceNegotiated`] on
-	/// success or this event on failure. Prior successfully negotiated splice transactions are
-	/// unaffected.
+	/// Each splice attempt (initial or RBF) resolves to this event on failure. On success,
+	/// [`Event::SpliceNegotiated`] is emitted if the negotiated transaction includes local
+	/// inputs or outputs. Prior successfully negotiated splice transactions are unaffected.
 	///
 	/// Any UTXOs contributed to the failed round that are not committed to a prior negotiated
 	/// splice transaction will be returned via a preceding [`Event::DiscardFunding`].
