@@ -12936,11 +12936,21 @@ where
 						.as_ref()
 						.map(|n| n.funding_feerate_sat_per_1000_weight())
 				});
-			debug_assert!(
-				prev_feerate.is_some(),
-				"pending_splice should have last_funding_feerate or funding_negotiation",
-			);
-			let min_rbf_feerate = prev_feerate.map(min_rbf_feerate);
+			let prev_feerate = match prev_feerate {
+				Some(prev_feerate) => prev_feerate,
+				None => {
+					// The feerate and our contribution are only persisted by LDK 0.3+, so their
+					// absence means this splice was last written by an older version (negotiated
+					// there, or round-tripped 0.3 -> 0.2 -> 0.3) and cannot be RBF'd.
+					return Err(APIError::APIMisuseError {
+						err: format!(
+							"Channel {} has a pending splice from a prior LDK version and cannot be spliced again",
+							self.context.channel_id(),
+						),
+					});
+				},
+			};
+			let min_rbf_feerate = Some(min_rbf_feerate(prev_feerate));
 			let prior = if pending_splice.last_funding_feerate_sat_per_1000_weight.is_some() {
 				pending_splice.latest_contribution().cloned()
 			} else {
