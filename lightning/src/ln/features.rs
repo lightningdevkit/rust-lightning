@@ -40,7 +40,10 @@ macro_rules! impl_feature_len_prefixed_write {
 		}
 		impl Readable for $features {
 			fn read<R: io::Read>(r: &mut R) -> Result<Self, DecodeError> {
-				Ok(Self::from_be_bytes(Vec::<u8>::read(r)?))
+				let len: u16 = Readable::read(r)?;
+				let mut bytes = vec![0u8; len as usize];
+				r.read_exact(&mut bytes[..])?;
+				Ok(Self::from_be_bytes(bytes))
 			}
 		}
 	};
