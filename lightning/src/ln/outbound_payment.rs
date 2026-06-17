@@ -1136,15 +1136,19 @@ impl OutboundPayments {
 		)
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn pay_for_bolt12_invoice<
-		R: Router, ES: EntropySource, NS: NodeSigner, NL: NodeIdLookUp, IH, SP, L: Logger,
+		R: Router,
+		ES: EntropySource,
+		NS: NodeSigner,
+		NL: NodeIdLookUp,
+		IH,
+		SP,
+		L: Logger,
 	>(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
-		optional_params: OptionalBolt12PaymentParams,
-		router: &R, first_hops: Vec<ChannelDetails>, features: Bolt12InvoiceFeatures, inflight_htlcs: IH,
-		entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
-		secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
+		optional_params: OptionalBolt12PaymentParams, router: &R, first_hops: Vec<ChannelDetails>,
+		features: Bolt12InvoiceFeatures, inflight_htlcs: IH, entropy_source: &ES, node_signer: &NS,
+		node_id_lookup: &NL, secp_ctx: &Secp256k1<secp256k1::All>, best_block_height: u32,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		send_payment_along_path: SP, logger: &WithContext<L>,
 	) -> Result<(), Bolt12PaymentError>
@@ -1152,7 +1156,8 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
-		let OptionalBolt12PaymentParams { amount_msats, retry_strategy, route_params_config } = optional_params;
+		let OptionalBolt12PaymentParams { amount_msats, retry_strategy, route_params_config } =
+			optional_params;
 
 		let invoice_amount = invoice.amount_msats();
 		let send_amount = amount_msats.unwrap_or(invoice_amount);
@@ -1190,10 +1195,26 @@ impl OutboundPayments {
 		// correctly validate MPP payments, including when this node pays only a partial amount.
 		let invoice = PaidBolt12Invoice::Bolt12Invoice(invoice.clone());
 		self.send_payment_for_bolt12_invoice_internal(
-			payment_id, payment_hash, None, None, invoice, route_params, retry_strategy,
-			false, Some(invoice_amount), router, first_hops, inflight_htlcs,
-			entropy_source, node_signer, node_id_lookup, secp_ctx, best_block_height,
-			pending_events, send_payment_along_path, logger,
+			payment_id,
+			payment_hash,
+			None,
+			None,
+			invoice,
+			route_params,
+			retry_strategy,
+			false,
+			Some(invoice_amount),
+			router,
+			first_hops,
+			inflight_htlcs,
+			entropy_source,
+			node_signer,
+			node_id_lookup,
+			secp_ctx,
+			best_block_height,
+			pending_events,
+			send_payment_along_path,
+			logger,
 		)
 	}
 

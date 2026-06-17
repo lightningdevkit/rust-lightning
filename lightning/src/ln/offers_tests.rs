@@ -2926,3 +2926,118 @@ fn pay_for_bolt12_invoice_partial_amount() {
 	// full invoice amount (10M), so she waits for the remaining 5M before settling.
 	assert!(alice.node.get_and_clear_pending_events().is_empty());
 }
+
+/// Checks the full multi-sender flow: two independent payers each pay part of the same BOLT 12
+/// invoice via `pay_for_bolt12_invoice`, the recipient claims once both parts arrive, and both
+/// payers see `Event::PaymentSent`.
+#[test]
+fn pay_for_bolt12_invoice_partial_amount_multi_payer() {
+	let mut manually_pay_cfg = test_default_channel_config();
+	manually_pay_cfg.manually_handle_bolt12_invoices = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[None, Some(manually_pay_cfg.clone()), Some(manually_pay_cfg)],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	// The recipient funds a channel to each payer so both have outbound liquidity to pay her.
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+	let carol = &nodes[2];
+
+	let invoice_amount = 10_000_000u64;
+	let partial_amount = 5_000_000u64;
+
+	let offer =
+		alice.node.create_offer_builder().unwrap().amount_msats(invoice_amount).build().unwrap();
+
+	// Bob requests an invoice through the offer flow; both payers pay against this same invoice.
+	let orig_payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, orig_payment_id, Default::default()).unwrap();
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+
+	let invoice = match get_event!(bob, Event::InvoiceReceived) {
+		Event::InvoiceReceived { invoice, .. } => invoice,
+		_ => panic!("Expected InvoiceReceived"),
+	};
+
+	bob.node.abandon_payment(orig_payment_id);
+	get_event!(bob, Event::PaymentFailed);
+
+	let payment_hash = invoice.payment_hash();
+
+	let partial_params = || channelmanager::OptionalBolt12PaymentParams {
+		amount_msats: Some(partial_amount),
+		retry_strategy: Retry::Attempts(0),
+		..Default::default()
+	};
+
+	// Bob pays his half. The recipient holds the HTLC, as the MPP total isn't met yet.
+	bob.node.pay_for_bolt12_invoice(&invoice, PaymentId([2; 32]), partial_params()).unwrap();
+	check_added_monitors(bob, 1);
+	let mut events = bob.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&alice_id, &mut events);
+	do_pass_along_path(
+		PassAlongPathArgs::new(bob, &[alice], partial_amount, payment_hash, ev)
+			.without_clearing_recipient_events()
+			.without_claimable_event()
+			.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]),
+	);
+	assert!(alice.node.get_and_clear_pending_events().is_empty());
+
+	// Carol pays the remaining half, completing the MPP. The recipient now emits PaymentClaimable
+	// for the full invoice amount.
+	carol.node.pay_for_bolt12_invoice(&invoice, PaymentId([3; 32]), partial_params()).unwrap();
+	check_added_monitors(carol, 1);
+	let mut events = carol.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = remove_first_msg_event_to_node(&alice_id, &mut events);
+	let claimable = do_pass_along_path(
+		PassAlongPathArgs::new(carol, &[alice], invoice_amount, payment_hash, ev)
+			.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]),
+	)
+	.unwrap();
+
+	let payment_preimage = match claimable {
+		Event::PaymentClaimable { purpose, .. } => purpose.preimage().unwrap(),
+		_ => panic!("Expected PaymentClaimable"),
+	};
+
+	// Claiming releases a fulfill to each payer, and each payer sees PaymentSent.
+	alice.node.claim_funds(payment_preimage);
+	check_added_monitors(alice, 2);
+	expect_payment_claimed!(alice, payment_hash, invoice_amount);
+
+	let mut fulfill_events = alice.node.get_and_clear_pending_msg_events();
+	assert_eq!(fulfill_events.len(), 2);
+	for payer in [bob, carol] {
+		let payer_id = payer.node.get_our_node_id();
+		let ev = remove_first_msg_event_to_node(&payer_id, &mut fulfill_events);
+		match ev {
+			crate::ln::msgs::MessageSendEvent::UpdateHTLCs { updates, .. } => {
+				assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+				payer
+					.node
+					.handle_update_fulfill_htlc(alice_id, updates.update_fulfill_htlcs[0].clone());
+				do_commitment_signed_dance(payer, alice, &updates.commitment_signed, false, false);
+				expect_payment_sent!(payer, payment_preimage);
+			},
+			_ => panic!("Expected UpdateHTLCs"),
+		}
+	}
+}

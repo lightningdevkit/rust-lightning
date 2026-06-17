@@ -5902,8 +5902,20 @@ impl<
 	/// that the invoice was previously requested. The caller is responsible for invoice
 	/// verification and for providing a unique `payment_id`.
 	///
+	/// Because this method skips the internal request-tracking check, the caller must confirm the
+	/// invoice corresponds to one they requested before paying it, using
+	/// [`Bolt12Invoice::verify_using_metadata`] or [`Bolt12Invoice::verify_using_payer_data`] with
+	/// the [`Nonce`] and [`ExpandedKey`] used to build the original [`InvoiceRequest`]. This is the
+	/// path to use for invoices obtained outside of LDK's offer flow.
+	///
 	/// The amount this node contributes to the payment can be set via
 	/// [`OptionalBolt12PaymentParams::amount_msats`], which defaults to the full invoice amount.
+	///
+	/// Failed paths are retried according to [`OptionalBolt12PaymentParams::retry_strategy`]. Once
+	/// the payment has been abandoned (e.g. after the retry limit is reached and an
+	/// [`Event::PaymentFailed`] is generated), it can be retried by calling this method again with a
+	/// fresh `payment_id`; reusing the same `payment_id` while the payment is still pending returns
+	/// [`Bolt12PaymentError::DuplicateInvoice`].
 	///
 	/// Returns [`Bolt12PaymentError::DuplicateInvoice`] if a payment with the given `payment_id`
 	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if the requested amount is zero
@@ -5911,6 +5923,10 @@ impl<
 	///
 	/// Either [`Event::PaymentSent`] or [`Event::PaymentFailed`] will be generated once the
 	/// payment completes.
+	///
+	/// [`Nonce`]: crate::offers::nonce::Nonce
+	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn pay_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
 		optional_params: OptionalBolt12PaymentParams,
