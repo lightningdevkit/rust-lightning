@@ -376,11 +376,11 @@ impl FromStr for Bolt11Invoice {
 /// let parsed_1 = invoice.parse::<Bolt11Invoice>();
 ///
 /// let parsed_2 = match invoice.parse::<SignedRawBolt11Invoice>() {
-/// 	Ok(signed) => match Bolt11Invoice::from_signed(signed) {
-/// 		Ok(invoice) => Ok(invoice),
-/// 		Err(e) => Err(ParseOrSemanticError::SemanticError(e)),
-/// 	},
-/// 	Err(e) => Err(ParseOrSemanticError::ParseError(e)),
+///    Ok(signed) => match Bolt11Invoice::from_signed(signed) {
+///        Ok(invoice) => Ok(invoice),
+///        Err(e) => Err(ParseOrSemanticError::SemanticError(e)),
+///    },
+///    Err(e) => Err(ParseOrSemanticError::ParseError(e)),
 /// };
 ///
 /// assert!(parsed_1.is_ok());

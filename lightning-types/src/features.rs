@@ -858,7 +858,7 @@ impl Deref for FeatureFlags {
 	fn deref(&self) -> &[u8] {
 		match self {
 			FeatureFlags::Held { bytes, len } => &bytes[..*len as usize],
-			FeatureFlags::Heap(vec) => &vec,
+			FeatureFlags::Heap(vec) => vec,
 		}
 	}
 }
@@ -1179,12 +1179,12 @@ impl<T: sealed::Context> Features<T> {
 		let mut known_chunks = T::KNOWN_FEATURE_MASK.chunks(8);
 		for chunk in self.flags.chunks(8) {
 			let mut flag_bytes = [0; 8];
-			flag_bytes[..chunk.len()].copy_from_slice(&chunk);
+			flag_bytes[..chunk.len()].copy_from_slice(chunk);
 			let flag_int = u64::from_le_bytes(flag_bytes);
 
 			let known_chunk = known_chunks.next().unwrap_or(&[0; 0]);
 			let mut known_bytes = [0; 8];
-			known_bytes[..known_chunk.len()].copy_from_slice(&known_chunk);
+			known_bytes[..known_chunk.len()].copy_from_slice(known_chunk);
 			let known_int = u64::from_le_bytes(known_bytes);
 
 			const REQ_MASK: u64 = u64::from_le_bytes([ANY_REQUIRED_FEATURES_MASK; 8]);
@@ -1268,10 +1268,10 @@ impl<T: sealed::Context> Features<T> {
 	fn set_bit(&mut self, bit: usize, custom: bool) -> Result<(), ()> {
 		let byte_offset = bit / 8;
 		let mask = 1 << (bit - 8 * byte_offset);
-		if byte_offset < T::KNOWN_FEATURE_MASK.len() && custom {
-			if (T::KNOWN_FEATURE_MASK[byte_offset] & mask) != 0 {
-				return Err(());
-			}
+		if byte_offset < T::KNOWN_FEATURE_MASK.len()
+			&& custom && (T::KNOWN_FEATURE_MASK[byte_offset] & mask) != 0
+		{
+			return Err(());
 		}
 
 		if self.flags.len() <= byte_offset {
