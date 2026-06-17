@@ -265,6 +265,15 @@ impl AsyncReceiveOfferCache {
 			.ok_or(())
 	}
 
+	/// Returns whether [`Self::get_async_receive_offer`] would return an offer without marking an
+	/// unused offer as used.
+	pub(super) fn has_async_receive_offer(&self, duration_since_epoch: Duration) -> bool {
+		self.offers_with_idx().any(|(_, offer)| {
+			!offer.offer.is_expired_no_std(duration_since_epoch)
+				&& matches!(offer.status, OfferStatus::Ready { .. } | OfferStatus::Used { .. })
+		})
+	}
+
 	/// Remove expired offers from the cache, returning the first slot number in the cache that needs
 	/// a new offer, if any exist.
 	pub(super) fn prune_expired_offers(

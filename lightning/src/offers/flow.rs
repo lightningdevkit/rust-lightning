@@ -1755,7 +1755,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	}
 
 	/// Returns a [`Future`] that completes when an async receive offer is ready, i.e., after the
-	/// interactive static-invoice protocol completes.
+	/// interactive static-invoice protocol completes. If an offer is already ready, the returned
+	/// [`Future`] will already be complete.
 	///
 	/// Callers can `.await` the returned [`Future`] in an async context.
 	#[cfg_attr(
@@ -1765,7 +1766,12 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// After it completes, use [`Self::get_async_receive_offer`] to retrieve the offer.
 	pub fn get_async_receive_offer_ready_future(&self) -> Future {
-		self.async_receive_offer_ready_notifier.get_future()
+		let cache = self.async_receive_offer_cache.lock().unwrap();
+		if cache.has_async_receive_offer(self.duration_since_epoch()) {
+			Future::completed()
+		} else {
+			self.async_receive_offer_ready_notifier.get_future()
+		}
 	}
 
 	/// Get the encoded [`AsyncReceiveOfferCache`] for persistence.

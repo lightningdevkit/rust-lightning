@@ -162,6 +162,18 @@ pub struct Future {
 }
 
 impl Future {
+	pub(crate) fn completed() -> Self {
+		let state = Arc::new(Mutex::new(FutureState {
+			callbacks: Vec::new(),
+			std_future_callbacks: Vec::new(),
+			callbacks_with_state: Vec::new(),
+			complete: true,
+			callbacks_made: false,
+			next_idx: 1,
+		}));
+		Future { state, self_idx: 0 }
+	}
+
 	/// Registers a callback to be called upon completion of this future. If the future has already
 	/// completed, the callback will be called immediately.
 	///

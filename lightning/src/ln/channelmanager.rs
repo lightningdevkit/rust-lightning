@@ -5911,16 +5911,6 @@ impl<
 		self.check_refresh_async_receive_offer_cache(false).unwrap();
 	}
 
-	/// Requests fresh async receive offer paths from the configured static invoice server, if any.
-	pub fn refresh_async_receive_offers(&self) -> Result<(), ()> {
-		self.check_refresh_async_receive_offer_cache(false).map_err(|()| {
-			log_error!(
-				self.logger,
-				"Failed to create blinded paths when requesting async receive offer paths"
-			);
-		})
-	}
-
 	/// Requests fresh async receive offer paths from the configured static invoice server, if any,
 	/// and attaches `payment_metadata` to the resulting BOLT 12 payment contexts.
 	///
@@ -5939,30 +5929,6 @@ impl<
 				"Failed to create blinded paths when requesting async receive offer paths"
 			);
 		})
-	}
-
-	/// Returns once an async receive offer is ready after the interactive static-invoice
-	/// protocol completes, or immediately if one is already available.
-	///
-	/// Callers that need a timeout can combine this future with their runtime's timeout
-	/// primitive.
-	#[cfg_attr(
-		feature = "std",
-		doc = "Synchronous callers should instead fetch the underlying [`Future`] via [`Self::get_async_receive_offer_ready_future`] and call [`Future::wait_timeout`] on it."
-	)]
-	///
-	/// [`Future`]: crate::util::wakers::Future
-	#[cfg_attr(
-		feature = "std",
-		doc = "[`Future::wait_timeout`]: crate::util::wakers::Future::wait_timeout"
-	)]
-	pub async fn await_async_receive_offer(&self) -> Result<Offer, ()> {
-		if let Ok(offer) = self.get_async_receive_offer() {
-			return Ok(offer);
-		}
-
-		self.flow.get_async_receive_offer_ready_future().await;
-		self.get_async_receive_offer()
 	}
 
 	/// Returns a [`Future`] that completes when an async receive offer is ready.
