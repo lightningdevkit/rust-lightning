@@ -5627,6 +5627,29 @@ impl<
 		}
 	}
 
+	fn route_params_for_fixed_route(route: &mut Route) -> RouteParameters {
+		let params = route.route_params.clone().unwrap_or_else(|| {
+			let (payee_node_id, cltv_delta) = route
+				.paths
+				.first()
+				.and_then(|path| {
+					path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32))
+				})
+				.unwrap_or_else(|| {
+					(PublicKey::from_slice(&[2; 33]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32)
+				});
+			let dummy_payment_params = PaymentParameters::from_node_id(payee_node_id, cltv_delta);
+			RouteParameters::from_payment_params_and_value(
+				dummy_payment_params,
+				route.get_total_amount(),
+			)
+		});
+		if route.route_params.is_none() {
+			route.route_params = Some(params.clone());
+		}
+		params
+	}
+
 	/// Sends a payment along a given route. See [`Self::send_payment`] for more info.
 	///
 	/// LDK will not automatically retry this payment, though it may be manually re-sent after an
@@ -5638,23 +5661,49 @@ impl<
 	) -> Result<(), RetryableSendFailure> {
 		let best_block_height = self.best_block.read().unwrap().height;
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
-		let route_params = route.route_params.clone().unwrap_or_else(|| {
-			// Create a dummy route params since they're a required parameter but unused in this case
-			let (payee_node_id, cltv_delta) = route.paths.first()
-				.and_then(|path| path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32)))
-				.unwrap_or_else(|| (PublicKey::from_slice(&[2; 32]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32));
-			let dummy_payment_params = PaymentParameters::from_node_id(payee_node_id, cltv_delta);
-			RouteParameters::from_payment_params_and_value(dummy_payment_params, route.get_total_amount())
-		});
-		if route.route_params.is_none() { route.route_params = Some(route_params.clone()); }
+		let route_params = Self::route_params_for_fixed_route(&mut route);
 		let router = FixedRouter::new(route);
 		let logger =
 			WithContext::for_payment(&self.logger, None, None, Some(payment_hash), payment_id);
 		self.pending_outbound_payments
 			.send_payment(payment_hash, recipient_onion, payment_id, Retry::Attempts(0),
-				route_params, &&router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
+				route_params, &router, self.list_usable_channels(), || self.compute_inflight_htlcs(),
 				&self.entropy_source, &self.node_signer, best_block_height,
 				&self.pending_events, |args| self.send_payment_along_path(args), &logger)
+	}
+
+	/// Sends a spontaneous payment along a given route. See
+	/// [`Self::send_spontaneous_payment`] for more info.
+	///
+	/// LDK will not automatically retry this payment, though it may be manually
+	/// re-sent after an
+	/// [`Event::PaymentFailed`] is generated.
+	pub fn send_spontaneous_payment_with_route(
+		&self, mut route: Route, payment_preimage: Option<PaymentPreimage>,
+		recipient_onion: RecipientOnionFields, payment_id: PaymentId,
+	) -> Result<PaymentHash, RetryableSendFailure> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let route_params = Self::route_params_for_fixed_route(&mut route);
+		let router = FixedRouter::new(route);
+		let payment_hash = payment_preimage.map(|preimage| preimage.into());
+		let logger = WithContext::for_payment(&self.logger, None, None, payment_hash, payment_id);
+		self.pending_outbound_payments.send_spontaneous_payment(
+			payment_preimage,
+			recipient_onion,
+			payment_id,
+			Retry::Attempts(0),
+			route_params,
+			&router,
+			self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			best_block_height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+			&logger,
+		)
 	}
 
 	/// Sends a payment to the route found using the provided [`RouteParameters`], retrying failed
@@ -6158,6 +6207,98 @@ impl<
 			|args| self.send_payment_along_path(args),
 			&WithContext::for_payment(&self.logger, None, None, payment_hash, payment_id),
 		)
+	}
+
+	/// Performs a circular rebalancing payment: funds exit our node over `outbound_channel_id`,
+	/// traverse the Lightning Network, and re-enter our node through `inbound_channel_id`.
+	///
+	/// This is a convenient helper for moving liquidity between two of our channels without
+	/// requiring a counterparty invoice. It is equivalent to constructing an appropriate circular
+	/// [`Route`] and sending a spontaneous (keysend) payment over it.
+	///
+	/// # How it works
+	///
+	/// A route hint directs the router through the `inbound_channel_id`'s counterparty to a dummy
+	/// payee, forced to start with `outbound_channel_id`. The dummy payee is then replaced with our
+	/// own node ID to close the loop. The route is sent as a spontaneous payment.
+	///
+	/// # Limitations
+	///
+	/// - Only single-path routing (no MPP support) is currently available.
+	/// - The payment is not recorded by the `Scorer`.
+	///
+	/// # Errors
+	///
+	/// Returns [`RetryableSendFailure::RouteNotFound`] if channel validation fails or no route can be
+	/// found. Payment-level errors (e.g. HTLC failures mid-flight) are reported asynchronously
+	/// via [`Event::PaymentFailed`].
+	///
+	/// [`Route`]: crate::routing::router::Route
+	/// [`Event::PaymentFailed`]: crate::events::Event::PaymentFailed
+	pub fn send_circular_payment(
+		&self, outbound_channel_id: ChannelId, inbound_channel_id: ChannelId, amount_msat: u64,
+		payment_id: PaymentId,
+	) -> Result<PaymentHash, RetryableSendFailure> {
+		if outbound_channel_id == inbound_channel_id {
+			return Err(RetryableSendFailure::RouteNotFound);
+		}
+
+		let usable_channels = self.list_usable_channels();
+		let out_chan = usable_channels
+			.iter()
+			.find(|c| c.channel_id == outbound_channel_id)
+			.ok_or(RetryableSendFailure::RouteNotFound)?;
+
+		let in_chan = usable_channels
+			.iter()
+			.find(|c| c.channel_id == inbound_channel_id)
+			.ok_or(RetryableSendFailure::RouteNotFound)?;
+
+		let our_node_id = self.get_our_node_id();
+		let forwarding_info = in_chan
+			.counterparty
+			.forwarding_info
+			.as_ref()
+			.ok_or(RetryableSendFailure::RouteNotFound)?;
+		let dummy_payee = PublicKey::from_slice(&[2; 33]).unwrap();
+		let route_hint =
+			crate::routing::router::RouteHint(vec![crate::routing::router::RouteHintHop {
+				src_node_id: in_chan.counterparty.node_id,
+				short_channel_id: in_chan
+					.get_inbound_payment_scid()
+					.ok_or(RetryableSendFailure::RouteNotFound)?,
+				fees: lightning_types::routing::RoutingFees {
+					base_msat: forwarding_info.fee_base_msat,
+					proportional_millionths: forwarding_info.fee_proportional_millionths,
+				},
+				cltv_expiry_delta: forwarding_info.cltv_expiry_delta,
+				htlc_minimum_msat: in_chan.inbound_htlc_minimum_msat,
+				htlc_maximum_msat: in_chan.inbound_htlc_maximum_msat,
+			}]);
+
+		let route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::from_node_id(dummy_payee, MIN_FINAL_CLTV_EXPIRY_DELTA as u32)
+				.with_route_hints(vec![route_hint])
+				.map_err(|_| RetryableSendFailure::RouteNotFound)?,
+			amount_msat,
+		);
+
+		let first_hops: [&ChannelDetails; 1] = [out_chan];
+		let inflight_htlcs = self.compute_inflight_htlcs();
+		let mut route = self
+			.router
+			.find_route(&our_node_id, &route_params, Some(&first_hops), inflight_htlcs)
+			.map_err(|_| RetryableSendFailure::RouteNotFound)?;
+
+		for path in route.paths.iter_mut() {
+			if let Some(last) = path.hops.last_mut() {
+				last.pubkey = our_node_id;
+			}
+		}
+
+		let preimage = PaymentPreimage(self.entropy_source.get_secure_random_bytes());
+		let onion = RecipientOnionFields::spontaneous_empty(amount_msat);
+		self.send_spontaneous_payment_with_route(route, Some(preimage), onion, payment_id)
 	}
 
 	/// Send a payment that is probing the given route for liquidity. We calculate the
