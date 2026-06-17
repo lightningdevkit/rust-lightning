@@ -7185,6 +7185,9 @@ pub struct SpliceFundingNegotiated {
 	/// The outpoint of the channel's splice funding transaction.
 	pub funding_txo: bitcoin::OutPoint,
 
+	/// Whether the holder contributed local inputs or outputs to the negotiated splice.
+	pub has_local_contribution: bool,
+
 	/// The features that this channel will operate with.
 	pub channel_type: ChannelTypeFeatures,
 
@@ -9559,11 +9562,18 @@ where
 					funding.get_funding_txo().expect("funding outpoint should be set");
 				let channel_type = funding.get_channel_type().clone();
 				let funding_redeem_script = funding.get_funding_redeemscript();
+				let has_local_contribution = self
+					.context
+					.interactive_tx_signing_session
+					.as_ref()
+					.map(|signing_session| signing_session.has_local_contribution())
+					.unwrap_or(false);
 
 				pending_splice.negotiated_candidates.push(funding);
 
 				let splice_negotiated = SpliceFundingNegotiated {
 					funding_txo: funding_txo.into_bitcoin_outpoint(),
+					has_local_contribution,
 					channel_type,
 					funding_redeem_script,
 				};
