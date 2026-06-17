@@ -12948,10 +12948,11 @@ where
 						.as_ref()
 						.map(|n| n.funding_feerate_sat_per_1000_weight())
 				});
-			debug_assert!(
-				prev_feerate.is_some(),
-				"pending_splice should have last_funding_feerate or funding_negotiation",
-			);
+			// The feerate and our contribution are only persisted by LDK 0.3+, so their absence
+			// means this splice was last written by an older version (negotiated there, or
+			// round-tripped 0.3 -> 0.2 -> 0.3) and cannot be RBF'd. Leave the RBF feerate floor
+			// unset so the new splice is queued and begins as a fresh splice once the pending
+			// candidate locks, rather than attempting to replace it.
 			let min_rbf_feerate = prev_feerate.map(min_rbf_feerate);
 			let prior = if pending_splice.last_funding_feerate_sat_per_1000_weight.is_some() {
 				pending_splice.latest_contribution().cloned()

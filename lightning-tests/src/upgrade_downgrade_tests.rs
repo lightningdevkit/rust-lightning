@@ -52,6 +52,7 @@ use lightning_0_0_125::util::ser::Writeable as _;
 use lightning::blinded_path::message::NextMessageHop;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use lightning::ln::channel_state::SpliceCandidateStatus;
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::msgs;
 use lightning::ln::msgs::BaseMessageHandler as _;
@@ -1026,4 +1027,75 @@ fn upgrade_single_splice_from_0_2() {
 		assert_eq!(splice.candidates.len(), 1);
 		assert_eq!(splice.candidates[0].contribution, None);
 	}
+
+	// The inherited splice cannot be RBF'd -- 0.2 persisted neither its feerate nor our contribution
+	// to reconstruct the prior request -- so splice_channel returns a fresh template with no RBF
+	// feerate floor rather than refusing. The new splice is queued to begin once the inherited
+	// splice locks.
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert!(funding_template.min_rbf_feerate().is_none());
+}
+
+#[test]
+fn splice_inherited_across_0_2_queues_until_lock() {
+	// Negotiate a contributory splice on current, downgrade to LDK 0.2, then upgrade back. LDK 0.2
+	// persists neither our contribution nor the splice feerate and does not retain the odd TLVs that
+	// carry them, so the splice returns to current without either. It therefore cannot be RBF'd;
+	// splicing again instead queues a new splice that begins once the inherited splice locks.
+	// Same single-splice setup as the downgrade tests; we only need node 0 here.
+	let (v3_mgr, _, v3_mon, _, channel_id) = downgrade_setup_single_splice();
+	let chan_id_bytes = channel_id.0;
+
+	// Downgrade node 0 to LDK 0.2 and re-serialize there, stripping the contribution and feerate.
+	let (v2_mgr, v2_mon);
+	{
+		let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+		chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+		chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+		let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+		let mut config = lightning_0_2_utils::test_default_channel_config();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		let mgr = lightning_0_2_utils::_reload_node(&nodes[0], config, &v3_mgr, &[&v3_mon[..]]);
+		assert_eq!(mgr.list_channels().len(), 1);
+		let v2_channel_id = lightning_0_2::ln::types::ChannelId(chan_id_bytes);
+		v2_mgr = mgr.encode();
+		v2_mon = get_monitor_0_2!(nodes[0], v2_channel_id).encode();
+	}
+
+	// Upgrade back to current and splice the channel carrying the inherited splice.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister, chain_mon, new_node);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let config = test_default_channel_config();
+	reload_node!(nodes[0], config, &v2_mgr, &[&v2_mon[..]], persister, chain_mon, new_node);
+
+	let channel_id = ChannelId(chan_id_bytes);
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	// splice_channel returns a fresh template with no RBF feerate floor rather than refusing.
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert!(funding_template.min_rbf_feerate().is_none());
+
+	// Contributing queues the splice as `WaitingOnLock`: it cannot replace the inherited splice via
+	// RBF (its feerate and our contribution are absent), so it will be spliced once that splice
+	// locks. A splice-out needs no wallet funds, letting us drive the queue without connecting
+	// blocks to the reloaded node.
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let channels = nodes[0].node.list_channels();
+	let splice = channels[0].splice_details.as_ref().unwrap();
+	assert!(matches!(
+		splice.candidates.last().unwrap().status,
+		SpliceCandidateStatus::WaitingOnLock,
+	));
 }
