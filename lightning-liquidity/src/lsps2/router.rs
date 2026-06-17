@@ -168,6 +168,14 @@ impl<R: Router, ES: EntropySource, MD: LSPS2Bolt12PaymentMetadataDecoder> Router
 		first_hops: Vec<ChannelDetails>, tlvs: ReceiveTlvs, amount_msats: Option<u64>,
 		secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		let all_params = self.metadata_lsps2_params(&tlvs.payment_context);
+		if all_params.is_empty()
+			&& first_hops.is_empty()
+			&& matches!(&tlvs.payment_context, PaymentContext::AsyncBolt12Offer(_))
+		{
+			return Err(());
+		}
+
 		// Retrieve paths through existing channels from the inner router.
 		let inner_res = self.inner_router.create_blinded_payment_paths(
 			recipient,
@@ -180,7 +188,6 @@ impl<R: Router, ES: EntropySource, MD: LSPS2Bolt12PaymentMetadataDecoder> Router
 
 		// If no LSPS2 parameters were present in the payment metadata, just fallback to the inner
 		// router's paths.
-		let all_params = self.metadata_lsps2_params(&tlvs.payment_context);
 		if all_params.is_empty() {
 			return inner_res;
 		}
@@ -259,12 +266,14 @@ mod tests {
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	use lightning::blinded_path::payment::{
-		Bolt12OfferContext, Bolt12RefundContext, PaymentConstraints, PaymentContext, ReceiveTlvs,
+		AsyncBolt12OfferContext, BlindedPaymentPath, Bolt12OfferContext, Bolt12RefundContext,
+		PaymentConstraints, PaymentContext, ReceiveTlvs,
 	};
 	use lightning::blinded_path::NodeIdLookUp;
 	use lightning::ln::channel_state::ChannelDetails;
 	use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
 	use lightning::offers::invoice_request::InvoiceRequestFields;
+	use lightning::offers::nonce::Nonce;
 	use lightning::offers::offer::OfferId;
 	use lightning::routing::router::{InFlightHtlcs, Route, RouteParameters, Router};
 	use lightning::sign::{EntropySource, NodeSigner, ReceiveAuthKey, Recipient};
@@ -383,6 +392,19 @@ mod tests {
 		}
 	}
 
+	fn async_bolt12_offer_tlvs(
+		offer_nonce: Nonce, payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
+	) -> ReceiveTlvs {
+		ReceiveTlvs {
+			payment_secret: PaymentSecret([2; 32]),
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 100, htlc_minimum_msat: 1 },
+			payment_context: PaymentContext::AsyncBolt12Offer(AsyncBolt12OfferContext {
+				offer_nonce,
+				payment_metadata,
+			}),
+		}
+	}
+
 	fn bolt12_refund_tlvs() -> ReceiveTlvs {
 		ReceiveTlvs {
 			payment_secret: PaymentSecret([2; 32]),
@@ -496,6 +518,43 @@ mod tests {
 
 		assert!(result.is_err());
 		assert_eq!(router.inner_router.create_blinded_payment_paths_calls(), 1);
+	}
+
+	#[test]
+	fn errors_for_async_offer_without_metadata_or_first_hops() {
+		let inner_router = MockRouter::new();
+		let recipient = pubkey(10);
+		let secp_ctx = Secp256k1::new();
+		let tlvs = async_bolt12_offer_tlvs(Nonce::from_entropy_source(TestEntropy), None);
+		let inner_path = BlindedPaymentPath::new(
+			&[],
+			recipient,
+			ReceiveAuthKey([3; 32]),
+			tlvs.clone(),
+			u64::MAX,
+			MIN_FINAL_CLTV_EXPIRY_DELTA,
+			&TestEntropy,
+			&secp_ctx,
+		)
+		.unwrap();
+		*inner_router.paths_to_return.lock().unwrap() = Some(vec![inner_path]);
+
+		let router = LSPS2BOLT12Router::new_with_payment_metadata_decoder(
+			inner_router,
+			TestEntropy,
+			TestMetadataDecoder,
+		);
+		let result = router.create_blinded_payment_paths(
+			recipient,
+			ReceiveAuthKey([3; 32]),
+			Vec::new(),
+			tlvs,
+			Some(10_000),
+			&secp_ctx,
+		);
+
+		assert!(result.is_err());
+		assert_eq!(router.inner_router.create_blinded_payment_paths_calls(), 0);
 	}
 
 	#[test]
