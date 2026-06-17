@@ -42,7 +42,7 @@ use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
 use lightning::blinded_path::payment::{
-	Bolt12OfferContext, PaymentConstraints, PaymentContext, ReceiveTlvs,
+	BlindedPaymentPath, Bolt12OfferContext, PaymentConstraints, PaymentContext, ReceiveTlvs,
 };
 use lightning::blinded_path::NodeIdLookUp;
 use lightning::ln::channelmanager::{InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
@@ -113,6 +113,42 @@ impl Router for FailingRouter {
 		_amount_msats: Option<u64>, _secp_ctx: &Secp256k1<T>,
 	) -> Result<Vec<lightning::blinded_path::payment::BlindedPaymentPath>, ()> {
 		Err(())
+	}
+}
+
+struct FallbackBeforeMetadataRouter;
+
+impl Router for FallbackBeforeMetadataRouter {
+	fn find_route(
+		&self, _payer: &PublicKey, _route_params: &RouteParameters,
+		_first_hops: Option<&[&lightning::ln::channel_state::ChannelDetails]>,
+		_inflight_htlcs: InFlightHtlcs,
+	) -> Result<Route, &'static str> {
+		Err("fallback-before-metadata test router")
+	}
+
+	fn create_blinded_payment_paths<
+		T: bitcoin::secp256k1::Signing + bitcoin::secp256k1::Verification,
+	>(
+		&self, recipient: PublicKey, local_node_receive_key: ReceiveAuthKey,
+		_first_hops: Vec<lightning::ln::channel_state::ChannelDetails>, tlvs: ReceiveTlvs,
+		_amount_msats: Option<u64>, secp_ctx: &Secp256k1<T>,
+	) -> Result<Vec<BlindedPaymentPath>, ()> {
+		if tlvs.payment_context.payment_metadata().is_some() {
+			return Err(());
+		}
+
+		BlindedPaymentPath::new(
+			&[],
+			recipient,
+			local_node_receive_key,
+			tlvs,
+			u64::MAX,
+			MIN_FINAL_CLTV_EXPIRY_DELTA,
+			&RandomBytes::new([44; 32]),
+			secp_ctx,
+		)
+		.map(|path| vec![path])
 	}
 }
 
@@ -593,7 +629,7 @@ fn channel_open_failed_releases_intercepted_htlcs() {
 
 	let intercept_scid = service_node.node.get_intercept_scid();
 	let user_channel_id = 42u128;
-	let cltv_expiry_delta: u32 = 144;
+	let cltv_expiry_delta: u16 = 144;
 	let payment_size_msat = Some(1_000_000);
 	let fee_base_msat: u64 = 1_000;
 
@@ -2198,7 +2234,7 @@ fn bolt12_lsps2_compact_message_path_test() {
 	let intercepted_msg = events
 		.into_iter()
 		.find_map(|e| match e {
-			Event::OnionMessageIntercepted { next_hop, message } => {
+			Event::OnionMessageIntercepted { next_hop, message, .. } => {
 				assert_eq!(next_hop, NextMessageHop::ShortChannelId(intercept_scid));
 				Some(message)
 			},
@@ -3186,7 +3222,7 @@ fn async_payment_via_lsps2_jit_channel() {
 	let payment_metadata =
 		lsps2_bolt12_payment_metadata(service_node_id, intercept_scid, cltv_expiry_delta);
 	let lsps2_router = Arc::new(LSPS2BOLT12Router::new_with_payment_metadata_decoder(
-		FailingRouter::new(),
+		FallbackBeforeMetadataRouter,
 		Arc::new(RandomBytes::new([43; 32])),
 		TestBolt12PaymentMetadataDecoder,
 	));
@@ -3219,6 +3255,30 @@ fn async_payment_via_lsps2_jit_channel() {
 		.blinded_paths_for_async_recipient(recipient_id.clone(), None)
 		.unwrap();
 	client_node.inner.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+
+	// The path setup above triggers an automatic async-offer refresh before the LSPS2 metadata
+	// has been attached. Even if the inner router could build a fallback path, we must not upload
+	// a static invoice for the LSPS2 JIT flow until the metadata-derived intercept-SCID path is
+	// available.
+	while let Some(msg) =
+		client_node.inner.onion_messenger.next_onion_message_for_peer(service_node_id)
+	{
+		service_node.inner.onion_messenger.handle_onion_message(client_node_id, &msg);
+	}
+	while let Some(msg) =
+		service_node.inner.onion_messenger.next_onion_message_for_peer(client_node_id)
+	{
+		client_node.inner.onion_messenger.handle_onion_message(service_node_id, &msg);
+	}
+	assert!(
+		client_node.inner.onion_messenger.next_onion_message_for_peer(service_node_id).is_none(),
+		"client must not upload a static invoice before LSPS2 metadata is available"
+	);
+	assert!(
+		service_node.inner.node.get_and_clear_pending_events().is_empty(),
+		"service must not receive a static invoice before LSPS2 metadata is available"
+	);
+
 	client_node
 		.inner
 		.node
@@ -3371,7 +3431,7 @@ fn async_payment_via_lsps2_jit_channel() {
 		.into_inner()
 		.into_iter()
 		.filter_map(|e| match e {
-			Event::OnionMessageIntercepted { next_hop, message } => {
+			Event::OnionMessageIntercepted { next_hop, message, .. } => {
 				assert_eq!(next_hop, NextMessageHop::NodeId(client_node_id));
 				Some(message)
 			},
