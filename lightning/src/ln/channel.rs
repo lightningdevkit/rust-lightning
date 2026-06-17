@@ -13407,45 +13407,40 @@ where
 			)));
 		}
 
-		self.is_rbf_compatible().map_err(|msg| ChannelError::WarnAndDisconnect(msg))?;
+		self.is_rbf_compatible()
+			.map_err(|msg| ChannelError::Abort(AbortReason::RbfUnavailable(msg)))?;
 
-		let pending_splice = match &self.pending_splice {
-			Some(pending_splice) => pending_splice,
-			None => {
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Channel {} has no pending splice to RBF",
-					self.context.channel_id(),
-				)));
-			},
-		};
+		let (pending_splice, last_candidate) = self
+			.pending_splice
+			.as_ref()
+			.filter(|pending_splice| !pending_splice.negotiated_candidates.is_empty())
+			.map(|pending_splice| {
+				(
+					pending_splice,
+					pending_splice.negotiated_candidates.last().expect("checked above"),
+				)
+			})
+			.ok_or_else(|| {
+				ChannelError::Abort(AbortReason::RbfUnavailable(
+					"No pending splice available to RBF".into(),
+				))
+			})?;
 
 		if pending_splice.funding_negotiation.is_some() {
 			return Err(ChannelError::Abort(AbortReason::NegotiationInProgress));
 		}
 
 		if pending_splice.received_funding_txid.is_some() {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} counterparty already sent splice_locked, cannot RBF",
-				self.context.channel_id(),
+			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
+				"Already received splice_locked".into(),
 			)));
 		}
 
 		if pending_splice.sent_funding_txid.is_some() {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} already sent splice_locked, cannot RBF",
-				self.context.channel_id(),
+			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
+				"Already sent splice_locked".into(),
 			)));
 		}
-
-		let last_candidate = match pending_splice.negotiated_candidates.last() {
-			Some(candidate) => candidate,
-			None => {
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Channel {} has no negotiated splice candidates to RBF",
-					self.context.channel_id(),
-				)));
-			},
-		};
 
 		let prev_feerate =
 			pending_splice.last_funding_feerate_sat_per_1000_weight.unwrap_or_else(|| {
@@ -13611,7 +13606,9 @@ where
 		};
 
 		let last_candidate = pending_splice.negotiated_candidates.last().ok_or_else(|| {
-			ChannelError::WarnAndDisconnect("No negotiated splice candidates for RBF".to_owned())
+			ChannelError::Abort(AbortReason::RbfUnavailable(
+				"No pending splice available to RBF".into(),
+			))
 		})?;
 		let holder_pubkeys = last_candidate.get_holder_pubkeys().clone();
 		let counterparty_funding_pubkey = *last_candidate.counterparty_funding_pubkey();
