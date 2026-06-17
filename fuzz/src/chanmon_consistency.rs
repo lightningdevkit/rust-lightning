@@ -936,7 +936,8 @@ fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessag
 	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
 	// disconnect their counterparty if they're expecting a timely response.
 	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
-		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
+		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF")
+			|| msg.data.contains("contribution no longer valid at quiescence");
 		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
 		{
 			panic!("Unexpected disconnect case: {}", msg.data);
