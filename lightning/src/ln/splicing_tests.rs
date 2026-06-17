@@ -6654,22 +6654,11 @@ fn test_splice_rbf_no_pending_splice() {
 
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1);
-	match &msg_events[0] {
-		MessageSendEvent::HandleError { action, .. } => {
-			assert_eq!(
-				*action,
-				msgs::ErrorAction::DisconnectPeerWithWarning {
-					msg: msgs::WarningMessage {
-						channel_id,
-						data: format!("Channel {} has no pending splice to RBF", channel_id),
-					},
-				}
-			);
-		},
-		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
-	}
+	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	assert_eq!(
+		tx_abort_data(&tx_abort),
+		"Rejecting RBF attempt: No pending splice available to RBF"
+	);
 }
 
 #[test]
@@ -6767,25 +6756,8 @@ fn test_splice_rbf_after_splice_locked() {
 
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1);
-	match &msg_events[0] {
-		MessageSendEvent::HandleError { action, .. } => {
-			assert_eq!(
-				*action,
-				msgs::ErrorAction::DisconnectPeerWithWarning {
-					msg: msgs::WarningMessage {
-						channel_id,
-						data: format!(
-							"Channel {} counterparty already sent splice_locked, cannot RBF",
-							channel_id,
-						),
-					},
-				}
-			);
-		},
-		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
-	}
+	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	assert_eq!(tx_abort_data(&tx_abort), "Rejecting RBF attempt: Already received splice_locked");
 }
 
 #[test]
@@ -6968,22 +6940,11 @@ fn test_splice_rbf_zeroconf_rejected() {
 
 	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
 
-	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 1);
-	match &msg_events[0] {
-		MessageSendEvent::HandleError { action, .. } => {
-			assert_eq!(
-				*action,
-				msgs::ErrorAction::DisconnectPeerWithWarning {
-					msg: msgs::WarningMessage {
-						channel_id,
-						data: format!("Channel {} has option_zeroconf, cannot RBF", channel_id,),
-					},
-				}
-			);
-		},
-		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
-	}
+	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	assert_eq!(
+		tx_abort_data(&tx_abort),
+		format!("Rejecting RBF attempt: Channel {} has option_zeroconf, cannot RBF", channel_id)
+	);
 }
 
 #[test]
