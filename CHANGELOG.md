@@ -49,9 +49,27 @@
  * Several spurious debug assertions were fixed (#4537, #4618).
 
 ## Security
-0.1.10 fixes a sanitization issue.
+0.1.10 fixes a sanitization issue and several denial-of-service vulnerabilities.
+ * `Bolt11Invoice::recover_payee_pub_key` no longer panics if called on an
+   invoice which set an explicit public key, rather than relying on public key
+   recovery. This method is called from `payment_parameters_from_invoice` and
+   `payment_parameters_from_variable_amount_invoice` (#4717).
+ * Maliciously-crafted unpayable invoices which have overflowing feerates will
+   no longer cause an `unwrap` failure panic (#4716).
+ * `possiblyrandom` did not properly generate random data except when it was
+   explicitly configured to. By default this means LDK is vulnerable to various
+   HashDoS attacks (#4719).
+ * `OMNameResolver` will no longer panic when looking up payment instructions
+   which include unicode characters at the start of a TXT record (#4718).
  * `PrintableString` did not properly sanitize unicode format characters,
    allowing an attacker to corrupt the rendering of logs or UI (#4593, #4605).
+ * RGS data is now limited in how large of a graph it is able to cause a client
+   to store in memory. Note that RGS data is still considered a DoS vector in
+   general and you should only use semi-trusted RGS data (#4713).
+ * Counterparty-provided strings in failure messages are no longer logged in
+   full, reducing the ability of such a counterparty to spam our logs (#4714).
+ * Reading a corrupted `ChannelManager` or `ProbabilisticScorer` can no longer
+   cause us to allocate large amounts of memory (#4712).
 
 Thanks to Project Loupe for reporting most of the issues fixed in this release.
 
