@@ -1257,6 +1257,8 @@ where
 	/// This removes the intercept SCID, any outbound channel state, and associated
 	/// channel‐ID mappings for the specified `user_channel_id`, but only while no payment
 	/// has been forwarded yet and no channel has been opened on-chain.
+	/// Any held HTLCs for the pending flow are failed backwards before the local state
+	/// is removed.
 	///
 	/// Returns an error if:
 	///  - there is no channel matching `user_channel_id`, or
@@ -1292,25 +1294,27 @@ where
 
 			let jit_channel = peer_state
 				.outbound_channels_by_intercept_scid
-				.get(&intercept_scid)
+				.get_mut(&intercept_scid)
 				.ok_or_else(|| APIError::APIMisuseError {
-				err: format!(
-					"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
-					intercept_scid, user_channel_id,
-				),
-			})?;
+					err: format!(
+						"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
+						intercept_scid, user_channel_id,
+					),
+				})?;
 
-			let is_pending = matches!(
-				jit_channel.state,
-				OutboundJITChannelState::PendingInitialPayment { .. }
-					| OutboundJITChannelState::PendingChannelOpen { .. }
-			);
+			let intercepted_htlcs = match &mut jit_channel.state {
+				OutboundJITChannelState::PendingInitialPayment { payment_queue }
+				| OutboundJITChannelState::PendingChannelOpen { payment_queue, .. } => payment_queue.clear(),
+				_ => {
+					return Err(APIError::APIMisuseError {
+						err: "Cannot abandon channel open after channel creation or payment forwarding"
+							.to_string(),
+					});
+				},
+			};
 
-			if !is_pending {
-				return Err(APIError::APIMisuseError {
-					err: "Cannot abandon channel open after channel creation or payment forwarding"
-						.to_string(),
-				});
+			for htlc in intercepted_htlcs {
+				let _ = self.channel_manager.get_cm().fail_intercepted_htlc(htlc.intercept_id);
 			}
 
 			peer_state.intercept_scid_by_user_channel_id.remove(&user_channel_id);
