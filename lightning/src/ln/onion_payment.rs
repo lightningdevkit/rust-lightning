@@ -492,6 +492,22 @@ pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 	cur_height: u32, allow_skimmed_fees: bool,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
+	peel_payment_onion_inner(
+		msg,
+		node_signer,
+		logger,
+		secp_ctx,
+		cur_height,
+		allow_skimmed_fees,
+		0,
+	)
+}
+
+#[rustfmt::skip]
+fn peel_payment_onion_inner<NS: NodeSigner, L: Logger, T: secp256k1::Verification>(
+	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
+	cur_height: u32, allow_skimmed_fees: bool, accumulated_dummy_skim_msats: u64,
+) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (hop, next_packet_details_opt) =
 		decode_incoming_update_add_htlc_onion(msg, &node_signer, &logger, secp_ctx
 	).map_err(|(msg, failure_reason)| {
@@ -552,14 +568,32 @@ pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>
 				secp_ctx
 			);
 
-			peel_payment_onion(&new_update_add_htlc, node_signer, logger, secp_ctx, cur_height, allow_skimmed_fees)?
+			let accumulated_dummy_skim_msats = accumulated_dummy_skim_msats
+				.checked_add(msg.amount_msat.saturating_sub(new_update_add_htlc.amount_msat))
+				.ok_or(InboundHTLCErr {
+					msg: "Dummy hop fee accumulation overflowed",
+					reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+					err_data: vec![0; 32],
+				})?;
+
+			peel_payment_onion_inner(
+				&new_update_add_htlc,
+				node_signer,
+				logger,
+				secp_ctx,
+				cur_height,
+				allow_skimmed_fees,
+				accumulated_dummy_skim_msats,
+			)?
 		},
 		_ => {
 			let shared_secret = hop.shared_secret().secret_bytes();
+			let dummy_skimmed_msats = (accumulated_dummy_skim_msats != 0).then_some(accumulated_dummy_skim_msats);
+
 			create_recv_pending_htlc_info(
 				hop, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
 				None, allow_skimmed_fees, msg.skimmed_fee_msat,
-				None, msg.accountable.unwrap_or(false), cur_height,
+				dummy_skimmed_msats, msg.accountable.unwrap_or(false), cur_height,
 			)?
 		}
 	})
