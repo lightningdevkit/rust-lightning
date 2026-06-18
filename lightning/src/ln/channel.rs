@@ -9587,6 +9587,13 @@ where
 			self.context.signer_pending_commitment_update = true;
 			commitment_update = None;
 		}
+		if revoke_and_ack.is_some() {
+			// If signer-pending state regenerated an RAA, the monitor update for that RAA was
+			// already persisted before we set `signer_pending_revoke_and_ack`. Thus, if reconnect
+			// also marked the same RAA monitor-pending while another monitor update was in flight,
+			// the RAA we're returning here satisfies that monitor-pending resend.
+			self.context.monitor_pending_revoke_and_ack = false;
+		}
 
 		let (closing_signed, signed_closing_tx, shutdown_result) = if self.context.signer_pending_closing {
 			debug_assert!(self.context.last_sent_closing_fee.is_some());

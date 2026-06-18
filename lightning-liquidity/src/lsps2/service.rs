@@ -1257,6 +1257,8 @@ where
 	/// This removes the intercept SCID, any outbound channel state, and associated
 	/// channel‐ID mappings for the specified `user_channel_id`, but only while no payment
 	/// has been forwarded yet and no channel has been opened on-chain.
+	/// Any held HTLCs for the pending flow are failed backwards before the local state
+	/// is removed.
 	///
 	/// Returns an error if:
 	///  - there is no channel matching `user_channel_id`, or
@@ -1292,25 +1294,27 @@ where
 
 			let jit_channel = peer_state
 				.outbound_channels_by_intercept_scid
-				.get(&intercept_scid)
+				.get_mut(&intercept_scid)
 				.ok_or_else(|| APIError::APIMisuseError {
-				err: format!(
-					"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
-					intercept_scid, user_channel_id,
-				),
-			})?;
+					err: format!(
+						"Failed to map intercept_scid {} for user_channel_id {} to a channel.",
+						intercept_scid, user_channel_id,
+					),
+				})?;
 
-			let is_pending = matches!(
-				jit_channel.state,
-				OutboundJITChannelState::PendingInitialPayment { .. }
-					| OutboundJITChannelState::PendingChannelOpen { .. }
-			);
+			let intercepted_htlcs = match &mut jit_channel.state {
+				OutboundJITChannelState::PendingInitialPayment { payment_queue }
+				| OutboundJITChannelState::PendingChannelOpen { payment_queue, .. } => payment_queue.clear(),
+				_ => {
+					return Err(APIError::APIMisuseError {
+						err: "Cannot abandon channel open after channel creation or payment forwarding"
+							.to_string(),
+					});
+				},
+			};
 
-			if !is_pending {
-				return Err(APIError::APIMisuseError {
-					err: "Cannot abandon channel open after channel creation or payment forwarding"
-						.to_string(),
-				});
+			for htlc in intercepted_htlcs {
+				let _ = self.channel_manager.get_cm().fail_intercepted_htlc(htlc.intercept_id);
 			}
 
 			peer_state.intercept_scid_by_user_channel_id.remove(&user_channel_id);
@@ -1784,13 +1788,21 @@ where
 		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
 		// introduce some batching to upper-bound the number of requests inflight at any given
 		// time.
-		let mut did_persist = false;
 
 		if self.persistence_in_flight.fetch_add(1, Ordering::AcqRel) > 0 {
 			// If we're not the first event processor to get here, just return early, the increment
 			// we just did will be treated as "go around again" at the end.
-			return Ok(did_persist);
+			return Ok(false);
 		}
+
+		let res = self.do_persist().await;
+		debug_assert!(res.is_err() || self.persistence_in_flight.load(Ordering::Acquire) == 0);
+		self.persistence_in_flight.store(0, Ordering::Release);
+		res
+	}
+
+	async fn do_persist(&self) -> Result<bool, lightning::io::Error> {
+		let mut did_persist = false;
 
 		loop {
 			let mut need_remove = Vec::new();
@@ -1853,6 +1865,7 @@ where
 					did_persist = true;
 				} else {
 					self.persist_peer_state(counterparty_node_id).await?;
+					did_persist = true;
 				}
 			}
 
@@ -2353,6 +2366,8 @@ mod tests {
 
 	use bitcoin::{absolute::LockTime, transaction::Version};
 	use core::str::FromStr;
+	use lightning::io::Cursor;
+	use lightning::util::ser::{Readable, Writeable};
 
 	const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
 
@@ -2758,6 +2773,52 @@ mod tests {
 				matches!(action, Some(HTLCInterceptedAction::ForwardHTLC(channel_id)) if channel_id == ChannelId([200; 32]))
 			);
 		}
+	}
+
+	#[test]
+	fn replayed_intercepted_htlc_after_persist_is_idempotent() {
+		let payment_size_msat = Some(500_000_000);
+		let opening_fee_params = LSPS2OpeningFeeParams {
+			min_fee_msat: 10_000_000,
+			proportional: 10_000,
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+			min_lifetime: 4032,
+			max_client_to_self_delay: 2016,
+			min_payment_size_msat: 10_000_000,
+			max_payment_size_msat: 1_000_000_000,
+			promise: "ignore".to_string(),
+		};
+		let intercept_scid = 42;
+		let user_channel_id = 43;
+		let htlc = InterceptedHTLC {
+			intercept_id: InterceptId([1; 32]),
+			expected_outbound_amount_msat: 500_000_000,
+			payment_hash: PaymentHash([2; 32]),
+		};
+
+		let mut jit_channel =
+			OutboundJITChannel::new(payment_size_msat, opening_fee_params, user_channel_id, false);
+		assert!(matches!(
+			jit_channel.htlc_intercepted(htlc).unwrap(),
+			Some(HTLCInterceptedAction::OpenChannel(_))
+		));
+
+		let mut peer_state = PeerState::new();
+		peer_state.intercept_scid_by_user_channel_id.insert(user_channel_id, intercept_scid);
+		peer_state.insert_outbound_channel(intercept_scid, jit_channel);
+
+		let encoded_peer_state = peer_state.encode();
+		let mut decoded_peer_state = PeerState::read(&mut Cursor::new(encoded_peer_state)).unwrap();
+		let decoded_jit_channel = decoded_peer_state
+			.outbound_channels_by_intercept_scid
+			.get_mut(&intercept_scid)
+			.unwrap();
+
+		assert!(decoded_jit_channel.htlc_intercepted(htlc).unwrap().is_none());
+
+		let ForwardPaymentAction(_, fee_payment) =
+			decoded_jit_channel.channel_ready(ChannelId([3; 32])).unwrap();
+		assert_eq!(fee_payment.htlcs, vec![htlc]);
 	}
 
 	#[test]
