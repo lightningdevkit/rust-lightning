@@ -1,0 +1,18 @@
+# API Updates
+
+ * `ChannelDetails` now has a `splice_details` field
+   (`Option<SpliceDetails>`) reporting any pending splice attempts on a channel.
+   Each splice or RBF round is reported as a `SpliceCandidateDetails` in
+   `SpliceDetails::candidates`, with the stage it has reached given by
+   `SpliceCandidateStatus` (spanning a contribution committed via
+   `ChannelManager::funding_contributed` but not yet negotiating, the in-flight
+   negotiation, and a negotiated candidate awaiting confirmation). `SpliceDetails`
+   also reports the confirmed candidate's progress (`ConfirmedSpliceCandidate`)
+   and the txid of any `splice_locked` received from the counterparty.
+
+# Backwards Compatibility
+
+ * A pending splice negotiated before upgrading from a prior LDK version (e.g.
+   0.2) cannot be RBF'd, as older versions persisted neither its feerate nor our
+   contribution. Splicing such a channel instead queues a new splice that begins
+   once the inherited splice locks.
