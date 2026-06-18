@@ -1301,7 +1301,7 @@ fn test_notify_without_webhooks_does_nothing() {
 }
 
 #[test]
-fn test_notifications_and_peer_connected_resets_cooldown() {
+fn test_notifications_and_peer_connected_reset_is_throttled() {
 	let mock_time_provider = Arc::new(MockTimeProvider::new(1000));
 	let time_provider = Arc::<MockTimeProvider>::clone(&mock_time_provider);
 	let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -1379,7 +1379,7 @@ fn test_notifications_and_peer_connected_resets_cooldown() {
 		"Should not emit event due to cooldown"
 	);
 
-	// 5. After peer_connected, notification should be sent again immediately
+	// 5. The first peer_connected reset should allow another notification immediately.
 	let init_msg = Init {
 		features: lightning_types::features::InitFeatures::empty(),
 		remote_network_address: None,
@@ -1396,6 +1396,31 @@ fn test_notifications_and_peer_connected_resets_cooldown() {
 			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
 		},
 		_ => panic!("Expected SendWebhookNotification event after peer_connected"),
+	}
+
+	// 6. A rapid peer lifecycle update should not clear the cooldown again.
+	service_node.liquidity_manager.peer_disconnected(client_node_id);
+	let result = service_handler.notify_payment_incoming(client_node_id);
+	let error = result.unwrap_err();
+	assert_eq!(error, LSPS5ProtocolError::SlowDownError);
+	assert!(
+		service_node.liquidity_manager.next_event().is_none(),
+		"Should not emit event after a rapid lifecycle reset"
+	);
+
+	// 7. Once the reset throttle has elapsed, peer_connected can reset the cooldown again.
+	mock_time_provider.advance_time(11);
+	service_node.liquidity_manager.peer_connected(client_node_id, &init_msg, false).unwrap();
+	let _ = service_handler.notify_payment_incoming(client_node_id);
+	let event = service_node.liquidity_manager.next_event().unwrap();
+	match event {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification {
+			notification,
+			..
+		}) => {
+			assert_eq!(notification.method, WebhookNotificationMethod::LSPS5PaymentIncoming);
+		},
+		_ => panic!("Expected SendWebhookNotification event after reset throttle elapsed"),
 	}
 }
 
