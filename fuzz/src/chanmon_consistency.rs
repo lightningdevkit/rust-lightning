@@ -227,6 +227,10 @@ impl ChainState {
 		self.utxos.contains(outpoint)
 	}
 
+	fn is_confirmed_txid(&self, txid: &Txid) -> bool {
+		self.confirmed_txids.contains(txid)
+	}
+
 	fn confirmed_output(&self, outpoint: &BitcoinOutPoint) -> Option<&TxOut> {
 		if !self.confirmed_txids.contains(&outpoint.txid) {
 			return None;
@@ -2852,7 +2856,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn process_msg_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, event: MessageSendEvent,
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
-			out: &Out,
+			chain_state: &ChainState, out: &Out,
 		) -> Option<MessageSendEvent> {
 			match event {
 				MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
@@ -2944,6 +2948,11 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				},
 				MessageSendEvent::SendSpliceLocked { ref node_id, ref msg } => {
 					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "splice_locked");
+					assert!(
+						chain_state.is_confirmed_txid(&msg.splice_txid),
+						"splice_locked referenced unconfirmed txid {}",
+						msg.splice_txid
+					);
 					nodes[dest_idx].handle_splice_locked(source_node_id, msg);
 					None
 				},
@@ -2975,6 +2984,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 
 		let nodes = &self.nodes;
+		let chain_state = &self.chain_state;
 		let out = &self.out;
 		let queues = &mut self.queues;
 		let mut events = queues.take_for_node(node_idx);
@@ -2995,6 +3005,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				corrupt_forward,
 				limit_events,
 				nodes,
+				chain_state,
 				out,
 			);
 			if limit_events != ProcessMessages::AllMessages {
@@ -3051,7 +3062,15 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				events::Event::PaymentPathSuccessful { .. } => {},
 				events::Event::PaymentPathFailed { .. } => {},
 				events::Event::PaymentForwarded { .. } if node_idx == 1 => {},
-				events::Event::ChannelReady { .. } => {},
+				events::Event::ChannelReady { funding_txo, .. } => {
+					if let Some(funding_txo) = funding_txo {
+						assert!(
+							chain_state.is_confirmed_txid(&funding_txo.txid),
+							"ChannelReady referenced unconfirmed funding txid {}",
+							funding_txo.txid
+						);
+					}
+				},
 				events::Event::HTLCHandlingFailed { .. } => {},
 				events::Event::FundingTransactionReadyForSigning {
 					channel_id,
