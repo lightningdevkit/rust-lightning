@@ -234,7 +234,7 @@ impl Readable for LSPSRequestId {
 }
 
 /// An object representing datetimes as described in bLIP-50 / LSPS0.
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, Deserialize, Serialize)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct LSPSDateTime(pub chrono::DateTime<chrono::Utc>);
 
@@ -275,8 +275,23 @@ impl LSPSDateTime {
 impl FromStr for LSPSDateTime {
 	type Err = ();
 	fn from_str(s: &str) -> Result<Self, Self::Err> {
-		let datetime = chrono::DateTime::parse_from_rfc3339(s).map_err(|_| ())?;
-		Ok(Self(datetime.into()))
+		let datetime: chrono::DateTime<chrono::Utc> =
+			chrono::DateTime::parse_from_rfc3339(s).map_err(|_| ())?.into();
+		// Reject pre-epoch datetimes here so peer-controlled `valid_until` /
+		// `expires_at` fields can never produce an `LSPSDateTime` with a negative
+		// UNIX timestamp, which would otherwise panic the `i64 -> u64` cast in
+		// `is_past`.
+		if datetime.timestamp() < 0 {
+			return Err(());
+		}
+		Ok(Self(datetime))
+	}
+}
+
+impl<'de> Deserialize<'de> for LSPSDateTime {
+	fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+		let s = String::deserialize(deserializer)?;
+		Self::from_str(&s).map_err(|()| de::Error::custom("invalid LSPSDateTime"))
 	}
 }
 
@@ -995,5 +1010,16 @@ mod tests {
 
 		assert_eq!(later.duration_since(&earlier), Duration::from_secs(60));
 		assert_eq!(earlier.duration_since(&later), Duration::ZERO);
+	}
+
+	#[test]
+	fn is_past_handles_pre_epoch_datetime() {
+		// A peer-controlled RFC3339 datetime before 1970 must be rejected at parse
+		// time, so it can never reach `is_past` (or any other consumer) and panic.
+		assert!(LSPSDateTime::from_str("1900-01-01T00:00:00Z").is_err());
+
+		// JSON deserialization (the path peer messages take) must reject it too.
+		let json = "\"1900-01-01T00:00:00Z\"";
+		assert!(serde_json::from_str::<LSPSDateTime>(json).is_err());
 	}
 }
