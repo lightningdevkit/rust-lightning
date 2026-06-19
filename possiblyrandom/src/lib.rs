@@ -20,19 +20,13 @@
 
 #![no_std]
 
-#[cfg(any(
-	feature = "getrandom",
-	not(any(target_os = "unknown", target_os = "none"))
-))]
+#[cfg(any(feature = "getrandom", not(any(target_os = "unknown", target_os = "none"))))]
 extern crate getrandom;
 
 /// Possibly fills `dest` with random data. May fill it with zeros.
 #[inline]
 pub fn getpossiblyrandom(dest: &mut [u8]) {
 	dest.fill(0);
-	#[cfg(any(
-		feature = "getrandom",
-		not(any(target_os = "unknown", target_os = "none"))
-	))]
+	#[cfg(any(feature = "getrandom", not(any(target_os = "unknown", target_os = "none"))))]
 	let _ = getrandom::getrandom(dest);
 }
