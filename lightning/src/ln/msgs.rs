@@ -260,6 +260,12 @@ pub struct ChannelParameters {
 	pub dust_limit_satoshis: u64,
 	/// The minimum value unencumbered by HTLCs for the non-channel-initiator to keep in the
 	/// channel.
+	///
+	/// For V2 channels, this is computed from the initiator's funding contribution known when
+	/// [`Event::OpenChannelRequest`] is generated. The finally enforced reserve may be higher if
+	/// the acceptor later contributes additional funds.
+	///
+	/// [`Event::OpenChannelRequest`]: crate::events::Event::OpenChannelRequest
 	pub channel_reserve_satoshis: u64,
 	/// The maximum inbound HTLC value in flight towards channel initiator, in milli-satoshi
 	pub max_htlc_value_in_flight_msat: u64,
