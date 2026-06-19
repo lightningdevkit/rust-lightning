@@ -15,9 +15,9 @@ use crate::chain::transaction::OutPoint;
 use crate::chain::{self, ChannelMonitorUpdateStatus};
 use crate::events::{ClosureReason, Event, FundingInfo};
 use crate::ln::channel::{
-	get_holder_selected_channel_reserve_satoshis, ChannelError, InboundV1Channel,
-	OutboundV1Channel, COINBASE_MATURITY, MIN_THEIR_CHAN_RESERVE_SATOSHIS,
-	UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
+	get_holder_selected_channel_reserve_satoshis, get_v2_channel_reserve_satoshis, ChannelError,
+	InboundV1Channel, OutboundV1Channel, COINBASE_MATURITY, MIN_CHAN_DUST_LIMIT_SATOSHIS,
+	MIN_THEIR_CHAN_RESERVE_SATOSHIS, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
 use crate::ln::channelmanager::{
 	self, TrustedChannelFeatures, BREAKDOWN_TIMEOUT, MAX_UNFUNDED_CHANNEL_PEERS,
@@ -233,13 +233,69 @@ fn do_test_manual_inbound_accept_with_override(
 	nodes[2].node.handle_open_channel(node_a, &open_channel_msg);
 	let events = nodes[2].node.get_and_clear_pending_events();
 	match events[0] {
-		Event::OpenChannelRequest { temporary_channel_id, .. } => nodes[2]
-			.node
-			.accept_inbound_channel(&temporary_channel_id, &node_a, 23, config_overrides)
-			.unwrap(),
+		Event::OpenChannelRequest { temporary_channel_id, ref params, .. } => {
+			assert_eq!(params.channel_reserve_satoshis, open_channel_msg.channel_reserve_satoshis);
+			nodes[2]
+				.node
+				.accept_inbound_channel(&temporary_channel_id, &node_a, 23, config_overrides)
+				.unwrap()
+		},
 		_ => panic!("Unexpected event"),
 	}
 	get_event_msg!(nodes[2], MessageSendEvent::SendAcceptChannel, node_a)
+}
+
+#[test]
+fn test_open_channel_request_exposes_v2_channel_reserve() {
+	let mut dual_fund_cfg = test_default_channel_config();
+	dual_fund_cfg.enable_dual_funded_channels = true;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(dual_fund_cfg.clone()), Some(dual_fund_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a = nodes[0].node.get_our_node_id();
+	let node_b = nodes[1].node.get_our_node_id();
+	nodes[0].node.create_channel(node_b, 100_000, 0, 42, None, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
+	let funding_feerate_sat_per_1000_weight =
+		open_channel.common_fields.commitment_feerate_sat_per_1000_weight;
+	let second_per_commitment_point = open_channel.common_fields.first_per_commitment_point;
+	let mut open_channel_v2 = msgs::OpenChannelV2 {
+		common_fields: open_channel.common_fields,
+		funding_feerate_sat_per_1000_weight,
+		locktime: 0,
+		second_per_commitment_point,
+		require_confirmed_inputs: None,
+		disable_channel_reserve: None,
+	};
+
+	nodes[1].node.handle_open_channel_v2(node_a, &open_channel_v2);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { ref params, .. } => {
+			assert_eq!(
+				params.channel_reserve_satoshis,
+				get_v2_channel_reserve_satoshis(100_000, MIN_CHAN_DUST_LIMIT_SATOSHIS, false)
+					.unwrap()
+			);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	open_channel_v2.common_fields.temporary_channel_id =
+		ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
+	open_channel_v2.disable_channel_reserve = Some(());
+	nodes[1].node.handle_open_channel_v2(node_a, &open_channel_v2);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	match events[0] {
+		Event::OpenChannelRequest { ref params, .. } => {
+			assert_eq!(params.channel_reserve_satoshis, 0);
+		},
+		_ => panic!("Unexpected event"),
+	}
 }
 
 #[test]

@@ -1,0 +1,9 @@
+# API Updates
+
+ * `Event::OpenChannelRequest::params` now exposes the channel reserve in
+   `msgs::ChannelParameters::channel_reserve_satoshis`. For V1 channels this is
+   the reserve provided in `open_channel`; for V2 channels this is derived from
+   the V2 reserve rules and `disable_channel_reserve`.
+   `msgs::CommonOpenChannelFields::channel_parameters` is now crate-internal
+   because common open-channel fields alone do not contain enough information to
+   construct the full `ChannelParameters`.

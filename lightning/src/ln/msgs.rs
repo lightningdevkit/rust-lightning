@@ -238,9 +238,10 @@ pub struct CommonOpenChannelFields {
 
 impl CommonOpenChannelFields {
 	/// The [`ChannelParameters`] for this channel.
-	pub fn channel_parameters(&self) -> ChannelParameters {
+	pub(crate) fn channel_parameters(&self, channel_reserve_satoshis: u64) -> ChannelParameters {
 		ChannelParameters {
 			dust_limit_satoshis: self.dust_limit_satoshis,
+			channel_reserve_satoshis,
 			max_htlc_value_in_flight_msat: self.max_htlc_value_in_flight_msat,
 			htlc_minimum_msat: self.htlc_minimum_msat,
 			commitment_feerate_sat_per_1000_weight: self.commitment_feerate_sat_per_1000_weight,
@@ -257,6 +258,9 @@ pub struct ChannelParameters {
 	/// The threshold below which outputs on transactions broadcast by the channel initiator will be
 	/// omitted.
 	pub dust_limit_satoshis: u64,
+	/// The minimum value unencumbered by HTLCs for the non-channel-initiator to keep in the
+	/// channel.
+	pub channel_reserve_satoshis: u64,
 	/// The maximum inbound HTLC value in flight towards channel initiator, in milli-satoshi
 	pub max_htlc_value_in_flight_msat: u64,
 	/// The minimum HTLC size for HTLCs towards the channel initiator, in milli-satoshi
