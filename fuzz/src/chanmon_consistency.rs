@@ -2146,8 +2146,10 @@ impl PaymentTracker {
 	// accounting.
 	fn has_unfinished_claims(&self) -> bool {
 		self.records_by_id.values().any(|record| {
+			let still_needs_receiver_event =
+				!record.receiver_claimed && !record.all_paths_finished();
 			record.claim_funds_called
-				&& (!record.receiver_claimed
+				&& (still_needs_receiver_event
 					|| (record.sender_outcome.is_none() && !record.all_paths_blocked()))
 		})
 	}
@@ -2207,14 +2209,12 @@ impl PaymentTracker {
 		}
 	}
 
-	// Blocks pending paths through closing channels: once cleanup ends they are
-	// unresolvable. The close invariant separately checks that each tracked
-	// close was expected.
+	// Blocks tracked paths through closing channels before final accounting.
+	// Pending payments use this to stop waiting for routes that can no longer
+	// resolve normally. Claimed payments use the same marker to allow a missing
+	// PaymentClaimed only when every route path became unresolvable.
 	fn block_unresolvable_closed_paths(&mut self, close_tracker: &ChannelCloseTracker) {
 		for record in self.records_by_id.values_mut() {
-			if record.status != PaymentStatus::Pending {
-				continue;
-			}
 			for path_idx in 0..record.paths.len() {
 				let path_finished = record.blocked_paths.contains(&path_idx)
 					|| record.failed_paths.contains(&path_idx);
@@ -2226,6 +2226,26 @@ impl PaymentTracker {
 				}
 				record.blocked_paths.insert(path_idx);
 			}
+		}
+	}
+
+	// Stops final cleanup from waiting on send attempts that were accepted into
+	// outbound payment tracking but never committed an HTLC to any live channel.
+	// There is no peer or on-chain HTLC left for the harness to drive, so these
+	// do not belong in the force-close settlement invariant.
+	fn clear_uncommitted_pending_sends(&mut self, nodes: &[HarnessNode<'_>; 3]) {
+		for record in self.records_by_id.values_mut() {
+			if record.status != PaymentStatus::Pending
+				|| record.sender_outcome.is_some()
+				|| record.receiver_claimed
+				|| record.claim_funds_called
+				|| Self::has_pending_outbound_htlc(
+					&nodes[record.source_idx].node,
+					record.payment_hash,
+				) {
+				continue;
+			}
+			record.status = PaymentStatus::Resolved;
 		}
 	}
 
@@ -2283,24 +2303,31 @@ impl PaymentTracker {
 		}
 	}
 
-	// Asserts claim_funds calls reached valid outcomes: the receiver saw
-	// PaymentClaimed, and the sender either learned success or failed only
-	// after at least one path was blocked. For MPP, one blocked path is enough
-	// to make the whole payment fail even when the remaining paths fail back
-	// through normal path-failure events.
+	// Asserts claim_funds calls reached valid outcomes: either the receiver saw
+	// PaymentClaimed, or every route path became terminal before the receiver
+	// event was needed. "Terminal" includes explicit PaymentPathFailed events as
+	// well as blocked paths because an on-chain timeout can fail dust or expired
+	// HTLCs back without a receiver-side PaymentClaimed.
+	//
+	// Sender-side PaymentFailed is accepted after at least one blocked path, or
+	// after every path has failed or blocked. For MPP, one blocked path is
+	// enough to make the whole payment fail even when the remaining paths have
+	// not yet failed back through normal path-failure events.
 	fn assert_claims_resolved(&self) {
 		for record in self.records_by_id.values().filter(|record| record.claim_funds_called) {
+			let all_paths_blocked = record.all_paths_blocked();
+			let all_paths_finished = record.all_paths_finished();
 			assert!(
-				record.receiver_claimed,
+				record.receiver_claimed || all_paths_finished,
 				"Payment {:?} was claimed with claim_funds but receiver never got PaymentClaimed",
 				record.payment_hash,
 			);
-			let all_paths_blocked = record.all_paths_blocked();
 			match record.sender_outcome {
 				Some(SenderOutcome::Sent) => {},
 				Some(SenderOutcome::Failed) => assert!(
-					!record.blocked_paths.is_empty(),
-					"claimed payment {:?} failed sender-side without any path blocked: \
+					!record.blocked_paths.is_empty() || all_paths_finished,
+					"claimed payment {:?} failed sender-side before any path was blocked \
+					 or all paths had finished: \
 					 blocked={:?}, failed={:?}, paths={:?}",
 					record.payment_hash,
 					record.blocked_paths,
@@ -2342,11 +2369,14 @@ impl PaymentTracker {
 		return false;
 	}
 
-	// Detects whether a payment hash still has committed outbound HTLCs, to
-	// keep exhausted-retry payments tracked until those HTLCs resolve.
+	// Detects whether a payment hash still has outbound HTLCs that left the
+	// holding cell, to keep exhausted-retry payments tracked until those HTLCs
+	// resolve.
 	fn has_pending_outbound_htlc(source: &ChanMan, payment_hash: PaymentHash) -> bool {
 		source.list_channels().iter().any(|chan| {
-			chan.pending_outbound_htlcs.iter().any(|htlc| htlc.payment_hash == payment_hash)
+			chan.pending_outbound_htlcs
+				.iter()
+				.any(|htlc| htlc.payment_hash == payment_hash && htlc.htlc_id.is_some())
 		})
 	}
 
@@ -3835,6 +3865,13 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 							Ok(()) => {},
 							Err(APIError::APIMisuseError { ref err })
 								if err.contains("does not have a pending splice negotiation") => {},
+							Err(APIError::ChannelUnavailable { .. })
+								if close_tracker.is_closed_or_closing(&channel_id) =>
+							{
+								// The signing event was queued while the channel
+								// existed, but a close can be processed before the
+								// application handles the event.
+							},
 							Err(e) => panic!("{e:?}"),
 						}
 					} else {
@@ -3851,6 +3888,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 							{
 								// A queued signing event can be invalidated by a later `tx_abort`
 								// before the application handles it.
+							},
+							Err(APIError::ChannelUnavailable { .. })
+								if close_tracker.is_closed_or_closing(&channel_id) =>
+							{
+								// A close can make a queued signing event stale before
+								// the application has a chance to provide signatures.
 							},
 							Err(e) => panic!("{e:?}"),
 						}
@@ -4078,6 +4121,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 
 		self.payments.block_unresolvable_closed_paths(&self.close_tracker);
+		self.payments.clear_uncommitted_pending_sends(&self.nodes);
 		self.payments.assert_no_pending("after settling all state");
 		self.payments.assert_claims_resolved();
 
@@ -4136,6 +4180,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 
 		self.process_all_events();
+		// Sendability probes can be accepted into a holding cell behind monitor
+		// progress. If they never committed an HTLC, they do not need cleanup
+		// accounting any more than the main fuzz-driven sends above.
+		self.payments.clear_uncommitted_pending_sends(&self.nodes);
 		self.payments.assert_no_pending("after settle probes");
 
 		self.nodes[0].record_last_htlc_clear_fee();
