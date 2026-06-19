@@ -1350,6 +1350,7 @@ impl<'a> HarnessNode<'a> {
 					);
 				}
 			},
+			Err(APIError::ChannelUnavailable { .. }) => {},
 			Err(e) => {
 				assert!(
 					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
@@ -1369,8 +1370,12 @@ impl<'a> HarnessNode<'a> {
 			.list_channels()
 			.iter()
 			.find(|chan| chan.channel_id == *channel_id)
-			.map(|chan| chan.outbound_capacity_msat)
-			.unwrap();
+			.map(|chan| chan.outbound_capacity_msat);
+		let Some(outbound_capacity_msat) = outbound_capacity_msat else {
+			// The fuzzer can target a channel after a close removed it from
+			// list_channels; treat that as a stale splice command.
+			return;
+		};
 		if outbound_capacity_msat < 20_000_000 {
 			return;
 		}
@@ -1393,6 +1398,7 @@ impl<'a> HarnessNode<'a> {
 					);
 				}
 			},
+			Err(APIError::ChannelUnavailable { .. }) => {},
 			Err(e) => {
 				assert!(
 					matches!(e, APIError::APIMisuseError { ref err } if err.contains("splice")),
@@ -2279,7 +2285,9 @@ impl PaymentTracker {
 
 	// Asserts claim_funds calls reached valid outcomes: the receiver saw
 	// PaymentClaimed, and the sender either learned success or failed only
-	// after every path was blocked.
+	// after at least one path was blocked. For MPP, one blocked path is enough
+	// to make the whole payment fail even when the remaining paths fail back
+	// through normal path-failure events.
 	fn assert_claims_resolved(&self) {
 		for record in self.records_by_id.values().filter(|record| record.claim_funds_called) {
 			assert!(
@@ -2291,10 +2299,13 @@ impl PaymentTracker {
 			match record.sender_outcome {
 				Some(SenderOutcome::Sent) => {},
 				Some(SenderOutcome::Failed) => assert!(
-					all_paths_blocked,
-					"claimed payment {:?} failed sender-side without every path blocked: \
+					!record.blocked_paths.is_empty(),
+					"claimed payment {:?} failed sender-side without any path blocked: \
 					 blocked={:?}, failed={:?}, paths={:?}",
-					record.payment_hash, record.blocked_paths, record.failed_paths, record.paths,
+					record.payment_hash,
+					record.blocked_paths,
+					record.failed_paths,
+					record.paths,
 				),
 				None => assert!(
 					all_paths_blocked,
