@@ -3139,7 +3139,9 @@ fn held_htlc_timeout() {
 		MIN_CLTV_EXPIRY_DELTA as u32
 			+ TEST_FINAL_CLTV
 			+ HTLC_FAIL_BACK_BUFFER
-			+ LATENCY_GRACE_PERIOD_BLOCKS,
+			+ LATENCY_GRACE_PERIOD_BLOCKS
+			// Each dummy hop adds a 40-block CLTV delta before the held HTLC can time out.
+			+ DEFAULT_PAYMENT_DUMMY_HOPS as u32 * 40,
 	);
 	sender_lsp.node.process_pending_htlc_forwards();
 

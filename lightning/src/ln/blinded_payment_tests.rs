@@ -258,12 +258,18 @@ fn one_hop_blinded_path_with_dummy_hops() {
 	let ev = remove_first_msg_event_to_node(&nodes[1].node.get_our_node_id(), &mut events);
 
 	let path = &[&nodes[1]];
-	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, ev)
+	// Conservative aggregation of the two dummy-hop fees overpays the recipient by 1 msat.
+	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat + 1, payment_hash, ev)
 		.with_dummy_tlvs(&dummy_tlvs)
 		.with_payment_secret(payment_secret);
 
 	do_pass_along_path(args);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	// The sender reports the same 1-msat aggregation overpay as part of its total fee.
+	let expected_route = &[&[&nodes[1]][..]];
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, payment_preimage)
+			.with_expected_extra_total_fees_msat(1),
+	);
 }
 
 #[test]

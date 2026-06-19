@@ -454,6 +454,23 @@ impl ForwardTlvsInfo for TrampolineForwardTlvs {
 	}
 }
 
+/// Default relay parameters used for dummy hops when there is no nearby
+/// forwarding hop to mirror.
+///
+/// These values were chosen because they correspond to the most commonly
+/// observed forwarding parameters on the public Lightning Network. They also
+/// act as upper bounds when deriving relay parameters from nearby forwarding
+/// data, ensuring dummy hops remain representative of typical network routing
+/// behavior.
+const DEFAULT_DUMMY_PAYMENT_RELAY: PaymentRelay =
+	PaymentRelay { cltv_expiry_delta: 40, fee_proportional_millionths: 1, fee_base_msat: 1_000 };
+
+/// Default payment constraints used for dummy hops.
+///
+/// These values impose no additional CLTV or HTLC-minimum restrictions.
+const DEFAULT_DUMMY_PAYMENT_CONSTRAINTS: PaymentConstraints =
+	PaymentConstraints { max_cltv_expiry: u32::MAX, htlc_minimum_msat: 0 };
+
 /// TLVs carried by a dummy hop within a blinded payment path.
 ///
 /// Dummy hops do not correspond to real forwarding decisions, but are processed
@@ -468,20 +485,54 @@ impl ForwardTlvsInfo for TrampolineForwardTlvs {
 pub struct DummyTlvs {
 	/// Relay requirements (fees and CLTV delta) that must be satisfied when
 	/// processing this dummy hop.
-	pub payment_relay: PaymentRelay,
+	pub(crate) payment_relay: PaymentRelay,
 	/// Constraints that apply to the payment when relaying over this dummy hop.
-	pub payment_constraints: PaymentConstraints,
+	pub(crate) payment_constraints: PaymentConstraints,
+}
+
+impl DummyTlvs {
+	/// Constructs a dummy-hop TLV set from explicit relay requirements and
+	/// payment constraints.
+	///
+	/// This is primarily intended for callers that need full control over the
+	/// relay parameters encoded into a dummy hop.
+	pub fn new(payment_relay: PaymentRelay, payment_constraints: PaymentConstraints) -> Self {
+		Self { payment_relay, payment_constraints }
+	}
+
+	/// Constructs dummy-hop TLVs by deriving relay parameters from a nearby
+	/// forwarding hop.
+	///
+	/// Fee and CLTV values are capped to the default dummy-hop relay policy so
+	/// that the resulting parameters remain representative of common network
+	/// routing behavior while avoiding unusually large relay requirements.
+	pub fn from_forward_tlvs(forward_tlvs: &ForwardTlvs) -> Self {
+		let forward_payment_relay = forward_tlvs.payment_relay;
+
+		let dummy_payment_relay = PaymentRelay {
+			cltv_expiry_delta: core::cmp::min(
+				forward_payment_relay.cltv_expiry_delta,
+				DEFAULT_DUMMY_PAYMENT_RELAY.cltv_expiry_delta,
+			),
+			fee_proportional_millionths: core::cmp::min(
+				forward_payment_relay.fee_proportional_millionths,
+				DEFAULT_DUMMY_PAYMENT_RELAY.fee_proportional_millionths,
+			),
+			fee_base_msat: core::cmp::min(
+				forward_payment_relay.fee_base_msat,
+				DEFAULT_DUMMY_PAYMENT_RELAY.fee_base_msat,
+			),
+		};
+
+		Self::new(dummy_payment_relay, DEFAULT_DUMMY_PAYMENT_CONSTRAINTS)
+	}
 }
 
 impl Default for DummyTlvs {
+	/// Returns a dummy-hop TLV set using the default relay policy and payment
+	/// constraints.
 	fn default() -> Self {
-		let payment_relay =
-			PaymentRelay { cltv_expiry_delta: 0, fee_proportional_millionths: 0, fee_base_msat: 0 };
-
-		let payment_constraints =
-			PaymentConstraints { max_cltv_expiry: u32::MAX, htlc_minimum_msat: 0 };
-
-		Self { payment_relay, payment_constraints }
+		Self::new(DEFAULT_DUMMY_PAYMENT_RELAY, DEFAULT_DUMMY_PAYMENT_CONSTRAINTS)
 	}
 }
 
@@ -1095,6 +1146,10 @@ pub(super) fn compute_payinfo<F: ForwardTlvsInfo>(
 		)
 		.ok_or(())?; // If underflow occurs, we cannot send to this hop without exceeding their max
 	}
+	// `payee_htlc_maximum_msat` limits the final payment plus all dummy-hop fees. For example, a
+	// 100,000 msat channel maximum and a 1,000 msat dummy-hop fee allow a 99,000 msat final payment.
+	// Apply the channel maximum here; the loop below subtracts each dummy-hop fee from it.
+	htlc_maximum_msat = core::cmp::min(payee_htlc_maximum_msat, htlc_maximum_msat);
 	for dummy_tlvs in dummy_tlvs.iter() {
 		cltv_expiry_delta =
 			cltv_expiry_delta.checked_add(dummy_tlvs.payment_relay.cltv_expiry_delta).ok_or(())?;
@@ -1104,10 +1159,14 @@ pub(super) fn compute_payinfo<F: ForwardTlvsInfo>(
 			&dummy_tlvs.payment_relay,
 		)
 		.unwrap_or(1); // If underflow occurs, we definitely reached this node's min
+
+		// Track the amount left after this dummy hop deducts its fee. After all dummy hops, this is
+		// the largest final amount whose inbound HTLC does not exceed the payee's channel maximum.
+		htlc_maximum_msat =
+			amt_to_forward_msat(htlc_maximum_msat, &dummy_tlvs.payment_relay).ok_or(())?;
 	}
 	htlc_minimum_msat =
 		core::cmp::max(payee_tlvs.payment_constraints.htlc_minimum_msat, htlc_minimum_msat);
-	htlc_maximum_msat = core::cmp::min(payee_htlc_maximum_msat, htlc_maximum_msat);
 
 	if htlc_maximum_msat < htlc_minimum_msat {
 		return Err(());
