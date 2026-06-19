@@ -337,11 +337,22 @@ where
 					let mut filtered_history =
 						script_history.iter().filter(|h| h.tx_hash == **txid);
 					if let Some(history) = filtered_history.next() {
+						if history.height <= 0 {
+							// Skip if it's a an unconfirmed entry.
+							continue;
+						}
 						let prob_conf_height = history.height as u32;
 						let confirmed_tx = self.get_confirmed_tx(tx, prob_conf_height)?;
 						confirmed_txs.push(confirmed_tx);
 					}
-					debug_assert!(filtered_history.next().is_none());
+					if filtered_history.next().is_some() {
+						log_error!(
+							self.logger,
+							"Failed due to server returning multiple history entries for Tx {}.",
+							txid
+						);
+						return Err(InternalError::Failed);
+					}
 				}
 
 				for (watched_output, script_history) in
@@ -349,6 +360,7 @@ where
 				{
 					for possible_output_spend in script_history {
 						if possible_output_spend.height <= 0 {
+							// Skip if it's a an unconfirmed entry.
 							continue;
 						}
 

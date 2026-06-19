@@ -1800,14 +1800,19 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 				// Handled above
 			},
 			wire::Message::Error(msg) => {
-				log_debug!(logger, "Got Err message from {}: {}", log_pubkey!(their_node_id), PrintableString(&msg.data));
+				log_debug!(
+					logger,
+					"Got Err message from {}: {}",
+					log_pubkey!(their_node_id),
+					log_msg!(msg.data)
+				);
 				self.message_handler.chan_handler.handle_error(their_node_id, &msg);
 				if msg.channel_id.is_zero() {
 					return Err(PeerHandleError { }.into());
 				}
 			},
 			wire::Message::Warning(msg) => {
-				log_debug!(logger, "Got warning message from {}: {}", log_pubkey!(their_node_id), PrintableString(&msg.data));
+				log_debug!(logger, "Got warning message from {}: {}", log_pubkey!(their_node_id), log_msg!(msg.data));
 			},
 
 			wire::Message::Ping(msg) => {
@@ -2399,7 +2404,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								msgs::ErrorAction::DisconnectPeer { msg } => {
 									if let Some(msg) = msg.as_ref() {
 										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-											log_pubkey!(node_id), msg.data);
+											log_pubkey!(node_id), log_msg!(msg.data));
 									} else {
 										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {}",
 											log_pubkey!(node_id));
@@ -2412,7 +2417,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								},
 								msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
 									log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-										log_pubkey!(node_id), msg.data);
+										log_pubkey!(node_id), log_msg!(msg.data));
 									// We do not have the peers write lock, so we just store that we're
 									// about to disconnect the peer and do it after we finish
 									// processing most messages.
@@ -2428,13 +2433,13 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 								msgs::ErrorAction::SendErrorMessage { ref msg } => {
 									log_trace!(logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
 											log_pubkey!(node_id),
-											msg.data);
+											log_msg!(msg.data));
 									self.enqueue_message(&mut *get_peer_for_forwarding!(&node_id)?, msg);
 								},
 								msgs::ErrorAction::SendWarningMessage { ref msg, ref log_level } => {
 									log_given_level!(logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler for node {} with message {}",
 											log_pubkey!(node_id),
-											msg.data);
+											log_msg!(msg.data));
 									self.enqueue_message(&mut *get_peer_for_forwarding!(&node_id)?, msg);
 								},
 							}

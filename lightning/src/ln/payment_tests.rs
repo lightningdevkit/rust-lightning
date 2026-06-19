@@ -290,7 +290,7 @@ fn mpp_retry_overpay() {
 	expect_payment_sent!(&nodes[0], payment_preimage, Some(expected_total_fee_msat));
 }
 
-fn do_mpp_receive_timeout(send_partial_mpp: bool) {
+fn do_mpp_receive_timeout(send_partial_mpp: bool, keysend: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
@@ -301,7 +301,12 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	let (chan_3_update, _, chan_3_id, _) = create_announced_chan_between_nodes(&nodes, 1, 3);
 	let (chan_4_update, _, _, _) = create_announced_chan_between_nodes(&nodes, 2, 3);
 
-	let (mut route, payment_hash, payment_preimage, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[3], 100_000);
+	let (mut route, payment_hash, payment_preimage, payment_secret) = if keysend {
+		let payment_params = PaymentParameters::for_keysend(nodes[3].node.get_our_node_id(), TEST_FINAL_CLTV, true);
+		get_route_and_payment_hash!(nodes[0], nodes[3], payment_params, 100_000)
+	} else {
+		get_route_and_payment_hash!(nodes[0], nodes[3], 100_000)
+	};
 	let path = route.paths[0].clone();
 	route.paths.push(path);
 	route.paths[0].hops[0].pubkey = nodes[1].node.get_our_node_id();
@@ -312,9 +317,24 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	route.paths[1].hops[1].short_channel_id = chan_4_update.contents.short_channel_id;
 
 	// Initiate the MPP payment.
-	nodes[0].node.send_payment_with_route(route, payment_hash,
-		RecipientOnionFields::secret_only(payment_secret), PaymentId(payment_hash.0)).unwrap();
-	check_added_monitors!(nodes[0], 2); // one monitor per path
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	if keysend {
+		let route_params = route.route_params.clone().unwrap();
+		nodes[0].router.expect_find_route(route_params.clone(), Ok(route.clone()));
+		nodes[0]
+			.node
+			.send_spontaneous_payment(
+				Some(payment_preimage),
+				onion,
+				PaymentId(payment_hash.0),
+				route_params,
+				Retry::Attempts(0),
+			)
+			.unwrap();
+	} else {
+		nodes[0].node.send_payment_with_route(route, payment_hash, onion, PaymentId(payment_hash.0)).unwrap();
+	}
+	check_added_monitors(&nodes[0], 2); // one monitor per path
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 
@@ -348,7 +368,19 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 	} else {
 		// Pass half of the payment along the second path.
 		let node_2_msgs = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
-		pass_along_path(&nodes[0], &[&nodes[2], &nodes[3]], 200_000, payment_hash, Some(payment_secret), node_2_msgs, true, None);
+		let path = &[&nodes[2], &nodes[3]];
+		let payment_secret = Some(payment_secret);
+		let expected_preimage = if keysend { Some(payment_preimage) } else { None };
+		pass_along_path(
+			&nodes[0],
+			path,
+			200_000,
+			payment_hash,
+			payment_secret,
+			node_2_msgs,
+			true,
+			expected_preimage,
+		);
 
 		// Even after MPP_TIMEOUT_TICKS we should not timeout the MPP if we have all the parts
 		for _ in 0..MPP_TIMEOUT_TICKS {
@@ -363,8 +395,14 @@ fn do_mpp_receive_timeout(send_partial_mpp: bool) {
 
 #[test]
 fn mpp_receive_timeout() {
-	do_mpp_receive_timeout(true);
-	do_mpp_receive_timeout(false);
+	do_mpp_receive_timeout(true, false);
+	do_mpp_receive_timeout(false, false);
+}
+
+#[test]
+fn keysend_mpp_receive_timeout() {
+	do_mpp_receive_timeout(true, true);
+	do_mpp_receive_timeout(false, true);
 }
 
 #[test]
@@ -1711,6 +1749,36 @@ fn abandoned_send_payment_idempotent() {
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1]]], 100_000, second_payment_hash, second_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1]], second_payment_preimage);
+}
+
+#[test]
+fn abandoned_payment_fulfilled_preserves_fee_paid_msat() {
+	// Previously, if we abandoned a payment with HTLCs in-flight and the payment eventually
+	// succeeded, we would set the `Event::PaymentSent::fee_paid_msat` to None, even though we had
+	// docs guaranteeing that it would always be Some after 0.0.103.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let amt_msat = 5_000_000;
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], nodes[2], amt_msat);
+	let payment_id = PaymentId(payment_hash.0);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let path: &[&Node] = &[&nodes[1], &nodes[2]];
+	pass_along_route(&nodes[0], &[path], amt_msat, payment_hash, payment_secret);
+
+	nodes[0].node.abandon_payment(payment_id);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path], payment_preimage));
 }
 
 #[derive(PartialEq)]

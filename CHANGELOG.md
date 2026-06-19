@@ -1,3 +1,86 @@
+# 0.1.10 - Jun 18, 2026 - "Loupe de Loupe"
+
+## API Updates
+ * `DefaultMessageRouter` will now always generate blinded message paths that
+   provide no privacy (where our node is the introduction node) for nodes with
+   public channels. This works around an issue which will appear for any nodes
+   with LND peers that enable onion messaging - such peers will refuse to
+   forward BOLT 12 messages from unknown third parties, which most BOLT 12
+   payers rely on today (#4647).
+ * Explicit `amount_msats` of 0 is rejected in BOLT 12 `Offer`s; `OfferBuilder`
+   now maps 0-amounts to an amount of `None` (#4324).
+
+## Bug Fixes
+ * Async `ChannelMonitorUpdate` persistence operations which complete, but are
+   not marked as complete in a persisted `ChannelManager` prior to restart,
+   followed immediately by a block connection and then another restart could
+   result in some channel operations hanging leading for force-closures (#4377).
+ * If an MPP payment is claimed but `ChannelMonitorUpdate`s for some parts are
+   still being completed asynchronously, further channel updates (e.g.
+   forwarding another payment) are pending and the node restarts, the channel
+   could have become stuck (#4520).
+ * The presence of unconfirmed transactions actually no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4590).
+ * `FilesystemStore::list_all_keys` will no longer fail if there are stale
+   intermediate files lying around from a previous unclean shutdown (#4618).
+ * When forwarding an HTLC while in a blinded path with proportional fees over
+   200%, LDK will no longer spuriously allow a forward that pays us 1 msat too
+   little in fees (#4697).
+ * Fixed a rare case where a channel could get stuck on reconnect when using
+   both async `ChannelMonitorUpdate` persistence and async signing (#4684).
+ * `Event::PaymentSent::fee_paid_msat` is no longer `None` in cases where
+   `ChannelManager::abandon_payment` was called before the payment ultimately
+   completes anyway (#4651).
+ * Syncing a `ChainMonitor` using the `Confirm` trait will no longer write some
+   full `ChannelMonitor`s to disk several times per block (#4544).
+ * `OMDomainResolver` now correctly accounts for failed queries when rate
+   limiting, ensuring we continue to respond to queries after failures (#4591).
+ * Calling `ChannelManager::send_payment_with_route` without a `route_params`
+   and with an invalid `Route` will no longer panic (#4707).
+ * `lightning-custom-message`'s handling of `peer_connected` events now ensures
+   that sub-handlers will see a `peer_disconnected` event if a different
+   sub-handler refused the connection by `Err`ing `peer_connected` (#4595).
+ * Incomplete MPP keysend payments will no longer see their HTLCs held until
+   expiry (#4558).
+ * `InvoiceRequestBuilder` will no longer accept a `quantity` of `0` for a
+   BOLT 12 `Offer`, allowing any quantity up to a bound (#4667).
+ * `lightning-custom-message` handlers that return `Ok(None)` when asked to
+   deserialize a message in their defined range no longer cause panics (#4709).
+ * Several spurious debug assertions were fixed (#4537, #4618).
+
+## Security
+0.1.10 fixes a sanitization issue and several denial-of-service vulnerabilities.
+ * `Bolt11Invoice::recover_payee_pub_key` no longer panics if called on an
+   invoice which set an explicit public key, rather than relying on public key
+   recovery. This method is called from `payment_parameters_from_invoice` and
+   `payment_parameters_from_variable_amount_invoice` (#4717).
+ * Maliciously-crafted unpayable invoices which have overflowing feerates will
+   no longer cause an `unwrap` failure panic (#4716).
+ * `possiblyrandom` did not properly generate random data except when it was
+   explicitly configured to. By default this means LDK is vulnerable to various
+   HashDoS attacks (#4719).
+ * `OMNameResolver` will no longer panic when looking up payment instructions
+   which include unicode characters at the start of a TXT record (#4718).
+ * `PrintableString` did not properly sanitize unicode format characters,
+   allowing an attacker to corrupt the rendering of logs or UI (#4593, #4605).
+ * RGS data is now limited in how large of a graph it is able to cause a client
+   to store in memory. Note that RGS data is still considered a DoS vector in
+   general and you should only use semi-trusted RGS data (#4713).
+ * Counterparty-provided strings in failure messages are no longer logged in
+   full, reducing the ability of such a counterparty to spam our logs (#4714).
+ * Reading a corrupted `ChannelManager` or `ProbabilisticScorer` can no longer
+   cause us to allocate large amounts of memory (#4712).
+
+Thanks to Project Loupe for reporting most of the issues fixed in this release.
+
+
+# 0.1.9 - Jan 26, 2026 - "Electrum Confirmations"
+
+## Bug Fixes
+ * The presence of unconfirmed transactions no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4341).
+
+
 # 0.1.8 - Dec 2, 2025 - "Async Update Completion"
 
 ## Bug Fixes

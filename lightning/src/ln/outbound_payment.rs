@@ -133,6 +133,9 @@ pub(crate) enum PendingOutboundPayment {
 		/// Will be `None` if the payment was serialized before 0.0.115 or if downgrading to 0.0.124
 		/// or later with a reason that was added after.
 		reason: Option<PaymentFailureReason>,
+		/// Preserved from `Retryable` so we can still report `fee_paid_msat` if an HTLC succeeds after
+		/// the payment was abandoned. Added in 0.3/0.1.10.
+		pending_fee_msat: Option<u64>,
 	},
 }
 
@@ -209,6 +212,7 @@ impl PendingOutboundPayment {
 	fn get_pending_fee_msat(&self) -> Option<u64> {
 		match self {
 			PendingOutboundPayment::Retryable { pending_fee_msat, .. } => pending_fee_msat.clone(),
+			PendingOutboundPayment::Abandoned { pending_fee_msat, .. } => pending_fee_msat.clone(),
 			_ => None,
 		}
 	}
@@ -251,6 +255,7 @@ impl PendingOutboundPayment {
 			},
 			_ => new_hash_set(),
 		};
+		let pending_fee_msat = self.get_pending_fee_msat();
 		match self {
 			Self::Retryable { payment_hash, .. } |
 				Self::InvoiceReceived { payment_hash, .. } |
@@ -260,6 +265,7 @@ impl PendingOutboundPayment {
 					session_privs,
 					payment_hash: *payment_hash,
 					reason: Some(reason),
+					pending_fee_msat,
 				};
 			},
 			_ => {}
@@ -2409,6 +2415,7 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 		(0, session_privs, required),
 		(1, reason, upgradable_option),
 		(2, payment_hash, required),
+		(5, pending_fee_msat, option),
 	},
 	(5, AwaitingInvoice) => {
 		(0, expiration, required),
