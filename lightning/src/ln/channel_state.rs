@@ -213,7 +213,7 @@ impl_ser_tlv_based!(OutboundHTLCDetails, {
 });
 
 /// Information needed for constructing an invoice route hint for this channel.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CounterpartyForwardingInfo {
 	/// Base routing fee in millisatoshis.
 	pub fee_base_msat: u32,

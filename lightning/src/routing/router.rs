@@ -176,28 +176,36 @@ where
 					None => return None,
 				};
 
-				let cltv_expiry_delta = payment_relay.cltv_expiry_delta as u32;
+				Some((details, short_channel_id, payment_relay))
+			})
+			.map(|(details, short_channel_id, payment_relay)| {
+				let (dummy_tlvs, last_payment_constraints) = DummyTlvs::new_dummy_tail_from_receive_constraints(
+					DEFAULT_PAYMENT_DUMMY_HOPS, tlvs.payment_constraints, &self.entropy_source
+				)?;
+
+				// The real first hop forwards into the dummy tail, so its CLTV constraint is derived
+				// from the upstream-most dummy constraints instead of directly from the receive TLVs.
 				let payment_constraints = PaymentConstraints {
-					max_cltv_expiry: tlvs.payment_constraints
+					max_cltv_expiry: last_payment_constraints
 						.max_cltv_expiry
-						.saturating_add(cltv_expiry_delta),
+						.checked_add(payment_relay.cltv_expiry_delta as u32)
+						.ok_or(())?,
 					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
 				};
-				Some(PaymentForwardNode {
-					tlvs: ForwardTlvs {
-						short_channel_id,
-						payment_relay,
-						payment_constraints,
-						next_blinding_override: None,
-						features: BlindedHopFeatures::empty(),
-					},
+				let forward_tlvs = ForwardTlvs {
+					short_channel_id,
+					payment_relay,
+					payment_constraints,
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
+				};
+				let forward_node = PaymentForwardNode {
+					tlvs: forward_tlvs,
 					node_id: details.counterparty.node_id,
 					htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX),
-				})
-			})
-			.map(|forward_node| {
+				};
 				BlindedPaymentPath::new_with_dummy_hops(
-					&[forward_node], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+					&[forward_node], recipient, &dummy_tlvs,
 					local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 				)
 			})
@@ -208,8 +216,11 @@ where
 			Ok(paths) if !paths.is_empty() => Ok(paths),
 			_ => {
 				if network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient)) {
+					let (dummy_tlvs, _) = DummyTlvs::new_dummy_tail_from_receive_constraints(
+						DEFAULT_PAYMENT_DUMMY_HOPS, tlvs.payment_constraints, &self.entropy_source
+					)?;
 					BlindedPaymentPath::new_with_dummy_hops(
-						&[], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+						&[], recipient, &dummy_tlvs,
 						local_node_receive_key, tlvs, u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 					).map(|path| vec![path])
 				} else {

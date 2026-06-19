@@ -1479,8 +1479,10 @@ fn async_receive_mpp() {
 	do_pass_along_path(args);
 
 	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
-	let args = PassAlongPathArgs::new(&nodes[0], expected_route[1], amt_msat, payment_hash, ev)
-		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
+	// Fee aggregation leaves the recipient with 32 msat beyond the requested amount.
+	let args =
+		PassAlongPathArgs::new(&nodes[0], expected_route[1], amt_msat + 32, payment_hash, ev)
+			.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 	let keysend_preimage = match claimable_ev {
 		Event::PaymentClaimable {
@@ -1489,11 +1491,11 @@ fn async_receive_mpp() {
 		} => payment_preimage.unwrap(),
 		_ => panic!(),
 	};
-	claim_payment_along_route(ClaimAlongRouteArgs::new(
-		&nodes[0],
-		expected_route,
-		keysend_preimage,
-	));
+	// Sender fee includes the full dummy-hop fee; recipient events do not split it out.
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(&nodes[0], expected_route, keysend_preimage)
+			.with_expected_extra_total_fees_msat(74),
+	);
 }
 
 #[test]
@@ -3139,7 +3141,9 @@ fn held_htlc_timeout() {
 		MIN_CLTV_EXPIRY_DELTA as u32
 			+ TEST_FINAL_CLTV
 			+ HTLC_FAIL_BACK_BUFFER
-			+ LATENCY_GRACE_PERIOD_BLOCKS,
+			+ LATENCY_GRACE_PERIOD_BLOCKS
+			// Account for the largest randomly selected dummy-hop CLTV delta.
+			+ DEFAULT_PAYMENT_DUMMY_HOPS as u32 * 144,
 	);
 	sender_lsp.node.process_pending_htlc_forwards();
 
@@ -3429,7 +3433,8 @@ fn async_payment_mpp() {
 	let mut events = lsp_b.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&recipient.node.get_our_node_id(), &mut events);
-	let args = PassAlongPathArgs::new(lsp_b, expected_path, amt_msat, payment_hash, ev)
+	// Fee aggregation leaves the recipient with 242 msat beyond the requested amount.
+	let args = PassAlongPathArgs::new(lsp_b, expected_path, amt_msat + 242, payment_hash, ev)
 		.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]);
 	let claimable_ev = do_pass_along_path(args).unwrap();
 
@@ -3442,7 +3447,11 @@ fn async_payment_mpp() {
 	};
 
 	let expected_route: &[&[&Node]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
-	claim_payment_along_route(ClaimAlongRouteArgs::new(sender, expected_route, keysend_preimage));
+	// Sender fee includes the full dummy-hop fee; recipient events do not split it out.
+	claim_payment_along_route(
+		ClaimAlongRouteArgs::new(sender, expected_route, keysend_preimage)
+			.with_expected_extra_total_fees_msat(599),
+	);
 }
 
 #[test]
