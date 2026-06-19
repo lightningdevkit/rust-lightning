@@ -45,7 +45,6 @@ use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{InitFeatures, NodeFeatures};
-use crate::types::string::PrintableString;
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Level, Logger, WithContext};
 use crate::util::ser::{VecWriter, Writeable, Writer};
@@ -2415,7 +2414,7 @@ where
 					logger,
 					"Got Err message from {}: {}",
 					their_node_id,
-					PrintableString(&msg.data)
+					log_msg!(msg.data)
 				);
 				self.message_handler.chan_handler.handle_error(their_node_id, &msg);
 				if msg.channel_id.is_zero() {
@@ -2427,7 +2426,7 @@ where
 					logger,
 					"Got warning message from {}: {}",
 					their_node_id,
-					PrintableString(&msg.data)
+					log_msg!(msg.data)
 				);
 			},
 
@@ -3213,7 +3212,7 @@ where
 								msgs::ErrorAction::DisconnectPeer { msg } => {
 									if let Some(msg) = msg.as_ref() {
 										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-											node_id, msg.data);
+											node_id, log_msg!(msg.data));
 									} else {
 										log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {}",
 											node_id);
@@ -3228,7 +3227,7 @@ where
 								},
 								msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
 									log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
-										node_id, msg.data);
+										node_id, log_msg!(msg.data));
 									// We do not have the peers write lock, so we just store that we're
 									// about to disconnect the peer and do it after we finish
 									// processing most messages.
@@ -3254,7 +3253,7 @@ where
 								msgs::ErrorAction::SendErrorMessage { ref msg } => {
 									log_trace!(logger, "Handling SendErrorMessage HandleError event in peer_handler for node {} with message {}",
 											node_id,
-											msg.data);
+											log_msg!(msg.data));
 									self.enqueue_message(
 										&mut *get_peer_for_forwarding!(&node_id)?,
 										msg,
@@ -3266,7 +3265,7 @@ where
 								} => {
 									log_given_level!(logger, *log_level, "Handling SendWarningMessage HandleError event in peer_handler for node {} with message {}",
 											node_id,
-											msg.data);
+											log_msg!(msg.data));
 									self.enqueue_message(
 										&mut *get_peer_for_forwarding!(&node_id)?,
 										msg,
