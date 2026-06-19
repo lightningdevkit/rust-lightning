@@ -327,7 +327,7 @@ where C::Target: chain::Filter,
 			let funding_txid_hash = funding_outpoint.txid.to_raw_hash();
 			let funding_txid_hash_bytes = funding_txid_hash.as_byte_array();
 			let funding_txid_u32 = u32::from_be_bytes([funding_txid_hash_bytes[0], funding_txid_hash_bytes[1], funding_txid_hash_bytes[2], funding_txid_hash_bytes[3]]);
-			funding_txid_u32.wrapping_add(best_height.unwrap_or_default())
+			best_height.map(|height| funding_txid_u32.wrapping_add(height))
 		};
 
 		let partition_factor = if channel_count < 15 {
@@ -337,7 +337,7 @@ where C::Target: chain::Filter,
 		};
 
 		let has_pending_claims = monitor_state.monitor.has_pending_claims();
-		if has_pending_claims || get_partition_key(funding_outpoint) % partition_factor == 0 {
+		if has_pending_claims || get_partition_key(funding_outpoint).is_some_and(|key| key % partition_factor == 0) {
 			log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
 			// Even though we don't track monitor updates from chain-sync as pending, we still want
 			// updates per-channel to be well-ordered so that users don't see a
