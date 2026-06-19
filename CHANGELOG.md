@@ -79,6 +79,8 @@ sanitization issue.
    `PaymentParameters::from_bolt11_invoice` (#4717).
  * Maliciously-crafted unpayable invoices which have overflowing feerates will
    no longer cause an `unwrap` failure panic (#4716).
+ * Parsing an `LSPSDateTime` which is before 1970 no longer panics. This is
+   reachable when parsing messages from counterparties (#4715).
  * `possiblyrandom` did not properly generate random data except when it was
    explicitly configured to. By default this means LDK is vulnerable to various
    HashDoS attacks (#4719).
