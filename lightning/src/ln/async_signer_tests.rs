@@ -1949,6 +1949,119 @@ fn test_async_splice_initial_commit_sig_waits_for_monitor_before_tx_signatures()
 }
 
 #[test]
+fn test_async_splice_receives_tx_signatures_while_unrelated_monitor_update_pending() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let (initiator, acceptor) = (&nodes[0], &nodes[1]);
+	let initiator_node_id = initiator.node.get_our_node_id();
+	let acceptor_node_id = acceptor.node.get_our_node_id();
+	let final_node_id = nodes[2].node.get_our_node_id();
+
+	let (payment_preimage, payment_hash, ..) =
+		route_payment(initiator, &[acceptor, &nodes[2]], 1_000_000);
+
+	acceptor.disable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	}];
+	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
+	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
+
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = event {
+		let partially_signed_tx = initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		initiator
+			.node
+			.funding_transaction_signed(&channel_id, &acceptor_node_id, partially_signed_tx)
+			.unwrap();
+	}
+
+	let initiator_commit_sig = get_htlc_update_msgs(initiator, &acceptor_node_id);
+
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	acceptor
+		.node
+		.handle_commitment_signed(initiator_node_id, &initiator_commit_sig.commitment_signed[0]);
+	check_added_monitors(acceptor, 1);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	acceptor.enable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	acceptor.node.signer_unblocked(None);
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
+		initiator.node.handle_commitment_signed(acceptor_node_id, &updates.commitment_signed[0]);
+		check_added_monitors(initiator, 1);
+	} else {
+		panic!("Unexpected event");
+	}
+
+	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
+
+	let acceptor_tx_signatures =
+		get_event_msg!(acceptor, MessageSendEvent::SendTxSignatures, initiator_node_id);
+	initiator.node.handle_tx_signatures(acceptor_node_id, &acceptor_tx_signatures);
+
+	let delayed_initiator_tx_signatures =
+		get_event_msg!(initiator, MessageSendEvent::SendTxSignatures, acceptor_node_id);
+	let mut broadcasted = initiator.tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasted.len(), 1, "{broadcasted:?}");
+	let splice_tx = broadcasted.pop().unwrap();
+
+	mine_transaction(initiator, &splice_tx);
+	mine_transaction(acceptor, &splice_tx);
+	let _ = get_event!(initiator, Event::SpliceNegotiated);
+
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	let mut commitment_update = get_htlc_update_msgs(&nodes[2], &acceptor_node_id);
+	assert_eq!(commitment_update.update_fulfill_htlcs.len(), 1);
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	acceptor.node.handle_update_fulfill_htlc(
+		final_node_id,
+		commitment_update.update_fulfill_htlcs.remove(0),
+	);
+	check_added_monitors(acceptor, 1);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	acceptor.node.handle_tx_signatures(initiator_node_id, &delayed_initiator_tx_signatures);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	let events = acceptor.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	assert!(events.iter().any(|event| matches!(event, Event::SpliceNegotiated { .. })));
+	assert!(events.iter().any(|event| matches!(event, Event::PaymentForwarded { .. })));
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	assert!(msg_events
+		.iter()
+		.any(|event| matches!(event, MessageSendEvent::SendTxSignatures { .. })));
+	assert!(msg_events.iter().any(|event| matches!(event, MessageSendEvent::UpdateHTLCs { .. })));
+	check_added_monitors(acceptor, 1);
+}
+
+#[test]
 fn test_async_splice_shared_input_signature_released_on_unblock() {
 	// Test that we can provide the signature of a splice's shared input asynchronously, and check
 	// that the holding cell is freed after exiting quiescence due to exchanging `tx_signatures`.

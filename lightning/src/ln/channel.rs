@@ -9686,9 +9686,8 @@ where
 		};
 		if self.is_awaiting_monitor_update() {
 			// Although the user may have already provided our `tx_signatures`, we must not send
-			// them if we're waiting for the monitor to durably persist the counterparty's signature
-			// for our initial commitment post-splice.
-			debug_assert!(self.context.monitor_pending_tx_signatures);
+			// them or complete the exchange while a monitor update is pending.
+			self.context.monitor_pending_tx_signatures = true;
 			log_debug!(
 				logger,
 				"Waiting for async monitor update to complete prior to releasing our tx_signatures"
