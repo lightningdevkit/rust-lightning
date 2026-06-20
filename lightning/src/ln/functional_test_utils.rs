@@ -3993,6 +3993,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 	assert_eq!(claim_event.len(), 1, "{claim_event:?}");
 	#[allow(unused)]
 	let mut fwd_amt_msat = 0;
+	let dummy_skimmed_fee_msat;
 	match claim_event[0] {
 		Event::PaymentClaimed {
 			purpose:
@@ -4003,6 +4004,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			amount_msat,
 			ref htlcs,
 			ref onion_fields,
+			dummy_skimmed_fees_msat,
 			..
 		} => {
 			assert_eq!(preimage, args.payment_preimage);
@@ -4011,6 +4013,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, args.custom_tlvs);
 			check_claimed_htlcs_match_route(args.origin_node, args.expected_paths, htlcs);
 			fwd_amt_msat = amount_msat;
+			dummy_skimmed_fee_msat = dummy_skimmed_fees_msat;
 		},
 		Event::PaymentClaimed {
 			purpose:
@@ -4021,6 +4024,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			amount_msat,
 			ref htlcs,
 			ref onion_fields,
+			dummy_skimmed_fees_msat,
 			..
 		} => {
 			assert_eq!(&payment_hash.0, &Sha256::hash(&args.payment_preimage.0)[..]);
@@ -4029,6 +4033,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			assert_eq!(onion_fields.as_ref().unwrap().custom_tlvs, args.custom_tlvs);
 			check_claimed_htlcs_match_route(args.origin_node, args.expected_paths, htlcs);
 			fwd_amt_msat = amount_msat;
+			dummy_skimmed_fee_msat = dummy_skimmed_fees_msat;
 		},
 		_ => panic!(),
 	}
@@ -4060,7 +4065,7 @@ pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 		}
 	}
 
-	pass_claimed_payment_along_route_from_ev(fwd_amt_msat, per_path_msgs, args)
+	pass_claimed_payment_along_route_from_ev(fwd_amt_msat, per_path_msgs, args) + dummy_skimmed_fee_msat
 }
 
 pub fn pass_claimed_payment_along_route_from_ev(
