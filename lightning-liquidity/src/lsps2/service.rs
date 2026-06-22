@@ -512,7 +512,7 @@ impl_ser_tlv_based!(OutboundJITChannel, {
 	(4, opening_fee_params, required),
 	(6, payment_size_msat, option),
 	(8, trust_model, required),
-	(10, created_at, option),
+	(11, created_at, option),
 });
 
 impl OutboundJITChannel {
