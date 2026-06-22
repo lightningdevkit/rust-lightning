@@ -213,9 +213,8 @@ where
 							state.set_needs_persist(true);
 						}
 					} else {
-						// This should never happen, we can only have one `persist` call
-						// in-progress at once and map entries are only removed by it.
-						debug_assert!(false);
+						// Already removed by a concurrent `persist_peer_state` call (e.g. from
+						// `prune_orders`); nothing left to do for this peer.
 					}
 				}
 				if let Some(future) = future_opt {
@@ -241,31 +240,78 @@ where
 	async fn persist_peer_state(
 		&self, counterparty_node_id: PublicKey,
 	) -> Result<(), lightning::io::Error> {
-		let fut = {
+		// Under the read lock, check whether we need to do anything and whether the peer
+		// state is now empty (prunable) so we can decide which storage operation to use.
+		let is_prunable = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 			match outer_state_lock.get(&counterparty_node_id) {
-				None => {
-					// We dropped the peer state by now.
-					return Ok(());
-				},
+				None => return Ok(()),
 				Some(entry) => {
-					let mut peer_state_lock = entry.lock().unwrap();
+					let peer_state_lock = entry.lock().unwrap();
 					if !peer_state_lock.needs_persist() {
-						// We already have persisted otherwise by now.
 						return Ok(());
-					} else {
-						peer_state_lock.set_needs_persist(false);
+					}
+					peer_state_lock.is_prunable()
+				},
+			}
+		};
+
+		if is_prunable {
+			// The peer state is empty: remove it from the in-memory map and the KV store.
+			// We need the write lock to remove the map entry; hold it until we've started
+			// the remove future (but not through its completion) to stay well-ordered with
+			// other `persist_peer_state` calls for the same peer.
+			let fut = {
+				let mut per_peer_state = self.per_peer_state.write().unwrap();
+				if let Entry::Occupied(mut entry) = per_peer_state.entry(counterparty_node_id) {
+					let state = entry.get_mut().get_mut().unwrap();
+					if state.is_prunable() {
+						entry.remove();
 						let key = counterparty_node_id.to_string();
-						let encoded = peer_state_lock.encode();
-						// Begin the write with the entry lock held. This avoids racing with
-						// potentially-in-flight `persist` calls writing state for the same peer.
-						self.kv_store.write(
+						Some(self.kv_store.remove(
 							LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 							LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 							&key,
-							encoded,
-						)
+							true,
+						))
+					} else {
+						// New state arrived between the read and write lock; mark it dirty
+						// so it will be written on the next persist call.
+						state.set_needs_persist(true);
+						None
 					}
+				} else {
+					// Already removed by a concurrent persist_peer_state call.
+					None
+				}
+			};
+			if let Some(fut) = fut {
+				fut.await?;
+			}
+			return Ok(());
+		}
+
+		// The peer state is non-empty: serialize and write it.
+		let fut = {
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+			match outer_state_lock.get(&counterparty_node_id) {
+				None => return Ok(()),
+				Some(entry) => {
+					let mut peer_state_lock = entry.lock().unwrap();
+					if !peer_state_lock.needs_persist() {
+						return Ok(());
+					}
+					peer_state_lock.set_needs_persist(false);
+					let key = counterparty_node_id.to_string();
+					let encoded = peer_state_lock.encode();
+					// Begin the write with the entry lock held. This avoids racing with
+					// potentially-in-flight `persist` calls writing state for the same peer.
+					self.kv_store.write(
+						LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+						LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+						&key,
+						encoded,
+					)
 				},
 			}
 		};
