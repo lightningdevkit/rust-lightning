@@ -11465,26 +11465,11 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 		};
 
-		// We have to match below instead of map_err on the above as in the map_err closure the borrow checker
-		// would consider peer_state moved even though we would bail out with the `?` operator.
-		let (channel_id, mut channel, message_send_event) = match res {
-			Ok(res) => res,
-			Err(err) => {
-				mem::drop(peer_state_lock);
-				mem::drop(per_peer_state);
-				// TODO(dunxen): Find/make less icky way to do this.
-				match self.handle_error(
-					Result::<(), MsgHandleErrInternal>::Err(err),
-					*counterparty_node_id,
-				) {
-					Ok(_) => {
-						unreachable!("`handle_error` only returns Err as we've passed in an Err")
-					},
-					Err(e) => {
-						return Err(APIError::ChannelUnavailable { err: e.err });
-					},
-				}
-			},
+		let Ok((channel_id, mut channel, message_send_event)) = res else {
+			mem::drop(peer_state_lock);
+			mem::drop(per_peer_state);
+			let e = self.handle_error::<()>(res.map(|_| ()), *counterparty_node_id).unwrap_err();
+			return Err(APIError::ChannelUnavailable { err: e.err });
 		};
 
 		if trusted_channel_features.is_some_and(|f| f.is_0conf()) {
