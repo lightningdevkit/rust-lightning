@@ -19829,7 +19829,7 @@ impl<
 		#[cfg(test)]
 		let reconstruct_manager_from_monitors =
 			args.reconstruct_manager_from_monitors.unwrap_or_else(|| {
-				use core::hash::{BuildHasher, Hasher};
+				use core::hash::BuildHasher;
 
 				match std::env::var("LDK_TEST_REBUILD_MGR_FROM_MONITORS") {
 					Ok(val) => match val.as_str() {
