@@ -26,21 +26,29 @@ impl PaymentQueue {
 		PaymentQueue { payments: Vec::new() }
 	}
 
+	fn payment_status(entry: &PaymentQueueEntry) -> (u64, usize) {
+		let total_expected_outbound_amount_msat =
+			entry.htlcs.iter().map(|htlc| htlc.expected_outbound_amount_msat).sum();
+		(total_expected_outbound_amount_msat, entry.htlcs.len())
+	}
+
 	pub(crate) fn add_htlc(&mut self, new_htlc: InterceptedHTLC) -> (u64, usize) {
+		if let Some(entry) = self
+			.payments
+			.iter()
+			.find(|entry| entry.htlcs.iter().any(|htlc| htlc.intercept_id == new_htlc.intercept_id))
+		{
+			debug_assert_eq!(entry.payment_hash, new_htlc.payment_hash);
+			return Self::payment_status(entry);
+		}
+
 		let payment =
 			self.payments.iter_mut().find(|entry| entry.payment_hash == new_htlc.payment_hash);
 		if let Some(entry) = payment {
 			// HTLCs within a payment should have the same payment hash.
 			debug_assert!(entry.htlcs.iter().all(|htlc| htlc.payment_hash == entry.payment_hash));
-			// The given HTLC should not already be present.
-			debug_assert!(entry
-				.htlcs
-				.iter()
-				.all(|htlc| htlc.intercept_id != new_htlc.intercept_id));
 			entry.htlcs.push(new_htlc);
-			let total_expected_outbound_amount_msat =
-				entry.htlcs.iter().map(|htlc| htlc.expected_outbound_amount_msat).sum();
-			(total_expected_outbound_amount_msat, entry.htlcs.len())
+			Self::payment_status(entry)
 		} else {
 			let expected_outbound_amount_msat = new_htlc.expected_outbound_amount_msat;
 			let entry =
@@ -117,6 +125,15 @@ mod tests {
 			(300_000_000, 1),
 		);
 		assert_eq!(payment_queue.pop_greater_than_msat(500_000_000), None);
+
+		assert_eq!(
+			payment_queue.add_htlc(InterceptedHTLC {
+				intercept_id: InterceptId([2; 32]),
+				expected_outbound_amount_msat: 300_000_000,
+				payment_hash: PaymentHash([100; 32]),
+			}),
+			(500_000_000, 2),
+		);
 
 		assert_eq!(
 			payment_queue.add_htlc(InterceptedHTLC {

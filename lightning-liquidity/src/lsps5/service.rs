@@ -244,7 +244,7 @@ where
 		})
 	}
 
-	pub(crate) async fn persist(&self) -> Result<(), lightning::io::Error> {
+	pub(crate) async fn persist(&self) -> Result<bool, lightning::io::Error> {
 		// TODO: We should eventually persist in parallel, however, when we do, we probably want to
 		// introduce some batching to upper-bound the number of requests inflight at any given
 		// time.
@@ -252,68 +252,18 @@ where
 		if self.persistence_in_flight.fetch_add(1, Ordering::AcqRel) > 0 {
 			// If we're not the first event processor to get here, just return early, the increment
 			// we just did will be treated as "go around again" at the end.
-			return Ok(());
+			return Ok(false);
 		}
 
+		let mut did_persist = false;
+
 		loop {
-			let mut need_remove = Vec::new();
-			let mut need_persist = Vec::new();
-
-			self.check_prune_stale_webhooks(&mut self.per_peer_state.write().unwrap());
-			{
-				let outer_state_lock = self.per_peer_state.read().unwrap();
-
-				for (client_id, peer_state) in outer_state_lock.iter() {
-					let is_prunable = peer_state.is_prunable();
-					let has_open_channel = self.client_has_open_channel(client_id);
-					if is_prunable && !has_open_channel {
-						need_remove.push(*client_id);
-					} else if peer_state.needs_persist {
-						need_persist.push(*client_id);
-					}
-				}
-			}
-
-			for client_id in need_persist.into_iter() {
-				debug_assert!(!need_remove.contains(&client_id));
-				self.persist_peer_state(client_id).await?;
-			}
-
-			for client_id in need_remove {
-				let mut future_opt = None;
-				{
-					// We need to take the `per_peer_state` write lock to remove an entry, but also
-					// have to hold it until after the `remove` call returns (but not through
-					// future completion) to ensure that writes for the peer's state are
-					// well-ordered with other `persist_peer_state` calls even across the removal
-					// itself.
-					let mut per_peer_state = self.per_peer_state.write().unwrap();
-					if let Entry::Occupied(mut entry) = per_peer_state.entry(client_id) {
-						let state = entry.get_mut();
-						if state.is_prunable() && !self.client_has_open_channel(&client_id) {
-							entry.remove();
-							let key = client_id.to_string();
-							future_opt = Some(self.kv_store.remove(
-								LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
-								LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
-								&key,
-								true,
-							));
-						} else {
-							// If the peer was re-added, force a re-persist of the current state.
-							state.needs_persist = true;
-						}
-					} else {
-						// This should never happen, we can only have one `persist` call
-						// in-progress at once and map entries are only removed by it.
-						debug_assert!(false);
-					}
-				}
-				if let Some(future) = future_opt {
-					future.await?;
-				} else {
-					self.persist_peer_state(client_id).await?;
-				}
+			match self.do_persist().await {
+				Ok(pass_did_persist) => did_persist |= pass_did_persist,
+				Err(e) => {
+					self.persistence_in_flight.store(0, Ordering::Release);
+					return Err(e);
+				},
 			}
 
 			if self.persistence_in_flight.fetch_sub(1, Ordering::AcqRel) != 1 {
@@ -325,7 +275,75 @@ where
 			break;
 		}
 
-		Ok(())
+		Ok(did_persist)
+	}
+
+	async fn do_persist(&self) -> Result<bool, lightning::io::Error> {
+		let mut did_persist = false;
+		let mut need_remove = Vec::new();
+		let mut need_persist = Vec::new();
+
+		self.check_prune_stale_webhooks(&mut self.per_peer_state.write().unwrap());
+		{
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+
+			for (client_id, peer_state) in outer_state_lock.iter() {
+				let is_prunable = peer_state.is_prunable();
+				let has_open_channel = self.client_has_open_channel(client_id);
+				if is_prunable && !has_open_channel {
+					need_remove.push(*client_id);
+				} else if peer_state.needs_persist {
+					need_persist.push(*client_id);
+				}
+			}
+		}
+
+		for client_id in need_persist.into_iter() {
+			debug_assert!(!need_remove.contains(&client_id));
+			self.persist_peer_state(client_id).await?;
+			did_persist = true;
+		}
+
+		for client_id in need_remove {
+			let mut future_opt = None;
+			{
+				// We need to take the `per_peer_state` write lock to remove an entry, but also
+				// have to hold it until after the `remove` call returns (but not through
+				// future completion) to ensure that writes for the peer's state are
+				// well-ordered with other `persist_peer_state` calls even across the removal
+				// itself.
+				let mut per_peer_state = self.per_peer_state.write().unwrap();
+				if let Entry::Occupied(mut entry) = per_peer_state.entry(client_id) {
+					let state = entry.get_mut();
+					if state.is_prunable() && !self.client_has_open_channel(&client_id) {
+						entry.remove();
+						let key = client_id.to_string();
+						future_opt = Some(self.kv_store.remove(
+							LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+							LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+							&key,
+							true,
+						));
+					} else {
+						// If the peer was re-added, force a re-persist of the current state.
+						state.needs_persist = true;
+					}
+				} else {
+					// This should never happen, we can only have one `persist` call
+					// in-progress at once and map entries are only removed by it.
+					debug_assert!(false);
+				}
+			}
+			if let Some(future) = future_opt {
+				future.await?;
+				did_persist = true;
+			} else {
+				self.persist_peer_state(client_id).await?;
+				did_persist = true;
+			}
+		}
+
+		Ok(did_persist)
 	}
 
 	fn check_prune_stale_webhooks<'a>(

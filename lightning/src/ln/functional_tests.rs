@@ -407,7 +407,7 @@ pub fn test_inbound_outbound_capacity_is_not_zero() {
 	assert_eq!(channels0.len(), 1);
 	assert_eq!(channels1.len(), 1);
 
-	let reserve = get_holder_selected_channel_reserve_satoshis(100_000, &default_config);
+	let reserve = get_holder_selected_channel_reserve_satoshis(100_000, &default_config).unwrap();
 	assert_eq!(channels0[0].inbound_capacity_msat, 95000000 - reserve * 1000);
 	assert_eq!(channels1[0].outbound_capacity_msat, 95000000 - reserve * 1000);
 
@@ -8405,7 +8405,7 @@ pub fn test_inconsistent_mpp_params() {
 	pass_along_path(&nodes[0], path_b, real_amt, hash, Some(payment_secret), event, true, None);
 
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path_a, path_b], preimage));
-	expect_payment_sent(&nodes[0], preimage, Some(None), true, true);
+	expect_payment_sent(&nodes[0], preimage, Some(Some(2000)), true, true);
 }
 
 #[xtest(feature = "_externalize_tests")]
@@ -9847,4 +9847,221 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 pub fn test_multi_post_event_actions() {
 	do_test_multi_post_event_actions(true);
 	do_test_multi_post_event_actions(false);
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_dust_exposure_holding_cell_assertion() {
+	// Test that we properly move forward if we pop an HTLC-add from the holding cell but fail to
+	// add it to the channel. In 0.2 this cause a (harmless in prod) debug assertion failure. We
+	// try to ensure that this won't happen by checking that an HTLC will be able to be added
+	// before we add it to the holding cell, so getting into this state takes a bit of work.
+	//
+	// Here we accomplish this by using the dust exposure limit. This has the unique feature that
+	// node C can increase node B's dust exposure on the B <-> C channel without B doing anything.
+	// To exploit this, we get node B one HTLC away from being over-exposed to dust, give it one
+	// more HTLC in the holding cell, then have node C add an HTLC. By the time the holding-cell
+	// HTLC is released we are at max-dust-exposure and will fail it.
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	// Configure nodes with specific dust limits
+	let mut config = test_default_channel_config();
+	// Use a fixed dust exposure limit to make the test simpler
+	const DUST_HTLC_VALUE_MSAT: u64 = 500_000;
+	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FixedLimitMsat(5_000_000);
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 100;
+
+	let configs = [Some(config.clone()), Some(config.clone()), Some(config.clone())];
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	// Create channels: A <-> B <-> C
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let bc_chan_id = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+	send_payment(&nodes[0], &[&nodes[1], &nodes[2]], 10_000_000);
+
+	// Send multiple dust HTLCs from B to C to approach the dust limit (including transaction fees)
+	for _ in 0..4 {
+		route_payment(&nodes[1], &[&nodes[2]], DUST_HTLC_VALUE_MSAT);
+	}
+
+	// At this point we shouldn't be over the dust limit, and should still be able to send HTLCs.
+	let bs_chans = nodes[1].node.list_channels();
+	let bc_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
+	assert_eq!(
+		bc_chan.next_outbound_htlc_minimum_msat,
+		config.channel_handshake_config.our_htlc_minimum_msat
+	);
+
+	// Add a further HTLC from B to C, but don't deliver the send messages.
+	// After this we'll only have the ability to add one more HTLC, but by not delivering the send
+	// messages (leaving B waiting on C's RAA) the next HTLC will go into B's holding cell.
+	let (route_bc, payment_hash_bc, _payment_preimage_bc, payment_secret_bc) =
+		get_route_and_payment_hash!(nodes[1], nodes[2], DUST_HTLC_VALUE_MSAT);
+	let onion_bc = RecipientOnionFields::secret_only(payment_secret_bc);
+	let id = PaymentId(payment_hash_bc.0);
+	nodes[1].node.send_payment_with_route(route_bc, payment_hash_bc, onion_bc, id).unwrap();
+	check_added_monitors(&nodes[1], 1);
+	let send_bc = SendEvent::from_node(&nodes[1]);
+
+	let bs_chans = nodes[1].node.list_channels();
+	let bc_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
+	assert_eq!(
+		bc_chan.next_outbound_htlc_minimum_msat,
+		config.channel_handshake_config.our_htlc_minimum_msat
+	);
+
+	// Forward an additional HTLC from A through B to C. This will go in B's holding cell for node
+	// C as it is waiting on a response to the above messages.
+	let payment_params_ac = PaymentParameters::from_node_id(node_c_id, TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
+		.unwrap();
+	let (route_ac, payment_hash_cell, _, payment_secret_ac) =
+		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params_ac, DUST_HTLC_VALUE_MSAT);
+	let onion_ac = RecipientOnionFields::secret_only(payment_secret_ac);
+	let id = PaymentId(payment_hash_cell.0);
+	nodes[0].node.send_payment_with_route(route_ac, payment_hash_cell, onion_ac, id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let send_ab = SendEvent::from_node(&nodes[0]);
+	nodes[1].node.handle_update_add_htlc(node_a_id, &send_ab.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_ab.commitment_msg, false, true);
+
+	// At this point when we process pending forwards the HTLC will go into the holding cell and no
+	// further messages will be generated. Node B will also be at its maximum dust exposure and
+	// will refuse to send any dust HTLCs (when it includes the holding cell HTLC).
+	expect_and_process_pending_htlcs(&nodes[1], false);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let bs_chans = nodes[1].node.list_channels();
+	let bc_chan = bs_chans.iter().find(|chan| chan.counterparty.node_id == node_c_id).unwrap();
+	assert!(bc_chan.next_outbound_htlc_minimum_msat > DUST_HTLC_VALUE_MSAT);
+
+	// Send an additional HTLC from C to B. This will make B unable to forward the HTLC already in
+	// its holding cell as it would be over-exposed to dust.
+	let (route_cb, payment_hash_cb, payment_preimage_cb, payment_secret_cb) =
+		get_route_and_payment_hash!(nodes[2], nodes[1], DUST_HTLC_VALUE_MSAT);
+	let onion_cb = RecipientOnionFields::secret_only(payment_secret_cb);
+	let id = PaymentId(payment_hash_cb.0);
+	nodes[2].node.send_payment_with_route(route_cb, payment_hash_cb, onion_cb, id).unwrap();
+	check_added_monitors(&nodes[2], 1);
+
+	// Now deliver all the messages and make sure that the HTLC is failed-back.
+	let send_event_cb = SendEvent::from_node(&nodes[2]);
+	nodes[1].node.handle_update_add_htlc(node_c_id, &send_event_cb.msgs[0]);
+	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &send_event_cb.commitment_msg);
+	check_added_monitors(&nodes[1], 1);
+
+	nodes[2].node.handle_update_add_htlc(node_b_id, &send_bc.msgs[0]);
+	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &send_bc.commitment_msg);
+	check_added_monitors(&nodes[2], 1);
+
+	let cs_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, node_b_id);
+	nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa);
+	check_added_monitors(&nodes[1], 1);
+	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &node_c_id);
+
+	// When we delivered the RAA above, we attempted (and failed) to add the HTLC to the channel,
+	// causing it to be ready to fail-back, which we do here:
+	let next_hop =
+		HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: bc_chan_id };
+	expect_htlc_forwarding_fails(&nodes[1], &[next_hop]);
+	check_added_monitors(&nodes[1], 1);
+	fail_payment_along_path(&[&nodes[0], &nodes[1]]);
+	let conditions = PaymentFailedConditions::new();
+	expect_payment_failed_conditions(&nodes[0], payment_hash_cell, false, conditions);
+
+	nodes[2].node.handle_revoke_and_ack(node_b_id, &bs_raa);
+	check_added_monitors(&nodes[2], 1);
+	let cs_cs = get_htlc_update_msgs(&nodes[2], &node_b_id);
+
+	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &bs_cs);
+	check_added_monitors(&nodes[2], 1);
+	let cs_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, node_b_id);
+
+	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &cs_cs.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+	let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_c_id);
+
+	nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa);
+	check_added_monitors(&nodes[1], 1);
+	expect_and_process_pending_htlcs(&nodes[1], false);
+	expect_payment_claimable!(nodes[1], payment_hash_cb, payment_secret_cb, DUST_HTLC_VALUE_MSAT);
+
+	nodes[2].node.handle_revoke_and_ack(node_b_id, &bs_raa);
+	check_added_monitors(&nodes[2], 1);
+
+	// Now that everything has settled, make sure the channels still work with a simple claim.
+	claim_payment(&nodes[2], &[&nodes[1]], payment_preimage_cb);
+}
+
+#[test]
+fn test_dup_htlc_claim_onchain_and_offchain() {
+	// Tests what happens if we receive a claim first offchain, then see a counterparty broadcast
+	// their commitment transaction and re-claim the same HTLC on-chain. This was never broken, but
+	// the very specific ordering in this test did hit a debug assertion failure.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let legacy_cfg = test_default_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_bc = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Route payment A -> B -> C.
+	let (payment_preimage, payment_hash, _, _) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	// C claims the payment.
+	nodes[2].node.claim_funds(payment_preimage);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+	check_added_monitors(&nodes[2], 1);
+
+	// Deliver only C's update_fulfill_htlc to B (NOT the commitment_signed). B learns
+	// the preimage and claims from A (adding an RAA blocker on B-C via
+	// internal_update_fulfill_htlc, then removing it when the A-B monitor update completes
+	// and the EmitEventOptionAndFreeOtherChannel action runs).
+	let cs_updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_updates.update_fulfill_htlcs[0].clone());
+	check_added_monitors(&nodes[1], 1);
+
+	// Ignore B's attempts to claim the HTLC from A.
+	nodes[1].node.get_and_clear_pending_msg_events();
+
+	// Get C's commitment transactions. C's commitment includes the HTLC and C has
+	// an HTLC-success transaction (claiming with preimage). Mine both on B.
+	let cs_txn = get_local_commitment_txn!(nodes[2], chan_bc.2);
+	assert!(cs_txn.len() >= 2, "Expected commitment + HTLC-success tx, got {}", cs_txn.len());
+
+	// Mine C's commitment on B. B sees the counterparty commitment on-chain.
+	mine_transaction(&nodes[1], &cs_txn[0]);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert!(
+		events.iter().any(|e| matches!(e, Event::ChannelClosed { .. })),
+		"Expected ChannelClosed event"
+	);
+
+	// Mine C's HTLC-success transaction. B's monitor sees the preimage being used on-chain
+	// and generates an HTLCEvent with the preimage.
+	mine_transaction(&nodes[1], &cs_txn[1]);
+
+	// Advance past ANTI_REORG_DELAY so the on-chain HTLC resolution matures. This triggers
+	// the monitor to generate an HTLCEvent with the preimage via process_pending_monitor_events,
+	// which calls claim_funds_internal a second time.
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY);
 }

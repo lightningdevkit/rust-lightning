@@ -1039,7 +1039,9 @@ mod fuzzy_onion_utils {
 		// hops. Determine the number of hops to be used for attribution data.
 		let attributable_hop_count = usize::min(path.hops.len(), MAX_HOPS);
 
-		for (route_hop_idx, shared_secret) in shared_secrets.enumerate().take(attributable_hop_count) {
+		for (route_hop_idx, shared_secret) in
+			shared_secrets.enumerate().take(attributable_hop_count)
+		{
 			attribution_data.crypt(shared_secret.as_ref());
 
 			// Calculate position relative to the last attributable hop. The last attributable hop is at position 0. We need
