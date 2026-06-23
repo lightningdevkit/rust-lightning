@@ -3059,7 +3059,7 @@ mod tests {
 		};
 
 		let mut jit_channel =
-			OutboundJITChannel::new(payment_size_msat, opening_fee_params, user_channel_id, false);
+			OutboundJITChannel::new(payment_size_msat, opening_fee_params, user_channel_id, false, None);
 		assert!(matches!(
 			jit_channel.htlc_intercepted(htlc).unwrap(),
 			Some(HTLCInterceptedAction::OpenChannel(_))
@@ -3103,11 +3103,11 @@ mod tests {
 		let live_channel_id = ChannelId([47; 32]);
 
 		let mut stale_jit_channel =
-			OutboundJITChannel::new(None, opening_fee_params.clone(), stale_user_channel_id, false);
+			OutboundJITChannel::new(None, opening_fee_params.clone(), stale_user_channel_id, false, None);
 		stale_jit_channel.state =
 			OutboundJITChannelState::PaymentForwarded { channel_id: stale_channel_id };
 		let mut live_jit_channel =
-			OutboundJITChannel::new(None, opening_fee_params, live_user_channel_id, false);
+			OutboundJITChannel::new(None, opening_fee_params, live_user_channel_id, false, None);
 		live_jit_channel.state =
 			OutboundJITChannelState::PaymentForwarded { channel_id: live_channel_id };
 
