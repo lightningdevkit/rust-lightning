@@ -1,0 +1,11 @@
+# API Updates
+
+ * `BlindedMessagePath::new_for_external_recipient` was added to build a blinded message path whose
+   recipient hop terminates at a non-LDK node (e.g. CLN). It builds a standard BOLT-4 recipient hop
+   with no `ReceiveAuthKey` and no `MessageContext`, so that such a recipient can decrypt its
+   `encrypted_recipient_data`, dropping the `ReceiveAuthKey`-based deanonymization protections and
+   adding no dummy hops.
+ * `BlindedPaymentPath::new_for_external_recipient` was added to build a blinded payment path whose
+   payee hop terminates at a non-LDK node (e.g. CLN). It builds a standard BOLT-4 payee hop with no
+   `ReceiveAuthKey`, so that such a recipient can decrypt its `encrypted_recipient_data`, dropping
+   the `ReceiveAuthKey`-based deanonymization protections and adding no dummy hops.

@@ -21,24 +21,27 @@ use super::messenger::{
 	OnionMessagePath, OnionMessenger, Responder, ResponseInstruction, SendError, SendSuccess,
 };
 use super::offers::{OffersMessage, OffersMessageHandler};
-use super::packet::{OnionMessageContents, Packet};
+use super::packet::{ControlTlvs, OnionMessageContents, Packet};
 use crate::blinded_path::message::{
 	AsyncPaymentsContext, BlindedMessagePath, DNSResolverContext, MessageContext,
-	MessageForwardNode, NextMessageHop, OffersContext, MESSAGE_PADDING_ROUND_OFF,
+	MessageForwardNode, NextMessageHop, OffersContext, ReceiveTlvs, MESSAGE_PADDING_ROUND_OFF,
 };
 use crate::blinded_path::utils::is_padded;
 use crate::blinded_path::NodeIdLookUp;
+use crate::crypto::streams::ChaChaPolyReadAdapter;
 use crate::events::{Event, EventsProvider};
 use crate::ln::msgs::{self, BaseMessageHandler, DecodeError, OnionMessageHandler};
+use crate::ln::onion_utils::gen_rho_from_shared_secret;
 use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
 use crate::routing::test_utils::{add_channel, add_or_update_node};
 use crate::sign::{NodeSigner, Recipient};
 use crate::types::features::{ChannelFeatures, InitFeatures};
-use crate::util::ser::{FixedLengthReader, LengthReadable, Writeable, Writer};
+use crate::util::ser::{FixedLengthReader, LengthReadable, LengthReadableArgs, Writeable, Writer};
 use crate::util::test_utils::{TestChainSource, TestKeysInterface, TestLogger, TestNodeSigner};
 
 use bitcoin::hex::FromHex;
 use bitcoin::network::Network;
+use bitcoin::secp256k1::ecdh::SharedSecret;
 use bitcoin::secp256k1::{All, PublicKey, Secp256k1, SecretKey};
 
 use crate::io;
@@ -473,6 +476,41 @@ fn one_blinded_hop() {
 	let node_id = nodes[1].node_id;
 	let blinded_path =
 		BlindedMessagePath::new(&[], node_id, receive_key, context, false, entropy, &secp_ctx);
+	let destination = Destination::BlindedPath(blinded_path);
+	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
+	nodes[1].custom_message_handler.expect_message(TestCustomMessage::Pong);
+	pass_along_path(&nodes);
+}
+
+#[test]
+fn blinded_path_for_external_recipient() {
+	// Check a path for a non-LDK recipient is delivered, and that its recipient hop can be read by a
+	// spec-standard ChaCha20Poly1305 decryptor with no context.
+	let nodes = create_nodes(2);
+	let test_msg = TestCustomMessage::Pong;
+
+	let secp_ctx = Secp256k1::new();
+	let entropy = &*nodes[1].entropy_source;
+	let node_id = nodes[1].node_id;
+	let blinded_path =
+		BlindedMessagePath::new_for_external_recipient(&[], node_id, false, entropy, &secp_ctx);
+
+	// The recipient hop must decrypt under standard ChaCha20Poly1305 (empty AAD) with no context.
+	{
+		let ss = SharedSecret::new(&blinded_path.blinding_point(), &nodes[1].privkey);
+		let rho = gen_rho_from_shared_secret(&ss.secret_bytes());
+		let encrypted_payload = &blinded_path.blinded_hops()[0].encrypted_payload;
+		let mut s = io::Cursor::new(encrypted_payload);
+		let mut reader = FixedLengthReader::new(&mut s, encrypted_payload.len() as u64);
+		let ChaChaPolyReadAdapter { readable } =
+			<ChaChaPolyReadAdapter<ControlTlvs>>::read(&mut reader, rho).unwrap();
+		match readable {
+			ControlTlvs::Receive(ReceiveTlvs { context }) => assert!(context.is_none()),
+			_ => panic!("Expected a receive-hop control TLV"),
+		}
+	}
+
 	let destination = Destination::BlindedPath(blinded_path);
 	let instructions = MessageSendInstructions::WithoutReplyPath { destination };
 	nodes[0].messenger.send_onion_message(test_msg, instructions).unwrap();
