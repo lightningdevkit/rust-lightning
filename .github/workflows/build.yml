@@ -243,7 +243,7 @@ jobs:
           sudo apt-get -y install build-essential binutils-dev libunwind-dev
       - name: Pin the regex dependency
         run: |
-          cd fuzz && cargo update -p regex --precise "1.9.6" --verbose && cd ..
+          cd fuzz && cargo update -p regex --precise "1.9.6" && cargo update -p libc --precise 0.2.183 && cd ..
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz

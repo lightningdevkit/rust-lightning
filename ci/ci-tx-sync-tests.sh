@@ -23,6 +23,13 @@ PIN_RELEASE_DEPS # pin the release dependencies
 # Starting with version 2.12.1, the `indexmap` crate has an MSRV of rustc 1.82.
 [ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p indexmap --precise "2.11.4" --verbose
 
+# Starting with version 1.9.0, the `zeroize` crate has an MSRV of rustc 1.85.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p zeroize --precise "1.8.2" --verbose
+
+# Starting with version 0.4.0, the `getrandom` crate has an MSRV of rustc 1.85
+GETRANDOM_VERSION="$(cargo tree 2>&1 | grep -o 'getrandom v0.4.*' | tr -d ' `' | tr 'v' '@' || echo -n)"
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p "$GETRANDOM_VERSION" --precise 0.3.4 --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking Transaction Sync Clients with features."
