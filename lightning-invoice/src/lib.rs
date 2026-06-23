@@ -159,6 +159,10 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// consistency is more important.
 pub const MAX_LENGTH: usize = 7089;
 
+/// The maximum length of a tagged field in a BOLT11 invoice. This is 1023 * 5 bits (i.e., 639
+/// bytes).
+pub const MAX_TAGGED_FIELD_DATA_BYTES: usize = 639;
+
 /// The [`bech32::Bech32`] checksum algorithm, with extended max length suitable
 /// for BOLT11 invoices.
 pub enum Bolt11Bech32 {}
@@ -886,7 +890,11 @@ impl<D: tb::Bool, H: tb::Bool, T: tb::Bool, C: tb::Bool, S: tb::Bool>
 	pub fn optional_payment_metadata(
 		mut self, payment_metadata: Vec<u8>,
 	) -> InvoiceBuilder<D, H, T, C, S, tb::True> {
-		self.tagged_fields.push(TaggedField::PaymentMetadata(payment_metadata));
+		if payment_metadata.len() > MAX_TAGGED_FIELD_DATA_BYTES {
+			self.error = Some(CreationError::PaymentMetadataTooLong);
+		} else {
+			self.tagged_fields.push(TaggedField::PaymentMetadata(payment_metadata));
+		}
 		let mut found_features = false;
 		for field in self.tagged_fields.iter_mut() {
 			if let TaggedField::Features(f) = field {
@@ -1676,12 +1684,12 @@ impl TaggedField {
 }
 
 impl Description {
-	/// Creates a new `Description` if `description` is at most 1023 * 5 bits (i.e., 639 bytes)
+	/// Creates a new `Description` if `description` is at most [`MAX_TAGGED_FIELD_DATA_BYTES`]
 	/// long, and returns [`CreationError::DescriptionTooLong`] otherwise.
 	///
 	/// Please note that single characters may use more than one byte due to UTF8 encoding.
 	pub fn new(description: String) -> Result<Description, CreationError> {
-		if description.len() > 639 {
+		if description.len() > MAX_TAGGED_FIELD_DATA_BYTES {
 			Err(CreationError::DescriptionTooLong)
 		} else {
 			Ok(Description(UntrustedString(description)))
@@ -1798,6 +1806,9 @@ pub enum CreationError {
 	/// The supplied description string was longer than 639 __bytes__ (see [`Description::new`])
 	DescriptionTooLong,
 
+	/// The supplied payment metadata was longer than 639 __bytes__
+	PaymentMetadataTooLong,
+
 	/// The specified route has too many hops and can't be encoded
 	RouteTooLong,
 
@@ -1820,6 +1831,7 @@ impl Display for CreationError {
 	fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
 		match self {
 			CreationError::DescriptionTooLong => f.write_str("The supplied description string was longer than 639 bytes"),
+			CreationError::PaymentMetadataTooLong => f.write_str("The supplied payment metadata was longer than 639 bytes"),
 			CreationError::RouteTooLong => f.write_str("The specified route has too many hops and can't be encoded"),
 			CreationError::TimestampOutOfBounds => f.write_str("The Unix timestamp of the supplied date is less than zero or greater than 35-bits"),
 			CreationError::InvalidAmount => f.write_str("The supplied millisatoshi amount was greater than the total bitcoin supply"),
@@ -2275,6 +2287,10 @@ mod test {
 
 		let long_desc_res = builder.clone().description(too_long_string).build_raw();
 		assert_eq!(long_desc_res, Err(CreationError::DescriptionTooLong));
+
+		let long_metadata_res =
+			builder.clone().description("Test".into()).payment_metadata(vec![0u8; 640]).build_raw();
+		assert_eq!(long_metadata_res, Err(CreationError::PaymentMetadataTooLong));
 
 		let route_hop = RouteHintHop {
 			src_node_id: PublicKey::from_slice(
