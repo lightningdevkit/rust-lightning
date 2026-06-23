@@ -74,6 +74,7 @@ impl AnchorDescriptor {
 			chan_utils::get_keyed_anchor_redeemscript(
 				&channel_params.broadcaster_pubkeys().funding_pubkey,
 			)
+			.to_p2wsh()
 		} else {
 			assert!(tx_params.channel_type_features.supports_anchor_zero_fee_commitments());
 			shared_anchor_script_pubkey()
@@ -1386,5 +1387,28 @@ mod tests {
 			},
 			pending_htlcs: Vec::new(),
 		});
+	}
+
+	#[test]
+	fn test_anchor_descriptor_previous_utxo_script_pubkey_uses_p2wsh() {
+		let mut transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
+		transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+
+		let funding_pubkey = transaction_parameters.holder_pubkeys.funding_pubkey;
+		let expected_script_pubkey =
+			chan_utils::get_keyed_anchor_redeemscript(&funding_pubkey).to_p2wsh();
+
+		let anchor_descriptor = AnchorDescriptor {
+			channel_derivation_parameters: ChannelDerivationParameters {
+				value_satoshis: 42_000_000,
+				keys_id: [42; 32],
+				transaction_parameters,
+			},
+			outpoint: OutPoint::null(),
+			value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
+		};
+
+		assert_eq!(anchor_descriptor.previous_utxo().script_pubkey, expected_script_pubkey);
 	}
 }

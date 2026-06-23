@@ -471,11 +471,11 @@ pub(crate) mod futures_util {
 	use core::pin::Pin;
 	use core::task::{Poll, RawWaker, RawWakerVTable, Waker};
 	pub(crate) struct Selector<
-		A: Future<Output = ()> + Unpin,
+		A: Future<Output = bool> + Unpin,
 		B: Future<Output = ()> + Unpin,
 		C: Future<Output = ()> + Unpin,
 		D: Future<Output = ()> + Unpin,
-		E: Future<Output = bool> + Unpin,
+		E: Future<Output = ()> + Unpin,
 	> {
 		pub a: A,
 		pub b: B,
@@ -485,28 +485,30 @@ pub(crate) mod futures_util {
 	}
 
 	pub(crate) enum SelectorOutput {
-		A,
+		A(bool),
 		B,
 		C,
 		D,
-		E(bool),
+		E,
 	}
 
 	impl<
-			A: Future<Output = ()> + Unpin,
+			A: Future<Output = bool> + Unpin,
 			B: Future<Output = ()> + Unpin,
 			C: Future<Output = ()> + Unpin,
 			D: Future<Output = ()> + Unpin,
-			E: Future<Output = bool> + Unpin,
+			E: Future<Output = ()> + Unpin,
 		> Future for Selector<A, B, C, D, E>
 	{
 		type Output = SelectorOutput;
 		fn poll(
 			mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>,
 		) -> Poll<SelectorOutput> {
+			// Bias the selector so it first polls the sleeper future, allowing to exit immediately
+			// if the flag is set.
 			match Pin::new(&mut self.a).poll(ctx) {
-				Poll::Ready(()) => {
-					return Poll::Ready(SelectorOutput::A);
+				Poll::Ready(res) => {
+					return Poll::Ready(SelectorOutput::A(res));
 				},
 				Poll::Pending => {},
 			}
@@ -529,8 +531,8 @@ pub(crate) mod futures_util {
 				Poll::Pending => {},
 			}
 			match Pin::new(&mut self.e).poll(ctx) {
-				Poll::Ready(res) => {
-					return Poll::Ready(SelectorOutput::E(res));
+				Poll::Ready(()) => {
+					return Poll::Ready(SelectorOutput::E);
 				},
 				Poll::Pending => {},
 			}
@@ -1032,15 +1034,15 @@ where
 			(false, false) => FASTEST_TIMER,
 		};
 		let fut = Selector {
-			a: channel_manager.get_cm().get_event_or_persistence_needed_future(),
-			b: chain_monitor.get_update_future(),
-			c: om_fut,
-			d: lm_fut,
-			e: sleeper(sleep_delay),
+			a: sleeper(sleep_delay),
+			b: channel_manager.get_cm().get_event_or_persistence_needed_future(),
+			c: chain_monitor.get_update_future(),
+			d: om_fut,
+			e: lm_fut,
 		};
 		match fut.await {
-			SelectorOutput::A | SelectorOutput::B | SelectorOutput::C | SelectorOutput::D => {},
-			SelectorOutput::E(exit) => {
+			SelectorOutput::B | SelectorOutput::C | SelectorOutput::D | SelectorOutput::E => {},
+			SelectorOutput::A(exit) => {
 				if exit {
 					break;
 				}
@@ -1223,12 +1225,20 @@ where
 		}
 
 		if let Some(liquidity_manager) = liquidity_manager.as_ref() {
-			log_trace!(logger, "Persisting LiquidityManager...");
 			let fut = async {
-				liquidity_manager.get_lm().persist().await.map_err(|e| {
-					log_error!(logger, "Persisting LiquidityManager failed: {}", e);
-					e
-				})
+				liquidity_manager
+					.get_lm()
+					.persist()
+					.await
+					.map(|did_persist| {
+						if did_persist {
+							log_trace!(logger, "Persisted LiquidityManager.");
+						}
+					})
+					.map_err(|e| {
+						log_error!(logger, "Persisting LiquidityManager failed: {}", e);
+						e
+					})
 			};
 			futures.set_e(Box::pin(fut));
 		}

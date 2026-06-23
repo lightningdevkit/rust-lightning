@@ -9,7 +9,9 @@ use lightning::ln::msgs::{
 	DecodeError, ErrorAction, LightningError, SocketAddress, UnsignedChannelUpdate,
 	UnsignedNodeAnnouncement,
 };
-use lightning::routing::gossip::{NetworkGraph, NodeAlias, NodeId};
+use lightning::routing::gossip::{
+	NetworkGraph, NodeAlias, NodeId, CHAN_COUNT_ESTIMATE, NODE_COUNT_ESTIMATE,
+};
 use lightning::util::logger::Logger;
 use lightning::util::ser::{BigSize, FixedLengthReader, Readable};
 use lightning::{log_debug, log_given_level, log_gossip, log_trace, log_warn};
@@ -115,17 +117,27 @@ where
 			}
 		};
 
+		const MAX_NODE_COUNT: u32 = (NODE_COUNT_ESTIMATE as u32) * 10;
+		const MAX_CHANNEL_COUNT: u64 = (CHAN_COUNT_ESTIMATE as u64) * 10;
+
 		let node_id_count: u32 = Readable::read(read_cursor)?;
+		if node_id_count > MAX_NODE_COUNT {
+			return Err(LightningError {
+				err: "RGS data contained nonsense number of nodes to update".to_owned(),
+				action: ErrorAction::IgnoreError,
+			}
+			.into());
+		}
 		let mut node_ids: Vec<NodeId> = Vec::with_capacity(core::cmp::min(
 			node_id_count,
 			MAX_INITIAL_NODE_ID_VECTOR_CAPACITY,
 		) as usize);
-
 		let network_graph = &self.network_graph;
 		let mut node_modifications: Vec<UnsignedNodeAnnouncement> = Vec::new();
 
+		let read_only_network_graph = network_graph.read_only();
+
 		if parse_node_details {
-			let read_only_network_graph = network_graph.read_only();
 			for _ in 0..node_id_count {
 				let mut pubkey_bytes = [0u8; 33];
 				read_cursor.read_exact(&mut pubkey_bytes)?;
@@ -237,9 +249,12 @@ where
 			}
 		}
 
+		let original_graph_channel_count = read_only_network_graph.channels().len() as u32;
+		core::mem::drop(read_only_network_graph);
+
 		let mut previous_scid: u64 = 0;
 		let announcement_count: u32 = Readable::read(read_cursor)?;
-		for _ in 0..announcement_count {
+		for i in 0..announcement_count {
 			let features = Readable::read(read_cursor)?;
 
 			// handle SCID
@@ -282,6 +297,10 @@ where
 						cursor.len()
 					);
 				}
+			}
+
+			if (original_graph_channel_count as u64) + (i as u64) > MAX_CHANNEL_COUNT {
+				continue;
 			}
 
 			let announcement_result = network_graph.add_channel_from_partial_announcement(
@@ -329,6 +348,13 @@ where
 		previous_scid = 0;
 
 		let update_count: u32 = Readable::read(read_cursor)?;
+		if update_count as u64 > MAX_CHANNEL_COUNT {
+			return Err(LightningError {
+				err: "RGS data contained nonsense number of channels to update".to_owned(),
+				action: ErrorAction::IgnoreError,
+			}
+			.into());
+		}
 		log_debug!(self.logger, "Processing RGS update from {} with {} nodes, {} channel announcements and {} channel updates.",
 			latest_seen_timestamp, node_id_count, announcement_count, update_count);
 		if update_count == 0 {

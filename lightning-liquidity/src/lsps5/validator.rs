@@ -11,7 +11,6 @@
 
 use super::msgs::LSPS5ClientError;
 
-use crate::alloc::string::ToString;
 use crate::lsps0::ser::LSPSDateTime;
 use crate::lsps5::msgs::WebhookNotification;
 use crate::sync::Mutex;
@@ -91,14 +90,17 @@ impl LSPS5Validator {
 	}
 
 	fn check_for_replay_attack(&self, signature: &str) -> Result<(), LSPS5ClientError> {
+		// zbase32 decoding accepts case aliases, so canonicalize the cache key
+		// to match verification semantics without decoding the signature again.
+		let signature = signature.to_ascii_lowercase();
 		let mut signatures = self.recent_signatures.lock().unwrap();
-		if signatures.contains(&signature.to_string()) {
+		if signatures.contains(&signature) {
 			return Err(LSPS5ClientError::ReplayAttack);
 		}
 		if signatures.len() == MAX_RECENT_SIGNATURES {
 			signatures.pop_back();
 		}
-		signatures.push_front(signature.to_string());
+		signatures.push_front(signature);
 		Ok(())
 	}
 }

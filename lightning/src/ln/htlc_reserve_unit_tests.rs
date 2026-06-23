@@ -48,7 +48,8 @@ fn do_test_counterparty_no_reserve(send_from_initiator: bool) {
 	push_amt -= feerate_per_kw as u64
 		* (commitment_tx_base_weight(&channel_type_features) + 4 * COMMITMENT_TX_WEIGHT_PER_HTLC)
 		/ 1000 * 1000;
-	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -=
+		get_holder_selected_channel_reserve_satoshis(100_000, &default_config).unwrap() * 1000;
 
 	let push = if send_from_initiator { 0 } else { push_amt };
 	let temp_channel_id =
@@ -993,7 +994,8 @@ pub fn test_chan_reserve_violation_outbound_htlc_inbound_chan() {
 		&channel_type_features,
 	);
 
-	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -=
+		get_holder_selected_channel_reserve_satoshis(100_000, &default_config).unwrap() * 1000;
 
 	let _ = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt);
 
@@ -1035,7 +1037,8 @@ pub fn test_chan_reserve_violation_inbound_htlc_outbound_channel() {
 		MIN_AFFORDABLE_HTLC_COUNT as u64,
 		&channel_type_features,
 	);
-	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -=
+		get_holder_selected_channel_reserve_satoshis(100_000, &default_config).unwrap() * 1000;
 	let chan = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, push_amt);
 
 	// Send four HTLCs to cover the initial push_msat buffer we're required to include
@@ -1111,7 +1114,8 @@ pub fn test_chan_reserve_dust_inbound_htlcs_outbound_chan() {
 		MIN_AFFORDABLE_HTLC_COUNT as u64,
 		&channel_type_features,
 	);
-	push_amt -= get_holder_selected_channel_reserve_satoshis(100_000, &default_config) * 1000;
+	push_amt -=
+		get_holder_selected_channel_reserve_satoshis(100_000, &default_config).unwrap() * 1000;
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100000, push_amt);
 
 	let (htlc_success_tx_fee_sat, _) =

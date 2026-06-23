@@ -994,6 +994,16 @@ fn replay_prevention_test() {
 	assert!(replay_result.is_err(), "Immediate replay attack should be detected");
 	assert_eq!(replay_result.unwrap_err(), LSPS5ClientError::ReplayAttack);
 
+	let case_modified_signature = signature.to_ascii_uppercase();
+	assert_ne!(case_modified_signature, signature);
+	let case_modified_replay_result =
+		validator.validate(service_node_id, &timestamp, &case_modified_signature, &body);
+	assert!(
+		case_modified_replay_result.is_err(),
+		"Immediate replay attack should be detected when the signature case changes"
+	);
+	assert_eq!(case_modified_replay_result.unwrap_err(), LSPS5ClientError::ReplayAttack);
+
 	// Fill up the validator's signature cache to push out the original signature.
 	for i in 0..MAX_RECENT_SIGNATURES {
 		// Advance time, allowing for another notification
@@ -1647,4 +1657,184 @@ fn lsps5_service_handler_persistence_across_restarts() {
 			panic!("Expected SendWebhookNotification event after restart");
 		}
 	}
+}
+
+struct FailableKVStore {
+	inner: TestStore,
+	fail_lsps5: std::sync::atomic::AtomicBool,
+}
+
+impl FailableKVStore {
+	fn new() -> Self {
+		Self { inner: TestStore::new(false), fail_lsps5: std::sync::atomic::AtomicBool::new(false) }
+	}
+
+	fn set_fail_lsps5(&self, fail: bool) {
+		self.fail_lsps5.store(fail, std::sync::atomic::Ordering::SeqCst);
+	}
+}
+
+impl lightning::util::persist::KVStoreSync for FailableKVStore {
+	fn read(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+	) -> lightning::io::Result<Vec<u8>> {
+		<TestStore as lightning::util::persist::KVStoreSync>::read(
+			&self.inner,
+			primary_namespace,
+			secondary_namespace,
+			key,
+		)
+	}
+
+	fn write(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, buf: Vec<u8>,
+	) -> lightning::io::Result<()> {
+		if secondary_namespace == "lsps5_service"
+			&& self.fail_lsps5.load(std::sync::atomic::Ordering::SeqCst)
+		{
+			return Err(lightning::io::Error::new(
+				lightning::io::ErrorKind::Other,
+				"intentional failure for lsps5 namespace",
+			));
+		}
+		<TestStore as lightning::util::persist::KVStoreSync>::write(
+			&self.inner,
+			primary_namespace,
+			secondary_namespace,
+			key,
+			buf,
+		)
+	}
+
+	fn remove(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
+	) -> lightning::io::Result<()> {
+		if secondary_namespace == "lsps5_service"
+			&& self.fail_lsps5.load(std::sync::atomic::Ordering::SeqCst)
+		{
+			return Err(lightning::io::Error::new(
+				lightning::io::ErrorKind::Other,
+				"intentional failure for lsps5 namespace",
+			));
+		}
+		<TestStore as lightning::util::persist::KVStoreSync>::remove(
+			&self.inner,
+			primary_namespace,
+			secondary_namespace,
+			key,
+			lazy,
+		)
+	}
+
+	fn list(
+		&self, primary_namespace: &str, secondary_namespace: &str,
+	) -> lightning::io::Result<Vec<String>> {
+		<TestStore as lightning::util::persist::KVStoreSync>::list(
+			&self.inner,
+			primary_namespace,
+			secondary_namespace,
+		)
+	}
+}
+
+#[test]
+fn lsps5_service_persist_resets_in_flight_counter_on_io_error() {
+	use lightning::ln::peer_handler::CustomMessageHandler;
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let service_kv_store = Arc::new(FailableKVStore::new());
+	let client_kv_store = Arc::new(TestStore::new(false));
+
+	let service_config = LiquidityServiceConfig {
+		#[cfg(lsps1_service)]
+		lsps1_service_config: None,
+		lsps2_service_config: None,
+		lsps5_service_config: Some(LSPS5ServiceConfig::default()),
+		advertise_service: true,
+	};
+	let client_config = LiquidityClientConfig {
+		lsps1_client_config: None,
+		lsps2_client_config: None,
+		lsps5_client_config: Some(LSPS5ClientConfig::default()),
+	};
+	let time_provider: Arc<dyn TimeProvider + Send + Sync> = Arc::new(DefaultTimeProvider);
+
+	let chain_params = ChainParameters {
+		network: Network::Testnet,
+		best_block: BestBlock::from_network(Network::Testnet),
+	};
+
+	let service_lm = LiquidityManagerSync::new_with_custom_time_provider(
+		nodes[0].keys_manager,
+		nodes[0].keys_manager,
+		nodes[0].node,
+		None::<Arc<dyn Filter + Send + Sync>>,
+		Some(chain_params),
+		Arc::clone(&service_kv_store),
+		nodes[0].tx_broadcaster,
+		Some(service_config),
+		None,
+		Arc::clone(&time_provider),
+	)
+	.unwrap();
+
+	let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
+		nodes[1].keys_manager,
+		nodes[1].keys_manager,
+		nodes[1].node,
+		None::<Arc<dyn Filter + Send + Sync>>,
+		Some(chain_params),
+		client_kv_store,
+		nodes[1].tx_broadcaster,
+		None,
+		Some(client_config),
+		Arc::clone(&time_provider),
+	)
+	.unwrap();
+
+	let service_node_id = nodes[0].node.get_our_node_id();
+	let client_node_id = nodes[1].node.get_our_node_id();
+
+	create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	let client_handler = client_lm.lsps5_client_handler().unwrap();
+	client_handler
+		.set_webhook(service_node_id, "App".to_string(), "https://example.org/hook".to_string())
+		.unwrap();
+
+	let req_msgs = client_lm.get_and_clear_pending_msg();
+	assert_eq!(req_msgs.len(), 1);
+	let (_, request) = req_msgs.into_iter().next().unwrap();
+	service_lm.handle_custom_message(request, client_node_id).unwrap();
+
+	// Consume the SendWebhookNotification event so pending events queue is drained.
+	let _ = service_lm.next_event();
+	let _ = service_lm.get_and_clear_pending_msg();
+
+	// Initial persist should succeed and clear all needs_persist flags.
+	service_lm.persist().expect("initial persist should succeed");
+
+	// Now arrange for lsps5 writes to fail and dirty lsps5 state without dirtying
+	// pending_events (which lives in a different namespace).
+	service_kv_store.set_fail_lsps5(true);
+	service_lm.peer_disconnected(client_node_id);
+
+	// First persist attempt should error out due to the failing kv_store.
+	let res1 = service_lm.persist();
+	assert!(res1.is_err(), "persist should fail when lsps5 kv_store write fails");
+
+	// Second persist attempt must still attempt the write (and fail again). With the
+	// bug, the LSPS5 service handler's `persistence_in_flight` counter is left above
+	// zero on error so this returns Ok(false) immediately, silently dropping the
+	// pending state and breaking persistence forever.
+	let res2 = service_lm.persist();
+	assert!(
+		res2.is_err(),
+		"after a failed persist, subsequent persist calls must still attempt to persist; got {:?}",
+		res2,
+	);
 }
