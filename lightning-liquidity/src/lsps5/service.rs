@@ -633,6 +633,27 @@ where
 		}
 	}
 
+	/// Removes all webhook registrations for a client.
+	///
+	/// This can be used to fully offboard a client, clearing all their registered webhooks
+	/// in one call rather than removing them one by one with [`prune_webhook`]. The state
+	/// change will be persisted on the next call to [`LiquidityManager::persist`].
+	///
+	/// Returns the number of webhooks removed, or an [`APIError::APIMisuseError`] if the
+	/// client has no registered state.
+	///
+	/// [`prune_webhook`]: Self::prune_webhook
+	/// [`LiquidityManager::persist`]: crate::LiquidityManager::persist
+	pub fn prune_webhooks(&self, counterparty_node_id: PublicKey) -> Result<usize, APIError> {
+		let mut outer_state_lock = self.per_peer_state.write().unwrap();
+		match outer_state_lock.get_mut(&counterparty_node_id) {
+			Some(peer_state) => Ok(peer_state.remove_all_webhooks()),
+			None => Err(APIError::APIMisuseError {
+				err: format!("No existing state with counterparty {}", counterparty_node_id),
+			}),
+		}
+	}
+
 	fn send_notifications_to_client_webhooks(
 		&self, client_id: PublicKey, notification: WebhookNotification,
 	) -> Result<(), LSPS5ProtocolError> {
@@ -838,6 +859,15 @@ impl PeerState {
 
 		self.webhooks.push((name, hook));
 		self.needs_persist |= true;
+	}
+
+	fn remove_all_webhooks(&mut self) -> usize {
+		let count = self.webhooks.len();
+		if count > 0 {
+			self.webhooks.clear();
+			self.needs_persist = true;
+		}
+		count
 	}
 
 	fn remove_webhook(&mut self, name: &LSPS5AppName) -> bool {
