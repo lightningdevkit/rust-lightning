@@ -986,6 +986,12 @@ where
 		let random_bytes = self._entropy_source.get_secure_random_bytes();
 
 		const MAX_PEER_STORAGE_SIZE: usize = 65531;
+		// The overhead between the sum of `serialized_length()` for the included monitors and
+		// the final `PeerStorage{}.data` wire size. This accounts for:
+		// - 2 bytes: CollectionLength vec length prefix from `encode()`
+		// - 16 bytes: ChaCha20Poly1305 AEAD tag
+		// - 32 bytes: random_bytes nonce seed appended during encryption
+		const PEER_STORAGE_OVERHEAD: usize = 2 + 16 + 32;
 		const USIZE_LEN: usize = core::mem::size_of::<usize>();
 		let mut random_bytes_cycle_iter = random_bytes.iter().cycle();
 
@@ -1042,7 +1048,7 @@ where
 
 			let serialized_length = peer_storage_monitor.serialized_length();
 
-			if current_size + serialized_length > MAX_PEER_STORAGE_SIZE {
+			if current_size + serialized_length > MAX_PEER_STORAGE_SIZE - PEER_STORAGE_OVERHEAD {
 				continue;
 			} else {
 				current_size += serialized_length;
@@ -2214,5 +2220,75 @@ mod tests {
 		assert_eq!(chain_monitor_b.list_monitors().len(), 1);
 		assert_eq!(chain_monitor_a.pending_operation_count(), 0);
 		assert_eq!(chain_monitor_b.pending_operation_count(), 0);
+	}
+
+	/// Regression test for peer-storage blob size accounting.
+	///
+	/// `send_peer_storage` caps the *plaintext* payload at `MAX_PEER_STORAGE_SIZE` (65531), but the
+	/// message put on the wire is the *encrypted* blob, which is ~50 bytes larger: a 2-byte
+	/// CollectionLength vec prefix, a 16-byte ChaCha20Poly1305 AEAD tag, and a 32-byte nonce seed.
+	/// Without accounting for this overhead, the emitted `PeerStorage` message can exceed BOLT #1's
+	/// 65531-byte limit (and even BOLT #8's 65535-byte transport limit, which would panic the node
+	/// in `peer_channel_encryptor`).
+	#[test]
+	#[cfg(peer_storage)]
+	fn test_peer_storage_blob_within_size_limit() {
+		const MAX_PEER_STORAGE_SIZE: usize = 65531;
+
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let fee_est = TestFeeEstimator::new(253);
+		let logger = TestLogger::new();
+		let persister = TestPersister::new();
+		let chain_source = TestChainSource::new(Network::Testnet);
+		let keys = TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let chain_monitor = ChainMonitor::new(
+			Some(&chain_source),
+			&broadcaster,
+			&logger,
+			&fee_est,
+			&persister,
+			&keys,
+			keys.get_peer_storage_key(),
+			false,
+		);
+
+		// Create enough monitors to stress the peer storage size limit. Each dummy monitor
+		// is ~500 bytes, so ~200 monitors is enough to exceed 65531.
+		let num_monitors = 200;
+		let mut counterparty_id = None;
+		for i in 0..num_monitors {
+			let mut chan_id = [0u8; 32];
+			chan_id[0] = (i / 256) as u8;
+			chan_id[1] = (i % 256) as u8;
+			let chan = ChannelId::from_bytes(chan_id);
+			let monitor = crate::chain::channelmonitor::dummy_monitor(chan, |keys| {
+				TestChannelSigner::new(DynSigner::new(keys))
+			});
+			if i == 0 {
+				counterparty_id = Some(monitor.get_counterparty_node_id());
+			}
+			assert!(Watch::watch_channel(&chain_monitor, chan, monitor).is_ok());
+		}
+
+		// Trigger send_peer_storage for the first monitor's counterparty. This internally
+		// iterates over monitors and should cap the total encrypted size.
+		let node_id = counterparty_id.unwrap();
+		chain_monitor.send_peer_storage(node_id);
+
+		let msg_events = chain_monitor.get_and_clear_pending_msg_events();
+		let mut saw_peer_storage = false;
+		for ev in msg_events {
+			if let MessageSendEvent::SendPeerStorage { msg, .. } = ev {
+				saw_peer_storage = true;
+				assert!(
+					msg.data.len() <= MAX_PEER_STORAGE_SIZE,
+					"peer_storage blob length {} exceeds BOLT #1 limit of {}",
+					msg.data.len(),
+					MAX_PEER_STORAGE_SIZE,
+				);
+			}
+		}
+		assert!(saw_peer_storage, "expected a SendPeerStorage message");
 	}
 }

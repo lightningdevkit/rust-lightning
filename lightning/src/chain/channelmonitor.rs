@@ -1952,7 +1952,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			counterparty_hash_commitment_number: new_hash_map(),
 			counterparty_fulfilled_htlcs: new_hash_map(),
 
-			current_counterparty_commitment_number: 1 << 48,
+			current_counterparty_commitment_number: (1 << 48) - 1,
 			current_holder_commitment_number,
 
 			payment_preimages: new_hash_map(),
