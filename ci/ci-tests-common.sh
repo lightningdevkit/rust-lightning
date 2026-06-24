@@ -23,4 +23,7 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # Starting with version 0.27.8, the `hyper-rustls` crate has an MSRV of rustc 1.85.0.
 [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p hyper-rustls --precise "0.27.7" --quiet
 
+# Starting with version 1.9.0, the `zeroize` crate uses Rust 2024.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p zeroize --precise "1.8.2" --quiet
+
 export RUST_BACKTRACE=1
