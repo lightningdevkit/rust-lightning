@@ -4249,6 +4249,7 @@ mod tests {
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
 			current_dust_exposure_msat: None,
+			splice_details: None,
 		}
 	}
 
@@ -9813,6 +9814,7 @@ pub(crate) mod bench_utils {
 			pending_inbound_htlcs: Vec::new(),
 			pending_outbound_htlcs: Vec::new(),
 			current_dust_exposure_msat: None,
+			splice_details: None,
 		}
 	}
 
