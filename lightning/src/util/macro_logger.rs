@@ -267,7 +267,7 @@ mod tests {
 
 	#[test]
 	fn debug_msg_truncates_at_limit() {
-		let s: String = core::iter::repeat('a').take(LOG_MSG_MAX_LEN + 100).collect();
+		let s = "a".repeat(LOG_MSG_MAX_LEN + 100);
 		let result = DebugMsg(&s).to_string();
 		// Should be exactly LOG_MSG_MAX_LEN 'a's followed by "..."
 		assert_eq!(result.len(), LOG_MSG_MAX_LEN + 3);
@@ -276,7 +276,7 @@ mod tests {
 
 	#[test]
 	fn debug_msg_no_truncation_at_exact_limit() {
-		let s: String = core::iter::repeat('a').take(LOG_MSG_MAX_LEN).collect();
+		let s = "a".repeat(LOG_MSG_MAX_LEN);
 		let result = DebugMsg(&s).to_string();
 		assert_eq!(result.len(), LOG_MSG_MAX_LEN);
 		assert!(!result.ends_with("..."));
@@ -298,7 +298,7 @@ mod tests {
 	#[test]
 	fn debug_msg_multibyte_unicode() {
 		// Each emoji is multiple bytes but one character
-		let s: String = core::iter::repeat('\u{1F600}').take(LOG_MSG_MAX_LEN + 10).collect();
+		let s = "\u{1F600}".repeat(LOG_MSG_MAX_LEN + 10);
 		let result = DebugMsg(&s).to_string();
 		let char_count: usize = result.chars().count();
 		// LOG_MSG_MAX_LEN emoji chars + 3 chars for "..."
