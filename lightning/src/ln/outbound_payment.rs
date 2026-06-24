@@ -2876,7 +2876,6 @@ mod tests {
 		Bolt12PaymentError, OutboundPayments, PendingOutboundPayment, RecipientCustomTlvs, Retry,
 		RetryableSendFailure, StaleExpiration,
 	};
-	#[cfg(feature = "std")]
 	use crate::offers::currency::NullCurrencyConversion;
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;

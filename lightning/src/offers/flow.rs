@@ -606,6 +606,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Returns an error if the parameterized [`Router`] is unable to create a blinded path for the offer.
 	///
+	/// Currency-denominated amounts set on the returned builder are validated
+	/// with `converter` when the offer is built.
+	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`DefaultMessageRouter`]: crate::onion_message::messenger::DefaultMessageRouter

@@ -233,6 +233,10 @@ macro_rules! offer_explicit_metadata_builder_methods {
 		///
 		/// Use a different pubkey per offer to avoid correlating offers.
 		///
+		/// The `converter` is used when building offers with currency-denominated
+		/// amounts. Use [`NullCurrencyConversion`] for offers that do not use
+		/// currency conversion.
+		///
 		/// # Note
 		///
 		/// If constructing an [`Offer`] for use with a [`ChannelManager`], use
@@ -240,6 +244,7 @@ macro_rules! offer_explicit_metadata_builder_methods {
 		///
 		/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 		/// [`ChannelManager::create_offer_builder`]: crate::ln::channelmanager::ChannelManager::create_offer_builder
+		/// [`NullCurrencyConversion`]: crate::offers::currency::NullCurrencyConversion
 		pub fn new(signing_pubkey: PublicKey, converter: &'a CC) -> Self {
 			Self {
 				offer: OfferContents {
@@ -356,8 +361,11 @@ macro_rules! offer_builder_methods { (
 
 	/// Sets the [`Offer::amount`].
 	///
+	/// If the amount is currency-denominated, [`OfferBuilder::build`] validates
+	/// it with the converter provided when constructing the builder.
+	///
 	/// Successive calls to this method will override the previous setting.
-	pub(super) fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
+	pub fn amount($($self_mut)* $self: $self_type, amount: Amount) -> $return_type {
 		$self.offer.amount = Some(amount);
 		$return_value
 	}
@@ -407,15 +415,25 @@ macro_rules! offer_builder_methods { (
 	}
 
 	/// Builds an [`Offer`] from the builder's settings.
+	///
+	/// Returns [`Bolt12SemanticError::UnsupportedCurrency`] if the offer uses a
+	/// currency-denominated amount not supported by the builder's converter.
+	///
+	/// Returns [`Bolt12SemanticError::InvalidAmount`] if the amount is not payable
+	/// in millisatoshis.
 	pub fn build($($self_mut)* $self: $self_type) -> Result<Offer, Bolt12SemanticError> {
 		match $self.offer.amount {
-			Some(Amount::Bitcoin { amount_msats }) => {
-				if amount_msats == 0 || amount_msats > MAX_VALUE_MSAT {
+			None => {},
+			Some(amount) => {
+				// Validate that the offer amount resolves to a non-zero
+				// millisatoshi range within the maximum msats allowed.
+				let (minimum_msats, _maximum_msats) = amount
+					.to_msats_range($self.converter)?;
+
+				if minimum_msats == 0 {
 					return Err(Bolt12SemanticError::InvalidAmount);
 				}
-			},
-			Some(Amount::Currency { .. }) => return Err(Bolt12SemanticError::UnsupportedCurrency),
-			None => {},
+			}
 		}
 
 		if $self.offer.amount.is_some() && $self.offer.description.is_none() {
@@ -1134,6 +1152,61 @@ pub enum Amount {
 		/// The amount in the currency unit adjusted by the ISO 4217 exponent (e.g., USD cents).
 		amount: u64,
 	},
+}
+
+impl Amount {
+	/// Returns the accepted millisatoshi range for this amount.
+	///
+	/// Bitcoin-denominated amounts return an exact range where the minimum
+	/// and maximum values are equal.
+	///
+	/// Currency-denominated amounts are converted using the exchange-rate
+	/// bounds provided by the given [`CurrencyConversion`] implementation.
+	pub fn to_msats_range<CC: CurrencyConversion>(
+		&self, converter: &CC,
+	) -> Result<(u64, u64), Bolt12SemanticError> {
+		match *self {
+			Amount::Bitcoin { amount_msats } => {
+				if amount_msats > MAX_VALUE_MSAT {
+					return Err(Bolt12SemanticError::InvalidAmount);
+				}
+
+				Ok((amount_msats, amount_msats))
+			},
+			Amount::Currency { iso4217_code, amount } => {
+				let range = converter
+					.conversion_range(iso4217_code)
+					.map(|rate_bound| rate_bound.to_range())
+					.map_err(|_| Bolt12SemanticError::UnsupportedCurrency)?;
+
+				// Ensure the lower bound is payable. If it exceeds `MAX_VALUE_MSAT`,
+				// no valid payment amount can satisfy the range.
+				let minimum_msats = u128::from(amount)
+					.checked_mul(u128::from(range.minimum.msats()))
+					.and_then(|numerator| {
+						numerator.checked_div(u128::from(range.minimum.minor_units().get()))
+					})
+					.and_then(|amount_msats| amount_msats.try_into().ok())
+					.filter(|msats| *msats <= MAX_VALUE_MSAT)
+					.ok_or(Bolt12SemanticError::InvalidAmount)?;
+
+				// Overflow when computing the upper bound implies an amount larger than
+				// the maximum representable payment amount is acceptable by the node.
+				// In that case, saturate to MAX_VALUE_MSAT since any larger value would
+				// be rejected anyway.
+				let maximum_msats = u128::from(amount)
+					.checked_mul(u128::from(range.maximum.msats()))
+					.and_then(|numerator| {
+						numerator.checked_div(u128::from(range.maximum.minor_units().get()))
+					})
+					.and_then(|amount_msats| amount_msats.try_into().ok())
+					.unwrap_or(u64::MAX)
+					.min(MAX_VALUE_MSAT);
+
+				Ok((minimum_msats, maximum_msats))
+			},
+		}
+	}
 }
 
 /// An ISO 4217 three-letter currency code (e.g., USD).
