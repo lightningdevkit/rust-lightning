@@ -249,3 +249,84 @@ impl CurrencyConversion for NullCurrencyConversion {
 		Err(())
 	}
 }
+
+#[cfg(test)]
+mod tests {
+	use crate::offers::currency::{ExchangeRate, ExchangeRateBound, Tolerance};
+	use core::num::NonZeroU64;
+
+	#[test]
+	fn creates_fractional_basis_points_exchange_rate_range() {
+		// A fractional rate keeps the denominator unchanged and applies
+		// basis-point tolerances to the numerator. The selected values exercise
+		// truncating integer division while still producing a range around the
+		// reference rate.
+		let rate = ExchangeRate::from_parts(101, NonZeroU64::new(4).unwrap());
+		let bound =
+			ExchangeRateBound::new(rate, Tolerance::BasisPoints(100), Tolerance::BasisPoints(200))
+				.unwrap();
+
+		let range = bound.to_range();
+		assert_eq!(range.minimum.msats(), 100);
+		assert_eq!(range.minimum.minor_units(), NonZeroU64::new(4).unwrap());
+		assert_eq!(range.maximum.msats(), 103);
+		assert_eq!(range.maximum.minor_units(), NonZeroU64::new(4).unwrap());
+		assert!(range.minimum < rate);
+		assert!(rate < range.maximum);
+	}
+
+	#[test]
+	fn creates_absolute_exchange_rate_range() {
+		// Absolute tolerances are expressed per minor unit. For fractional rates,
+		// they must be scaled by the exchange-rate denominator before being
+		// applied to the numerator.
+		let rate = ExchangeRate::from_parts(1000, NonZeroU64::new(4).unwrap());
+		let bound =
+			ExchangeRateBound::new(rate, Tolerance::AbsoluteMsats(3), Tolerance::AbsoluteMsats(5))
+				.unwrap();
+
+		let range = bound.to_range();
+		assert_eq!(range.minimum.msats(), 988);
+		assert_eq!(range.minimum.minor_units(), NonZeroU64::new(4).unwrap());
+		assert_eq!(range.maximum.msats(), 1020);
+		assert_eq!(range.maximum.minor_units(), NonZeroU64::new(4).unwrap());
+	}
+
+	#[test]
+	fn rejects_invalid_exchange_rate_ranges() {
+		// A lower basis-points tolerance of 100% or more is rejected so the
+		// minimum accepted exchange rate cannot become zero or negative.
+		assert!(ExchangeRateBound::new(
+			ExchangeRate::new(1000),
+			Tolerance::BasisPoints(10_000),
+			Tolerance::BasisPoints(0),
+		)
+		.is_err());
+
+		// Absolute lower tolerances are scaled by the denominator before being
+		// subtracted from the numerator, and must not underflow the reference rate.
+		assert!(ExchangeRateBound::new(
+			ExchangeRate::from_parts(5, NonZeroU64::new(2).unwrap()),
+			Tolerance::AbsoluteMsats(3),
+			Tolerance::BasisPoints(0),
+		)
+		.is_err());
+
+		// Basis-point upper tolerances must not overflow the resulting numerator.
+		assert!(ExchangeRateBound::new(
+			ExchangeRate::new(u64::MAX),
+			Tolerance::BasisPoints(0),
+			Tolerance::BasisPoints(1),
+		)
+		.is_err());
+
+		// Absolute upper tolerances are also scaled by the denominator and must
+		// leave the resulting numerator representable as a u64.
+		assert!(ExchangeRateBound::new(
+			ExchangeRate::from_parts(u64::MAX - 1, NonZeroU64::new(2).unwrap()),
+			Tolerance::BasisPoints(0),
+			Tolerance::AbsoluteMsats(1),
+		)
+		.is_err());
+	}
+}
