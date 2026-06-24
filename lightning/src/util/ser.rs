@@ -13,7 +13,7 @@
 //! [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 //! [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 
-use crate::io::{self, BufRead, Read, Write};
+use crate::io::{self, Read, Write};
 use crate::io_extras::{copy, sink};
 use crate::ln::interactivetxs::{TxInMetadata, TxOutMetadata};
 use crate::ln::onion_utils::{HMAC_COUNT, HMAC_LEN, HOLD_TIME_LEN, MAX_HOPS};
@@ -74,72 +74,6 @@ impl<W: Write> Writer for W {
 	#[inline]
 	fn write_all(&mut self, buf: &[u8]) -> Result<(), io::Error> {
 		<Self as io::Write>::write_all(self, buf)
-	}
-}
-
-// TODO: Drop this entirely if rust-bitcoin releases a version bump with https://github.com/rust-bitcoin/rust-bitcoin/pull/3173
-/// Wrap buffering support for implementations of Read.
-/// A [`Read`]er which keeps an internal buffer to avoid hitting the underlying stream directly for
-/// every read, implementing [`BufRead`].
-///
-/// In order to avoid reading bytes past the first object, and those bytes then ending up getting
-/// dropped, this BufReader operates in one-byte-increments.
-struct BufReader<'a, R: Read> {
-	inner: &'a mut R,
-	buf: [u8; 1],
-	is_consumed: bool,
-}
-
-impl<'a, R: Read> BufReader<'a, R> {
-	/// Creates a [`BufReader`] which will read from the given `inner`.
-	pub fn new(inner: &'a mut R) -> Self {
-		BufReader { inner, buf: [0; 1], is_consumed: true }
-	}
-}
-
-impl<'a, R: Read> Read for BufReader<'a, R> {
-	#[inline]
-	fn read(&mut self, output: &mut [u8]) -> io::Result<usize> {
-		if output.is_empty() {
-			return Ok(0);
-		}
-		let mut offset = 0;
-		if !self.is_consumed {
-			output[0] = self.buf[0];
-			self.is_consumed = true;
-			offset = 1;
-		}
-		self.inner.read(&mut output[offset..]).map(|len| len + offset)
-	}
-}
-
-impl<'a, R: Read> BufRead for BufReader<'a, R> {
-	#[inline]
-	fn fill_buf(&mut self) -> io::Result<&[u8]> {
-		debug_assert!(false, "rust-bitcoin doesn't actually use this");
-		if self.is_consumed {
-			let count = self.inner.read(&mut self.buf[..])?;
-			debug_assert!(count <= 1, "read gave us a garbage length");
-
-			// upon hitting EOF, assume the byte is already consumed
-			self.is_consumed = count == 0;
-		}
-
-		if self.is_consumed {
-			Ok(&[])
-		} else {
-			Ok(&self.buf[..])
-		}
-	}
-
-	#[inline]
-	fn consume(&mut self, amount: usize) {
-		debug_assert!(false, "rust-bitcoin doesn't actually use this");
-		if amount >= 1 {
-			debug_assert_eq!(amount, 1, "Can only consume one byte");
-			debug_assert!(!self.is_consumed, "Cannot consume more than had been read");
-			self.is_consumed = true;
-		}
 	}
 }
 
