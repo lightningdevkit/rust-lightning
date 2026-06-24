@@ -1479,7 +1479,9 @@ mod tests {
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
 	use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
-	use crate::offers::currency::NullCurrencyConversion;
+	use crate::offers::currency::{
+		CurrencyConversion, ExchangeRate, ExchangeRateBound, NullCurrencyConversion, Tolerance,
+	};
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::CurrencyCode;
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
@@ -1487,11 +1489,27 @@ mod tests {
 	use crate::types::features::OfferFeatures;
 	use crate::types::string::PrintableString;
 	use crate::util::ser::{BigSize, Writeable};
+	use crate::util::test_utils::TestCurrencyConversion;
 	use bitcoin::constants::ChainHash;
 	use bitcoin::network::Network;
 	use bitcoin::secp256k1::Secp256k1;
 	use core::num::NonZeroU64;
 	use core::time::Duration;
+
+	struct FixedCurrencyConversion {
+		rate: ExchangeRate,
+	}
+
+	impl CurrencyConversion for FixedCurrencyConversion {
+		fn conversion_range(&self, currency: CurrencyCode) -> Result<ExchangeRateBound, ()> {
+			if currency.as_str() == "USD" {
+				let tolerance = Tolerance::BasisPoints(0);
+				ExchangeRateBound::new(self.rate, tolerance, tolerance)
+			} else {
+				Err(())
+			}
+		}
+	}
 
 	#[test]
 	fn builds_offer_with_defaults() {
@@ -1800,6 +1818,15 @@ mod tests {
 			Err(e) => assert_eq!(e, Bolt12SemanticError::UnsupportedCurrency),
 		}
 
+		let offer = OfferBuilder::new(pubkey(42), &TestCurrencyConversion {})
+			.amount(currency_amount.clone())
+			.build()
+			.unwrap();
+		let tlv_stream = offer.as_tlv_stream();
+		assert_eq!(offer.amount(), Some(currency_amount.clone()));
+		assert_eq!(tlv_stream.0.amount, Some(10));
+		assert_eq!(tlv_stream.0.currency, Some(b"USD"));
+
 		let offer = OfferBuilder::new(pubkey(42), &NullCurrencyConversion)
 			.amount(currency_amount.clone())
 			.amount(bitcoin_amount.clone())
@@ -1818,6 +1845,32 @@ mod tests {
 
 		// An amount of 0 must be rejected per BOLT 12.
 		match OfferBuilder::new(pubkey(42), &NullCurrencyConversion).amount_msats(0).build() {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
+		}
+
+		let converter = FixedCurrencyConversion {
+			rate: ExchangeRate::from_parts(1, NonZeroU64::new(2).unwrap()),
+		};
+		match OfferBuilder::new(pubkey(42), &converter)
+			.amount(Amount::Currency {
+				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+				amount: 1,
+			})
+			.build()
+		{
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
+		}
+
+		let converter = FixedCurrencyConversion { rate: ExchangeRate::new(1) };
+		match OfferBuilder::new(pubkey(42), &converter)
+			.amount(Amount::Currency {
+				iso4217_code: CurrencyCode::new(*b"USD").unwrap(),
+				amount: MAX_VALUE_MSAT + 1,
+			})
+			.build()
+		{
 			Ok(_) => panic!("expected error"),
 			Err(e) => assert_eq!(e, Bolt12SemanticError::InvalidAmount),
 		}
