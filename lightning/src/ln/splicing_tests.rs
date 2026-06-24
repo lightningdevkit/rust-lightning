@@ -34,6 +34,7 @@ use crate::types::string::UntrustedString;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
+use crate::util::test_channel_signer::SignerOp;
 use crate::util::wallet_utils::{
 	CoinSelection, CoinSelectionSourceSync, ConfirmedUtxo, Input, WalletSourceSync, WalletSync,
 };
@@ -10247,4 +10248,171 @@ fn test_splice_out_maximum_includes_pending_claimed_inbound_htlc() {
 	assert_eq!(node_1_details.next_splice_out_maximum_sat, expected_splice_out_max);
 
 	assert!(nodes[1].node.splice_channel(&channel_id, &node_id_0).is_ok());
+}
+
+#[test]
+fn test_async_splice_receives_tx_signatures_while_unrelated_monitor_update_pending() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let (initiator, acceptor) = (&nodes[0], &nodes[1]);
+	let initiator_node_id = initiator.node.get_our_node_id();
+	let acceptor_node_id = acceptor.node.get_our_node_id();
+	let final_node_id = nodes[2].node.get_our_node_id();
+
+	// Leave a forwarded HTLC across A-B and B-C. Later, C will reveal the
+	// preimage so B has to persist an unrelated preimage update on A-B while the
+	// delayed splice `tx_signatures` are still in flight.
+	let (payment_preimage, payment_hash, ..) =
+		route_payment(initiator, &[acceptor, &nodes[2]], 1_000_000);
+
+	// Keep the A-B splice from completing immediately at B. The disabled
+	// counterparty-commitment signer forces B to wait for both the signer and
+	// the splice monitor update before it can send `tx_signatures`.
+	acceptor.disable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	}];
+	let contribution = initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
+	negotiate_splice_tx(initiator, acceptor, channel_id, contribution);
+
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = event {
+		let partially_signed_tx = initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		initiator
+			.node
+			.funding_transaction_signed(&channel_id, &acceptor_node_id, partially_signed_tx)
+			.unwrap();
+	}
+
+	let initiator_commit_sig = get_htlc_update_msgs(initiator, &acceptor_node_id);
+
+	// B accepts A's splice commitment, but the monitor update remains pending.
+	// This is the async-signing window that normally guards emission of B's
+	// `tx_signatures`.
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	acceptor
+		.node
+		.handle_commitment_signed(initiator_node_id, &initiator_commit_sig.commitment_signed[0]);
+	check_added_monitors(acceptor, 1);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Unblock only the signer side first. B can now produce its splice
+	// `commitment_signed`, but still must not send `tx_signatures` until the
+	// monitor update above completes.
+	acceptor.enable_channel_signer_op(
+		&initiator_node_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	acceptor.node.signer_unblocked(None);
+
+	let msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
+		initiator.node.handle_commitment_signed(acceptor_node_id, &updates.commitment_signed[0]);
+		check_added_monitors(initiator, 1);
+	} else {
+		panic!("Unexpected event");
+	}
+
+	// Completing B's splice monitor update releases B's `tx_signatures`. This
+	// is the update for which `monitor_pending_tx_signatures` is expected to be
+	// set.
+	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
+
+	let acceptor_tx_signatures =
+		get_event_msg!(acceptor, MessageSendEvent::SendTxSignatures, initiator_node_id);
+	initiator.node.handle_tx_signatures(acceptor_node_id, &acceptor_tx_signatures);
+
+	// A can now fully sign and broadcast the splice transaction. Save A's
+	// reciprocal `tx_signatures` instead of delivering them to B, so B later
+	// sees an old splice message after another monitor update has started.
+	let delayed_initiator_tx_signatures =
+		get_event_msg!(initiator, MessageSendEvent::SendTxSignatures, acceptor_node_id);
+	let mut broadcasted = initiator.tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasted.len(), 1, "{broadcasted:?}");
+	let splice_tx = broadcasted.pop().unwrap();
+
+	// Confirm the splice on both A and B before B receives A's delayed
+	// `tx_signatures`. This mirrors the fuzz timeline where one side's
+	// broadcast can reach chain before the reciprocal message reaches its peer.
+	mine_transaction(initiator, &splice_tx);
+	mine_transaction(acceptor, &splice_tx);
+	let _ = get_event!(initiator, Event::SpliceNegotiated);
+
+	// Claiming the forwarded payment at C creates an HTLC fulfill that B must
+	// propagate backward over the same A-B channel that is being spliced.
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	let mut commitment_update = get_htlc_update_msgs(&nodes[2], &acceptor_node_id);
+	assert_eq!(commitment_update.update_fulfill_htlcs.len(), 1);
+	// Deliver only the fulfill to B and make B's A-B monitor update stay
+	// in-flight. This monitor update is unrelated to splice tx signatures: it
+	// durably records the payment preimage so B can safely settle the incoming
+	// HTLC from A.
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	acceptor.node.handle_update_fulfill_htlc(
+		final_node_id,
+		commitment_update.update_fulfill_htlcs.remove(0),
+	);
+	check_added_monitors(acceptor, 1);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Deliver A's delayed splice `tx_signatures` while B is waiting on the unrelated HTLC-preimage
+	// monitor update. B's `tx_signatures` was already released, so there's no message to send and
+	// we should expect the splice negotiation to complete.
+	acceptor.node.handle_tx_signatures(initiator_node_id, &delayed_initiator_tx_signatures);
+	expect_splice_pending_event(acceptor, &initiator_node_id);
+
+	// Finally, drive the state machines to completion.
+	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	let mut update_fulfill = get_htlc_update_msgs(acceptor, &initiator_node_id);
+	check_added_monitors(acceptor, 1);
+	let payment_forwarded = get_event!(acceptor, Event::PaymentForwarded);
+	expect_payment_forwarded(
+		payment_forwarded,
+		acceptor,
+		initiator,
+		&nodes[2],
+		Some(1000),
+		None,
+		false,
+		false,
+		false,
+	);
+
+	do_commitment_signed_dance(
+		acceptor,
+		&nodes[2],
+		&commitment_update.commitment_signed,
+		false,
+		false,
+	);
+
+	initiator.node.handle_update_fulfill_htlc(
+		acceptor_node_id,
+		update_fulfill.update_fulfill_htlcs.remove(0),
+	);
+	do_commitment_signed_dance(
+		initiator,
+		acceptor,
+		&update_fulfill.commitment_signed,
+		false,
+		false,
+	);
+	expect_payment_sent(initiator, payment_preimage, None, true, true);
 }
