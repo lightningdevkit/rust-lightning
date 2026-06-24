@@ -801,6 +801,18 @@ impl<'a, 'b, 'c> Drop for Node<'a, 'b, 'c> {
 				panic!("Had excess RAA blockers on node {}: {:?}", self.logger.id, raa_blockers);
 			}
 
+			for channel_id in self.chain_monitor.chain_monitor.list_monitors() {
+				let monitor = self.chain_monitor.chain_monitor.get_monitor(channel_id).unwrap();
+				let unacked_monitor_events = monitor.drain_unacked_monitor_events();
+				if !unacked_monitor_events.is_empty() {
+					panic!(
+						"Node {} channel {channel_id:?} had {} unacked monitor events at drop: {unacked_monitor_events:#?}",
+						unacked_monitor_events.len(),
+						self.logger.id
+					);
+				}
+			}
+
 			// Check that if we serialize the network graph, we can deserialize it again.
 			let network_graph = {
 				let mut w = test_utils::TestVecWriter(Vec::new());
@@ -1263,7 +1275,20 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 	if let Some(chain_monitor) = node.chain_monitor() {
 		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
 		let n = added_monitors.len();
-		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
+		if n != count {
+			let recent = chain_monitor.recent_monitor_updates.lock().unwrap();
+			let mut desc = String::new();
+			for (i, (chan_id, update)) in recent.iter().take(n).enumerate() {
+				desc += &format!(
+					"\n  [{}] chan={} update_id={} steps={:?}",
+					i, chan_id, update.update_id, update.updates
+				);
+			}
+			panic!(
+				"expected {} monitors to be added, not {}. Last {} updates (most recent first):{}",
+				count, n, n, desc
+			);
+		}
 		added_monitors.clear();
 	}
 }
@@ -3065,7 +3090,7 @@ macro_rules! expect_payment_sent {
 			$expected_payment_preimage,
 			$expected_fee_msat_opt.map(|o| Some(o)),
 			$expect_paths,
-			true,
+			if $node.node.test_persistent_monitor_events_enabled() { false } else { true },
 		)
 	};
 }
@@ -4228,7 +4253,15 @@ pub fn claim_payment_along_route(
 		do_claim_payment_along_route(args) + expected_extra_total_fees_msat;
 
 	if !skip_last {
-		expect_payment_sent!(origin_node, payment_preimage, Some(expected_total_fee_msat))
+		let expect_post_ev_mon_update =
+			if origin_node.node.test_persistent_monitor_events_enabled() { false } else { true };
+		expect_payment_sent(
+			origin_node,
+			payment_preimage,
+			Some(Some(expected_total_fee_msat)),
+			true,
+			expect_post_ev_mon_update,
+		)
 	} else {
 		(None, Vec::new())
 	}
