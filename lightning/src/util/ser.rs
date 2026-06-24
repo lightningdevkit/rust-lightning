@@ -1625,8 +1625,7 @@ macro_rules! impl_consensus_ser {
 
 		impl Readable for $bitcoin_type {
 			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-				let mut reader = BufReader::<_>::new(r);
-				match consensus::encode::Decodable::consensus_decode(&mut reader) {
+				match consensus::encode::Decodable::consensus_decode(r) {
 					Ok(t) => Ok(t),
 					Err(consensus::encode::Error::Io(ref e))
 						if e.kind() == io::ErrorKind::UnexpectedEof =>
