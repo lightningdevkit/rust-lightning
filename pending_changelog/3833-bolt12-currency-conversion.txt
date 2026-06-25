@@ -1,0 +1,15 @@
+# API Updates
+
+ * BOLT 12 offers may now use ISO 4217 currency-denominated amounts. Users who
+   create or pay such offers must provide a `CurrencyConversion` implementation
+   so LDK can convert the currency amount to millisatoshis and verify returned
+   invoice amounts.
+
+ * `ChannelManager::new` and `ChannelManagerReadArgs` now take a
+   `currency_conversion` argument. Users who do not support currency conversion
+   may use `NullCurrencyConversion`.
+
+ * BOLT 12 offer and invoice builders now thread currency conversion through
+   their construction paths. Unsupported currencies or invalid converted amounts
+   fail offer, invoice request, or invoice construction instead of being
+   accepted without conversion.
