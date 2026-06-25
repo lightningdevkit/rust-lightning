@@ -1,3 +1,10 @@
+# 0.2.4 - Jun 25, 2026 - "Release the CI"
+
+## Bug Fixes
+ * 0.2.3 broke the MSRV of the `lightning` crate, which now again compiles on
+   `rustc` 1.63 (#4737).
+
+
 # 0.2.3 - Jun 18, 2026 - "Through the Loupe"
 
 ## API Updates
