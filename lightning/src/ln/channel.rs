@@ -10650,10 +10650,6 @@ where
 					)));
 				}
 
-				if !session.has_received_commitment_signed() {
-					self.context.expecting_peer_commitment_signed = true;
-				}
-
 				if !session.has_holder_witnesses() {
 					log_debug!(logger, "Waiting for funding transaction signatures to be provided");
 				} else {
