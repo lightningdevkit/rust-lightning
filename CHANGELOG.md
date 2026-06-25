@@ -1,3 +1,10 @@
+# 0.1.11 - Jun 24, 2026 - "CI Matters"
+
+## Bug Fixes
+ * 0.1.10 broke the MSRV of the `lightning` crate, which now again compiles on
+   `rustc` 1.63 (#4737).
+
+
 # 0.1.10 - Jun 18, 2026 - "Loupe de Loupe"
 
 ## API Updates

@@ -37,7 +37,6 @@ use crate::onion_message::packet::OnionMessageContents;
 use crate::routing::gossip::{NodeId, NodeAlias};
 use crate::util::atomic_counter::AtomicCounter;
 use crate::util::logger::{Level, Logger, WithContext};
-use crate::util::string::PrintableString;
 
 #[allow(unused_imports)]
 use crate::prelude::*;
