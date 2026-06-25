@@ -2253,9 +2253,13 @@ mod tests {
 			false,
 		);
 
-		// Create enough monitors to stress the peer storage size limit. Each dummy monitor
-		// is ~500 bytes, so ~200 monitors is enough to exceed 65531.
-		let num_monitors = 200;
+		// Create enough monitors to stress the peer storage size limit such that the total
+		// plaintext serialized_length() exceeds MAX_PEER_STORAGE_SIZE, ensuring the selection
+		// loop actually hits the cap. 600 monitors at ~300 bytes each = ~180K, well above the
+		// 65531 max, so the encrypted output will be forced to the boundary regardless of
+		// the random selection order. This guarantees the test catches the difference when
+		// PEER_STORAGE_OVERHEAD is not accounted for.
+		let num_monitors = 600;
 		let mut counterparty_id = None;
 		for i in 0..num_monitors {
 			let mut chan_id = [0u8; 32];
@@ -2284,6 +2288,13 @@ mod tests {
 				assert!(
 					msg.data.len() <= MAX_PEER_STORAGE_SIZE,
 					"peer_storage blob length {} exceeds BOLT #1 limit of {}",
+					msg.data.len(),
+					MAX_PEER_STORAGE_SIZE,
+				);
+				assert!(
+					msg.data.len() > MAX_PEER_STORAGE_SIZE - 500,
+					"peer_storage blob length {} is too far from the {} byte limit, \
+					 boundary was not meaningfully tested",
 					msg.data.len(),
 					MAX_PEER_STORAGE_SIZE,
 				);
