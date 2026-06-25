@@ -8614,6 +8614,15 @@ where
 				"Got a single commitment_signed message when expecting a batch".to_owned(),
 			));
 		}
+		if let Some(funding_txid) = msg.funding_txid {
+			let locked_funding_txid =
+				self.funding.get_funding_txid().expect("funded channel must have known txid");
+			if funding_txid != locked_funding_txid {
+				return Err(ChannelError::Ignore(format!(
+					"Ignoring commitment_signed for stale funding txid {funding_txid}"
+				)));
+			}
+		}
 
 		let transaction_number = self.holder_commitment_point.next_transaction_number();
 		let commitment_point = self.holder_commitment_point.next_point();

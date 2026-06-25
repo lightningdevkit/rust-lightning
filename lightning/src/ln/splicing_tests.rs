@@ -4177,6 +4177,78 @@ fn do_cancel_funding_contributed_before_funding_transaction_signed(state: u8) {
 }
 
 #[test]
+fn cancel_funding_contributed_then_inflight_commitment_signed_does_not_close_channel() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	}];
+	let funding_contribution =
+		initiate_splice_out(initiator, acceptor, channel_id, outputs).unwrap();
+	let new_funding_script = complete_splice_handshake(initiator, acceptor);
+	complete_interactive_funding_negotiation(
+		initiator,
+		acceptor,
+		channel_id,
+		funding_contribution.clone(),
+		new_funding_script,
+	);
+
+	// Both peers completed the interactive transaction exchange. Since only the
+	// initiator contributed splice funds, the initiator must still surface the
+	// unsigned funding transaction before it may send its initial
+	// `commitment_signed`.
+	let _ = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+
+	// The acceptor has no funding contribution, so it can send its initial
+	// `commitment_signed` immediately. Hold that message to model it racing with
+	// the local caller's decision to cancel instead of sign.
+	let acceptor_commit_sig = get_htlc_update_msgs(acceptor, &node_id_initiator);
+	assert_eq!(acceptor_commit_sig.commitment_signed.len(), 1);
+
+	// Cancel before signing. This is a valid API flow: local contribution is
+	// discarded, the splice negotiation fails locally, and LDK queues a
+	// `tx_abort` for the peer.
+	initiator.node.cancel_funding_contributed(&channel_id, &node_id_acceptor).unwrap();
+	let reason = NegotiationFailureReason::LocallyCanceled;
+	expect_splice_failed_events(initiator, &channel_id, funding_contribution, reason);
+
+	// Keep our `tx_abort` queued. The fuzz failure has this exact ordering: our
+	// abort is outbound, but the acceptor's earlier `commitment_signed` reaches
+	// us first.
+	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
+	assert_eq!(tx_abort.channel_id, channel_id);
+
+	initiator
+		.node
+		.handle_commitment_signed(node_id_acceptor, &acceptor_commit_sig.commitment_signed[0]);
+
+	// The delayed `commitment_signed` belonged to the splice we just aborted. It
+	// should not be validated against the post-abort channel state and should
+	// not force-close the live channel as an invalid commitment signature.
+	assert!(initiator.node.get_and_clear_pending_events().is_empty());
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
+	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+}
+
+#[test]
 fn cannot_cancel_funding_contributed_after_funding_transaction_signed() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
