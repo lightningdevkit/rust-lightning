@@ -3492,14 +3492,14 @@ pub fn send_along_route_with_secret<'a, 'b, 'c>(
 	recv_value: u64, our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret,
 ) -> PaymentId {
 	let payment_id = PaymentId(origin_node.keys_manager.backing.get_secure_random_bytes());
-	origin_node.router.expect_find_route(route.route_params.clone().unwrap(), Ok(route.clone()));
+	origin_node.router.expect_find_route(route.route_params.clone(), Ok(route.clone()));
 	origin_node
 		.node
 		.send_payment(
 			our_payment_hash,
 			RecipientOnionFields::secret_only(our_payment_secret, recv_value),
 			payment_id,
-			route.route_params.unwrap(),
+			route.route_params,
 			Retry::Attempts(0),
 		)
 		.unwrap();

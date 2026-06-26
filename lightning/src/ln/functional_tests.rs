@@ -164,7 +164,7 @@ pub fn fake_network_test() {
 	let route_params = RouteParameters::from_payment_params_and_value(payment_params, 1000000);
 	let route = Route {
 		paths: vec![Path { hops, blinded_tail: None }],
-		route_params: Some(route_params.clone()),
+		route_params: route_params.clone(),
 	};
 	let path: &[_] = &[&nodes[2], &nodes[3], &nodes[1]];
 	let payment_preimage_1 = send_along_route(&nodes[1], route, path, 1000000).0;
@@ -202,8 +202,7 @@ pub fn fake_network_test() {
 		+ chan_2.1.contents.fee_proportional_millionths as u64 * hops[2].fee_msat as u64 / 1000000;
 	hops[0].fee_msat = chan_3.1.contents.fee_base_msat as u64
 		+ chan_3.1.contents.fee_proportional_millionths as u64 * hops[1].fee_msat as u64 / 1000000;
-	let route =
-		Route { paths: vec![Path { hops, blinded_tail: None }], route_params: Some(route_params) };
+	let route = Route { paths: vec![Path { hops, blinded_tail: None }], route_params };
 	let path: &[_] = &[&nodes[3], &nodes[2], &nodes[1]];
 	let payment_hash_2 = send_along_route(&nodes[1], route, path, 1000000).1;
 
@@ -7214,7 +7213,7 @@ pub fn test_simple_mpp() {
 	route.paths[1].hops[0].pubkey = node_c_id;
 	route.paths[1].hops[0].short_channel_id = chan_2_id;
 	route.paths[1].hops[1].short_channel_id = chan_4_id;
-	route.route_params.as_mut().unwrap().final_value_msat = 200_000;
+	route.route_params.final_value_msat = 200_000;
 	let paths: &[&[_]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
 	send_along_route_with_secret(&nodes[0], route, paths, 200_000, payment_hash, payment_secret);
 	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], paths, payment_preimage));

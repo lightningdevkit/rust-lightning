@@ -240,7 +240,7 @@ impl<'a> Router for TestRouter<'a> {
 			assert_eq!(find_route_query, *params);
 			if let Some(res) = find_route_res {
 				if let Ok(ref route) = res {
-					assert_eq!(route.route_params, Some(find_route_query));
+					assert_eq!(route.route_params, find_route_query);
 					let scorer = self.scorer.read().unwrap();
 					let scorer = ScorerAccountingForInFlightHtlcs::new(scorer, &inflight_htlcs);
 					for path in &route.paths {
