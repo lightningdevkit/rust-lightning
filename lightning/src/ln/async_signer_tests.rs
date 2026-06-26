@@ -1853,7 +1853,7 @@ fn test_async_splice_initial_commit_sig() {
 	acceptor.node.handle_tx_signatures(initiator_node_id, &tx_signatures);
 
 	let _ = get_event!(initiator, Event::SpliceNegotiated);
-	let _ = get_event!(acceptor, Event::SpliceNegotiated);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
 }
 
 #[test]
@@ -1945,7 +1945,7 @@ fn test_async_splice_initial_commit_sig_waits_for_monitor_before_tx_signatures()
 	acceptor.node.handle_tx_signatures(initiator_node_id, &tx_signatures);
 
 	let _ = get_event!(initiator, Event::SpliceNegotiated);
-	let _ = get_event!(acceptor, Event::SpliceNegotiated);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
 }
 
 #[test]
@@ -2022,5 +2022,5 @@ fn test_async_splice_shared_input_signature_released_on_unblock() {
 	acceptor.node.handle_tx_signatures(initiator_node_id, &tx_signatures);
 
 	let _ = get_event!(initiator, Event::SpliceNegotiated);
-	let _ = get_event!(acceptor, Event::SpliceNegotiated);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
 }

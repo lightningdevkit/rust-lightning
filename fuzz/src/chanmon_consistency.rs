@@ -227,6 +227,10 @@ impl ChainState {
 		self.utxos.contains(outpoint)
 	}
 
+	fn is_confirmed_txid(&self, txid: &Txid) -> bool {
+		self.confirmed_txids.contains(txid)
+	}
+
 	fn confirmed_output(&self, outpoint: &BitcoinOutPoint) -> Option<&TxOut> {
 		if !self.confirmed_txids.contains(&outpoint.txid) {
 			return None;
@@ -936,7 +940,8 @@ fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessag
 	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
 	// disconnect their counterparty if they're expecting a timely response.
 	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
-		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
+		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF")
+			|| msg.data.contains("contribution no longer valid at quiescence");
 		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
 		{
 			panic!("Unexpected disconnect case: {}", msg.data);
@@ -2220,6 +2225,33 @@ fn build_node_config(chan_type: ChanType) -> UserConfig {
 	config
 }
 
+fn assert_no_stale_splice_negotiation(
+	node: &HarnessNode<'_>, channel_id: &ChannelId, counterparty_node_id: &PublicKey, context: &str,
+) {
+	let Some(channel) = node.list_channels().into_iter().find(|channel| {
+		channel.channel_id == *channel_id && channel.counterparty.node_id == *counterparty_node_id
+	}) else {
+		return;
+	};
+	let Some(details) = channel.splice_details else { return };
+
+	assert!(
+		details.negotiation.is_none(),
+		"{} left active splice negotiation behind: {:?}",
+		context,
+		details
+	);
+	assert!(
+		details.queued_contribution.is_some()
+			|| !details.candidates.is_empty()
+			|| details.confirmed_candidate.is_some()
+			|| details.received_splice_locked_txid.is_some(),
+		"{} left empty splice details behind: {:?}",
+		context,
+		details
+	);
+}
+
 fn assert_test_invariants(nodes: &[HarnessNode<'_>; 3]) {
 	assert_eq!(nodes[0].list_channels().len(), 3);
 	assert_eq!(nodes[1].list_channels().len(), 6);
@@ -2851,7 +2883,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn process_msg_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, event: MessageSendEvent,
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
-			out: &Out,
+			chain_state: &ChainState, out: &Out,
 		) -> Option<MessageSendEvent> {
 			match event {
 				MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
@@ -2914,6 +2946,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				MessageSendEvent::SendTxAbort { ref node_id, ref msg } => {
 					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "tx_abort");
 					nodes[dest_idx].handle_tx_abort(source_node_id, msg);
+					assert_no_stale_splice_negotiation(
+						&nodes[dest_idx],
+						&msg.channel_id,
+						&source_node_id,
+						"tx_abort receive",
+					);
 					None
 				},
 				MessageSendEvent::SendTxInitRbf { ref node_id, ref msg } => {
@@ -2943,6 +2981,11 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				},
 				MessageSendEvent::SendSpliceLocked { ref node_id, ref msg } => {
 					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "splice_locked");
+					assert!(
+						chain_state.is_confirmed_txid(&msg.splice_txid),
+						"splice_locked referenced unconfirmed txid {}",
+						msg.splice_txid
+					);
 					nodes[dest_idx].handle_splice_locked(source_node_id, msg);
 					None
 				},
@@ -2974,6 +3017,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 
 		let nodes = &self.nodes;
+		let chain_state = &self.chain_state;
 		let out = &self.out;
 		let queues = &mut self.queues;
 		let mut events = queues.take_for_node(node_idx);
@@ -2994,6 +3038,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				corrupt_forward,
 				limit_events,
 				nodes,
+				chain_state,
 				out,
 			);
 			if limit_events != ProcessMessages::AllMessages {
@@ -3050,7 +3095,15 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				events::Event::PaymentPathSuccessful { .. } => {},
 				events::Event::PaymentPathFailed { .. } => {},
 				events::Event::PaymentForwarded { .. } if node_idx == 1 => {},
-				events::Event::ChannelReady { .. } => {},
+				events::Event::ChannelReady { funding_txo, .. } => {
+					if let Some(funding_txo) = funding_txo {
+						assert!(
+							chain_state.is_confirmed_txid(&funding_txo.txid),
+							"ChannelReady referenced unconfirmed funding txid {}",
+							funding_txo.txid
+						);
+					}
+				},
 				events::Event::HTLCHandlingFailed { .. } => {},
 				events::Event::FundingTransactionReadyForSigning {
 					channel_id,
