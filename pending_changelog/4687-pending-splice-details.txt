@@ -1,0 +1,19 @@
+# API Updates
+
+ * `ChannelDetails` now has a `splice_details` field
+   (`Option<SpliceDetails>`) reporting any pending splice attempts on a channel:
+   a contribution committed via `ChannelManager::funding_contributed` but not yet
+   negotiating, the in-flight negotiation (`SpliceNegotiationDetails`, with
+   progress given by `SpliceNegotiationStatus`), the negotiated candidates
+   awaiting confirmation (`SpliceCandidateDetails`), the confirmed candidate's
+   progress (`ConfirmedSpliceCandidate`), and the txid of any `splice_locked`
+   received from the counterparty.
+
+# Backwards Compatibility
+
+ * A channel with a pending splice negotiated before upgrading from a prior LDK
+   version (e.g. 0.2) can no longer be spliced: `ChannelManager::splice_channel`
+   now returns an `APIError::APIMisuseError`. Older versions persisted neither the
+   prior feerate (needed to derive the minimum RBF feerate floor) nor our prior
+   contribution (needed to build the RBF transaction), so an RBF attempt cannot
+   proceed.
