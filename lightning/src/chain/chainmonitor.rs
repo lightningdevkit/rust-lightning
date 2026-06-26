@@ -337,7 +337,7 @@ where C::Target: chain::Filter,
 		};
 
 		let has_pending_claims = monitor_state.monitor.has_pending_claims();
-		if has_pending_claims || get_partition_key(funding_outpoint).is_some_and(|key| key % partition_factor == 0) {
+		if has_pending_claims || get_partition_key(funding_outpoint).map(|key| key % partition_factor == 0).unwrap_or(false) {
 			log_trace!(logger, "Syncing Channel Monitor for channel {}", log_funding_info!(monitor));
 			// Even though we don't track monitor updates from chain-sync as pending, we still want
 			// updates per-channel to be well-ordered so that users don't see a

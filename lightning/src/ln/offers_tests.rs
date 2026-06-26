@@ -51,7 +51,7 @@ use crate::events::{ClosureReason, Event, MessageSendEventsProvider, PaymentFail
 use crate::ln::channelmanager::{Bolt12PaymentError, MAX_SHORT_LIVED_RELATIVE_EXPIRY, PaymentId, RecentPaymentDetails, Retry, self};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
-use crate::ln::msgs::{ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
+use crate::ln::msgs::{ChannelMessageHandler, Init, OnionMessage, OnionMessageHandler};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
@@ -61,8 +61,7 @@ use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{Destination, PeeledOnion, MessageSendInstructions};
 use crate::onion_message::offers::OffersMessage;
 use crate::onion_message::packet::ParsedOnionMessageContents;
-use crate::routing::gossip::{NodeAlias, NodeId};
-use crate::sign::{NodeSigner, Recipient};
+use crate::sign::NodeSigner;
 use crate::util::ser::Writeable;
 
 use crate::prelude::*;
