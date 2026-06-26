@@ -9530,8 +9530,10 @@ where
 		&mut self, funding_tx_signed: &mut FundingTxSigned, funding_tx: Transaction,
 		best_block_height: u32, logger: &WithChannelContext<'a, L>,
 	) {
-		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
-		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
+		debug_assert!(
+			!self.is_awaiting_monitor_update() || !self.context.monitor_pending_tx_signatures
+		);
+		debug_assert!(!self.context.is_waiting_on_peer_pending_channel_update());
 
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
 			if let Some(FundingNegotiation::AwaitingSignatures {
@@ -9684,11 +9686,11 @@ where
 			splice_negotiated: None,
 			splice_locked: None,
 		};
-		if self.is_awaiting_monitor_update() {
+		if self.is_awaiting_monitor_update() && self.context.monitor_pending_tx_signatures {
 			// Although the user may have already provided our `tx_signatures`, we must not send
 			// them if we're waiting for the monitor to durably persist the counterparty's signature
 			// for our initial commitment post-splice.
-			debug_assert!(self.context.monitor_pending_tx_signatures);
+			debug_assert!(holder_tx_signatures.is_some());
 			log_debug!(
 				logger,
 				"Waiting for async monitor update to complete prior to releasing our tx_signatures"
@@ -10643,10 +10645,6 @@ where
 						"Unexpected next_funding txid: {}; expected: {}",
 						next_funding.txid, our_next_funding_txid,
 					)));
-				}
-
-				if !session.has_received_commitment_signed() {
-					self.context.expecting_peer_commitment_signed = true;
 				}
 
 				if !session.has_holder_witnesses() {
