@@ -162,8 +162,7 @@ impl BlindedPaymentPath {
 	}
 
 	/// Create a blinded path for a trampoline payment, to be forwarded along `intermediate_nodes`.
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub(crate) fn new_for_trampoline<
+	pub fn new_for_trampoline<
 		ES: EntropySource,
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
@@ -1321,5 +1320,85 @@ mod tests {
 		)
 		.unwrap();
 		assert_eq!(blinded_payinfo.htlc_maximum_msat, 3997);
+	}
+
+	#[test]
+	fn new_for_trampoline_path_structure() {
+		// Build a trampoline blinded path with a known ordered intermediate-node list and assert
+		// that (a) the introduction node is the first configured node and (b) the number of blinded
+		// hops equals (intermediates + 1) for the recipient.
+		use super::{BlindedPaymentPath, ForwardNode, TrampolineForwardTlvs};
+		use crate::blinded_path::IntroductionNode;
+		use crate::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
+		use crate::sign::ReceiveAuthKey;
+		use crate::util::test_utils::TestKeysInterface;
+		use bitcoin::network::Network;
+		use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+		let secp_ctx = Secp256k1::new();
+		let entropy_source = TestKeysInterface::new(&[42; 32], Network::Testnet);
+
+		// Three distinct intermediate node ids (introduction first, then relays) plus a recipient.
+		let intro_node =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1; 32]).unwrap());
+		let relay_node =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[2; 32]).unwrap());
+		let recipient =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[3; 32]).unwrap());
+
+		let ordered_nodes = [intro_node, relay_node];
+
+		let forward_nodes: Vec<ForwardNode<TrampolineForwardTlvs>> = ordered_nodes
+			.iter()
+			.enumerate()
+			.map(|(i, node_id)| {
+				let next_trampoline = ordered_nodes.get(i + 1).copied().unwrap_or(recipient);
+				ForwardNode {
+					node_id: *node_id,
+					tlvs: TrampolineForwardTlvs {
+						next_trampoline,
+						payment_relay: PaymentRelay {
+							cltv_expiry_delta: 144,
+							fee_proportional_millionths: 0,
+							fee_base_msat: 0,
+						},
+						payment_constraints: PaymentConstraints {
+							max_cltv_expiry: 1_000_000,
+							htlc_minimum_msat: 0,
+						},
+						features: BlindedHopFeatures::empty(),
+						next_blinding_override: None,
+					},
+					htlc_maximum_msat: u64::MAX,
+				}
+			})
+			.collect();
+
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret: PaymentSecret([0; 32]),
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: 1_000_000,
+				htlc_minimum_msat: 1,
+			},
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+		};
+
+		let path = BlindedPaymentPath::new_for_trampoline(
+			&forward_nodes,
+			recipient,
+			ReceiveAuthKey([7; 32]),
+			payee_tlvs,
+			u64::MAX,
+			MIN_FINAL_CLTV_EXPIRY_DELTA,
+			&entropy_source,
+			&secp_ctx,
+		)
+		.unwrap();
+
+		// (a) The introduction node is the first configured (introduction) node.
+		assert_eq!(path.introduction_node(), &IntroductionNode::NodeId(intro_node));
+
+		// (b) One blinded hop per intermediate, plus one for the recipient.
+		assert_eq!(path.blinded_hops().len(), ordered_nodes.len() + 1);
 	}
 }

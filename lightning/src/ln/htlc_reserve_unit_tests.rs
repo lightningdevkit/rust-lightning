@@ -294,7 +294,8 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 			stat.value_to_self_msat
 				- (stat.pending_outbound_htlcs_amount_msat
 					+ recv_value_21 + recv_value_22
-					+ total_fee_msat + total_fee_msat
+					+ total_fee_msat
+					+ total_fee_msat
 					+ commit_tx_fee_3_htlcs),
 			stat.channel_reserve_msat
 		);
@@ -3000,7 +3001,8 @@ fn do_test_0reserve_no_outputs_keyed_anchors(payment_success: bool) {
 		// min opener balance is the fee for 4 HTLCs, the anchors, and the dust limit
 		let min_channel_size =
 			commit_tx_fee_sat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, &channel_type)
-				+ anchors_sat + dust_limit_satoshis;
+				+ anchors_sat
+				+ dust_limit_satoshis;
 		assert!(min_channel_size > 1002);
 		min_channel_size
 	};

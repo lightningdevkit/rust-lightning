@@ -3919,32 +3919,33 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		debug_assert!(our_funding_satoshis == 0 || msg_push_msat == 0);
 		let value_to_self_msat = our_funding_satoshis * 1000 + msg_push_msat;
 
-		let counterparty_shutdown_scriptpubkey =
-			if their_features.supports_upfront_shutdown_script() {
-				match &open_channel_fields.shutdown_scriptpubkey {
-					&Some(ref script) => {
-						// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-						if script.len() == 0 {
-							None
-						} else {
-							if !script::is_bolt2_compliant(&script, their_features) {
-								return Err(ChannelError::close(format!(
+		let counterparty_shutdown_scriptpubkey = if their_features
+			.supports_upfront_shutdown_script()
+		{
+			match &open_channel_fields.shutdown_scriptpubkey {
+				&Some(ref script) => {
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					if script.len() == 0 {
+						None
+					} else {
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::close(format!(
 								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {script}"
 							)));
-							}
-							Some(script.clone())
 						}
-					},
-					// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-					&None => {
-						return Err(ChannelError::close(String::from(
+						Some(script.clone())
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&None => {
+					return Err(ChannelError::close(String::from(
 						"Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"
 					)));
-					},
-				}
-			} else {
-				None
-			};
+				},
+			}
+		} else {
+			None
+		};
 
 		let shutdown_scriptpubkey =
 			if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
@@ -4855,32 +4856,33 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			)));
 		}
 
-		let counterparty_shutdown_scriptpubkey =
-			if their_features.supports_upfront_shutdown_script() {
-				match &common_fields.shutdown_scriptpubkey {
-					&Some(ref script) => {
-						// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
-						if script.len() == 0 {
-							None
-						} else {
-							if !script::is_bolt2_compliant(&script, their_features) {
-								return Err(ChannelError::close(format!(
+		let counterparty_shutdown_scriptpubkey = if their_features
+			.supports_upfront_shutdown_script()
+		{
+			match &common_fields.shutdown_scriptpubkey {
+				&Some(ref script) => {
+					// Peer is signaling upfront_shutdown and has opt-out with a 0-length script. We don't enforce anything
+					if script.len() == 0 {
+						None
+					} else {
+						if !script::is_bolt2_compliant(&script, their_features) {
+							return Err(ChannelError::close(format!(
 								"Peer is signaling upfront_shutdown but has provided an unacceptable scriptpubkey format: {script}"
 							)));
-							}
-							Some(script.clone())
 						}
-					},
-					// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
-					&None => {
-						return Err(ChannelError::close(String::from(
+						Some(script.clone())
+					}
+				},
+				// Peer is signaling upfront shutdown but don't opt-out with correct mechanism (a.k.a 0-length script). Peer looks buggy, we fail the channel
+				&None => {
+					return Err(ChannelError::close(String::from(
 						"Peer is signaling upfront_shutdown but we don't get any script. Use 0-length script to opt-out"
 					)));
-					},
-				}
-			} else {
-				None
-			};
+				},
+			}
+		} else {
+			None
+		};
 
 		self.counterparty_dust_limit_satoshis = common_fields.dust_limit_satoshis;
 		self.counterparty_max_htlc_value_in_flight_msat = cmp::min(

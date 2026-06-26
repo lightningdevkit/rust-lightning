@@ -889,7 +889,8 @@ impl<
 		K: KVStore,
 		L: Logger,
 		O: OutputSpender,
-	> ReadableArgs<(B, E, Option<F>, O, D, K, L)> for (BlockLocator, OutputSweeper<B, D, E, F, K, L, O>)
+	> ReadableArgs<(B, E, Option<F>, O, D, K, L)>
+	for (BlockLocator, OutputSweeper<B, D, E, F, K, L, O>)
 where
 	D::Target: ChangeDestinationSource,
 {
