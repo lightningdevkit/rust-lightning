@@ -5914,8 +5914,16 @@ impl<
 	/// Requests fresh async receive offer paths from the configured static invoice server, if any,
 	/// and attaches `payment_metadata` to the resulting BOLT 12 payment contexts.
 	///
-	/// The metadata is persisted with the async receive offer cache so future static-invoice
-	/// refreshes for the same offer continue to include it.
+	/// This should be called when the payment metadata needed for newly-built async receive offers
+	/// becomes available or changes, such as after completing an out-of-band negotiation for how
+	/// payers should route to this node. You do not need to call it if your async receive offers do
+	/// not require custom payment metadata, or if the async receive offer cache already contains the
+	/// metadata that should be reused for later invoice refreshes.
+	///
+	/// The metadata is persisted with the async receive offer cache so the resulting offer and later
+	/// static-invoice refreshes for the same offer continue to include it. Routers that require this
+	/// metadata to build blinded payment paths may fail static invoice generation until this method is
+	/// called with the metadata they expect.
 	pub fn refresh_async_receive_offers_with_payment_metadata(
 		&self, payment_metadata: BTreeMap<u64, Vec<u8>>,
 	) -> Result<(), ()> {
