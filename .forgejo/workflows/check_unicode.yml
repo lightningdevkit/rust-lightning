@@ -1,0 +1,35 @@
+name: Unicode listing up to date
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '42 3 * * *'
+
+jobs:
+  check-unicode:
+    runs-on: debian-trixie
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Configure fj credentials
+        # `fj` reads its token from keys.json; it has no token environment
+        # variable, so write the automatic Actions token there for the API call.
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_USER: ${{ github.actor }}
+        run: |
+          install -d -m 700 "$HOME/.local/share/forgejo-cli"
+          printf '{"hosts":{"git.rust-bitcoin.org":{"type":"Application","name":"%s","token":"%s"}}}' "$FORGEJO_USER" "$FORGEJO_TOKEN" > "$HOME/.local/share/forgejo-cli/keys.json"
+          chmod 600 "$HOME/.local/share/forgejo-cli/keys.json"
+      - name: Check unicode file state
+        env:
+          HOST: git.rust-bitcoin.org
+          REPO: ${{ github.repository }}
+        run: |
+          curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/UnicodeData.txt https://www.unicode.org/Public/UCD/latest/ucd/UnicodeData.txt
+          contrib/gen_unicode_general_category.py /tmp/UnicodeData.txt -o /tmp/unicode.rs
+          if ! diff -u lightning-types/src/unicode.rs /tmp/unicode.rs; then
+            TITLE="Unicode listing out of date: ${{ github.workflow }}"
+            RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"
+            BODY="The unicode character listing is out of date, see $RUN_URL"
+            fj -H "$HOST" issue create "$TITLE" --body "$BODY" --repo "$REPO"
+          fi
