@@ -1922,9 +1922,6 @@ impl OutboundPayments {
 			}))
 		}
 
-		// `route_params` is a required field, but is unused when sending a probe along a fixed
-		// path. Construct dummy parameters from the path, leaving the fee budget unset to match
-		// the previous behavior of not tracking one for probes.
 		let route_params = {
 			let last_hop = path.hops.last().unwrap();
 			let payment_params =
@@ -1932,7 +1929,7 @@ impl OutboundPayments {
 			RouteParameters {
 				payment_params,
 				final_value_msat: path.final_value_msat(),
-				max_total_routing_fee_msat: None,
+				max_total_routing_fee_msat: Some(path.fee_msat()),
 			}
 		};
 		let route = Route { paths: vec![path], route_params };
