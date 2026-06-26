@@ -1089,7 +1089,7 @@ macro_rules! find_all_extract {
 #[allow(missing_docs)]
 impl RawBolt11Invoice {
 	/// Hash the HRP (as bytes) and signatureless data part (as Fe32 iterator)
-	fn hash_from_parts<'s, I: Iterator<Item = Fe32> + 's>(
+	pub(crate) fn hash_from_parts<'s, I: Iterator<Item = Fe32> + 's>(
 		hrp_bytes: &[u8], data_without_signature: I,
 	) -> [u8; 32] {
 		use crate::bech32::Fe32IterExt;
