@@ -552,26 +552,59 @@ pub fn complete_interactive_funding_negotiation_for_both<'a, 'b, 'c, 'd>(
 	assert!(expected_acceptor_scripts.is_empty(), "Not all acceptor outputs were sent");
 }
 
-pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
-	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, is_0conf: bool,
+/// Arguments for [`sign_interactive_funding_tx`]. [`SignInteractiveFundingTxArgs::new`] defaults to a
+/// first-attempt splice on a confirmed channel where only the initiator contributes; augment with the
+/// builder methods as the scenario requires.
+pub struct SignInteractiveFundingTxArgs<'a, 'b, 'c, 'd> {
+	initiator: &'a Node<'b, 'c, 'd>,
+	acceptor: &'a Node<'b, 'c, 'd>,
+	is_0conf: bool,
+	acceptor_has_contribution: bool,
 	expected_replaced_txid: Option<Txid>,
+}
+
+impl<'a, 'b, 'c, 'd> SignInteractiveFundingTxArgs<'a, 'b, 'c, 'd> {
+	pub fn new(initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>) -> Self {
+		Self {
+			initiator,
+			acceptor,
+			is_0conf: false,
+			acceptor_has_contribution: false,
+			expected_replaced_txid: None,
+		}
+	}
+
+	/// The channel is zero-conf, so `splice_locked` is exchanged at signing and the initiator's
+	/// `splice_locked` is returned.
+	pub fn zero_conf(mut self) -> Self {
+		self.is_0conf = true;
+		self
+	}
+
+	/// The acceptor contributed inputs and so must also sign the funding transaction.
+	pub fn with_acceptor_contribution(mut self) -> Self {
+		self.acceptor_has_contribution = true;
+		self
+	}
+
+	/// This is an RBF replacing the negotiated candidate `prior_txid`, expected as the prior candidate
+	/// in the `TransactionType::InteractiveFunding` broadcast.
+	pub fn replacing(mut self, prior_txid: Txid) -> Self {
+		self.expected_replaced_txid = Some(prior_txid);
+		self
+	}
+}
+
+pub fn sign_interactive_funding_tx<'a, 'b, 'c, 'd>(
+	args: SignInteractiveFundingTxArgs<'a, 'b, 'c, 'd>,
 ) -> (Transaction, Option<(msgs::SpliceLocked, PublicKey)>) {
-	sign_interactive_funding_tx_with_acceptor_contribution(
+	let SignInteractiveFundingTxArgs {
 		initiator,
 		acceptor,
 		is_0conf,
-		false,
+		acceptor_has_contribution,
 		expected_replaced_txid,
-	)
-}
-
-/// `expected_replaced_txid` is the expected txid of the prior negotiated candidate in the
-/// `TransactionType::InteractiveFunding` broadcast: `None` for a first splice attempt; `Some(txid)`
-/// for an RBF replacing that prior negotiated candidate.
-pub fn sign_interactive_funding_tx_with_acceptor_contribution<'a, 'b, 'c, 'd>(
-	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, is_0conf: bool,
-	acceptor_has_contribution: bool, expected_replaced_txid: Option<Txid>,
-) -> (Transaction, Option<(msgs::SpliceLocked, PublicKey)>) {
+	} = args;
 	let node_id_initiator = initiator.node.get_our_node_id();
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 
@@ -714,7 +747,8 @@ pub fn splice_channel<'a, 'b, 'c, 'd>(
 		funding_contribution,
 		new_funding_script.clone(),
 	);
-	let (splice_tx, splice_locked) = sign_interactive_funding_tx(initiator, acceptor, false, None);
+	let (splice_tx, splice_locked) =
+		sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(initiator, acceptor));
 	assert!(splice_locked.is_none());
 
 	expect_splice_pending_event(initiator, &node_id_acceptor);
@@ -1745,7 +1779,8 @@ fn fails_initiating_concurrent_splices(reconnect: bool) {
 		}),
 	);
 
-	let (splice_tx, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false, None);
+	let (splice_tx, splice_locked) =
+		sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]));
 	assert!(splice_locked.is_none());
 
 	expect_splice_pending_event(&nodes[0], &node_1_id);
@@ -1949,8 +1984,8 @@ fn do_test_splice_tiebreak(
 		);
 
 		// Sign (acceptor has contribution) and broadcast.
-		let (tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-			&nodes[0], &nodes[1], false, true, None,
+		let (tx, splice_locked) = sign_interactive_funding_tx(
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).with_acceptor_contribution(),
 		);
 		assert!(splice_locked.is_none());
 
@@ -2017,9 +2052,8 @@ fn do_test_splice_tiebreak(
 		);
 
 		// Sign (no acceptor contribution) and broadcast.
-		let (tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-			&nodes[0], &nodes[1], false, false, None,
-		);
+		let (tx, splice_locked) =
+			sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]));
 		assert!(splice_locked.is_none());
 
 		expect_splice_pending_event(&nodes[0], &node_id_1);
@@ -2066,7 +2100,7 @@ fn do_test_splice_tiebreak(
 		);
 
 		let (new_splice_tx, splice_locked) =
-			sign_interactive_funding_tx(&nodes[1], &nodes[0], false, None);
+			sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(&nodes[1], &nodes[0]));
 		assert!(splice_locked.is_none());
 
 		expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -3582,9 +3616,12 @@ fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 		splice_ack.funding_contribution_satoshis,
 		new_funding_script,
 	);
-	let (splice_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-		&nodes[0], &nodes[1], use_0conf, true, None,
-	);
+	let mut args =
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).with_acceptor_contribution();
+	if use_0conf {
+		args = args.zero_conf();
+	}
+	let (splice_tx, splice_locked) = sign_interactive_funding_tx(args);
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
@@ -4020,7 +4057,8 @@ fn acceptor_can_cancel_queued_funding_contributed_during_counterparty_splice() {
 		new_funding_script,
 	);
 
-	let (splice_tx, splice_locked) = sign_interactive_funding_tx(initiator, acceptor, false, None);
+	let (splice_tx, splice_locked) =
+		sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(initiator, acceptor));
 	assert!(splice_locked.is_none());
 	expect_splice_pending_event(initiator, &node_id_acceptor);
 	expect_splice_pending_event(acceptor, &node_id_initiator);
@@ -6108,10 +6146,8 @@ fn test_splice_rbf_acceptor_basic() {
 	// Step 10: Sign and broadcast. The prior candidate in the broadcast's
 	// `TransactionType::InteractiveFunding` must point at the first splice tx it is replacing.
 	let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
-		&nodes[0],
-		&nodes[1],
-		false,
-		Some(first_splice_tx.compute_txid()),
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(first_splice_tx.compute_txid()),
 	);
 	assert!(splice_locked.is_none());
 
@@ -6209,10 +6245,8 @@ fn test_splice_rbf_discard_unique_contribution() {
 	);
 
 	let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
-		&nodes[0],
-		&nodes[1],
-		false,
-		Some(first_splice_tx.compute_txid()),
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(first_splice_tx.compute_txid()),
 	);
 	assert!(splice_locked.is_none());
 
@@ -6277,10 +6311,8 @@ fn test_splice_rbf_at_high_feerate() {
 		new_funding_script.clone(),
 	);
 	let (rbf_tx_1, splice_locked) = sign_interactive_funding_tx(
-		&nodes[0],
-		&nodes[1],
-		false,
-		Some(first_splice_tx.compute_txid()),
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(first_splice_tx.compute_txid()),
 	);
 	assert!(splice_locked.is_none());
 	expect_splice_pending_event(&nodes[0], &node_id_1);
@@ -6301,8 +6333,9 @@ fn test_splice_rbf_at_high_feerate() {
 		contribution,
 		new_funding_script,
 	);
-	let (_, splice_locked) =
-		sign_interactive_funding_tx(&nodes[0], &nodes[1], false, Some(rbf_tx_1.compute_txid()));
+	let (_, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).replacing(rbf_tx_1.compute_txid()),
+	);
 	assert!(splice_locked.is_none());
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -6502,8 +6535,9 @@ fn test_splice_rbf_insufficient_feerate_high() {
 		contribution,
 		new_funding_script,
 	);
-	let (_, splice_locked) =
-		sign_interactive_funding_tx(&nodes[0], &nodes[1], false, Some(splice_tx.compute_txid()));
+	let (_, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).replacing(splice_tx.compute_txid()),
+	);
 	assert!(splice_locked.is_none());
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -7127,12 +7161,10 @@ pub fn do_test_splice_rbf_tiebreak(
 		);
 
 		// Sign (acceptor has contribution) and broadcast.
-		let (rbf_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-			&nodes[0],
-			&nodes[1],
-			false,
-			true,
-			Some(first_splice_tx.compute_txid()),
+		let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+				.with_acceptor_contribution()
+				.replacing(first_splice_tx.compute_txid()),
 		);
 		assert!(splice_locked.is_none());
 
@@ -7208,12 +7240,9 @@ pub fn do_test_splice_rbf_tiebreak(
 		);
 
 		// Sign (acceptor has no contribution) and broadcast.
-		let (rbf_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-			&nodes[0],
-			&nodes[1],
-			false,
-			false,
-			Some(first_splice_tx.compute_txid()),
+		let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+				.replacing(first_splice_tx.compute_txid()),
 		);
 		assert!(splice_locked.is_none());
 
@@ -7277,7 +7306,7 @@ pub fn do_test_splice_rbf_tiebreak(
 
 		// Sign (no acceptor contribution) and broadcast.
 		let (new_splice_tx, splice_locked) =
-			sign_interactive_funding_tx(&nodes[1], &nodes[0], false, None);
+			sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(&nodes[1], &nodes[0]));
 		assert!(splice_locked.is_none());
 
 		expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -7459,8 +7488,8 @@ fn test_splice_rbf_acceptor_recontributes() {
 		new_funding_script.clone(),
 	);
 
-	let (first_splice_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-		&nodes[0], &nodes[1], false, true, None,
+	let (first_splice_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).with_acceptor_contribution(),
 	);
 	assert!(splice_locked.is_none());
 
@@ -7497,12 +7526,10 @@ fn test_splice_rbf_acceptor_recontributes() {
 	);
 
 	// Step 11: Sign (acceptor has contribution) and broadcast.
-	let (rbf_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-		&nodes[0],
-		&nodes[1],
-		false,
-		true,
-		Some(first_splice_tx.compute_txid()),
+	let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.with_acceptor_contribution()
+			.replacing(first_splice_tx.compute_txid()),
 	);
 	assert!(splice_locked.is_none());
 
@@ -7594,8 +7621,8 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 		new_funding_script,
 	);
 
-	let (_first_splice_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-		&nodes[0], &nodes[1], false, true, None,
+	let (_first_splice_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).with_acceptor_contribution(),
 	);
 	assert!(splice_locked.is_none());
 
@@ -7727,8 +7754,8 @@ fn test_splice_rbf_recontributes_feerate_too_high() {
 		new_funding_script.clone(),
 	);
 
-	let (_first_splice_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-		&nodes[0], &nodes[1], false, true, None,
+	let (_first_splice_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).with_acceptor_contribution(),
 	);
 	assert!(splice_locked.is_none());
 
@@ -7814,8 +7841,10 @@ fn test_splice_rbf_sequential() {
 		funding_contribution_1,
 		new_funding_script.clone(),
 	);
-	let (splice_tx_1, splice_locked) =
-		sign_interactive_funding_tx(&nodes[0], &nodes[1], false, Some(splice_tx_0.compute_txid()));
+	let (splice_tx_1, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(splice_tx_0.compute_txid()),
+	);
 	assert!(splice_locked.is_none());
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -7835,8 +7864,10 @@ fn test_splice_rbf_sequential() {
 		funding_contribution_2,
 		new_funding_script.clone(),
 	);
-	let (rbf_tx_final, splice_locked) =
-		sign_interactive_funding_tx(&nodes[0], &nodes[1], false, Some(splice_tx_1.compute_txid()));
+	let (rbf_tx_final, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(splice_tx_1.compute_txid()),
+	);
 	assert!(splice_locked.is_none());
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -7904,8 +7935,9 @@ fn test_splice_rbf_amends_prior_net_positive_contribution_request() {
 			contribution,
 			new_funding_script.clone(),
 		);
-		let (tx, splice_locked) =
-			sign_interactive_funding_tx(&nodes[0], &nodes[1], false, Some(replaced_txid));
+		let (tx, splice_locked) = sign_interactive_funding_tx(
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).replacing(replaced_txid),
+		);
 		assert!(splice_locked.is_none());
 		expect_splice_pending_event(&nodes[0], &node_id_1);
 		expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -8038,8 +8070,9 @@ fn test_splice_rbf_amends_prior_net_negative_contribution_request() {
 			contribution,
 			new_funding_script.clone(),
 		);
-		let (tx, splice_locked) =
-			sign_interactive_funding_tx(&nodes[0], &nodes[1], false, Some(replaced_txid));
+		let (tx, splice_locked) = sign_interactive_funding_tx(
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).replacing(replaced_txid),
+		);
 		assert!(splice_locked.is_none());
 		expect_splice_pending_event(&nodes[0], &node_id_1);
 		expect_splice_pending_event(&nodes[1], &node_id_0);
@@ -8200,8 +8233,8 @@ fn test_splice_rbf_acceptor_contributes_then_disconnects() {
 		new_funding_script.clone(),
 	);
 
-	let (_first_splice_tx, splice_locked) = sign_interactive_funding_tx_with_acceptor_contribution(
-		&nodes[0], &nodes[1], false, true, None,
+	let (_first_splice_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).with_acceptor_contribution(),
 	);
 	assert!(splice_locked.is_none());
 
@@ -9081,10 +9114,8 @@ fn test_splice_rbf_rejects_low_feerate_after_several_attempts() {
 			new_funding_script.clone(),
 		);
 		let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
-			&nodes[0],
-			&nodes[1],
-			false,
-			Some(prev_splice_tx.compute_txid()),
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+				.replacing(prev_splice_tx.compute_txid()),
 		);
 		assert!(splice_locked.is_none());
 		expect_splice_pending_event(&nodes[0], &node_id_1);
@@ -9156,10 +9187,8 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 			new_funding_script.clone(),
 		);
 		let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
-			&nodes[0],
-			&nodes[1],
-			false,
-			Some(prev_splice_tx.compute_txid()),
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+				.replacing(prev_splice_tx.compute_txid()),
 		);
 		assert!(splice_locked.is_none());
 		expect_splice_pending_event(&nodes[0], &node_id_1);
@@ -9230,7 +9259,8 @@ fn test_no_disconnect_after_splice_completes() {
 		funding_contribution,
 		new_funding_script,
 	);
-	let (_, splice_locked) = sign_interactive_funding_tx(&nodes[0], &nodes[1], false, None);
+	let (_, splice_locked) =
+		sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]));
 	assert!(splice_locked.is_none());
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
