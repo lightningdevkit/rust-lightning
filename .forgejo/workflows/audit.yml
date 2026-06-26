@@ -1,0 +1,24 @@
+name: Security Audit
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *'
+
+jobs:
+  audit:
+    runs-on: debian-trixie
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+      - name: Install Rust stable toolchain
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain stable
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+      - name: Run cargo audit
+        # RUSTSEC-2021-0145 pertains `atty`, which is a depencency of
+        # `criterion`. While the latter removed the depencency in its
+        # newest version, it would also require a higher `rustc`. We
+        # therefore avoid bumping it to allow benchmarking with our
+        # `rustc` 1.63 MSRV.
+        run: cargo audit --ignore RUSTSEC-2021-0145
