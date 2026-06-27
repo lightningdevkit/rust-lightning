@@ -31,7 +31,7 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust ${{ matrix.toolchain }} toolchain
         run: |
           rustup default ${{ matrix.toolchain }}
@@ -49,14 +49,14 @@ jobs:
       - name: Enable caching for bitcoind
         if: matrix.platform != 'windows'
         id: cache-bitcoind
-        uses: actions/cache@v4
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: bin/bitcoind-${{ runner.os }}-${{ runner.arch }}
           key: bitcoind-${{ runner.os }}-${{ runner.arch }}
       - name: Enable caching for electrs
         if: matrix.platform != 'windows'
         id: cache-electrs
-        uses: actions/cache@v4
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: bin/electrs-${{ runner.os }}-${{ runner.arch }}
           key: electrs-${{ runner.os }}-${{ runner.arch }}

@@ -9,7 +9,7 @@ jobs:
     runs-on: debian-trixie
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust stable toolchain
         run: |
           rustup default stable
