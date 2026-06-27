@@ -352,14 +352,33 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
-      - name: Install tor
-        run: |
-          sudo apt install -y tor
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
       - name: Test tor connections using lightning-net-tokio
         run: |
+          set -eu
+          # tor is preinstalled in the runner image, but we have no sudo to
+          # start the system service, so run it in the background for this step.
+          # The test routes real traffic (including to a .onion address) through
+          # the proxy, so we must wait until tor is fully bootstrapped.
+          TOR_DATA="$(mktemp -d)"
+          tor --SocksPort 9050 --DataDirectory "$TOR_DATA" \
+            --Log "notice file $TOR_DATA/tor.log" &
+          TOR_PID=$!
+          trap 'kill "$TOR_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 90); do
+            if grep -q "Bootstrapped 100%" "$TOR_DATA/tor.log" 2>/dev/null; then
+              break
+            fi
+            if ! kill -0 "$TOR_PID" 2>/dev/null; then
+              echo "tor exited before bootstrapping:"; cat "$TOR_DATA/tor.log"; exit 1
+            fi
+            sleep 2
+          done
+          if ! grep -q "Bootstrapped 100%" "$TOR_DATA/tor.log"; then
+            echo "tor failed to bootstrap within timeout:"; cat "$TOR_DATA/tor.log"; exit 1
+          fi
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
 
   notify-failure:
