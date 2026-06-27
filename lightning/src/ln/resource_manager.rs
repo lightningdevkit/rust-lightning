@@ -1549,13 +1549,18 @@ mod tests {
 	) {
 		let channels = rm.channels.lock().unwrap();
 		let channel = channels.get(&incoming_scid).unwrap();
-		let slots = channel.general_bucket.channels_slots.get(&outgoing_scid).unwrap();
-		let used_count = slots
-			.iter()
-			.filter(|slot_idx| {
-				channel.general_bucket.slots_occupied[**slot_idx as usize] == Some(outgoing_scid)
-			})
-			.count();
+		let general_bucket = &channel.general_bucket;
+		let slots = general_bucket.channels_slots.get(&outgoing_scid).unwrap();
+
+		let mut used_count = 0;
+		for entry in slots {
+			if slot_used(*entry) {
+				// A slot flagged as used by this channel must also be marked occupied in the
+				// bucket-wide bitset.
+				assert!(general_bucket.is_slot_occupied(slot_index(*entry)));
+				used_count += 1;
+			}
+		}
 		assert_eq!(used_count, expected_count);
 	}
 
@@ -1924,7 +1929,7 @@ mod tests {
 			TestCase {
 				hold_time: slow_resolve,
 				settled: true,
-				expected_reputation: 0, // effective_fee = 0 (slow unaccountable)
+				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
 				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
 			},
 			TestCase {
