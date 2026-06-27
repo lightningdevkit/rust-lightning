@@ -60,7 +60,7 @@ use crate::sign::NodeSigner;
 use crate::sync::Mutex;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
-use crate::util::config::{HTLCInterceptionFlags, UserConfig};
+use crate::util::config::{ChannelConfigUpdate, HTLCInterceptionFlags, UserConfig};
 use crate::util::ser::Writeable;
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
@@ -414,6 +414,55 @@ fn extract_static_invoice_om<'a>(
 	.pop()
 	.unwrap();
 	(peer_id, om, static_invoice.unwrap())
+}
+
+/// Extracts the next static invoice update while ignoring unrelated offer-path requests.
+fn extract_serve_static_invoice_om<'a>(
+	recipient: &'a Node, next_hop_nodes: &[&'a Node],
+) -> (PublicKey, msgs::OnionMessage, StaticInvoice) {
+	let mut static_invoice = None;
+	let mut expected_msg_type = |peeled_onion: &_| match peeled_onion {
+		PeeledOnion::AsyncPayments(AsyncPaymentsMessage::ServeStaticInvoice(msg), _, _) => {
+			static_invoice = Some(msg.invoice.clone());
+			true
+		},
+		_ => false,
+	};
+	let expected_msg_type_to_ignore = |peeled_onion: &_| {
+		matches!(
+			peeled_onion,
+			&PeeledOnion::AsyncPayments(AsyncPaymentsMessage::OfferPathsRequest(_), _, _)
+		)
+	};
+	let (peer_id, om) = extract_expected_om(
+		recipient,
+		next_hop_nodes,
+		expected_msg_type,
+		expected_msg_type_to_ignore,
+	)
+	.pop()
+	.unwrap();
+	(peer_id, om, static_invoice.unwrap())
+}
+
+/// Delivers a static invoice update and checks that the server persists it in the expected slot.
+fn expect_static_invoice_persist_event(
+	server: &Node, recipient: &Node, serve_static_invoice_om: &msgs::OnionMessage,
+	expected_invoice: &StaticInvoice, expected_invoice_slot: u16, expected_recipient_id: &[u8],
+) {
+	server
+		.onion_messenger
+		.handle_onion_message(recipient.node.get_our_node_id(), serve_static_invoice_om);
+	let mut events = server.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events.pop().unwrap() {
+		Event::PersistStaticInvoice { invoice, invoice_slot, recipient_id, .. } => {
+			assert_eq!(&invoice, expected_invoice);
+			assert_eq!(invoice_slot, expected_invoice_slot);
+			assert_eq!(recipient_id, expected_recipient_id);
+		},
+		_ => panic!(),
+	}
 }
 
 fn extract_held_htlc_available_oms<'a>(
@@ -2505,6 +2554,135 @@ fn refresh_static_invoices_for_used_offers() {
 	let keysend_preimage = extract_payment_preimage(&claimable_ev);
 	let res = claim_payment_along_route(ClaimAlongRouteArgs::new(sender, route, keysend_preimage));
 	assert_eq!(res.0, Some(PaidBolt12Invoice::StaticInvoice(updated_invoice)));
+}
+
+/// Checks that a used async receive offer gets a fresh server-side static invoice when a new
+/// channel becomes usable. Used offers may already be published, so they should not wait for the
+/// normal invoice refresh threshold after local payment paths change.
+#[test]
+fn refresh_static_invoices_for_used_offers_when_channel_opens() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
+
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let server = &nodes[1];
+	let recipient = &nodes[2];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(recipient, &[&nodes[0], server]);
+
+	let flow_res = pass_static_invoice_server_messages(server, recipient, recipient_id.clone());
+	let original_invoice = flow_res.invoice;
+	assert_eq!(original_invoice.payment_paths().len(), 1);
+
+	// Mark the offer as used so the cache treats it as potentially published by the application.
+	let _offer = recipient.node.get_async_receive_offer().unwrap();
+
+	// Keep onion delivery direct so the test only checks that opening a channel refreshes the
+	// invoice after its forwarding information is available.
+	server.message_router.peers_override.lock().unwrap().push(recipient.node.get_our_node_id());
+	recipient.message_router.peers_override.lock().unwrap().push(server.node.get_our_node_id());
+
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let (peer_node_id, serve_static_invoice_om, updated_invoice) =
+		extract_serve_static_invoice_om(recipient, &[server]);
+	assert_eq!(peer_node_id, server.node.get_our_node_id());
+	assert_ne!(original_invoice, updated_invoice);
+	assert_eq!(updated_invoice.payment_paths().len(), 2);
+
+	expect_static_invoice_persist_event(
+		server,
+		recipient,
+		&serve_static_invoice_om,
+		&updated_invoice,
+		flow_res.invoice_slot,
+		&recipient_id,
+	);
+}
+
+/// Checks that changed forwarding parameters refresh the static invoice for a used offer without
+/// waiting for the normal invoice refresh threshold.
+#[test]
+fn refresh_static_invoices_for_used_offers_when_forwarding_fees_change() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
+
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+	let server = &nodes[1];
+	let recipient = &nodes[2];
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(recipient, &[&nodes[0], server]);
+
+	let flow_res = pass_static_invoice_server_messages(server, recipient, recipient_id.clone());
+	let original_invoice = flow_res.invoice;
+	let _offer = recipient.node.get_async_receive_offer().unwrap();
+
+	// Keep onion delivery direct so the test only checks the forwarding update trigger.
+	server.message_router.peers_override.lock().unwrap().push(recipient.node.get_our_node_id());
+	recipient.message_router.peers_override.lock().unwrap().push(server.node.get_our_node_id());
+
+	let channel = server
+		.node
+		.list_channels()
+		.into_iter()
+		.find(|channel| channel.counterparty.node_id == recipient.node.get_our_node_id())
+		.unwrap();
+	let updated_fee_base_msat = channel.config.unwrap().forwarding_fee_base_msat + 10;
+	let config_update = ChannelConfigUpdate {
+		forwarding_fee_base_msat: Some(updated_fee_base_msat),
+		..ChannelConfigUpdate::default()
+	};
+	server
+		.node
+		.update_partial_channel_config(
+			&recipient.node.get_our_node_id(),
+			&[channel.channel_id],
+			&config_update,
+		)
+		.unwrap();
+	let channel_update = get_event_msg!(
+		server,
+		MessageSendEvent::SendChannelUpdate,
+		recipient.node.get_our_node_id()
+	);
+	recipient.node.handle_channel_update(server.node.get_our_node_id(), &channel_update);
+
+	let (peer_node_id, serve_static_invoice_om, updated_invoice) =
+		extract_serve_static_invoice_om(recipient, &[server]);
+	assert_eq!(peer_node_id, server.node.get_our_node_id());
+	assert_ne!(original_invoice, updated_invoice);
+	assert_eq!(updated_invoice.payment_paths().len(), 1);
+	assert_eq!(updated_invoice.payment_paths()[0].payinfo.fee_base_msat, updated_fee_base_msat);
+
+	expect_static_invoice_persist_event(
+		server,
+		recipient,
+		&serve_static_invoice_om,
+		&updated_invoice,
+		flow_res.invoice_slot,
+		&recipient_id,
+	);
 }
 
 #[cfg_attr(feature = "std", ignore)]
