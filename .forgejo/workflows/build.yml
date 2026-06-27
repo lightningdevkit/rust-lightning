@@ -62,6 +62,14 @@ jobs:
     strategy:
       fail-fast: false
     runs-on: debian-trixie
+    # Codecov auto-detects only a fixed set of CI providers (not Forgejo), so the
+    # commit/branch/PR context is passed to the CLI explicitly in the steps below.
+    # CODECOV_PR is empty on non-pull_request events and is then omitted.
+    env:
+      CODECOV_SLUG: ${{ github.repository }}
+      CODECOV_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CODECOV_BRANCH: ${{ github.head_ref || github.ref_name }}
+      CODECOV_PR: ${{ github.event.pull_request.number }}
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -77,10 +85,13 @@ jobs:
           cargo llvm-cov --features rest-client,rpc-client,tokio,serde --codecov --hide-instantiations --output-path=target/codecov.json
           curl --verbose -O https://cli.codecov.io/latest/linux/codecov
           chmod +x codecov
+          # Pass the commit context manually since codecov can't detect Forgejo.
+          CC="--git-service github --slug $CODECOV_SLUG --sha $CODECOV_SHA --branch $CODECOV_BRANCH"
+          if [ -n "${CODECOV_PR:-}" ]; then CC="$CC --pr $CODECOV_PR"; fi
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
-          ./codecov --verbose upload-process --disable-search --fail-on-error -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'tests'
+          ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'tests'
           cargo clean
       - name: Clone fuzzing corpus
         run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
@@ -96,11 +107,14 @@ jobs:
       - name: Run fuzz coverage generation
         run: |
           ./contrib/generate_fuzz_coverage.sh --output-dir `pwd` --output-codecov-json
+          # Pass the commit context manually since codecov can't detect Forgejo.
+          CC="--git-service github --slug $CODECOV_SLUG --sha $CODECOV_SHA --branch $CODECOV_BRANCH"
+          if [ -n "${CODECOV_PR:-}" ]; then CC="$CC --pr $CODECOV_PR"; fi
           # Could you use this to fake the coverage report for your PR? Sure.
           # Will anyone be impressed by your amazing coverage? No
           # Maybe if codecov wasn't broken we wouldn't need to do this...
-          ./codecov --verbose upload-process --disable-search --fail-on-error -f fuzz-fake-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-fake-hashes'
-          ./codecov --verbose upload-process --disable-search --fail-on-error -f fuzz-real-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-real-hashes'
+          ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f fuzz-fake-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-fake-hashes'
+          ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f fuzz-real-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-real-hashes'
 
   benchmark:
     runs-on: debian-trixie
