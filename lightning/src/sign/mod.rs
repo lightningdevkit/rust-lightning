@@ -2884,3 +2884,112 @@ pub mod benches {
 		}
 	}
 }
+
+#[cfg(test)]
+mod static_output_tests {
+	use super::{KeysManager, STATIC_PAYMENT_KEY_COUNT};
+	use crate::sign::SignerProvider;
+
+	fn keys_id(counter: u32) -> [u8; 32] {
+		let mut id = [7u8; 32];
+		id[0..4].copy_from_slice(&counter.to_be_bytes());
+		id
+	}
+
+	#[test]
+	fn v2_destination_and_shutdown_scripts_are_per_channel() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, true);
+
+		let dest_a = keys.get_destination_script(keys_id(0)).unwrap();
+		let dest_b = keys.get_destination_script(keys_id(1)).unwrap();
+		let shutdown_a = keys.get_shutdown_scriptpubkey(keys_id(0)).unwrap().into_inner();
+		let shutdown_b = keys.get_shutdown_scriptpubkey(keys_id(1)).unwrap().into_inner();
+
+		// Distinct channels get distinct destination and shutdown scripts.
+		assert_ne!(dest_a, dest_b);
+		assert_ne!(shutdown_a, shutdown_b);
+		// Destination and shutdown scripts for the same channel are independent.
+		assert_ne!(dest_a, shutdown_a);
+		// They are not the single legacy script.
+		assert_ne!(dest_a, keys.destination_script);
+	}
+
+	#[test]
+	fn v1_scripts_are_static() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, false);
+
+		let dest_a = keys.get_destination_script(keys_id(0)).unwrap();
+		let dest_b = keys.get_destination_script(keys_id(1)).unwrap();
+		let shutdown_a = keys.get_shutdown_scriptpubkey(keys_id(0)).unwrap().into_inner();
+		let shutdown_b = keys.get_shutdown_scriptpubkey(keys_id(1)).unwrap().into_inner();
+
+		assert_eq!(dest_a, dest_b);
+		assert_eq!(dest_a, keys.destination_script);
+		assert_eq!(shutdown_a, shutdown_b);
+	}
+
+	#[test]
+	fn v2_scripts_are_re_derivable_across_restart() {
+		// `starting_time_*` differ but the seed and `channel_keys_id` are the same, so the same
+		// scripts must be re-derived (these only depend on the seed and `channel_keys_id`).
+		let keys_a = KeysManager::new(&[42; 32], 1, 2, true);
+		let keys_b = KeysManager::new(&[42; 32], 3, 4, true);
+
+		assert_eq!(
+			keys_a.get_destination_script(keys_id(5)).unwrap(),
+			keys_b.get_destination_script(keys_id(5)).unwrap()
+		);
+		assert_eq!(
+			keys_a.get_shutdown_scriptpubkey(keys_id(5)).unwrap().into_inner(),
+			keys_b.get_shutdown_scriptpubkey(keys_id(5)).unwrap().into_inner()
+		);
+	}
+
+	#[test]
+	fn v2_scripts_are_recoverable_via_chain_scan() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, true);
+		let possible_spks = keys.possible_v2_static_output_spks();
+		assert_eq!(possible_spks.len(), usize::from(STATIC_PAYMENT_KEY_COUNT) * 2);
+
+		for counter in 0..16 {
+			let id = keys_id(counter);
+			let dest = keys.get_destination_script(id).unwrap();
+			let shutdown = keys.get_shutdown_scriptpubkey(id).unwrap().into_inner();
+			assert!(possible_spks.contains(&dest));
+			assert!(possible_spks.contains(&shutdown));
+		}
+	}
+
+	#[test]
+	fn find_static_output_key_matches_handed_out_scripts() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, true);
+		let id = keys_id(3);
+
+		// Per-channel destination key resolves with the matching `channel_keys_id`.
+		let dest = keys.get_destination_script(id).unwrap();
+		let dest_key = keys.find_static_output_key(Some(id), &dest).expect("destination key");
+		assert_eq!(keys.p2wpkh_spk_for_key(&dest_key), dest);
+
+		// Per-channel shutdown key resolves with the matching `channel_keys_id`.
+		let shutdown = keys.get_shutdown_scriptpubkey(id).unwrap().into_inner();
+		let shutdown_key = keys.find_static_output_key(Some(id), &shutdown).expect("shutdown key");
+		assert_eq!(keys.p2wpkh_spk_for_key(&shutdown_key), shutdown);
+
+		// A per-channel script does not resolve under the wrong `channel_keys_id`.
+		assert!(keys.find_static_output_key(Some(keys_id(4)), &dest).is_none());
+
+		// Per-channel scripts also resolve without a `channel_keys_id` (seed-only recovery) by
+		// scanning the full set of possible keys.
+		let recovered =
+			keys.find_static_output_key(None, &dest).expect("recovered destination key");
+		assert_eq!(keys.p2wpkh_spk_for_key(&recovered), dest);
+
+		// Legacy scripts always resolve, even without a `channel_keys_id`.
+		let legacy_dest = keys.destination_script.clone();
+		assert!(keys.find_static_output_key(None, &legacy_dest).is_some());
+
+		// Unknown scripts never resolve.
+		let unknown = keys.get_destination_script(keys_id(9)).unwrap();
+		assert!(keys.find_static_output_key(Some(keys_id(8)), &unknown).is_none());
+	}
+}
