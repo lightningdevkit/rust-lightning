@@ -5905,6 +5905,17 @@ impl<
 		}
 	}
 
+	fn force_refresh_async_receive_static_invoices(&self) {
+		let router = &self.router;
+
+		// Only collect peers and usable channels when async receiving is configured. This avoids reading
+		// channels during state transitions when there is no static invoice to refresh.
+		self.flow.force_refresh_async_receive_static_invoices(
+			|| (self.get_peers_for_blinded_path(), self.list_usable_channels()),
+			router,
+		);
+	}
+
 	#[cfg(test)]
 	pub(crate) fn test_check_refresh_async_receive_offers(&self) {
 		self.check_refresh_async_receive_offer_cache(false);
