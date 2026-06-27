@@ -17,7 +17,7 @@ jobs:
     runs-on: debian-trixie
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust stable toolchain
         run: |
           rustup default stable
@@ -64,7 +64,7 @@ jobs:
     runs-on: debian-trixie
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
       - name: Install Rust stable toolchain
@@ -108,13 +108,13 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           rustup default ${{ env.TOOLCHAIN }}
       - name: Cache routing graph snapshot
         id: cache-graph
-        uses: actions/cache@v4
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: lightning/net_graph-2023-12-10.bin
           key: ldk-net_graph-v0.0.118-2023-12-10.bin
@@ -131,7 +131,7 @@ jobs:
           EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM: e94b38ef4b3ce683893bf6a3ee28d60cb37c73b059403ff77b7e7458157968c2
       - name: Cache scorer snapshot
         id: cache-scorer
-        uses: actions/cache@v4
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: lightning/scorer-2023-12-10.bin
           key: ldk-scorer-v0.0.118-2023-12-10.bin
@@ -172,7 +172,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
@@ -203,7 +203,7 @@ jobs:
       TOOLCHAIN: beta
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
@@ -218,7 +218,7 @@ jobs:
       TOOLCHAIN: 1.75
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           rustup default ${{ env.TOOLCHAIN }}
@@ -235,7 +235,7 @@ jobs:
       TOOLCHAIN: 1.75
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           rustup default ${{ env.TOOLCHAIN }}
@@ -311,7 +311,7 @@ jobs:
       TOOLCHAIN: stable
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           rustup default ${{ env.TOOLCHAIN }}
@@ -332,7 +332,7 @@ jobs:
       TOOLCHAIN: 1.75.0
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           rustup default ${{ env.TOOLCHAIN }}
@@ -351,7 +351,7 @@ jobs:
       TOOLCHAIN: 1.75.0
     steps:
       - name: Checkout source code
-        uses: actions/checkout@v4
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
           rustup default ${{ env.TOOLCHAIN }}
