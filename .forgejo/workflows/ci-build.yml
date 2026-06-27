@@ -23,11 +23,7 @@ jobs:
             || fromJSON('["1.75.0"]') }}
         exclude:
           - platform: windows
-            toolchain: 1.75.0
-          - platform: windows
-            toolchain: beta
           - platform: macos
-            toolchain: beta
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout source code
