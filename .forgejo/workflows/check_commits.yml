@@ -21,7 +21,7 @@ jobs:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Fetch full tree and rebase on upstream
         run: |
           git remote add upstream https://git.rust-bitcoin.org/lightningdevkit/rust-lightning
