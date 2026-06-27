@@ -115,6 +115,35 @@ jobs:
           # Maybe if codecov wasn't broken we wouldn't need to do this...
           ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f fuzz-fake-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-fake-hashes'
           ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f fuzz-real-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-real-hashes'
+      - name: Comment the codecov report link on the PR
+        # Codecov's own PR comment relies on CI environment detection (broken
+        # under Forgejo), so post a link to the commit's report ourselves. A
+        # hidden marker makes the comment sticky: update it instead of piling up
+        # a new comment on every push. Only runs for pull requests.
+        if: github.event.pull_request.number
+        env:
+          API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          set -eu
+          AUTH="Authorization: token ${FORGEJO_TOKEN}"
+          URL="https://app.codecov.io/github/${REPO}/commit/${CODECOV_SHA}"
+          MARKER="<!-- codecov-report-link -->"
+          BODY="${MARKER}"$'\n'"[Coverage report for this commit on Codecov](${URL})"
+
+          # Update an existing sticky comment if present, otherwise create one.
+          CID="$(curl -fsS -H "$AUTH" "$API/repos/$REPO/issues/$CODECOV_PR/comments?limit=50" \
+            | jq -r --arg m "$MARKER" 'map(select((.body // "") | contains($m))) | .[0].id // empty')"
+          if [ -n "$CID" ]; then
+            curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+              -X PATCH "$API/repos/$REPO/issues/comments/$CID" \
+              -d "$(jq -n --arg b "$BODY" '{body: $b}')" >/dev/null
+          else
+            curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+              -X POST "$API/repos/$REPO/issues/$CODECOV_PR/comments" \
+              -d "$(jq -n --arg b "$BODY" '{body: $b}')" >/dev/null
+          fi
 
   benchmark:
     runs-on: debian-trixie
