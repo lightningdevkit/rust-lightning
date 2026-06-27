@@ -107,6 +107,20 @@ pub trait ScoreLookUp {
 	fn channel_penalty_msat(
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64;
+
+	/// Returns score parameters tuned for a background liquidity probe of `amount_msat`.
+	///
+	/// The default implementation returns `score_params` unchanged. Scorers that support
+	/// probe path diversity (e.g. [`ProbabilisticScorer`]) override this to apply a diversity
+	/// penalty so that successive probes to the same target take different paths.
+	fn params_for_probe(
+		&self, score_params: &Self::ScoreParams, _amount_msat: u64,
+	) -> Self::ScoreParams
+	where
+		Self::ScoreParams: Clone,
+	{
+		score_params.clone()
+	}
 }
 
 /// `ScoreUpdate` is used to update the scorer's internal state after a payment attempt.
@@ -148,6 +162,15 @@ impl<S: ScoreLookUp, T: Deref<Target=S>> ScoreLookUp for T {
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams
 	) -> u64 {
 		self.deref().channel_penalty_msat(candidate, usage, score_params)
+	}
+
+	fn params_for_probe(
+		&self, score_params: &Self::ScoreParams, amount_msat: u64,
+	) -> Self::ScoreParams
+	where
+		Self::ScoreParams: Clone,
+	{
+		self.deref().params_for_probe(score_params, amount_msat)
 	}
 }
 
@@ -331,6 +354,15 @@ impl<'a, T: Score> ScoreLookUp for MultiThreadedScoreLockRead<'a, T> {
 		&self, candidate: &CandidateRouteHop, usage: ChannelUsage, score_params: &Self::ScoreParams,
 	) -> u64 {
 		self.0.channel_penalty_msat(candidate, usage, score_params)
+	}
+
+	fn params_for_probe(
+		&self, score_params: &Self::ScoreParams, amount_msat: u64,
+	) -> Self::ScoreParams
+	where
+		Self::ScoreParams: Clone,
+	{
+		self.0.params_for_probe(score_params, amount_msat)
 	}
 }
 
@@ -835,6 +867,34 @@ impl ProbabilisticScoringFeeParameters {
 	/// Clears the list of manual penalties that are applied during path finding.
 	pub fn clear_manual_penalties(&mut self) {
 		self.manual_node_penalties = new_hash_map();
+	}
+
+	/// Returns score parameters suitable for background probing path selection.
+	///
+	/// If [`Self::probing_diversity_penalty_msat`] is zero, sets it to a value comparable to the
+	/// other routing penalties at `amount_msat`, following the guidance on
+	/// [`Self::probing_diversity_penalty_msat`].
+	pub fn for_probing(&self, amount_msat: u64) -> Self {
+		let mut params = self.clone();
+		if params.probing_diversity_penalty_msat == 0 {
+			params.probing_diversity_penalty_msat = params
+				.base_penalty_msat
+				.saturating_add(params.historical_liquidity_penalty_multiplier_msat)
+				.saturating_add(
+					params.base_penalty_amount_multiplier_msat.saturating_mul(amount_msat)
+						/ (1_u64 << 30),
+				)
+				.saturating_add(
+					params
+						.historical_liquidity_penalty_amount_multiplier_msat
+						.saturating_mul(amount_msat)
+						/ AMOUNT_PENALTY_DIVISOR,
+					// In `combined_penalty_msat`, `negative_log10_times_2048` is on the order of
+					// 2048 for a typical worst-case channel, cancelling the `/ 2048` in that
+					// function and leaving `AMOUNT_PENALTY_DIVISOR` as the effective divisor.
+				);
+		}
+		params
 	}
 }
 
@@ -1724,6 +1784,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for Probabilisti
 			.saturating_add(anti_probing_penalty_msat)
 			.saturating_add(base_penalty_msat)
 	}
+
+	fn params_for_probe(
+		&self, score_params: &ProbabilisticScoringFeeParameters, amount_msat: u64,
+	) -> ProbabilisticScoringFeeParameters {
+		score_params.for_probing(amount_msat)
+	}
 }
 
 impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for ProbabilisticScorer<G, L> {
@@ -1894,6 +1960,12 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreLookUp for CombinedScor
 		score_params: &ProbabilisticScoringFeeParameters,
 	) -> u64 {
 		self.scorer.channel_penalty_msat(candidate, usage, score_params)
+	}
+
+	fn params_for_probe(
+		&self, score_params: &ProbabilisticScoringFeeParameters, amount_msat: u64,
+	) -> ProbabilisticScoringFeeParameters {
+		self.scorer.params_for_probe(score_params, amount_msat)
 	}
 }
 
@@ -4332,6 +4404,34 @@ mod tests {
 		// Once we've gotten halfway through the day our penalty is 1/4 the configured value.
 		scorer.time_passed(Duration::from_secs(86400/2 + 1));
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 250_000);
+	}
+
+	#[test]
+	fn for_probing_sets_diversity_penalty() {
+		let params = ProbabilisticScoringFeeParameters::default();
+		let amount_msat = 100_000;
+		let probed = params.for_probing(amount_msat);
+		let expected = params
+			.base_penalty_msat
+			.saturating_add(params.historical_liquidity_penalty_multiplier_msat)
+			.saturating_add(
+				params.base_penalty_amount_multiplier_msat.saturating_mul(amount_msat)
+					/ (1_u64 << 30),
+			)
+			.saturating_add(
+				params
+					.historical_liquidity_penalty_amount_multiplier_msat
+					.saturating_mul(amount_msat)
+					/ super::AMOUNT_PENALTY_DIVISOR,
+			);
+		assert_eq!(probed.probing_diversity_penalty_msat, expected);
+	}
+
+	#[test]
+	fn for_probing_leaves_existing_penalty() {
+		let mut params = ProbabilisticScoringFeeParameters::default();
+		params.probing_diversity_penalty_msat = 42;
+		assert_eq!(params.for_probing(100_000).probing_diversity_penalty_msat, 42);
 	}
 }
 

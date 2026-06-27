@@ -4065,6 +4065,7 @@ mod tests {
 			payment_params: PaymentParameters::for_keysend(recipient, u32::MAX, true),
 			final_value_msat: u64::MAX,
 			max_total_routing_fee_msat: Some(u64::MAX),
+			background_probe: false,
 		};
 		route_params.payment_params.max_total_cltv_expiry_delta = u32::MAX;
 		let recipient_onion = RecipientOnionFields::spontaneous_empty(u64::MAX);

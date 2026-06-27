@@ -100,7 +100,7 @@ impl<
 		L: Logger,
 		ES: EntropySource,
 		S: Deref,
-		SP: Sized,
+		SP: Sized + Clone,
 		Sc: ScoreLookUp<ScoreParams = SP>,
 	> Router for DefaultRouter<G, L, ES, S, SP, Sc>
 where
@@ -115,12 +115,27 @@ where
 		inflight_htlcs: InFlightHtlcs
 	) -> Result<Route, &'static str> {
 		let random_seed_bytes = self.entropy_source.get_secure_random_bytes();
-		find_route(
-			payer, params, &self.network_graph, first_hops, &self.logger,
-			&ScorerAccountingForInFlightHtlcs::new(self.scorer.read_lock(), &inflight_htlcs),
-			&self.score_params,
-			&random_seed_bytes
-		)
+
+		if params.background_probe {
+			let score_params = self.scorer.read_lock().params_for_probe(
+				&self.score_params, params.final_value_msat,
+			);
+			find_route(
+				payer, params, &self.network_graph, first_hops, &self.logger,
+				&ScorerAccountingForInFlightHtlcs::new(
+					self.scorer.read_lock(), &inflight_htlcs,
+				),
+				&score_params, &random_seed_bytes,
+			)
+		} else {
+			find_route(
+				payer, params, &self.network_graph, first_hops, &self.logger,
+				&ScorerAccountingForInFlightHtlcs::new(
+					self.scorer.read_lock(), &inflight_htlcs,
+				),
+				&self.score_params, &random_seed_bytes,
+			)
+		}
 	}
 
 	#[rustfmt::skip]
@@ -403,6 +418,15 @@ where
 		} else {
 			self.scorer.channel_penalty_msat(candidate, usage, score_params)
 		}
+	}
+
+	fn params_for_probe(
+		&self, score_params: &Self::ScoreParams, amount_msat: u64,
+	) -> Self::ScoreParams
+	where
+		Self::ScoreParams: Clone,
+	{
+		self.scorer.params_for_probe(score_params, amount_msat)
 	}
 }
 
@@ -890,6 +914,7 @@ impl Readable for Route {
 			payment_params: payment_params.0.unwrap(),
 			final_value_msat: final_value_msat.0.unwrap(),
 			max_total_routing_fee_msat,
+			background_probe: false,
 		};
 
 		Ok(Route { paths, route_params })
@@ -914,6 +939,10 @@ pub struct RouteParameters {
 	///
 	/// Note that values below a few sats may result in some paths being spuriously ignored.
 	pub max_total_routing_fee_msat: Option<u64>,
+
+	/// When true, indicates this route lookup is for a background liquidity probe rather than
+	/// a payment. [`DefaultRouter`] uses this to call [`ScoreLookUp::params_for_probe`] before routing.
+	pub(crate) background_probe: bool,
 }
 
 impl RouteParameters {
@@ -922,7 +951,38 @@ impl RouteParameters {
 	/// [`Self::max_total_routing_fee_msat`] defaults to 1% of the payment amount + 50 sats
 	#[rustfmt::skip]
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
-		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
+		Self {
+			payment_params,
+			final_value_msat,
+			max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000),
+			background_probe: false,
+		}
+	}
+
+	/// Constructs [`RouteParameters`] for background liquidity probing to `target_node_id`.
+	///
+	/// Unlike [`Self::from_payment_params_and_value`], this sets [`Self::max_total_routing_fee_msat`]
+	/// to `None`, leaving routing fees uncapped during path selection, sets
+	/// [`PaymentParameters::max_path_count`] to `1` so the full probe amount is carried on a single
+	/// path, and marks the route lookup as a background probe so that [`DefaultRouter`] applies
+	/// [`ScoreLookUp::params_for_probe`](crate::routing::scoring::ScoreLookUp::params_for_probe)
+	/// automatically.
+	///
+	/// Callers of the free [`find_route`] function must also call
+	/// [`ScoreLookUp::params_for_probe`](crate::routing::scoring::ScoreLookUp::params_for_probe)
+	/// themselves and pass the returned params to [`find_route`].
+	pub fn from_probe_target(
+		target_node_id: PublicKey, amount_msat: u64, final_cltv_expiry_delta: u32,
+	) -> Self {
+		let payment_params =
+			PaymentParameters::from_node_id(target_node_id, final_cltv_expiry_delta)
+				.with_max_path_count(1);
+		Self {
+			payment_params,
+			final_value_msat: amount_msat,
+			max_total_routing_fee_msat: None,
+			background_probe: true,
+		}
 	}
 
 	/// Sets the maximum number of hops that can be included in a payment path, based on the provided
@@ -971,6 +1031,7 @@ impl Readable for RouteParameters {
 			payment_params,
 			final_value_msat: final_value_msat.0.unwrap(),
 			max_total_routing_fee_msat,
+			background_probe: false,
 		})
 	}
 }
@@ -3923,7 +3984,9 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 		}
 	}
 
-	let route = Route { paths, route_params: route_params.clone() };
+	let mut stored_route_params = route_params.clone();
+	stored_route_params.background_probe = false;
+	let route = Route { paths, route_params: stored_route_params };
 
 	// Make sure we would never create a route whose total fees exceed max_total_routing_fee_msat.
 	if let Some(max_total_routing_fee_msat) = route_params.max_total_routing_fee_msat {
@@ -4109,15 +4172,15 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, P2PGossipSync};
 	use crate::routing::router::{
-		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, get_route,
-		BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path, Payee,
-		PaymentParameters, PublicHopCandidate, Route, RouteHint, RouteHintHop, RouteHop,
+		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, find_route,
+		get_route, BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path,
+		Payee, PaymentParameters, PublicHopCandidate, Route, RouteHint, RouteHintHop, RouteHop,
 		RouteParameters, RoutingFees, ScorerAccountingForInFlightHtlcs,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
 	};
 	use crate::routing::scoring::{
 		ChannelUsage, FixedPenaltyScorer, ProbabilisticScorer, ProbabilisticScoringDecayParameters,
-		ProbabilisticScoringFeeParameters, ScoreLookUp,
+		ProbabilisticScoringFeeParameters, ScoreLookUp, ScoreUpdate,
 	};
 	use crate::routing::test_utils::*;
 	use crate::routing::utxo::UtxoResult;
@@ -4307,6 +4370,177 @@ mod tests {
 		route_params.payment_params.max_path_length = 1;
 		get_route(&our_id, &route_params, &network_graph.read_only(), None,
 			Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap_err();
+	}
+
+	#[test]
+	fn find_probe_route_basic() {
+		let (secp_ctx, network_graph, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let decay_params = ProbabilisticScoringDecayParameters::default();
+		let scorer =
+			ProbabilisticScorer::new(decay_params, Arc::clone(&network_graph), Arc::clone(&logger));
+		let amount_msat = 100_000;
+		let route_params = RouteParameters::from_probe_target(nodes[2], amount_msat, 42);
+		let score_params =
+			scorer.params_for_probe(&ProbabilisticScoringFeeParameters::default(), amount_msat);
+		let random_seed_bytes = [42; 32];
+
+		let route = find_route(
+			&our_id,
+			&route_params,
+			&network_graph,
+			None,
+			Arc::clone(&logger),
+			&scorer,
+			&score_params,
+			&random_seed_bytes,
+		)
+		.unwrap();
+		assert!(!route.paths.is_empty());
+		assert!(route.paths[0].hops.len() >= 2);
+	}
+
+	#[test]
+	fn find_probe_route_diversity() {
+		use core::time::Duration;
+
+		// Diamond topology with two equal-cost 2-hop paths:
+		//        B (nodes[0])
+		//       / \
+		//  our_id   D (nodes[2], target)
+		//       \ /
+		//        C (nodes[1])
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
+		let (our_privkey, our_id, privkeys, nodes) = get_nodes(&secp_ctx);
+		let target = nodes[2];
+
+		let add_bidir_channel =
+			|scid: u64, node_a: &SecretKey, node_b: &SecretKey, features_id: u8| {
+				add_channel(
+					&gossip_sync,
+					&secp_ctx,
+					node_a,
+					node_b,
+					ChannelFeatures::from_le_bytes(id_to_feature_flags(features_id)),
+					scid,
+				);
+				for (key, channel_flags) in [(node_a, 0u8), (node_b, 1u8)] {
+					update_channel(
+						&gossip_sync,
+						&secp_ctx,
+						key,
+						UnsignedChannelUpdate {
+							chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+							short_channel_id: scid,
+							timestamp: 1,
+							message_flags: 1,
+							channel_flags,
+							cltv_expiry_delta: 18,
+							htlc_minimum_msat: 0,
+							htlc_maximum_msat: MAX_VALUE_MSAT,
+							fee_base_msat: 0,
+							fee_proportional_millionths: 0,
+							excess_data: Vec::new(),
+						},
+					);
+				}
+			};
+
+		add_bidir_channel(1, &our_privkey, &privkeys[0], 1);
+		add_or_update_node(
+			&gossip_sync,
+			&secp_ctx,
+			&privkeys[0],
+			NodeFeatures::from_le_bytes(id_to_feature_flags(1)),
+			0,
+		);
+		add_bidir_channel(2, &our_privkey, &privkeys[1], 2);
+		add_or_update_node(
+			&gossip_sync,
+			&secp_ctx,
+			&privkeys[1],
+			NodeFeatures::from_le_bytes(id_to_feature_flags(2)),
+			0,
+		);
+		add_bidir_channel(3, &privkeys[0], &privkeys[2], 3);
+		add_or_update_node(
+			&gossip_sync,
+			&secp_ctx,
+			&privkeys[2],
+			NodeFeatures::from_le_bytes(id_to_feature_flags(3)),
+			0,
+		);
+		add_bidir_channel(4, &privkeys[1], &privkeys[2], 4);
+
+		let decay_params = ProbabilisticScoringDecayParameters::default();
+		let mut scorer =
+			ProbabilisticScorer::new(decay_params, Arc::clone(&network_graph), Arc::clone(&logger));
+		let amount_msat = 100_000;
+		let route_params = RouteParameters::from_probe_target(target, amount_msat, 42);
+		let score_params =
+			scorer.params_for_probe(&ProbabilisticScoringFeeParameters::default(), amount_msat);
+		let random_seed_bytes = [42; 32];
+
+		let route1 = find_route(
+			&our_id,
+			&route_params,
+			&network_graph,
+			None,
+			Arc::clone(&logger),
+			&scorer,
+			&score_params,
+			&random_seed_bytes,
+		)
+		.unwrap();
+		let first_hop_scid_1 = route1.paths[0].hops[0].short_channel_id;
+
+		scorer.probe_successful(&route1.paths[0], Duration::from_secs(1));
+
+		let route2 = find_route(
+			&our_id,
+			&route_params,
+			&network_graph,
+			None,
+			Arc::clone(&logger),
+			&scorer,
+			&score_params,
+			&random_seed_bytes,
+		)
+		.unwrap();
+		let first_hop_scid_2 = route2.paths[0].hops[0].short_channel_id;
+		assert_ne!(first_hop_scid_1, first_hop_scid_2);
+
+		// Without diversity penalty, the same first hop should be selected again.
+		let no_diversity_params = ProbabilisticScoringFeeParameters::default();
+		let route3 = find_route(
+			&our_id,
+			&route_params,
+			&network_graph,
+			None,
+			Arc::clone(&logger),
+			&scorer,
+			&no_diversity_params,
+			&random_seed_bytes,
+		)
+		.unwrap();
+		let route4 = find_route(
+			&our_id,
+			&route_params,
+			&network_graph,
+			None,
+			Arc::clone(&logger),
+			&scorer,
+			&no_diversity_params,
+			&random_seed_bytes,
+		)
+		.unwrap();
+		assert_eq!(
+			route3.paths[0].hops[0].short_channel_id,
+			route4.paths[0].hops[0].short_channel_id,
+		);
 	}
 
 	#[test]
@@ -6746,7 +6980,7 @@ mod tests {
 		{
 			// Attempt to route while setting max_total_routing_fee_msat to 149_999 results in a failure.
 			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
-				max_total_routing_fee_msat: Some(149_999) };
+				max_total_routing_fee_msat: Some(149_999), background_probe: false };
 			if let Err(err) = get_route(
 				&our_id, &route_params, &network_graph.read_only(), None, Arc::clone(&logger),
 				&scorer, &Default::default(), &random_seed_bytes) {
@@ -6757,7 +6991,7 @@ mod tests {
 		{
 			// Now, attempt to route 200 sats (exact amount we can route).
 			let route_params = RouteParameters { payment_params: payment_params.clone(), final_value_msat: 200_000,
-				max_total_routing_fee_msat: Some(150_000) };
+				max_total_routing_fee_msat: Some(150_000), background_probe: false };
 			let route = get_route(&our_id, &route_params, &network_graph.read_only(), None,
 				Arc::clone(&logger), &scorer, &Default::default(), &random_seed_bytes).unwrap();
 			assert_eq!(route.paths.len(), 2);
@@ -9457,6 +9691,7 @@ mod tests {
 			payment_params,
 			final_value_msat: 1,
 			max_total_routing_fee_msat: None,
+			background_probe: false,
 		};
 		let route = get_route(
 			&our_node_id,
