@@ -4085,7 +4085,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		let shutdown_scriptpubkey =
 			if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-				match signer_provider.get_shutdown_scriptpubkey() {
+				match signer_provider.get_shutdown_scriptpubkey(channel_keys_id) {
 					Ok(scriptpubkey) => Some(scriptpubkey),
 					Err(_) => {
 						return Err(ChannelError::close(
@@ -4408,7 +4408,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		let shutdown_scriptpubkey =
 			if config.channel_handshake_config.commit_upfront_shutdown_pubkey {
-				match signer_provider.get_shutdown_scriptpubkey() {
+				match signer_provider.get_shutdown_scriptpubkey(channel_keys_id) {
 					Ok(scriptpubkey) => Some(scriptpubkey),
 					Err(_) => {
 						return Err(APIError::ChannelUnavailable {
@@ -11197,14 +11197,15 @@ where
 			Some(_) => false,
 			None => {
 				assert!(send_shutdown);
-				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
-					Ok(scriptpubkey) => scriptpubkey,
-					Err(_) => {
-						return Err(ChannelError::close(
-							"Failed to get shutdown scriptpubkey".to_owned(),
-						))
-					},
-				};
+				let shutdown_scriptpubkey =
+					match signer_provider.get_shutdown_scriptpubkey(self.context.channel_keys_id) {
+						Ok(scriptpubkey) => scriptpubkey,
+						Err(_) => {
+							return Err(ChannelError::close(
+								"Failed to get shutdown scriptpubkey".to_owned(),
+							))
+						},
+					};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
 					return Err(ChannelError::close(format!(
 						"Provided a scriptpubkey format not accepted by peer: {}",
@@ -14420,7 +14421,9 @@ where
 					Some(script) => script,
 					None => {
 						// otherwise, use the shutdown scriptpubkey provided by the signer
-						match signer_provider.get_shutdown_scriptpubkey() {
+						match signer_provider
+							.get_shutdown_scriptpubkey(self.context.channel_keys_id)
+						{
 							Ok(scriptpubkey) => scriptpubkey,
 							Err(_) => {
 								return Err(APIError::ChannelUnavailable {
@@ -17488,7 +17491,9 @@ mod tests {
 				.into_script())
 		}
 
-		fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+		fn get_shutdown_scriptpubkey(
+			&self, _channel_keys_id: [u8; 32],
+		) -> Result<ShutdownScript, ()> {
 			let secp_ctx = Secp256k1::signing_only();
 			let hex = "0fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 			let channel_close_key =

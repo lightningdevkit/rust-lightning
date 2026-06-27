@@ -1196,7 +1196,7 @@ fn test_unsupported_anysegwit_shutdown_script() {
 
 	// Check that using an unsupported shutdown script fails and a supported one succeeds.
 	let supported_shutdown_script =
-		chanmon_cfgs[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
+		chanmon_cfgs[1].keys_manager.get_shutdown_scriptpubkey([0; 32]).unwrap();
 	let unsupported_witness_program = WitnessProgram::new(WitnessVersion::V16, &[0, 40]).unwrap();
 	let unsupported_shutdown_script =
 		ShutdownScript::new_witness_program(&unsupported_witness_program).unwrap();

@@ -1121,8 +1121,9 @@ pub trait SignerProvider {
 	/// channel force close.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user.
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()>;
+	/// on-chain funds across channels as controlled to the same user. `channel_keys_id` may be
+	/// used to derive a unique value for each channel.
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()>;
 }
 
 impl<T: SignerProvider + ?Sized, SP: Deref<Target = T>> SignerProvider for SP {
@@ -1140,8 +1141,8 @@ impl<T: SignerProvider + ?Sized, SP: Deref<Target = T>> SignerProvider for SP {
 		self.deref().get_destination_script(channel_keys_id)
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
-		self.deref().get_shutdown_scriptpubkey()
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		self.deref().get_shutdown_scriptpubkey(channel_keys_id)
 	}
 }
 
@@ -2599,7 +2600,16 @@ impl SignerProvider for KeysManager {
 		Ok(self.destination_script.clone())
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		if self.v2_remote_key_derivation {
+			// Derive a fresh per-channel cooperative-close script for privacy. Funds paid to it
+			// remain recoverable from the seed alone by scanning the chain for the scripts
+			// returned by `possible_v2_static_output_spks`.
+			let idx = Self::static_output_key_idx(&channel_keys_id);
+			let key = self.derive_static_output_key(&self.shutdown_key, idx);
+			let pubkey = Xpub::from_priv(&self.secp_ctx, &key).public_key;
+			return Ok(ShutdownScript::new_p2wpkh_from_pubkey(pubkey));
+		}
 		Ok(ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone()))
 	}
 }
@@ -2734,8 +2744,8 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.get_destination_script(channel_keys_id)
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
-		self.inner.get_shutdown_scriptpubkey()
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		self.inner.get_shutdown_scriptpubkey(channel_keys_id)
 	}
 }
 
