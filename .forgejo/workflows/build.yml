@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust stable toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain stable
+          rustup default stable
       - name: Run externalized tests
         run: |
           cd ext-functional-test-demo
@@ -69,7 +69,7 @@ jobs:
           fetch-depth: 0
       - name: Install Rust stable toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal
+          rustup default stable
       - name: Run tests with coverage generation
         run: |
           cargo install cargo-llvm-cov
@@ -111,7 +111,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Cache routing graph snapshot
         id: cache-graph
         uses: actions/cache@v4
@@ -177,7 +177,7 @@ jobs:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Run cargo check for release build.
         run: |
           cargo check --release
@@ -208,7 +208,7 @@ jobs:
           fetch-depth: 0
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Simulate docs.rs build
         run: ci/check-docsrs.sh
 
@@ -221,7 +221,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz
@@ -238,7 +238,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Clone fuzzing corpus
         run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
       - name: Symlink corpus into hfuzz_workspace
@@ -314,7 +314,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Install clippy
         run: |
           rustup component add clippy
@@ -335,7 +335,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Install rustfmt
         run: |
           rustup component add rustfmt
@@ -354,7 +354,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
         run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile=minimal --default-toolchain ${{ env.TOOLCHAIN }}
+          rustup default ${{ env.TOOLCHAIN }}
       - name: Test tor connections using lightning-net-tokio
         run: |
           set -eu
