@@ -1866,7 +1866,7 @@ impl PaymentTracker {
 				}],
 				blinded_tail: None,
 			}],
-			route_params: route_params.clone(),
+			route_params,
 		};
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
@@ -1946,7 +1946,7 @@ impl PaymentTracker {
 				],
 				blinded_tail: None,
 			}],
-			route_params: route_params.clone(),
+			route_params,
 		};
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
