@@ -1,0 +1,33 @@
+name: CI check_commits
+
+on:
+  pull_request:
+    branches-ignore:
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check_commits:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Fetch full tree and rebase on upstream
+        run: |
+          git remote add upstream https://git.rust-bitcoin.org/lightningdevkit/rust-lightning
+          git fetch upstream
+          export GIT_COMMITTER_EMAIL="rl-ci@example.com"
+          export GIT_COMMITTER_NAME="RL CI"
+          git rebase upstream/${{ github.base_ref }}
+      - name: For each commit, run cargo check (including in fuzz)
+        run: ci/check-each-commit.sh upstream/${{ github.base_ref }}
