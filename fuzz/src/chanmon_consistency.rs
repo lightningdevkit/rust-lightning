@@ -2232,17 +2232,6 @@ fn build_node_config(chan_type: ChanType) -> UserConfig {
 	config
 }
 
-fn assert_test_invariants(nodes: &[HarnessNode<'_>; 3]) {
-	assert_eq!(nodes[0].list_channels().len(), 3);
-	assert_eq!(nodes[1].list_channels().len(), 6);
-	assert_eq!(nodes[2].list_channels().len(), 3);
-
-	// All broadcasters should be empty. Broadcast transactions are handled explicitly.
-	assert!(nodes[0].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[1].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[2].broadcaster.txn_broadcasted.borrow().is_empty());
-}
-
 fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
 	let init_dest =
 		Init { features: dest.init_features(), networks: None, remote_network_address: None };
@@ -2610,7 +2599,14 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	// and mining bytes.
 	fn finish(&mut self) {
 		self.mine_relayed_txs_until_quiet();
-		assert_test_invariants(&self.nodes);
+		assert_eq!(self.nodes[0].list_channels().len(), 3);
+		assert_eq!(self.nodes[1].list_channels().len(), 6);
+		assert_eq!(self.nodes[2].list_channels().len(), 3);
+
+		// All broadcasters should be empty. Broadcast transactions are handled explicitly.
+		for node in &self.nodes {
+			assert!(node.broadcaster.txn_broadcasted.borrow().is_empty());
+		}
 	}
 
 	fn link_between(&self, source_idx: usize, dest_idx: usize) -> &PeerLink {
