@@ -183,21 +183,27 @@ where
 						.saturating_add(cltv_expiry_delta),
 					htlc_minimum_msat: details.inbound_htlc_minimum_msat.unwrap_or(0),
 				};
-				Some(PaymentForwardNode {
-					tlvs: ForwardTlvs {
-						short_channel_id,
-						payment_relay,
-						payment_constraints,
-						next_blinding_override: None,
-						features: BlindedHopFeatures::empty(),
+				let forward_tlvs = ForwardTlvs {
+					short_channel_id,
+					payment_relay,
+					payment_constraints,
+					next_blinding_override: None,
+					features: BlindedHopFeatures::empty(),
+				};
+				let dummy_tlvs = DummyTlvs::from_forward_tlvs(&forward_tlvs);
+
+				Some((
+					PaymentForwardNode {
+						tlvs: forward_tlvs,
+						node_id: details.counterparty.node_id,
+						htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX),
 					},
-					node_id: details.counterparty.node_id,
-					htlc_maximum_msat: details.inbound_htlc_maximum_msat.unwrap_or(u64::MAX),
-				})
+					dummy_tlvs,
+				))
 			})
-			.map(|forward_node| {
+			.map(|(forward_node, dummy_tlvs)| {
 				BlindedPaymentPath::new_with_dummy_hops(
-					&[forward_node], recipient, &[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS],
+					&[forward_node], recipient, &[dummy_tlvs; DEFAULT_PAYMENT_DUMMY_HOPS],
 					local_node_receive_key, tlvs.clone(), u64::MAX, MIN_FINAL_CLTV_EXPIRY_DELTA, &self.entropy_source, secp_ctx
 				)
 			})

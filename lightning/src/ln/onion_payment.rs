@@ -281,7 +281,8 @@ pub(super) fn create_fwd_pending_htlc_info(
 pub(super) fn create_recv_pending_htlc_info(
 	hop_data: onion_utils::Hop, shared_secret: [u8; 32], payment_hash: PaymentHash,
 	amt_msat: u64, cltv_expiry: u32, phantom_shared_secret: Option<[u8; 32]>, allow_underpay: bool,
-	counterparty_skimmed_fee_msat: Option<u64>, incoming_accountable: bool, current_height: u32
+	counterparty_skimmed_fee_msat: Option<u64>, dummy_skimmed_msats: Option<u64>,
+	incoming_accountable: bool, current_height: u32
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (
 		payment_data, keysend_preimage, custom_tlvs, onion_amt_msat, onion_cltv_expiry,
@@ -436,6 +437,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		}
 		PendingHTLCRouting::ReceiveKeysend {
 			payment_data,
+			dummy_skimmed_msats,
 			payment_preimage,
 			payment_metadata,
 			incoming_cltv_expiry: cltv_expiry,
@@ -448,6 +450,7 @@ pub(super) fn create_recv_pending_htlc_info(
 	} else if let Some(data) = payment_data {
 		PendingHTLCRouting::Receive {
 			payment_data: data,
+			dummy_skimmed_msats,
 			payment_metadata,
 			payment_context,
 			incoming_cltv_expiry: cltv_expiry,
@@ -488,6 +491,22 @@ pub(super) fn create_recv_pending_htlc_info(
 pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>(
 	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
 	cur_height: u32, allow_skimmed_fees: bool,
+) -> Result<PendingHTLCInfo, InboundHTLCErr> {
+	peel_payment_onion_inner(
+		msg,
+		node_signer,
+		logger,
+		secp_ctx,
+		cur_height,
+		allow_skimmed_fees,
+		0,
+	)
+}
+
+#[rustfmt::skip]
+fn peel_payment_onion_inner<NS: NodeSigner, L: Logger, T: secp256k1::Verification>(
+	msg: &msgs::UpdateAddHTLC, node_signer: NS, logger: L, secp_ctx: &Secp256k1<T>,
+	cur_height: u32, allow_skimmed_fees: bool, accumulated_dummy_skim_msats: u64,
 ) -> Result<PendingHTLCInfo, InboundHTLCErr> {
 	let (hop, next_packet_details_opt) =
 		decode_incoming_update_add_htlc_onion(msg, &node_signer, &logger, secp_ctx
@@ -549,14 +568,32 @@ pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>
 				secp_ctx
 			);
 
-			peel_payment_onion(&new_update_add_htlc, node_signer, logger, secp_ctx, cur_height, allow_skimmed_fees)?
+			let accumulated_dummy_skim_msats = accumulated_dummy_skim_msats
+				.checked_add(msg.amount_msat.saturating_sub(new_update_add_htlc.amount_msat))
+				.ok_or(InboundHTLCErr {
+					msg: "Dummy hop fee accumulation overflowed",
+					reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+					err_data: vec![0; 32],
+				})?;
+
+			peel_payment_onion_inner(
+				&new_update_add_htlc,
+				node_signer,
+				logger,
+				secp_ctx,
+				cur_height,
+				allow_skimmed_fees,
+				accumulated_dummy_skim_msats,
+			)?
 		},
 		_ => {
 			let shared_secret = hop.shared_secret().secret_bytes();
+			let dummy_skimmed_msats = (accumulated_dummy_skim_msats != 0).then_some(accumulated_dummy_skim_msats);
+
 			create_recv_pending_htlc_info(
 				hop, shared_secret, msg.payment_hash, msg.amount_msat, msg.cltv_expiry,
 				None, allow_skimmed_fees, msg.skimmed_fee_msat,
-				msg.accountable.unwrap_or(false), cur_height,
+				dummy_skimmed_msats, msg.accountable.unwrap_or(false), cur_height,
 			)?
 		}
 	})
@@ -673,7 +710,7 @@ pub(super) fn decode_incoming_update_add_htlc_onion<NS: NodeSigner, L: Logger, T
 			) {
 				Ok((amt, cltv)) => (amt, cltv),
 				Err(()) => {
-					return encode_relay_error("Underflow calculating outbound amount or cltv value for blinded forward",
+					return encode_relay_error("Underflow calculating outbound amount or cltv value for dummy hop",
 						LocalHTLCFailureReason::InvalidOnionBlinding, shared_secret.secret_bytes(), None, &[0; 32]);
 				}
 			};
