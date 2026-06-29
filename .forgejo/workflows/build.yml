@@ -147,14 +147,12 @@ jobs:
 
   benchmark:
     runs-on: debian-trixie
-    env:
-      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust stable toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
+          rustup default stable
       - name: Cache routing graph snapshot
         id: cache-graph
         uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
@@ -211,16 +209,14 @@ jobs:
 
   check_release:
     runs-on: debian-trixie
-    env:
-      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust stable toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
+          rustup default stable
       - name: Run cargo check for release build.
         run: |
           cargo check --release
@@ -239,33 +235,29 @@ jobs:
 
   check_docs:
     runs-on: debian-trixie
-    env:
-      # While docs.rs builds using a nightly compiler (and we use some nightly features),
-      # nightly ends up randomly breaking builds occasionally, so we instead use beta
-      # and set RUSTC_BOOTSTRAP in check-docsrs.sh
-      TOOLCHAIN: beta
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      # While docs.rs builds using a nightly compiler (and we use some nightly features),
+      # nightly ends up randomly breaking builds occasionally, so we instead use beta
+      # and set RUSTC_BOOTSTRAP in check-docsrs.sh
+      - name: Install Rust beta toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
+          rustup default beta
       - name: Simulate docs.rs build
         run: ci/check-docsrs.sh
 
   fuzz_sanity:
     runs-on: debian-trixie
-    env:
-      TOOLCHAIN: 1.75
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust 1.75 toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
-      - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
+          rustup default 1.75
+      - name: Sanity check fuzz targets on Rust 1.75
         run: |
           cd fuzz
           RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --quiet --color always --lib -j8
@@ -274,14 +266,12 @@ jobs:
 
   fuzz:
     runs-on: debian-trixie
-    env:
-      TOOLCHAIN: 1.75
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust 1.75 toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
+          rustup default 1.75
       - name: Clone fuzzing corpus
         run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
       - name: Symlink corpus into hfuzz_workspace
@@ -350,14 +340,12 @@ jobs:
 
   linting:
     runs-on: debian-trixie
-    env:
-      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust stable toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
+          rustup default stable
       - name: Install clippy
         run: |
           rustup component add clippy
@@ -371,14 +359,12 @@ jobs:
 
   rustfmt:
     runs-on: debian-trixie
-    env:
-      TOOLCHAIN: 1.75.0
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust 1.75 toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
+          rustup default 1.75
       - name: Install rustfmt
         run: |
           rustup component add rustfmt
@@ -390,14 +376,12 @@ jobs:
         run: cd fuzz && cargo fmt --check
   tor-connect:
     runs-on: debian-trixie
-    env:
-      TOOLCHAIN: 1.75.0
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+      - name: Install Rust 1.75 toolchain
         run: |
-          rustup default ${{ env.TOOLCHAIN }}
+          rustup default 1.75
       - name: Test tor connections using lightning-net-tokio
         run: |
           set -eu
