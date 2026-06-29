@@ -935,18 +935,104 @@ type ChanMan<'a> = ChannelManager<
 >;
 
 #[inline]
-fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessage, bool) {
-	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
-	// disconnect their counterparty if they're expecting a timely response.
-	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
-		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
-		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
-		{
-			panic!("Unexpected disconnect case: {}", msg.data);
-		}
-		(msg, is_quiescent_msg)
-	} else {
-		panic!("Expected disconnect, got: {:?}", action);
+fn assert_disconnect_action<'a>(
+	action: &'a msgs::ErrorAction, close_tracker: &ChannelCloseTracker,
+) -> ExpectedControlAction<'a> {
+	match action {
+		msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } => {
+			// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause
+			// a node to disconnect their counterparty if they're expecting a timely response.
+			let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
+			assert!(
+				msg.data.contains("Disconnecting due to timeout awaiting response")
+					|| is_quiescent_msg,
+				"Unexpected disconnect case: {}",
+				msg.data,
+			);
+			ExpectedControlAction::Warning(msg, is_quiescent_msg)
+		},
+		msgs::ErrorAction::SendErrorMessage { ref msg } => {
+			assert!(
+				close_tracker.is_expected_closed_channel_error_msg(msg),
+				"Expected closed-channel error, got: {:?}",
+				msg,
+			);
+			ExpectedControlAction::Error(msg)
+		},
+		_ => panic!("Expected harness control error, got: {:?}", action),
+	}
+}
+
+enum ExpectedControlAction<'a> {
+	Warning(&'a msgs::WarningMessage, bool),
+	Error(&'a msgs::ErrorMessage),
+}
+
+struct ChannelCloseTracker {
+	// Channels this input explicitly requested to close, with the error reason
+	// passed to `force_close_broadcasting_latest_txn`.
+	closed_channels: HashMap<ChannelId, String>,
+}
+
+impl ChannelCloseTracker {
+	fn new() -> Self {
+		Self { closed_channels: new_hash_map() }
+	}
+
+	fn is_closed_or_closing(&self, channel_id: &ChannelId) -> bool {
+		self.closed_channels.contains_key(channel_id)
+	}
+
+	fn is_open(&self, channel_id: &ChannelId) -> bool {
+		!self.is_closed_or_closing(channel_id)
+	}
+
+	fn open_channels(&self, channel_ids: &[ChannelId]) -> Vec<ChannelId> {
+		channel_ids.iter().copied().filter(|channel_id| self.is_open(channel_id)).collect()
+	}
+
+	fn has_closed_channels(&self) -> bool {
+		!self.closed_channels.is_empty()
+	}
+
+	fn expect_channel_close(&mut self, channel_id: ChannelId, reason: String) {
+		assert!(
+			self.closed_channels.insert(channel_id, reason).is_none(),
+			"Channel {:?} close was already tracked",
+			channel_id,
+		);
+	}
+
+	fn verify_channel_closed_event(
+		&mut self, channel_id: ChannelId, reason: &events::ClosureReason,
+	) {
+		assert!(
+			self.closed_channels.contains_key(&channel_id),
+			"Channel {:?} closed without an explicit force-close: {:?}",
+			channel_id,
+			reason,
+		);
+	}
+
+	fn is_expected_closed_channel_error_msg(&self, msg: &msgs::ErrorMessage) -> bool {
+		let expected_reason = match self.closed_channels.get(&msg.channel_id) {
+			Some(reason) => reason,
+			None => return false,
+		};
+		msg.data == *expected_reason
+			|| msg.data
+				== "Channel closed because commitment or closing transaction was confirmed on chain."
+			// Messages queued before the close can be delivered
+			// after the counterparty has removed the channel.
+			|| msg.data.starts_with(
+				"Got a message for a channel from the wrong node! No such channel_id",
+			)
+			// A stale channel message may already have been delivered before
+			// the harness observes the close. If it errors against the same
+			// tracked channel, the result is part of explicit-close cleanup.
+			|| msg.data
+				== "Peer sent an invalid channel_reestablish to force close in a non-standard way"
+			|| msg.data.contains("when we needed a channel_reestablish")
 	}
 }
 
@@ -1495,6 +1581,7 @@ impl EventQueues {
 
 	fn route_from_middle<'a, I: IntoIterator<Item = MessageSendEvent>>(
 		&mut self, excess_events: I, expect_drop_node: Option<usize>, nodes: &[HarnessNode<'a>; 3],
+		close_tracker: &ChannelCloseTracker,
 	) {
 		// Push any events from Node B onto queues.ba and queues.bc.
 		let a_id = nodes[0].get_our_node_id();
@@ -1526,7 +1613,7 @@ impl EventQueues {
 					*node_id == a_id
 				},
 				MessageSendEvent::HandleError { ref action, ref node_id } => {
-					assert_disconnect_action(action);
+					assert_disconnect_action(action, close_tracker);
 					if Some(*node_id) == expect_drop_id {
 						panic!(
 							"peer_disconnected should drop msgs bound for the disconnected peer"
@@ -1561,7 +1648,10 @@ impl EventQueues {
 		}
 	}
 
-	fn drain_on_disconnect(&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3]) {
+	fn drain_on_disconnect(
+		&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3],
+		close_tracker: &ChannelCloseTracker,
+	) {
 		match edge_node {
 			0 => {
 				for event in nodes[0].get_and_clear_pending_msg_events() {
@@ -1575,12 +1665,17 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_disconnect_action(action);
+							assert_disconnect_action(action, close_tracker);
 						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(0), nodes);
+				self.route_from_middle(
+					nodes[1].get_and_clear_pending_msg_events(),
+					Some(0),
+					nodes,
+					close_tracker,
+				);
 			},
 			2 => {
 				for event in nodes[2].get_and_clear_pending_msg_events() {
@@ -1594,12 +1689,17 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_disconnect_action(action);
+							assert_disconnect_action(action, close_tracker);
 						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(2), nodes);
+				self.route_from_middle(
+					nodes[1].get_and_clear_pending_msg_events(),
+					Some(2),
+					nodes,
+					close_tracker,
+				);
 			},
 			_ => panic!("unsupported disconnected edge"),
 		}
@@ -1649,7 +1749,34 @@ impl PeerLink {
 		}
 	}
 
-	fn disconnect(&mut self, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues) {
+	fn assert_no_unexpected_disappeared_channels(
+		&self, nodes: &[HarnessNode<'_>; 3], close_tracker: &ChannelCloseTracker,
+	) {
+		let node_a_channels = nodes[self.node_a].list_channels();
+		let node_b_channels = nodes[self.node_b].list_channels();
+		for channel_id in &self.channel_ids {
+			if close_tracker.is_closed_or_closing(channel_id) {
+				continue;
+			}
+			assert!(
+				node_a_channels.iter().any(|chan| chan.channel_id == *channel_id),
+				"Node {} no longer lists channel {:?} without an explicit force-close",
+				self.node_a,
+				channel_id,
+			);
+			assert!(
+				node_b_channels.iter().any(|chan| chan.channel_id == *channel_id),
+				"Node {} no longer lists channel {:?} without an explicit force-close",
+				self.node_b,
+				channel_id,
+			);
+		}
+	}
+
+	fn disconnect(
+		&mut self, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues,
+		close_tracker: &ChannelCloseTracker,
+	) {
 		if self.disconnected {
 			return;
 		}
@@ -1665,7 +1792,7 @@ impl PeerLink {
 		} else {
 			panic!("unsupported link topology")
 		};
-		queues.drain_on_disconnect(edge_node, nodes);
+		queues.drain_on_disconnect(edge_node, nodes, close_tracker);
 		queues.clear_link(self);
 	}
 
@@ -1692,6 +1819,7 @@ impl PeerLink {
 
 	fn disconnect_for_reload(
 		&mut self, restarted_node: usize, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues,
+		close_tracker: &ChannelCloseTracker,
 	) {
 		if self.disconnected {
 			return;
@@ -1708,6 +1836,7 @@ impl PeerLink {
 				nodes[1].get_and_clear_pending_msg_events(),
 				Some(restarted_node),
 				nodes,
+				close_tracker,
 			);
 		} else {
 			nodes[remaining_node].get_and_clear_pending_msg_events();
@@ -2208,6 +2337,7 @@ struct Harness<'a, Out: Output + MaybeSend + MaybeSync> {
 	bc_link: PeerLink,
 	queues: EventQueues,
 	payments: PaymentTracker,
+	close_tracker: ChannelCloseTracker,
 }
 
 fn build_node_config(chan_type: ChanType) -> UserConfig {
@@ -2583,6 +2713,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			bc_link: PeerLink::new(1, 2, chan_bc_ids),
 			queues: EventQueues::new(),
 			payments: PaymentTracker::new(),
+			close_tracker: ChannelCloseTracker::new(),
 		}
 	}
 
@@ -2599,14 +2730,19 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	// and mining bytes.
 	fn finish(&mut self) {
 		self.mine_relayed_txs_until_quiet();
-		assert_eq!(self.nodes[0].list_channels().len(), 3);
-		assert_eq!(self.nodes[1].list_channels().len(), 6);
-		assert_eq!(self.nodes[2].list_channels().len(), 3);
+		self.assert_only_expected_channel_closes();
 
 		// All broadcasters should be empty. Broadcast transactions are handled explicitly.
 		for node in &self.nodes {
 			assert!(node.broadcaster.txn_broadcasted.borrow().is_empty());
 		}
+	}
+
+	fn assert_only_expected_channel_closes(&self) {
+		// A close may show up first as a missing list_channels entry rather
+		// than as an already-drained ChannelClosed event.
+		self.ab_link.assert_no_unexpected_disappeared_channels(&self.nodes, &self.close_tracker);
+		self.bc_link.assert_no_unexpected_disappeared_channels(&self.nodes, &self.close_tracker);
 	}
 
 	fn link_between(&self, source_idx: usize, dest_idx: usize) -> &PeerLink {
@@ -2630,17 +2766,29 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	fn send_on_channel(
 		&mut self, source_idx: usize, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
 	) -> bool {
+		if !self.close_tracker.is_open(&dest_chan_id) {
+			return false;
+		}
 		self.payments.send(&self.nodes, source_idx, dest_idx, dest_chan_id, amt)
 	}
 
 	fn send(&mut self, source_idx: usize, dest_idx: usize, amt: u64) {
-		let dest_chan_id = self.first_channel_id_between(source_idx, dest_idx);
+		let chan_ids = self.channel_ids_between(source_idx, dest_idx);
+		let dest_chan_id = match self.close_tracker.open_channels(&chan_ids).first().copied() {
+			Some(chan_id) => chan_id,
+			None => return,
+		};
 		self.payments.send_noret(&self.nodes, source_idx, dest_idx, dest_chan_id, amt);
 	}
 
 	fn send_hop(&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, amt: u64) {
 		let middle_chan_id = self.first_channel_id_between(source_idx, middle_idx);
 		let dest_chan_id = self.first_channel_id_between(middle_idx, dest_idx);
+		if !self.close_tracker.is_open(&middle_chan_id)
+			|| !self.close_tracker.is_open(&dest_chan_id)
+		{
+			return;
+		}
 		self.payments.send_hop(
 			&self.nodes,
 			source_idx,
@@ -2657,17 +2805,22 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	) {
 		match channels {
 			MppDirectChannels::All => {
-				let dest_chan_ids = self.channel_ids_between(source_idx, dest_idx);
+				let dest_chan_ids = self
+					.close_tracker
+					.open_channels(&self.channel_ids_between(source_idx, dest_idx));
 				self.payments.send_mpp_direct(
 					&self.nodes,
 					source_idx,
 					dest_idx,
-					&dest_chan_ids,
+					&dest_chan_ids[..],
 					amt,
 				);
 			},
 			MppDirectChannels::RepeatedFirst => {
 				let dest_chan_id = self.first_channel_id_between(source_idx, dest_idx);
+				if !self.close_tracker.is_open(&dest_chan_id) {
+					return;
+				}
 				let dest_chan_ids = [dest_chan_id, dest_chan_id, dest_chan_id];
 				self.payments.send_mpp_direct(
 					&self.nodes,
@@ -2690,29 +2843,39 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let dest_first_chan_id = dest_chan_ids[0];
 		match channels {
 			MppHopChannels::FirstHop => {
+				let middle_chan_ids = self.close_tracker.open_channels(&middle_chan_ids);
+				if !self.close_tracker.is_open(&dest_first_chan_id) {
+					return;
+				}
 				let dest_chan_ids = [dest_first_chan_id];
 				self.payments.send_mpp_hop(
 					&self.nodes,
 					source_idx,
 					middle_idx,
-					&middle_chan_ids,
+					&middle_chan_ids[..],
 					dest_idx,
 					&dest_chan_ids,
 					amt,
 				);
 			},
 			MppHopChannels::BothHops => {
+				let middle_chan_ids = self.close_tracker.open_channels(&middle_chan_ids);
+				let dest_chan_ids = self.close_tracker.open_channels(&dest_chan_ids);
 				self.payments.send_mpp_hop(
 					&self.nodes,
 					source_idx,
 					middle_idx,
-					&middle_chan_ids,
+					&middle_chan_ids[..],
 					dest_idx,
-					&dest_chan_ids,
+					&dest_chan_ids[..],
 					amt,
 				);
 			},
 			MppHopChannels::SecondHop => {
+				if !self.close_tracker.is_open(&middle_first_chan_id) {
+					return;
+				}
+				let dest_chan_ids = self.close_tracker.open_channels(&dest_chan_ids);
 				let middle_chan_ids = [middle_first_chan_id];
 				self.payments.send_mpp_hop(
 					&self.nodes,
@@ -2720,7 +2883,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					middle_idx,
 					&middle_chan_ids,
 					dest_idx,
-					&dest_chan_ids,
+					&dest_chan_ids[..],
 					amt,
 				);
 			},
@@ -2836,7 +2999,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn process_msg_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, event: MessageSendEvent,
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
-			out: &Out,
+			close_tracker: &ChannelCloseTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
 			match event {
 				MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
@@ -2859,6 +3022,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					None
 				},
 				MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
+					if close_tracker.is_closed_or_closing(&msg.channel_id) {
+						// A reestablish generated before an explicit close is stale once that
+						// close is tracked. Delivering it can keep generating closed-channel
+						// error messages and prevent settle_all from quiescing.
+						return None;
+					}
 					let dest_idx =
 						log_peer_message(node_idx, node_id, nodes, out, "channel_reestablish");
 					nodes[dest_idx].handle_channel_reestablish(source_node_id, msg);
@@ -2932,14 +3101,26 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					None
 				},
 				MessageSendEvent::HandleError { ref action, ref node_id, .. } => {
-					let (msg, is_quiescent) = assert_disconnect_action(action);
-					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "warning");
-					if is_quiescent {
-						nodes[node_idx].node.exit_quiescence(node_id, &msg.channel_id).unwrap();
-						nodes[dest_idx]
-							.node
-							.exit_quiescence(&source_node_id, &msg.channel_id)
-							.unwrap();
+					match assert_disconnect_action(action, close_tracker) {
+						ExpectedControlAction::Warning(msg, is_quiescent) => {
+							let dest_idx =
+								log_peer_message(node_idx, node_id, nodes, out, "warning");
+							if is_quiescent && !close_tracker.is_closed_or_closing(&msg.channel_id)
+							{
+								nodes[node_idx]
+									.node
+									.exit_quiescence(node_id, &msg.channel_id)
+									.unwrap();
+								nodes[dest_idx]
+									.node
+									.exit_quiescence(&source_node_id, &msg.channel_id)
+									.unwrap();
+							}
+						},
+						ExpectedControlAction::Error(msg) => {
+							let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "error");
+							nodes[dest_idx].handle_error(source_node_id, msg);
+						},
 					}
 					None
 				},
@@ -2959,6 +3140,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 
 		let nodes = &self.nodes;
+		let close_tracker = &self.close_tracker;
 		let out = &self.out;
 		let queues = &mut self.queues;
 		let mut events = queues.take_for_node(node_idx);
@@ -2979,6 +3161,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				corrupt_forward,
 				limit_events,
 				nodes,
+				close_tracker,
 				out,
 			);
 			if limit_events != ProcessMessages::AllMessages {
@@ -2987,7 +3170,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		if node_idx == 1 {
 			let remaining = extra_ev.into_iter().chain(events_iter).collect::<Vec<_>>();
-			queues.route_from_middle(remaining, None, nodes);
+			queues.route_from_middle(remaining, None, nodes, close_tracker);
 		} else if node_idx == 0 {
 			if let Some(ev) = extra_ev {
 				queues.push_for_node(0, ev);
@@ -3006,6 +3189,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let nodes = &self.nodes;
 		let payments = &mut self.payments;
 		let chain_state = &self.chain_state;
+		let close_tracker = &mut self.close_tracker;
 		// Multiple HTLCs can resolve for the same payment hash, so deduplicate
 		// claim/fail handling per event batch.
 		let mut claim_set = new_hash_map();
@@ -3043,6 +3227,11 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					unsigned_transaction,
 					..
 				} => {
+					if close_tracker.is_closed_or_closing(&channel_id) {
+						// The signing event was queued before an explicit close.
+						// Do not call splice funding APIs for a tracked-closed channel.
+						continue;
+					}
 					let wallet_script = nodes[node_idx].wallet.get_change_script().unwrap();
 					let has_unknown_spent_input = unsigned_transaction.input.iter().any(|input| {
 						!chain_state.is_unspent(&input.previous_output)
@@ -3091,11 +3280,21 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				},
 				events::Event::SpliceNegotiated { .. } => {},
 				events::Event::SpliceNegotiationFailed { .. } => {},
+				events::Event::ChannelClosed { channel_id, reason, .. } => {
+					close_tracker.verify_channel_closed_event(channel_id, &reason);
+				},
 				events::Event::DiscardFunding {
 					funding_info:
 						events::FundingInfo::Contribution { .. } | events::FundingInfo::Tx { .. },
 					..
 				} => {},
+				events::Event::SpendableOutputs { .. } => {
+					// The harness does not model an external sweeper wallet.
+				},
+				events::Event::BumpTransaction(_) => {
+					// Fee bumping is not modeled; broadcasts are relayed through
+					// the harness mempool directly.
+				},
 				_ => panic!("Unhandled event: {:?}", event),
 			}
 		}
@@ -3173,11 +3372,11 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn disconnect_ab(&mut self) {
-		self.ab_link.disconnect(&self.nodes, &mut self.queues);
+		self.ab_link.disconnect(&self.nodes, &mut self.queues, &self.close_tracker);
 	}
 
 	fn disconnect_bc(&mut self) {
-		self.bc_link.disconnect(&self.nodes, &mut self.queues);
+		self.bc_link.disconnect(&self.nodes, &mut self.queues, &self.close_tracker);
 	}
 
 	fn reconnect_ab(&mut self) {
@@ -3186,6 +3385,54 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 
 	fn reconnect_bc(&mut self) {
 		self.bc_link.reconnect(&self.nodes);
+	}
+
+	fn has_pending_htlcs(&self) -> bool {
+		self.nodes.iter().any(|node| {
+			node.list_channels().iter().any(|chan| {
+				!chan.pending_inbound_htlcs.is_empty() || !chan.pending_outbound_htlcs.is_empty()
+			})
+		})
+	}
+
+	fn force_close(&mut self, closer_idx: usize, channel_id: ChannelId, counterparty_idx: usize) {
+		if self.close_tracker.is_closed_or_closing(&channel_id) || self.has_pending_htlcs() {
+			// This opcode only models HTLC-free local closes. Leave it as a no-op
+			// while any channel has pending HTLCs, rather than mixing local
+			// force-close coverage with HTLC settlement.
+			return;
+		}
+		assert!(
+			self.nodes[closer_idx].list_channels().iter().any(|chan| chan.channel_id == channel_id),
+			"force-close target channel {:?} missing before explicit close",
+			channel_id,
+		);
+		let reason =
+			format!("chanmon harness force-close by node {} on {:?}", closer_idx, channel_id);
+		match self.nodes[closer_idx].node.force_close_broadcasting_latest_txn(
+			&channel_id,
+			&self.nodes[counterparty_idx].get_our_node_id(),
+			reason.clone(),
+		) {
+			Ok(()) => self.close_tracker.expect_channel_close(channel_id, reason),
+			Err(e) => panic!("{e:?}"),
+		}
+	}
+
+	fn splice_in(&self, node_idx: usize, channel_id: ChannelId, counterparty_idx: usize) {
+		if self.close_tracker.is_closed_or_closing(&channel_id) {
+			return;
+		}
+		let cp_node_id = self.nodes[counterparty_idx].get_our_node_id();
+		self.nodes[node_idx].splice_in(&cp_node_id, &channel_id);
+	}
+
+	fn splice_out(&self, node_idx: usize, channel_id: ChannelId, counterparty_idx: usize) {
+		if self.close_tracker.is_closed_or_closing(&channel_id) {
+			return;
+		}
+		let cp_node_id = self.nodes[counterparty_idx].get_our_node_id();
+		self.nodes[node_idx].splice_out(&cp_node_id, &channel_id);
 	}
 
 	// Finds the earliest loaded monitor height for a node. Startup sync uses it
@@ -3208,14 +3455,34 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		match node_idx {
 			0 => {
-				self.ab_link.disconnect_for_reload(0, &self.nodes, &mut self.queues);
+				self.ab_link.disconnect_for_reload(
+					0,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			1 => {
-				self.ab_link.disconnect_for_reload(1, &self.nodes, &mut self.queues);
-				self.bc_link.disconnect_for_reload(1, &self.nodes, &mut self.queues);
+				self.ab_link.disconnect_for_reload(
+					1,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
+				self.bc_link.disconnect_for_reload(
+					1,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			2 => {
-				self.bc_link.disconnect_for_reload(2, &self.nodes, &mut self.queues);
+				self.bc_link.disconnect_for_reload(
+					2,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			_ => panic!("invalid node index"),
 		}
@@ -3277,6 +3544,13 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		self.process_all_events();
 
+		if self.close_tracker.has_closed_channels() {
+			// Explicit closes broadcast commitment transactions. Mine the
+			// modeled mempool so later invariants see the post-close state.
+			self.mine_relayed_txs_until_quiet();
+			self.process_all_events();
+		}
+
 		// Verify no payments are stuck - all should have resolved
 		self.payments.assert_all_resolved();
 		// Verify that every payment claimed by a receiver resulted in a
@@ -3286,6 +3560,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		// All HTLCs should have been claimed or failed once we reach quiescence.
 		for (idx, node) in self.nodes.iter().enumerate() {
 			for chan in node.list_channels() {
+				if !self.close_tracker.is_open(&chan.channel_id) {
+					continue;
+				}
 				assert!(
 					chan.pending_inbound_htlcs.is_empty() && chan.pending_outbound_htlcs.is_empty(),
 					"Node {} channel {:?} has stuck HTLCs after settling all state: \
@@ -3300,16 +3577,19 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			}
 		}
 
-		// Finally, make sure that at least one end of each channel can make a substantial payment.
+		self.assert_only_expected_channel_closes();
+
+		// Finally, make sure that at least one end of each live channel can make
+		// a substantial payment.
 		let chan_ab_ids = self.ab_link.channel_ids().clone();
 		let chan_bc_ids = self.bc_link.channel_ids().clone();
-		for chan_id in chan_ab_ids {
+		for chan_id in self.close_tracker.open_channels(&chan_ab_ids) {
 			assert!(
 				self.send_on_channel(0, 1, chan_id, 10_000_000)
 					|| self.send_on_channel(1, 0, chan_id, 10_000_000)
 			);
 		}
-		for chan_id in chan_bc_ids {
+		for chan_id in self.close_tracker.open_channels(&chan_bc_ids) {
 			assert!(
 				self.send_on_channel(1, 2, chan_id, 10_000_000)
 					|| self.send_on_channel(2, 1, chan_id, 10_000_000)
@@ -3623,39 +3903,15 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				harness.nodes[2].checkpoint_manager_persistence();
 			},
 
-			0xa0 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[0].splice_in(&cp_node_id, &harness.chan_a_id());
-			},
-			0xa1 => {
-				let cp_node_id = harness.nodes[0].get_our_node_id();
-				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_a_id());
-			},
-			0xa2 => {
-				let cp_node_id = harness.nodes[2].get_our_node_id();
-				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_b_id());
-			},
-			0xa3 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[2].splice_in(&cp_node_id, &harness.chan_b_id());
-			},
+			0xa0 => harness.splice_in(0, harness.chan_a_id(), 1),
+			0xa1 => harness.splice_in(1, harness.chan_a_id(), 0),
+			0xa2 => harness.splice_in(1, harness.chan_b_id(), 2),
+			0xa3 => harness.splice_in(2, harness.chan_b_id(), 1),
 
-			0xa4 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[0].splice_out(&cp_node_id, &harness.chan_a_id());
-			},
-			0xa5 => {
-				let cp_node_id = harness.nodes[0].get_our_node_id();
-				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_a_id());
-			},
-			0xa6 => {
-				let cp_node_id = harness.nodes[2].get_our_node_id();
-				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_b_id());
-			},
-			0xa7 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[2].splice_out(&cp_node_id, &harness.chan_b_id());
-			},
+			0xa4 => harness.splice_out(0, harness.chan_a_id(), 1),
+			0xa5 => harness.splice_out(1, harness.chan_a_id(), 0),
+			0xa6 => harness.splice_out(1, harness.chan_b_id(), 2),
+			0xa7 => harness.splice_out(2, harness.chan_b_id(), 1),
 
 			// Sync node by 1 block.
 			0xa8 => harness.nodes[0].sync_with_chain_state(&harness.chain_state, Some(1)),
@@ -3802,6 +4058,10 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 				let count = MINE_BLOCK_COUNTS[(v - 0xd9) as usize];
 				harness.mine_blocks(count);
 			},
+			0xe1 => harness.force_close(0, harness.chan_a_id(), 1),
+			0xe2 => harness.force_close(1, harness.chan_b_id(), 2),
+			0xe3 => harness.force_close(1, harness.chan_a_id(), 0),
+			0xe4 => harness.force_close(2, harness.chan_b_id(), 1),
 
 			0xf0 => harness.ab_link.complete_monitor_updates_for_node(
 				0,
