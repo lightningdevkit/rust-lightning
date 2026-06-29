@@ -17,6 +17,7 @@ use core::ops::Deref;
 use core::pin::pin;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task;
+use core::time::Duration;
 
 use super::event::LSPS1ServiceEvent;
 use super::msgs::{
@@ -212,9 +213,8 @@ where
 							state.set_needs_persist(true);
 						}
 					} else {
-						// This should never happen, we can only have one `persist` call
-						// in-progress at once and map entries are only removed by it.
-						debug_assert!(false);
+						// Already removed by a concurrent `persist_peer_state` call (e.g. from
+						// `prune_orders`); nothing left to do for this peer.
 					}
 				}
 				if let Some(future) = future_opt {
@@ -240,31 +240,78 @@ where
 	async fn persist_peer_state(
 		&self, counterparty_node_id: PublicKey,
 	) -> Result<(), lightning::io::Error> {
-		let fut = {
+		// Under the read lock, check whether we need to do anything and whether the peer
+		// state is now empty (prunable) so we can decide which storage operation to use.
+		let is_prunable = {
 			let outer_state_lock = self.per_peer_state.read().unwrap();
 			match outer_state_lock.get(&counterparty_node_id) {
-				None => {
-					// We dropped the peer state by now.
-					return Ok(());
-				},
+				None => return Ok(()),
 				Some(entry) => {
-					let mut peer_state_lock = entry.lock().unwrap();
+					let peer_state_lock = entry.lock().unwrap();
 					if !peer_state_lock.needs_persist() {
-						// We already have persisted otherwise by now.
 						return Ok(());
-					} else {
-						peer_state_lock.set_needs_persist(false);
+					}
+					peer_state_lock.is_prunable()
+				},
+			}
+		};
+
+		if is_prunable {
+			// The peer state is empty: remove it from the in-memory map and the KV store.
+			// We need the write lock to remove the map entry; hold it until we've started
+			// the remove future (but not through its completion) to stay well-ordered with
+			// other `persist_peer_state` calls for the same peer.
+			let fut = {
+				let mut per_peer_state = self.per_peer_state.write().unwrap();
+				if let Entry::Occupied(mut entry) = per_peer_state.entry(counterparty_node_id) {
+					let state = entry.get_mut().get_mut().unwrap();
+					if state.is_prunable() {
+						entry.remove();
 						let key = counterparty_node_id.to_string();
-						let encoded = peer_state_lock.encode();
-						// Begin the write with the entry lock held. This avoids racing with
-						// potentially-in-flight `persist` calls writing state for the same peer.
-						self.kv_store.write(
+						Some(self.kv_store.remove(
 							LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
 							LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
 							&key,
-							encoded,
-						)
+							true,
+						))
+					} else {
+						// New state arrived between the read and write lock; mark it dirty
+						// so it will be written on the next persist call.
+						state.set_needs_persist(true);
+						None
 					}
+				} else {
+					// Already removed by a concurrent persist_peer_state call.
+					None
+				}
+			};
+			if let Some(fut) = fut {
+				fut.await?;
+			}
+			return Ok(());
+		}
+
+		// The peer state is non-empty: serialize and write it.
+		let fut = {
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+			match outer_state_lock.get(&counterparty_node_id) {
+				None => return Ok(()),
+				Some(entry) => {
+					let mut peer_state_lock = entry.lock().unwrap();
+					if !peer_state_lock.needs_persist() {
+						return Ok(());
+					}
+					peer_state_lock.set_needs_persist(false);
+					let key = counterparty_node_id.to_string();
+					let encoded = peer_state_lock.encode();
+					// Begin the write with the entry lock held. This avoids racing with
+					// potentially-in-flight `persist` calls writing state for the same peer.
+					self.kv_store.write(
+						LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+						LSPS1_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+						&key,
+						encoded,
+					)
 				},
 			}
 		};
@@ -752,6 +799,46 @@ where
 		Ok(())
 	}
 
+	/// Prunes terminal orders for all peers, freeing memory and per-peer quota.
+	///
+	/// Terminal orders are those in the [`super::msgs::LSPS1OrderState::Completed`] or
+	/// [`super::msgs::LSPS1OrderState::Failed`] state. `max_age` is measured from each order's
+	/// `created_at` timestamp. Pass [`Duration::ZERO`] to prune all terminal orders regardless
+	/// of age, which is useful to immediately free per-peer quota when clients are blocked by
+	/// the per-peer request limit due to accumulated failed orders.
+	///
+	/// Returns the total number of orders removed across all peers.
+	pub async fn prune_orders(&self, max_age: Duration) -> Result<usize, APIError> {
+		let now =
+			LSPSDateTime::new_from_duration_since_epoch(self.time_provider.duration_since_epoch());
+
+		let dirty_peers: Vec<(PublicKey, usize)> = {
+			let outer_state_lock = self.per_peer_state.read().unwrap();
+			outer_state_lock
+				.iter()
+				.filter_map(|(node_id, inner_lock)| {
+					let mut peer_state = inner_lock.lock().unwrap();
+					let pruned = peer_state.prune_terminal_orders(&now, max_age);
+					if pruned > 0 {
+						Some((*node_id, pruned))
+					} else {
+						None
+					}
+				})
+				.collect()
+		};
+
+		let total: usize = dirty_peers.iter().map(|(_, n)| n).sum();
+
+		for (node_id, _) in &dirty_peers {
+			self.persist_peer_state(*node_id).await.map_err(|e| APIError::APIMisuseError {
+				err: format!("Failed to persist peer state for {}: {}", node_id, e),
+			})?;
+		}
+
+		Ok(total)
+	}
+
 	fn generate_order_id(&self) -> LSPS1OrderId {
 		let bytes = self.entropy_source.get_secure_random_bytes();
 		LSPS1OrderId(utils::hex_str(&bytes[0..16]))
@@ -919,6 +1006,23 @@ where
 		&self, counterparty_node_id: PublicKey, order_id: LSPS1OrderId,
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.order_failed_and_refunded(counterparty_node_id, order_id));
+
+		let mut waker = dummy_waker();
+		let mut ctx = task::Context::from_waker(&mut waker);
+		match fut.as_mut().poll(&mut ctx) {
+			task::Poll::Ready(result) => result,
+			task::Poll::Pending => {
+				// In a sync context, we can't wait for the future to complete.
+				unreachable!("Should not be pending in a sync context");
+			},
+		}
+	}
+
+	/// Prunes terminal orders for all peers, freeing memory and per-peer quota.
+	///
+	/// Wraps [`LSPS1ServiceHandler::prune_orders`].
+	pub fn prune_orders(&self, max_age: Duration) -> Result<usize, APIError> {
+		let mut fut = pin!(self.inner.prune_orders(max_age));
 
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
