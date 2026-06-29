@@ -380,7 +380,7 @@ pub struct ChainMonitor<
 	logger: L,
 	fee_estimator: F,
 	persister: P,
-	_entropy_source: ES,
+	entropy_source: ES,
 	/// "User-provided" (ie persistence-completion/-failed) [`MonitorEvent`]s. These came directly
 	/// from the user and not from a [`ChannelMonitor`].
 	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<MonitorEvent>, PublicKey)>>,
@@ -440,7 +440,7 @@ where
 	/// This is not exported to bindings users as async is not supported outside of Rust.
 	pub fn new_async_beta(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F,
-		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
+		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, entropy_source: ES,
 		_our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
 	) -> Self {
 		let event_notifier = Arc::new(Notifier::new());
@@ -450,7 +450,7 @@ where
 			broadcaster,
 			logger,
 			fee_estimator: feeest,
-			_entropy_source,
+			entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Arc::clone(&event_notifier),
@@ -662,7 +662,7 @@ where
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub fn new(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
-		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
+		entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
 	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
@@ -671,7 +671,7 @@ where
 			logger,
 			fee_estimator: feeest,
 			persister,
-			_entropy_source,
+			entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Arc::new(Notifier::new()),
@@ -1007,7 +1007,7 @@ where
 	#[cfg(peer_storage)]
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		let mut monitors_list: Vec<PeerStorageMonitorHolder> = Vec::new();
-		let random_bytes = self._entropy_source.get_secure_random_bytes();
+		let random_bytes = self.entropy_source.get_secure_random_bytes();
 
 		const MAX_PEER_STORAGE_SIZE: usize = 65531;
 		const USIZE_LEN: usize = core::mem::size_of::<usize>();
@@ -1206,7 +1206,7 @@ where
 					&self.broadcaster,
 					&self.fee_estimator,
 					&self.logger,
-					&self._entropy_source,
+					&self.entropy_source,
 				);
 
 				let update_id = update.update_id;
@@ -1479,7 +1479,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self._entropy_source,
+				&self.entropy_source,
 			)
 		});
 
@@ -1507,7 +1507,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self._entropy_source,
+				&self.entropy_source,
 			);
 		}
 	}
@@ -1541,7 +1541,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self._entropy_source,
+				&self.entropy_source,
 			)
 		});
 		// Assume we may have some new events and wake the event processor
@@ -1557,7 +1557,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self._entropy_source,
+				&self.entropy_source,
 			);
 		}
 	}
@@ -1579,7 +1579,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self._entropy_source,
+				&self.entropy_source,
 			)
 		});
 
