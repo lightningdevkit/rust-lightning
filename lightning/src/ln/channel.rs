@@ -1157,7 +1157,15 @@ pub(crate) struct CommitmentStats {
 /// A return value enum for get_update_fulfill_htlc. See UpdateFulfillCommitFetch variants for
 /// description
 enum UpdateFulfillFetch {
-	NewClaim { monitor_update: ChannelMonitorUpdate, htlc_value_msat: u64, update_blocked: bool },
+	NewClaim {
+		/// The `ChannelMonitorUpdate` containing the new payment preimage. `None` when the caller
+		/// asked us to push the claim into the holding cell (via `force_holding_cell`); in that
+		/// case the caller is responsible for either flushing the holding cell (which will
+		/// produce a single combined update) or building a preimage-only update for durability.
+		monitor_update: Option<ChannelMonitorUpdate>,
+		htlc_value_msat: u64,
+		update_blocked: bool,
+	},
 	DuplicateClaim {},
 }
 
@@ -1172,6 +1180,11 @@ pub enum UpdateFulfillCommitFetch {
 		/// The value of the HTLC which was claimed, in msat.
 		htlc_value_msat: u64,
 	},
+	/// Indicates the HTLC fulfill was queued into the holding cell because the caller asked us
+	/// to defer it (e.g. so multiple claims on the same channel can be batched into a single
+	/// commitment update). No `ChannelMonitorUpdate` has been produced; the caller must flush
+	/// the holding cell to obtain one combined update for all queued claims.
+	Queued {},
 	/// Indicates the HTLC fulfill is duplicative and already existed either in the holding cell
 	/// or has been forgotten (presumably previously claimed).
 	DuplicateClaim {},
@@ -7652,18 +7665,35 @@ where
 		// (see equivalent if condition there).
 		assert!(!self.context.channel_state.can_generate_new_commitment());
 		let mon_update_id = self.context.latest_monitor_update_id; // Forget the ChannelMonitor update
-		let fulfill_resp =
-			self.get_update_fulfill_htlc(htlc_id_arg, payment_preimage_arg, None, None, logger);
+		let fulfill_resp = self.get_update_fulfill_htlc(
+			htlc_id_arg,
+			payment_preimage_arg,
+			None,
+			None,
+			false,
+			logger,
+		);
 		self.context.latest_monitor_update_id = mon_update_id;
 		if let UpdateFulfillFetch::NewClaim { update_blocked, .. } = fulfill_resp {
 			assert!(update_blocked); // The HTLC must have ended up in the holding cell.
 		}
 	}
 
+	/// Claims an inbound HTLC, generating either a `ChannelMonitorUpdate` plus inline state
+	/// transition (when the channel can immediately produce a commitment update) or pushing the
+	/// claim into the holding cell.
+	///
+	/// When `force_holding_cell` is `true` the claim is unconditionally pushed into the holding
+	/// cell and **no** `ChannelMonitorUpdate` is produced. The caller must subsequently flush the
+	/// holding cell (via [`Self::maybe_free_holding_cell_htlcs`]) to get a single combined
+	/// `ChannelMonitorUpdate`, or build a preimage-only update via
+	/// [`Self::build_preimage_only_monitor_update`] if the holding cell cannot be flushed yet.
+	/// This is used for batching multiple HTLC claims (e.g. MPP parts arriving on the same
+	/// channel) into one commitment update.
 	fn get_update_fulfill_htlc<L: Logger>(
 		&mut self, htlc_id_arg: u64, payment_preimage_arg: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		logger: &L,
+		force_holding_cell: bool, logger: &L,
 	) -> UpdateFulfillFetch {
 		// Either ChannelReady got set (which means it won't be unset) or there is no way any
 		// caller thought we could have something claimed (cause we wouldn't have accepted in an
@@ -7718,31 +7748,45 @@ where
 			return UpdateFulfillFetch::DuplicateClaim {};
 		}
 
+		let into_holding_cell =
+			force_holding_cell || !self.context.channel_state.can_generate_new_commitment();
+
 		// Now update local state:
 		//
 		// We have to put the payment_preimage in the channel_monitor right away here to ensure we
 		// can claim it even if the channel hits the chain before we see their next commitment.
-		self.context.latest_monitor_update_id += 1;
-		let monitor_update = ChannelMonitorUpdate {
-			update_id: self.context.latest_monitor_update_id,
-			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
-				payment_preimage: payment_preimage_arg.clone(),
-				payment_info,
-			}],
-			channel_id: Some(self.context.channel_id()),
+		// When the caller asked us to push into the holding cell for batching
+		// (`force_holding_cell`) we skip producing a `ChannelMonitorUpdate` here; the caller is
+		// responsible for either flushing the holding cell (producing one combined update with
+		// every queued preimage and the commitment) or building a preimage-only update for
+		// durability.
+		let monitor_update = if force_holding_cell {
+			None
+		} else {
+			self.context.latest_monitor_update_id += 1;
+			Some(ChannelMonitorUpdate {
+				update_id: self.context.latest_monitor_update_id,
+				updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+					payment_preimage: payment_preimage_arg.clone(),
+					payment_info,
+				}],
+				channel_id: Some(self.context.channel_id()),
+			})
 		};
 
-		if !self.context.channel_state.can_generate_new_commitment() {
+		if into_holding_cell {
 			// Note that this condition is the same as the assertion in
 			// `claim_htlc_while_disconnected_dropping_mon_update` and must match exactly -
 			// `claim_htlc_while_disconnected_dropping_mon_update` would not work correctly if we
-			// do not not get into this branch.
+			// do not get into this branch.
 			for pending_update in self.context.holding_cell_htlc_updates.iter() {
 				match pending_update {
 					&HTLCUpdateAwaitingACK::ClaimHTLC { htlc_id, .. } => {
 						if htlc_id_arg == htlc_id {
 							// Make sure we don't leave latest_monitor_update_id incremented here:
-							self.context.latest_monitor_update_id -= 1;
+							if monitor_update.is_some() {
+								self.context.latest_monitor_update_id -= 1;
+							}
 							return UpdateFulfillFetch::DuplicateClaim {};
 						}
 					},
@@ -7814,7 +7858,7 @@ where
 	pub fn get_update_fulfill_htlc_and_commit<L: Logger>(
 		&mut self, htlc_id: u64, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		logger: &L,
+		force_holding_cell: bool, logger: &L,
 	) -> UpdateFulfillCommitFetch {
 		let release_cs_monitor = self.context.blocked_monitor_updates.is_empty();
 		match self.get_update_fulfill_htlc(
@@ -7822,10 +7866,21 @@ where
 			payment_preimage,
 			payment_info,
 			attribution_data,
+			force_holding_cell,
 			logger,
 		) {
+			UpdateFulfillFetch::NewClaim { monitor_update: None, update_blocked, .. } => {
+				// Caller asked us to push the claim into the holding cell so that several claims
+				// on this channel can be batched into a single commitment update. We have not
+				// produced a `ChannelMonitorUpdate`; the caller will obtain one by flushing the
+				// holding cell (or by building a preimage-only update for durability if the
+				// channel cannot currently generate a commitment).
+				debug_assert!(force_holding_cell);
+				debug_assert!(update_blocked);
+				UpdateFulfillCommitFetch::Queued {}
+			},
 			UpdateFulfillFetch::NewClaim {
-				mut monitor_update,
+				monitor_update: Some(mut monitor_update),
 				htlc_value_msat,
 				update_blocked,
 			} => {
@@ -7871,6 +7926,66 @@ where
 			},
 			UpdateFulfillFetch::DuplicateClaim {} => UpdateFulfillCommitFetch::DuplicateClaim {},
 		}
+	}
+
+	/// Builds a preimage-only [`ChannelMonitorUpdate`] for a payment whose claims have just been
+	/// queued into the holding cell via
+	/// [`Self::get_update_fulfill_htlc_and_commit`] with `force_holding_cell = true`.
+	///
+	/// This is used to ensure preimage durability when the holding cell cannot be flushed
+	/// immediately (e.g. while awaiting RAA, while a monitor update is in progress, while
+	/// disconnected, or while quiescent). All MPP parts being claimed share the same preimage,
+	/// so a single one-step update is sufficient regardless of how many parts were queued.
+	/// The eventual holding-cell flush will produce a [`ChannelMonitorUpdate`] containing a
+	/// redundant `PaymentPreimage` step for the same preimage, which is harmless:
+	/// `ChannelMonitor` is idempotent w.r.t. the preimage, and we do not bother to track
+	/// `payment_info` again at flush time.
+	///
+	/// Increments `latest_monitor_update_id` by 1 and handles the
+	/// `blocked_monitor_updates` ID juggling so the new update is consecutive with any held
+	/// updates.
+	pub fn build_preimage_only_monitor_update<L: Logger>(
+		&mut self, payment_preimage: PaymentPreimage, payment_info: Option<PaymentClaimDetails>,
+		logger: &L,
+	) -> ChannelMonitorUpdate {
+		self.context.latest_monitor_update_id += 1;
+		let mut monitor_update = ChannelMonitorUpdate {
+			update_id: self.context.latest_monitor_update_id,
+			updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+				payment_preimage,
+				payment_info,
+			}],
+			channel_id: Some(self.context.channel_id()),
+		};
+
+		// If there are blocked monitor updates queued ahead of us, the new preimage update
+		// has to fly before them, so insert it at the head and bump their IDs (mirrors the
+		// logic in `get_update_fulfill_htlc_and_commit`).
+		if !self.context.blocked_monitor_updates.is_empty() {
+			let new_mon_id = self.context.blocked_monitor_updates[0].update.update_id;
+			monitor_update.update_id = new_mon_id;
+			for held_update in self.context.blocked_monitor_updates.iter_mut() {
+				held_update.update.update_id += 1;
+			}
+		}
+
+		// Mark the channel as having a monitor update in progress so that when the update is
+		// submitted to the chain monitor and persistence completes (synchronously or otherwise),
+		// `monitor_updating_restored` doesn't trip its `MONITOR_UPDATE_IN_PROGRESS` assertion.
+		// This mirrors the `monitor_updating_paused` call made in `free_holding_cell_htlcs`
+		// (the `Some` branch of `maybe_free_holding_cell_htlcs`) and in
+		// `get_update_fulfill_htlc_and_commit`.
+		self.monitor_updating_paused(
+			false,
+			false,
+			false,
+			Vec::new(),
+			Vec::new(),
+			Vec::new(),
+			logger,
+		);
+
+		monitor_update
 	}
 
 	/// Returns `Err` (always with [`ChannelError::Ignore`]) if the HTLC could not be failed (e.g.
@@ -9024,14 +9139,18 @@ where
 							*payment_preimage,
 							None,
 							attribution_data.clone(),
+							false,
 							logger,
 						);
-						let mut additional_monitor_update =
-							if let UpdateFulfillFetch::NewClaim { monitor_update, .. } = fulfill {
-								monitor_update
-							} else {
-								unreachable!()
-							};
+						let mut additional_monitor_update = if let UpdateFulfillFetch::NewClaim {
+							monitor_update: Some(monitor_update),
+							..
+						} = fulfill
+						{
+							monitor_update
+						} else {
+							unreachable!()
+						};
 						update_fulfill_count += 1;
 						monitor_update.updates.append(&mut additional_monitor_update.updates);
 						None

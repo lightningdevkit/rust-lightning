@@ -9625,24 +9625,23 @@ impl<
 				None
 			};
 			let payment_info = Some(PaymentClaimDetails { mpp_parts, claiming_payment });
-			for htlc in sources {
-				let this_mpp_claim =
-					pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim| {
-						let counterparty_id = htlc.mpp_part.prev_hop.counterparty_node_id;
-						let counterparty_id = counterparty_id
-							.expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
-						let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
-						(counterparty_id, htlc.mpp_part.prev_hop.channel_id, claim_ptr)
-					});
-				let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
-					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
-						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
-					}
-				});
 
-				// Create new attribution data as the final hop. Always report a zero hold time, because reporting a
-				// non-zero value will not make a difference in the penalty that may be applied by the sender. If there
-				// is a phantom hop, we need to double-process.
+			// Iterate every source and push each claim into its channel's holding cell so that
+			// multiple MPP parts arriving on the same channel will be released as a single
+			// combined `ChannelMonitorUpdate` (preimage steps + commitment update) when the
+			// holding cell is flushed below. We force the holding-cell path only when there is
+			// more than one source, to preserve the single-claim inline fast path (one combined
+			// `ChannelMonitorUpdate` produced directly by `get_update_fulfill_htlc_and_commit`).
+			let force_holding_cell = sources.len() > 1;
+			// Channels into which we successfully queued a claim and therefore must flush at
+			// the end. Using a `Vec` (rather than a `HashSet`) preserves insertion order so
+			// the flush order matches the iteration order, which keeps tests deterministic.
+			let mut touched_channels: Vec<(PublicKey, ChannelId, OutPoint)> = Vec::new();
+			for htlc in sources {
+				let counterparty_id = htlc.mpp_part.prev_hop.counterparty_node_id.expect("Prior to upgrading to LDK 0.1, all pending HTLCs forwarded by LDK 0.0.123 or before must be resolved. It appears at least one claimable payment was not resolved. Please downgrade to LDK 0.0.125 and resolve the HTLC by claiming the payment prior to upgrading.");
+				let chan_id = htlc.mpp_part.prev_hop.channel_id;
+				let funding_txo = htlc.mpp_part.prev_hop.outpoint;
+
 				let attribution_data =
 					if let Some(phantom_secret) = htlc.mpp_part.prev_hop.phantom_shared_secret {
 						let attribution_data =
@@ -9658,16 +9657,35 @@ impl<
 					0,
 				);
 
-				self.claim_funds_from_hop(
+				// Note: when this claim is `Queued` (`force_holding_cell` is true), the
+				// completion action and RAA blocker returned by this closure are *ignored* by
+				// `claim_funds_from_hop`. The flush loop below registers exactly one action
+				// and one RAA blocker per touched channel — matching the single combined
+				// `ChannelMonitorUpdate` the flush produces — instead of one per HTLC.
+				let queued = self.claim_funds_from_hop(
 					&htlc.mpp_part.prev_hop,
 					payment_preimage,
 					payment_info.clone(),
 					Some(attribution_data),
+					force_holding_cell,
 					|_, definitely_duplicate| {
 						debug_assert!(
 							!definitely_duplicate,
 							"We shouldn't claim duplicatively from a payment"
 						);
+						let this_mpp_claim =
+							pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim| {
+								(
+									counterparty_id,
+									chan_id,
+									PendingMPPClaimPointer(Arc::clone(pending_mpp_claim)),
+								)
+							});
+						let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
+							RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+								pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
+							}
+						});
 						(
 							Some(MonitorUpdateCompletionAction::PaymentClaimed {
 								payment_hash,
@@ -9676,6 +9694,59 @@ impl<
 							raa_blocker,
 						)
 					},
+				);
+				// Only `Queued` claims need a follow-up flush: the per-HTLC `completion_action`
+				// closure above is *ignored* by `claim_funds_from_hop` on the `Queued` path,
+				// so the flush loop below must run once per touched channel to register the
+				// action and persist the queued preimage(s) via a single combined
+				// `ChannelMonitorUpdate`. The non-queued paths (`NewClaim`, `DuplicateClaim`,
+				// and the closed-channel fallback inside `claim_mpp_part`) each invoke the
+				// closure themselves and register the action inline, so they neither need
+				// nor benefit from being added here.
+				if queued
+					&& !touched_channels
+						.iter()
+						.any(|(cp, c, _)| *cp == counterparty_id && *c == chan_id)
+				{
+					touched_channels.push((counterparty_id, chan_id, funding_txo));
+				}
+			}
+
+			// Flush each channel into which we queued a claim. For each channel this produces
+			// one combined `ChannelMonitorUpdate` (every queued `PaymentPreimage` step plus
+			// the commitment update). If a channel cannot currently generate a commitment
+			// (awaiting RAA, monitor update in progress, peer disconnected, quiescent, ...)
+			// we instead build a single preimage-only `ChannelMonitorUpdate` so the preimage
+			// is durable across restarts; the commitment update will follow when the holding
+			// cell is naturally flushed.
+			//
+			// We register exactly one `PaymentClaimed` action and (for MPP) one
+			// `ClaimedMPPPayment` RAA blocker per touched channel here, matching the single
+			// combined `ChannelMonitorUpdate` produced for that channel. Registering one per
+			// queued HTLC would be N-fold redundant and could prematurely unblock downstream
+			// channels in multi-channel MPP edge cases.
+			for (counterparty_id, chan_id, funding_txo) in touched_channels {
+				let this_mpp_claim = pending_mpp_claim_ptr_opt.as_ref().map(|pending_mpp_claim| {
+					let claim_ptr = PendingMPPClaimPointer(Arc::clone(pending_mpp_claim));
+					(counterparty_id, chan_id, claim_ptr)
+				});
+				let raa_blocker = pending_mpp_claim_ptr_opt.as_ref().map(|pending_claim| {
+					RAAMonitorUpdateBlockingAction::ClaimedMPPPayment {
+						pending_claim: PendingMPPClaimPointer(Arc::clone(pending_claim)),
+					}
+				});
+				let action = MonitorUpdateCompletionAction::PaymentClaimed {
+					payment_hash,
+					pending_mpp_claim: this_mpp_claim,
+				};
+				self.flush_pending_holding_cell_claim(
+					counterparty_id,
+					chan_id,
+					funding_txo,
+					payment_preimage,
+					payment_info.clone(),
+					action,
+					raa_blocker,
 				);
 			}
 		} else {
@@ -9736,6 +9807,7 @@ impl<
 			payment_preimage,
 			None,
 			Some(attribution_data),
+			false,
 			|htlc_claim_value_msat, definitely_duplicate| {
 				let chan_to_release = EventUnblockedChannel {
 					counterparty_node_id: next_channel_counterparty_node_id,
@@ -9826,6 +9898,10 @@ impl<
 		);
 	}
 
+	/// Returns `true` if the claim was queued into the channel's holding cell for batched
+	/// release by [`Self::flush_pending_holding_cell_claim`] and `false` otherwise (an inline
+	/// `ChannelMonitorUpdate` was produced, the claim was a duplicate, or the channel was
+	/// already closed). Only the `true` return value requires a follow-up flush.
 	fn claim_funds_from_hop<
 		ComplFunc: FnOnce(
 			Option<u64>,
@@ -9834,8 +9910,8 @@ impl<
 	>(
 		&self, prev_hop: &HTLCPreviousHopData, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		completion_action: ComplFunc,
-	) {
+		force_holding_cell: bool, completion_action: ComplFunc,
+	) -> bool {
 		let counterparty_node_id = prev_hop.counterparty_node_id.or_else(|| {
 			let short_to_chan_info = self.short_to_chan_info.read().unwrap();
 			short_to_chan_info.get(&prev_hop.prev_outbound_scid_alias).map(|(cp_id, _)| *cp_id)
@@ -9860,10 +9936,12 @@ impl<
 			payment_preimage,
 			payment_info,
 			attribution_data,
+			force_holding_cell,
 			completion_action,
 		)
 	}
 
+	/// See [`Self::claim_funds_from_hop`] for the meaning of the `bool` return value.
 	fn claim_mpp_part<
 		ComplFunc: FnOnce(
 			Option<u64>,
@@ -9872,8 +9950,8 @@ impl<
 	>(
 		&self, prev_hop: HTLCClaimSource, payment_preimage: PaymentPreimage,
 		payment_info: Option<PaymentClaimDetails>, attribution_data: Option<AttributionData>,
-		completion_action: ComplFunc,
-	) {
+		force_holding_cell: bool, completion_action: ComplFunc,
+	) -> bool {
 		//TODO: Delay the claimed_funds relaying just like we do outbound relay!
 
 		// If we haven't yet run background events assume we're still deserializing and shouldn't
@@ -9897,6 +9975,7 @@ impl<
 			.map(|peer_mutex| peer_mutex.lock().unwrap())
 			.expect(MISSING_MON_ERROR);
 
+		let mut queued = false;
 		{
 			let peer_state = &mut *peer_state_lock;
 			if let hash_map::Entry::Occupied(mut chan_entry) =
@@ -9909,10 +9988,29 @@ impl<
 						payment_preimage,
 						payment_info,
 						attribution_data,
+						force_holding_cell,
 						&&logger,
 					);
+					queued = matches!(&fulfill_res, UpdateFulfillCommitFetch::Queued { .. });
 
 					match fulfill_res {
+						UpdateFulfillCommitFetch::Queued {} => {
+							// The claim was queued into the holding cell so that this and any
+							// other concurrent claims on this channel will be released as a
+							// single combined `ChannelMonitorUpdate` later (see
+							// `claim_payment_internal`'s post-iteration flush). The completion
+							// action and RAA blocker are deliberately *not* registered here:
+							// because the entire batch of queued HTLCs maps to a single
+							// combined `ChannelMonitorUpdate`, registering one action / one
+							// blocker per queued HTLC would be N-fold redundant. The flush
+							// site (`flush_pending_holding_cell_claim`) instead registers
+							// exactly one action and one RAA blocker per channel, matching the
+							// one combined update it emits.
+							log_trace!(
+								logger,
+								"Queued claim into holding cell; deferring completion action registration to flush",
+							);
+						},
 						UpdateFulfillCommitFetch::NewClaim { htlc_value_msat, monitor_update } => {
 							let (action_opt, raa_blocker_opt) =
 								completion_action(Some(htlc_value_msat), false);
@@ -9975,7 +10073,7 @@ impl<
 							let action = if let Some(action) = action_opt {
 								action
 							} else {
-								return;
+								return false;
 							};
 
 							// If there are monitor updates in flight, we may be in the case
@@ -9991,7 +10089,7 @@ impl<
 									.entry(chan_id)
 									.or_insert_with(Vec::new)
 									.push(action);
-								return;
+								return false;
 							}
 
 							mem::drop(peer_state_lock);
@@ -10040,12 +10138,12 @@ impl<
 							} else {
 								debug_assert!(false,
 									"Duplicate claims should always either be for forwarded payments(freeing another channel immediately) or during init (for claim replay)");
-								return;
+								return false;
 							};
 						},
 					}
 				}
-				return;
+				return queued;
 			}
 		}
 
@@ -10122,6 +10220,190 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			mem::drop(peer_state_lock);
 			mem::drop(per_peer_state);
 			self.handle_monitor_update_completion_actions(actions);
+		}
+		false
+	}
+
+	/// Flushes a channel's holding cell after one or more HTLC claims for the same payment have
+	/// been queued via [`FundedChannel::get_update_fulfill_htlc_and_commit`] with
+	/// `force_holding_cell = true`.
+	///
+	/// When the holding cell can be freed this produces a single `ChannelMonitorUpdate`
+	/// containing every queued `PaymentPreimage` step plus the commitment update — so an
+	/// N-part MPP arriving on the same channel is fulfilled with exactly one
+	/// `commitment_signed` round-trip. When it cannot (awaiting RAA, monitor update in
+	/// progress, peer disconnected, quiescent, ...) we instead build a single preimage-only
+	/// `ChannelMonitorUpdate` so the preimage is durable across restarts; the
+	/// `commitment_signed` will be sent later when the holding cell is naturally flushed.
+	///
+	/// If the channel has disappeared between queueing and flushing (e.g. a concurrent
+	/// `force_shutdown`) — `force_shutdown` silently discards `ClaimHTLC` holding-cell entries,
+	/// so the queued preimage would otherwise be lost — we fall through to the closed-channel
+	/// claim path to persist a preimage-only `ChannelMonitorUpdate` and register the
+	/// completion action, matching the fallback in [`Self::claim_mpp_part`].
+	///
+	/// If the peer is also gone we have no `closed_channel_monitor_update_ids` slot to bump
+	/// and must give up; this is not expected during a claim flow because force-close keeps
+	/// the peer state intact.
+	fn flush_pending_holding_cell_claim(
+		&self, counterparty_node_id: PublicKey, chan_id: ChannelId, funding_txo: OutPoint,
+		payment_preimage: PaymentPreimage, payment_info: Option<PaymentClaimDetails>,
+		action: MonitorUpdateCompletionAction, raa_blocker: Option<RAAMonitorUpdateBlockingAction>,
+	) {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let mut peer_state_lock = match per_peer_state.get(&counterparty_node_id) {
+			Some(peer_mutex) => peer_mutex.lock().unwrap(),
+			None => {
+				debug_assert!(
+					false,
+					"Peer state missing while flushing a queued holding-cell claim; preimage may be lost",
+				);
+				return;
+			},
+		};
+		let peer_state = &mut *peer_state_lock;
+		if peer_state.channel_by_id.get(&chan_id).and_then(|chan| chan.as_funded()).is_none() {
+			// The channel disappeared (or transitioned out of the funded state) between the
+			// claim being queued into its holding cell and this flush. `force_shutdown`
+			// discards `ClaimHTLC` holding-cell entries, so the queued preimage is gone and
+			// the `ChannelMonitor` will not learn of it unless we persist one ourselves.
+			// Fall through to the closed-channel claim path: bump the closed-channel monitor
+			// update id, write a preimage-only `ChannelMonitorUpdate`, and register the
+			// completion action so `PendingMPPClaim` / `PaymentClaimed` are not stranded.
+			let payment_hash: PaymentHash = payment_preimage.into();
+			let logger = WithContext::from(
+				&self.logger,
+				Some(counterparty_node_id),
+				Some(chan_id),
+				Some(payment_hash),
+			);
+
+			let update_id = if let Some(latest_update_id) =
+				peer_state.closed_channel_monitor_update_ids.get_mut(&chan_id)
+			{
+				*latest_update_id = latest_update_id.saturating_add(1);
+				*latest_update_id
+			} else {
+				log_error!(
+					logger,
+					"Missing closed_channel_monitor_update_ids while flushing a queued holding-cell claim; preimage may be lost",
+				);
+				debug_assert!(false);
+				return;
+			};
+
+			let preimage_update = ChannelMonitorUpdate {
+				update_id,
+				updates: vec![ChannelMonitorUpdateStep::PaymentPreimage {
+					payment_preimage,
+					payment_info,
+				}],
+				channel_id: Some(chan_id),
+			};
+
+			if let Some(blocker) = raa_blocker {
+				peer_state
+					.actions_blocking_raa_monitor_updates
+					.entry(chan_id)
+					.or_insert_with(Vec::new)
+					.push(blocker);
+			}
+
+			log_trace!(
+				logger,
+				"Tracking monitor update completion action for queued holding-cell flush after channel closed: {:?}",
+				action,
+			);
+			peer_state
+				.monitor_update_blocked_actions
+				.entry(chan_id)
+				.or_insert_with(Vec::new)
+				.push(action);
+
+			if let Some(actions) = self.handle_post_close_monitor_update(
+				&mut peer_state.in_flight_monitor_updates,
+				&mut peer_state.monitor_update_blocked_actions,
+				funding_txo,
+				preimage_update,
+				counterparty_node_id,
+				chan_id,
+			) {
+				mem::drop(peer_state_lock);
+				mem::drop(per_peer_state);
+				self.handle_monitor_update_completion_actions(actions);
+			}
+			return;
+		}
+		let chan = peer_state
+			.channel_by_id
+			.get_mut(&chan_id)
+			.and_then(|chan| chan.as_funded_mut())
+			.expect("checked above");
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+
+		let (monitor_opt, holding_cell_failed_htlcs) =
+			chan.maybe_free_holding_cell_htlcs(&self.fee_estimator, &&logger);
+
+		let monitor_update = if let Some(mut monitor_update) = monitor_opt {
+			// Inject payment_info into the first PaymentPreimage step that matches our preimage
+			// (the holding cell may contain unrelated claims for other preimages from prior
+			// queueing).
+			for step in monitor_update.updates.iter_mut() {
+				if let ChannelMonitorUpdateStep::PaymentPreimage {
+					payment_preimage: ref step_preimage,
+					payment_info: ref mut info,
+				} = step
+				{
+					if *step_preimage == payment_preimage {
+						*info = payment_info;
+						break;
+					}
+				}
+			}
+			monitor_update
+		} else {
+			// Deferred flush: build a preimage-only `ChannelMonitorUpdate` so the preimage is
+			// durable now. All MPP parts share the same preimage so a single one-step update
+			// covers any number of queued claims for this payment.
+			chan.build_preimage_only_monitor_update(payment_preimage, payment_info, &&logger)
+		};
+
+		// Register exactly one `PaymentClaimed` action and (for MPP) one `ClaimedMPPPayment`
+		// RAA blocker for the entire batch of queued claims on this channel. The combined
+		// `ChannelMonitorUpdate` we just built represents every queued claim for this payment
+		// on this channel, so a single action / single blocker is the correct multiplicity.
+		log_trace!(
+			logger,
+			"Tracking monitor update completion action for queued holding-cell flush: {:?}",
+			action
+		);
+		peer_state
+			.monitor_update_blocked_actions
+			.entry(chan_id)
+			.or_insert_with(Vec::new)
+			.push(action);
+		if let Some(blocker) = raa_blocker {
+			peer_state
+				.actions_blocking_raa_monitor_updates
+				.entry(chan_id)
+				.or_insert_with(Vec::new)
+				.push(blocker);
+		}
+
+		let post_update_data = self.handle_new_monitor_update(
+			&mut peer_state.in_flight_monitor_updates,
+			&mut peer_state.monitor_update_blocked_actions,
+			&mut peer_state.pending_msg_events,
+			peer_state.is_connected,
+			chan,
+			funding_txo,
+			monitor_update,
+		);
+		mem::drop(peer_state_lock);
+		mem::drop(per_peer_state);
+		self.fail_holding_cell_htlcs(holding_cell_failed_htlcs, chan_id, &counterparty_node_id);
+		if let Some(data) = post_update_data {
+			self.handle_post_monitor_update_chan_resume(data);
 		}
 	}
 
@@ -20682,6 +20964,7 @@ impl<
 								payment_preimage,
 								None,
 								None,
+								false,
 								|_, _| {
 									(
 										Some(MonitorUpdateCompletionAction::PaymentClaimed {
@@ -21130,39 +21413,26 @@ mod tests {
 		assert_eq!(events.len(), 1);
 		pass_along_path(&nodes[0], &[&nodes[1]], 200_000, our_payment_hash, Some(payment_secret), events.drain(..).next().unwrap(), true, None);
 
-		// Claim the full MPP payment. Note that we can't use a test utility like
-		// claim_funds_along_route because the ordering of the messages causes the second half of the
-		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
-		// lightning messages manually.
+		// Claim the full MPP payment. Both parts are on the same channel, so they should be
+		// batched into a single commitment update.
 		nodes[1].node.claim_funds(payment_preimage);
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
-		check_added_monitors(&nodes[1], 2);
+		check_added_monitors(&nodes[1], 1);
 
-		let mut bs_1st_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_1st_updates.update_fulfill_htlcs.remove(0));
+		let mut bs_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+		assert_eq!(bs_updates.update_fulfill_htlcs.len(), 2);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_updates.update_fulfill_htlcs.remove(0));
 		expect_payment_sent(&nodes[0], payment_preimage, None, false, false);
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_1st_updates.commitment_signed);
+		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_updates.update_fulfill_htlcs.remove(0));
+		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_updates.commitment_signed);
 		check_added_monitors(&nodes[0], 1);
-		let (as_first_raa, as_first_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_first_raa);
+		let (as_raa, as_cs) = get_revoke_commit_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
+		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_raa);
 		check_added_monitors(&nodes[1], 1);
-		let mut bs_2nd_updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
-		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_first_cs);
+		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_cs);
 		check_added_monitors(&nodes[1], 1);
-		let bs_first_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_update_fulfill_htlc(nodes[1].node.get_our_node_id(), bs_2nd_updates.update_fulfill_htlcs.remove(0));
-		nodes[0].node.handle_commitment_signed_batch_test(nodes[1].node.get_our_node_id(), &bs_2nd_updates.commitment_signed);
-		check_added_monitors(&nodes[0], 1);
-		let as_second_raa = get_event_msg!(nodes[0], MessageSendEvent::SendRevokeAndACK, nodes[1].node.get_our_node_id());
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_first_raa);
-		let as_second_updates = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
-		check_added_monitors(&nodes[0], 1);
-		nodes[1].node.handle_revoke_and_ack(nodes[0].node.get_our_node_id(), &as_second_raa);
-		check_added_monitors(&nodes[1], 1);
-		nodes[1].node.handle_commitment_signed_batch_test(nodes[0].node.get_our_node_id(), &as_second_updates.commitment_signed);
-		check_added_monitors(&nodes[1], 1);
-		let bs_third_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
-		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_third_raa);
+		let bs_raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, nodes[0].node.get_our_node_id());
+		nodes[0].node.handle_revoke_and_ack(nodes[1].node.get_our_node_id(), &bs_raa);
 		check_added_monitors(&nodes[0], 1);
 
 		// Note that successful MPP payments will generate a single PaymentSent event upon the first
