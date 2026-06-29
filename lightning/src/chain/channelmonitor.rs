@@ -184,7 +184,9 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
-fn push_monitor_event(pending_monitor_events: &mut Vec<MonitorEvent>, event: MonitorEvent) {
+fn push_monitor_event<ES: EntropySource>(
+	pending_monitor_events: &mut Vec<MonitorEvent>, event: MonitorEvent, _entropy_source: ES,
+) {
 	pending_monitor_events.push(event);
 }
 
@@ -2115,12 +2117,18 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// itself.
 	///
 	/// panics if the given update is not the next update by update_id.
-	pub fn update_monitor<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	pub fn update_monitor<
+		B: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
+		ES: EntropySource,
+	>(
 		&self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &L,
+		entropy_source: &ES,
 	) -> Result<(), ()> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
-		inner.update_monitor(updates, broadcaster, fee_estimator, &logger)
+		inner.update_monitor(updates, broadcaster, fee_estimator, &logger, entropy_source)
 	}
 
 	/// Gets the update_id from the latest ChannelMonitorUpdate which was applied to this
@@ -2368,8 +2376,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		B: BroadcasterInterface,
 		F: FeeEstimator,
 		L: Logger,
+		ES: EntropySource,
 	>(
-		&self, broadcaster: &B, fee_estimator: &F, logger: &L,
+		&self, broadcaster: &B, fee_estimator: &F, logger: &L, entropy_source: &ES,
 	) {
 		let mut inner = self.inner.lock().unwrap();
 		let fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
@@ -2380,6 +2389,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			&fee_estimator,
 			&logger,
 			false,
+			entropy_source,
 		);
 	}
 
@@ -2407,7 +2417,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// [`get_outputs_to_watch`]: #method.get_outputs_to_watch
 	#[rustfmt::skip]
-	pub fn block_connected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	pub fn block_connected<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&self,
 		header: &Header,
 		txdata: &TransactionData,
@@ -2415,21 +2425,28 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
+		entropy_source: &ES,
 	) -> Vec<TransactionOutputs> {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.block_connected(
-			header, txdata, height, broadcaster, fee_estimator, &logger)
+			header, txdata, height, broadcaster, fee_estimator, &logger, entropy_source)
 	}
 
 	/// Determines if the disconnected block contained any transactions of interest and updates
 	/// appropriately.
-	pub fn blocks_disconnected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	pub fn blocks_disconnected<
+		B: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
+		ES: EntropySource,
+	>(
 		&self, fork_point: BlockLocator, broadcaster: B, fee_estimator: F, logger: &L,
+		entropy_source: &ES,
 	) {
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
-		inner.blocks_disconnected(fork_point, broadcaster, fee_estimator, &logger)
+		inner.blocks_disconnected(fork_point, broadcaster, fee_estimator, &logger, entropy_source)
 	}
 
 	/// Processes transactions confirmed in a block with the given header and height, returning new
@@ -2440,7 +2457,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// [`block_connected`]: Self::block_connected
 	#[rustfmt::skip]
-	pub fn transactions_confirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	pub fn transactions_confirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&self,
 		header: &Header,
 		txdata: &TransactionData,
@@ -2448,12 +2465,13 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
+		entropy_source: &ES,
 	) -> Vec<TransactionOutputs> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.transactions_confirmed(
-			header, txdata, height, broadcaster, &bounded_fee_estimator, &logger)
+			header, txdata, height, broadcaster, &bounded_fee_estimator, &logger, entropy_source)
 	}
 
 	/// Processes a transaction that was reorganized out of the chain.
@@ -2463,18 +2481,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// [`blocks_disconnected`]: Self::blocks_disconnected
 	#[rustfmt::skip]
-	pub fn transaction_unconfirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	pub fn transaction_unconfirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&self,
 		txid: &Txid,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
+		entropy_source: &ES,
 	) {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.transaction_unconfirmed(
-			txid, broadcaster, &bounded_fee_estimator, &logger
+			txid, broadcaster, &bounded_fee_estimator, &logger, entropy_source
 		);
 	}
 
@@ -2486,19 +2505,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// [`block_connected`]: Self::block_connected
 	#[rustfmt::skip]
-	pub fn best_block_updated<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	pub fn best_block_updated<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&self,
 		header: &Header,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: F,
 		logger: &L,
+		entropy_source: &ES,
 	) -> Vec<TransactionOutputs> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
 		let mut inner = self.inner.lock().unwrap();
 		let logger = WithChannelMonitor::from_impl(logger, &*inner, None);
 		inner.best_block_updated(
-			header, height, broadcaster, &bounded_fee_estimator, &logger
+			header, height, broadcaster, &bounded_fee_estimator, &logger, entropy_source
 		)
 	}
 
@@ -3925,9 +3945,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn generate_claimable_outpoints_and_watch_outputs(
+	fn generate_claimable_outpoints_and_watch_outputs<ES: EntropySource>(
 		&mut self, generate_monitor_event_with_reason: Option<ClosureReason>,
-		require_funding_seen: bool,
+		require_funding_seen: bool, entropy_source: ES,
 	) -> (Vec<PackageTemplate>, Vec<TransactionOutputs>) {
 		let funding = get_confirmed_funding_scope!(self);
 		let holder_commitment_tx = &funding.current_holder_commitment_tx;
@@ -3948,7 +3968,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				outpoint: funding_outpoint,
 				channel_id: self.channel_id,
 			};
-			push_monitor_event(&mut self.pending_monitor_events, event);
+			push_monitor_event(&mut self.pending_monitor_events, event, entropy_source);
 		}
 
 		// Although we aren't signing the transaction directly here, the transaction will be signed
@@ -3999,16 +4019,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// See also [`ChannelMonitor::broadcast_latest_holder_commitment_txn`].
 	///
 	/// [`ChannelMonitor::broadcast_latest_holder_commitment_txn`]: crate::chain::channelmonitor::ChannelMonitor::broadcast_latest_holder_commitment_txn
-	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	pub(crate) fn queue_latest_holder_commitment_txn_for_broadcast<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&mut self, broadcaster: &B, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &WithContext<L>,
-		require_funding_seen: bool,
+		require_funding_seen: bool, entropy_source: &ES,
 	) {
 		let reason = ClosureReason::HolderForceClosed {
 			broadcasted_latest_txn: Some(true),
 			message: "ChannelMonitor-initiated commitment transaction broadcast".to_owned(),
 		};
 		let (claimable_outpoints, _) =
-			self.generate_claimable_outpoints_and_watch_outputs(Some(reason), require_funding_seen);
+			self.generate_claimable_outpoints_and_watch_outputs(Some(reason), require_funding_seen, entropy_source);
 		// In manual-broadcast mode, if `require_funding_seen` is true and we have not yet observed
 		// the funding transaction on-chain, do not queue any transactions.
 		if require_funding_seen && self.is_manual_broadcast && !self.funding_seen_onchain {
@@ -4235,8 +4255,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn update_monitor<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
-		&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &WithContext<L>
+	fn update_monitor<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
+		&mut self, updates: &ChannelMonitorUpdate, broadcaster: &B, fee_estimator: &F, logger: &WithContext<L>,
+		entropy_source: &ES,
 	) -> Result<(), ()> {
 		if self.latest_update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID && updates.update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID {
 			log_info!(logger, "Applying pre-0.1 post-force-closed update to monitor {} with {} change(s).",
@@ -4372,7 +4393,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							log_trace!(logger, "Avoiding commitment broadcast, already detected confirmed spend onchain");
 							continue;
 						}
-						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true);
+						self.queue_latest_holder_commitment_txn_for_broadcast(broadcaster, &bounded_fee_estimator, logger, true, entropy_source);
 					} else if !self.holder_tx_signed {
 						log_error!(logger, "WARNING: You have a potentially-unsafe holder commitment transaction available to broadcast");
 						log_error!(logger, "    in channel monitor!");
@@ -4418,7 +4439,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						htlc_outputs.iter().filter_map(|(htlc, source)| {
 							source.as_ref().map(|s| (&**s, htlc.payment_hash, htlc.amount_msat))
 						}),
-						logger,
+						logger, entropy_source
 					);
 				},
 				ChannelMonitorUpdateStep::LatestCounterpartyCommitment {
@@ -4445,7 +4466,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					});
 					self.fail_htlcs_from_update_after_funding_spend(
 						nondust.chain(dust),
-						logger,
+						logger, entropy_source,
 					);
 				},
 				_ => {},
@@ -4509,9 +4530,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Only truly new HTLCs (not present in any previously-known commitment) need to be failed
 	/// here. HTLCs that were already tracked by the monitor will be handled by the existing
 	/// `fail_unbroadcast_htlcs` logic when the spending transaction confirms.
-	fn fail_htlcs_from_update_after_funding_spend<'a, L: Logger>(
+	fn fail_htlcs_from_update_after_funding_spend<'a, L: Logger, ES: EntropySource>(
 		&mut self, htlcs: impl Iterator<Item = (&'a HTLCSource, PaymentHash, u64)>,
-		logger: &WithContext<L>,
+		logger: &WithContext<L>, entropy_source: &ES,
 	) {
 		let pending_spend_entry = self
 			.onchain_events_awaiting_threshold_conf
@@ -4583,6 +4604,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						source: source.clone(),
 						htlc_value_satoshis,
 					}),
+					entropy_source,
 				);
 				self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 					commitment_tx_output_idx: None,
@@ -4648,8 +4670,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&self.outputs_to_watch
 	}
 
-	fn push_monitor_event(&mut self, event: MonitorEvent) {
-		push_monitor_event(&mut self.pending_monitor_events, event);
+	fn push_monitor_event<ES: EntropySource>(&mut self, event: MonitorEvent, entropy_source: ES) {
+		push_monitor_event(&mut self.pending_monitor_events, event, entropy_source);
 	}
 
 	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
@@ -5500,29 +5522,30 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn block_connected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	fn block_connected<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&mut self, header: &Header, txdata: &TransactionData, height: u32, broadcaster: B,
-		fee_estimator: F, logger: &WithContext<L>,
+		fee_estimator: F, logger: &WithContext<L>, entropy_source: &ES
 	) -> Vec<TransactionOutputs> {
 		let bounded_fee_estimator = LowerBoundedFeeEstimator::new(fee_estimator);
-		self.transactions_confirmed(header, txdata, height, broadcaster, &bounded_fee_estimator, logger)
+		self.transactions_confirmed(header, txdata, height, broadcaster, &bounded_fee_estimator, logger, entropy_source)
 	}
 
 	#[rustfmt::skip]
-	fn best_block_updated<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	fn best_block_updated<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&mut self,
 		header: &Header,
 		height: u32,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
+		entropy_source: &ES,
 	) -> Vec<TransactionOutputs> {
 		let block_hash = header.block_hash();
 
 		if height > self.best_block.height {
 			self.best_block.update_for_new_tip(block_hash, height);
 			log_trace!(logger, "Connecting new block {} at height {}", block_hash, height);
-			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger)
+			self.block_confirmed(height, block_hash, vec![], vec![], vec![], &broadcaster, &fee_estimator, logger, entropy_source)
 		} else if block_hash != self.best_block.block_hash {
 			self.best_block = BlockLocator::new(block_hash, height);
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
@@ -5537,7 +5560,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn transactions_confirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	fn transactions_confirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&mut self,
 		header: &Header,
 		txdata: &TransactionData,
@@ -5545,6 +5568,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
+		entropy_source: &ES,
 	) -> Vec<TransactionOutputs> {
 		let funding_seen_before = self.funding_seen_onchain;
 		let txn_matched = self.filter_block(txdata);
@@ -5719,7 +5743,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					);
 					log_info!(logger, "Channel closed by funding output spend in txid {txid}");
 					if !self.funding_spend_seen {
-						self.push_monitor_event(MonitorEvent::CommitmentTxConfirmed(()));
+						self.push_monitor_event(MonitorEvent::CommitmentTxConfirmed(()), entropy_source);
 					}
 					self.funding_spend_seen = true;
 
@@ -5794,7 +5818,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					break;
 				}
 			}
-			self.is_resolving_htlc_output(&tx, height, &block_hash, logger);
+			self.is_resolving_htlc_output(&tx, height, &block_hash, logger, entropy_source);
 
 			// Note that if the funding transaction (or some arbitrary dependent of the funding
 			// transaction or some HTLC transaction) spends to the `destination_script` or
@@ -5809,12 +5833,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		if should_broadcast_commitment {
 			let (mut claimables, mut outputs) =
-				self.generate_claimable_outpoints_and_watch_outputs(None, false);
+				self.generate_claimable_outpoints_and_watch_outputs(None, false, entropy_source);
 			claimable_outpoints.append(&mut claimables);
 			watch_outputs.append(&mut outputs);
 		}
 
-		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, logger)
+		self.block_confirmed(height, block_hash, txn_matched, watch_outputs, claimable_outpoints, &broadcaster, &fee_estimator, logger, entropy_source)
 	}
 
 	/// Update state for new block(s)/transaction(s) confirmed. Note that the caller must update
@@ -5826,7 +5850,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// `conf_height` should be set to the height at which any new transaction(s)/block(s) were
 	/// confirmed at, even if it is not the current best height.
 	#[rustfmt::skip]
-	fn block_confirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	fn block_confirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&mut self,
 		conf_height: u32,
 		conf_hash: BlockHash,
@@ -5836,6 +5860,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		broadcaster: &B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
+		entropy_source: &ES,
 	) -> Vec<TransactionOutputs> {
 		log_trace!(logger, "Processing {} matched transactions for block at height {}.", txn_matched.len(), conf_height);
 		debug_assert!(self.best_block.height >= conf_height);
@@ -5846,7 +5871,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if let Some(payment_hash) = should_broadcast {
 				let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
 				let (mut new_outpoints, mut new_outputs) =
-					self.generate_claimable_outpoints_and_watch_outputs(Some(reason), false);
+					self.generate_claimable_outpoints_and_watch_outputs(Some(reason), false, entropy_source);
 				if !self.is_manual_broadcast || self.funding_seen_onchain {
 					claimable_outpoints.append(&mut new_outpoints);
 					watch_outputs.append(&mut new_outputs);
@@ -5901,7 +5926,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source,
 						htlc_value_satoshis,
-					}));
+					}), entropy_source);
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 						commitment_tx_output_idx,
 						resolving_txid: Some(entry.txid),
@@ -6010,7 +6035,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
 						htlc_value_satoshis: htlc.amount_msat / 1000,
-					}));
+					}), entropy_source);
 				}
 			}
 		}
@@ -6049,8 +6074,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 
 	#[rustfmt::skip]
-	fn blocks_disconnected<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
-		&mut self, fork_point: BlockLocator, broadcaster: B, fee_estimator: F, logger: &WithContext<L>
+	fn blocks_disconnected<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
+		&mut self, fork_point: BlockLocator, broadcaster: B, fee_estimator: F, logger: &WithContext<L>,
+		entropy_source: &ES,
 	) {
 		let new_height = fork_point.height;
 		log_trace!(logger, "Block(s) disconnected to height {}", new_height);
@@ -6095,19 +6121,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `block_disconnected` call above so that
 		// it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger, true);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, &bounded_fee_estimator, logger, true, entropy_source);
 		}
 
 		self.best_block = fork_point;
 	}
 
 	#[rustfmt::skip]
-	fn transaction_unconfirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger>(
+	fn transaction_unconfirmed<B: BroadcasterInterface, F: FeeEstimator, L: Logger, ES: EntropySource>(
 		&mut self,
 		txid: &Txid,
 		broadcaster: B,
 		fee_estimator: &LowerBoundedFeeEstimator<F>,
 		logger: &WithContext<L>,
+		entropy_source: &ES,
 	) {
 		let mut removed_height = None;
 		for entry in self.onchain_events_awaiting_threshold_conf.iter() {
@@ -6157,7 +6184,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// Only attempt to broadcast the new commitment after the `transaction_unconfirmed` call above so
 		//  that it doesn't get removed from the set of pending claims.
 		if should_broadcast_commitment {
-			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger, true);
+			self.queue_latest_holder_commitment_txn_for_broadcast(&broadcaster, fee_estimator, logger, true, entropy_source);
 		}
 	}
 
@@ -6302,8 +6329,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Check if any transaction broadcasted is resolving HTLC output by a success or timeout on a holder
 	/// or counterparty commitment tx, if so send back the source, preimage if found and payment_hash of resolved HTLC
 	#[rustfmt::skip]
-	fn is_resolving_htlc_output<L: Logger>(
+	fn is_resolving_htlc_output<L: Logger, ES: EntropySource>(
 		&mut self, tx: &Transaction, height: u32, block_hash: &BlockHash, logger: &WithContext<L>,
+		entropy_source: &ES,
 	) {
 		let funding_spent = get_confirmed_funding_scope!(self);
 
@@ -6493,7 +6521,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
 							htlc_value_satoshis: amount_msat / 1000,
-						}));
+						}), entropy_source);
 					}
 				} else {
 					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
@@ -6594,33 +6622,44 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	}
 }
 
-impl<Signer: EcdsaChannelSigner, T: BroadcasterInterface, F: FeeEstimator, L: Logger> chain::Listen
-	for (ChannelMonitor<Signer>, T, F, L)
+impl<
+		Signer: EcdsaChannelSigner,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
+		ES: EntropySource,
+	> chain::Listen for (ChannelMonitor<Signer>, T, F, L, ES)
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.block_connected(header, txdata, height, &self.1, &self.2, &self.3);
+		self.0.block_connected(header, txdata, height, &self.1, &self.2, &self.3, &self.4);
 	}
 
 	fn blocks_disconnected(&self, fork_point: BlockLocator) {
-		self.0.blocks_disconnected(fork_point, &self.1, &self.2, &self.3);
+		self.0.blocks_disconnected(fork_point, &self.1, &self.2, &self.3, &self.4);
 	}
 }
 
-impl<Signer: EcdsaChannelSigner, M, T: BroadcasterInterface, F: FeeEstimator, L: Logger>
-	chain::Confirm for (M, T, F, L)
+impl<
+		Signer: EcdsaChannelSigner,
+		M,
+		T: BroadcasterInterface,
+		F: FeeEstimator,
+		L: Logger,
+		ES: EntropySource,
+	> chain::Confirm for (M, T, F, L, ES)
 where
 	M: Deref<Target = ChannelMonitor<Signer>>,
 {
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		self.0.transactions_confirmed(header, txdata, height, &self.1, &self.2, &self.3);
+		self.0.transactions_confirmed(header, txdata, height, &self.1, &self.2, &self.3, &self.4);
 	}
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
-		self.0.transaction_unconfirmed(txid, &self.1, &self.2, &self.3);
+		self.0.transaction_unconfirmed(txid, &self.1, &self.2, &self.3, &self.4);
 	}
 
 	fn best_block_updated(&self, header: &Header, height: u32) {
-		self.0.best_block_updated(header, height, &self.1, &self.2, &self.3);
+		self.0.best_block_updated(header, height, &self.1, &self.2, &self.3, &self.4);
 	}
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
@@ -7294,7 +7333,7 @@ mod tests {
 
 		let broadcaster = TestBroadcaster::with_blocks(Arc::clone(&nodes[1].blocks));
 		assert!(
-			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &&chanmon_cfgs[1].fee_estimator, &nodes[1].logger)
+			pre_update_monitor.update_monitor(&replay_update, &&broadcaster, &&chanmon_cfgs[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager)
 			.is_err());
 
 		// Even though we error'd on the first update, we should still have generated an HTLC claim

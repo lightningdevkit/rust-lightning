@@ -1354,6 +1354,7 @@ impl<'a> HarnessNode<'a> {
 					&self.broadcaster,
 					&self.fee_estimator,
 					&self.logger,
+					&self.keys_manager,
 				);
 				monitor.best_block_updated(
 					header,
@@ -1361,6 +1362,7 @@ impl<'a> HarnessNode<'a> {
 					&self.broadcaster,
 					&self.fee_estimator,
 					&self.logger,
+					&self.keys_manager,
 				);
 			}
 			let (header, txn) = chain_state.block_at(target_height);
@@ -1373,6 +1375,7 @@ impl<'a> HarnessNode<'a> {
 					&self.broadcaster,
 					&self.fee_estimator,
 					&self.logger,
+					&self.keys_manager,
 				);
 			}
 		}

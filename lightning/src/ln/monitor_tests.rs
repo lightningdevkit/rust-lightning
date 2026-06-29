@@ -339,7 +339,8 @@ fn archive_monitor_with_pending_closure_event() {
 	// Broadcast nodes[1]'s commitment transaction via the `ChannelMonitor` directly, so that the
 	// only indication of the closure the `ChannelManager` will ever get is the `MonitorEvent`.
 	get_monitor!(nodes[1], chan_id).broadcast_latest_holder_commitment_txn(
-		&nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger
+		&nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger,
+		&nodes[1].keys_manager,
 	);
 	let commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
 	assert_eq!(commitment_tx.len(), 1);
@@ -3245,7 +3246,8 @@ fn do_test_monitor_claims_with_random_signatures(keyed_anchors: bool, p2a_anchor
 	};
 
 	get_monitor!(closing_node, chan_id).broadcast_latest_holder_commitment_txn(
-		&closing_node.tx_broadcaster, &closing_node.fee_estimator, &closing_node.logger
+		&closing_node.tx_broadcaster, &closing_node.fee_estimator, &closing_node.logger,
+		&closing_node.keys_manager,
 	);
 	if keyed_anchors || p2a_anchor {
 		handle_bump_close_event(&closing_node);
@@ -3403,7 +3405,7 @@ fn test_update_replay_panics() {
 	// Update `monitor` until there's just one normal updates, an FC update, and a post-FC claim
 	// update pending
 	for update in updates.drain(..updates.len() - 4) {
-		monitor.update_monitor(&update, &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
+		monitor.update_monitor(&update, &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager).unwrap();
 	}
 	assert_eq!(updates.len(), 4);
 	assert!(matches!(updates[1].updates[0], ChannelMonitorUpdateStep::ChannelForceClosed { .. }));
@@ -3413,31 +3415,31 @@ fn test_update_replay_panics() {
 	// Ensure applying the force-close update skipping the last normal update fails
 	let poisoned_monitor = monitor.clone();
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
+		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager);
 		// We should panic, rather than returning an error here.
 	})).unwrap_err();
 
 	// Then apply the last normal and force-close update and make sure applying the preimage
 	// updates out-of-order fails.
-	monitor.update_monitor(&updates[0], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
-	monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
+	monitor.update_monitor(&updates[0], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager).unwrap();
+	monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager).unwrap();
 
 	let poisoned_monitor = monitor.clone();
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-		let _ = poisoned_monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
+		let _ = poisoned_monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager);
 		// We should panic, rather than returning an error here.
 	})).unwrap_err();
 
 	// Make sure re-applying the force-close update fails
 	let poisoned_monitor = monitor.clone();
 	std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger);
+		let _ = poisoned_monitor.update_monitor(&updates[1], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager);
 		// We should panic, rather than returning an error here.
 	})).unwrap_err();
 
 	// ...and finally ensure that applying all the updates succeeds.
-	monitor.update_monitor(&updates[2], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
-	monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger).unwrap();
+	monitor.update_monitor(&updates[2], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager).unwrap();
+	monitor.update_monitor(&updates[3], &nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger, &nodes[1].keys_manager).unwrap();
 }
 
 #[test]

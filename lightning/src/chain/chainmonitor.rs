@@ -1206,6 +1206,7 @@ where
 					&self.broadcaster,
 					&self.fee_estimator,
 					&self.logger,
+					&self._entropy_source,
 				);
 
 				let update_id = update.update_id;
@@ -1478,6 +1479,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
+				&self._entropy_source,
 			)
 		});
 
@@ -1505,6 +1507,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
+				&self._entropy_source,
 			);
 		}
 	}
@@ -1538,6 +1541,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
+				&self._entropy_source,
 			)
 		});
 		// Assume we may have some new events and wake the event processor
@@ -1553,6 +1557,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
+				&self._entropy_source,
 			);
 		}
 	}
@@ -1574,6 +1579,7 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
+				&self._entropy_source,
 			)
 		});
 
