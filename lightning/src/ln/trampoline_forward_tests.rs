@@ -27,6 +27,7 @@ fn test_prev_hop_data(htlc_id: u64) -> HTLCPreviousHopData {
 	HTLCPreviousHopData {
 		prev_outbound_scid_alias: 0,
 		user_channel_id: None,
+		amount_msat: None,
 		htlc_id,
 		incoming_packet_shared_secret: [0; 32],
 		phantom_shared_secret: None,
