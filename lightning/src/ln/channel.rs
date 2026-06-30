@@ -7210,14 +7210,14 @@ pub struct SpliceFundingFailed {
 	/// in prior rounds, which may be included in `contribution`.
 	contributed_outputs: Vec<ScriptBuf>,
 
-	/// The funding contribution from the failed round, if available.
-	contribution: Option<FundingContribution>,
+	/// The funding contribution from the failed round.
+	contribution: FundingContribution,
 }
 
 impl SpliceFundingFailed {
 	/// Splits into the funding info for `DiscardFunding` (if there are inputs or outputs to
 	/// discard) and the contribution for `SpliceNegotiationFailed`.
-	pub(super) fn into_parts(self) -> (Option<FundingInfo>, Option<FundingContribution>) {
+	pub(super) fn into_parts(self) -> (Option<FundingInfo>, FundingContribution) {
 		let funding_info =
 			if !self.contributed_inputs.is_empty() || !self.contributed_outputs.is_empty() {
 				Some(FundingInfo::Contribution {
@@ -7244,12 +7244,10 @@ macro_rules! splice_funding_failed_for {
 			None => SpliceFundingFailed {
 				contributed_inputs: vec![],
 				contributed_outputs: vec![],
-				contribution: Some(contribution),
+				contribution,
 			},
-			Some((contributed_inputs, contributed_outputs)) => SpliceFundingFailed {
-				contributed_inputs,
-				contributed_outputs,
-				contribution: Some(contribution),
+			Some((contributed_inputs, contributed_outputs)) => {
+				SpliceFundingFailed { contributed_inputs, contributed_outputs, contribution }
 			},
 		}
 	}};
