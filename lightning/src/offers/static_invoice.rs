@@ -129,6 +129,10 @@ impl<'a> StaticInvoiceBuilder<'a> {
 			return Err(Bolt12SemanticError::UnexpectedChain);
 		}
 
+		if offer.offer_recurrence().is_some() {
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
+		}
+
 		if payment_paths.is_empty()
 			|| held_htlc_available_paths.is_empty()
 			|| offer.paths().is_empty()
@@ -483,6 +487,8 @@ impl InvoiceContents {
 			node_id: Some(&self.signing_pubkey),
 			amount: None,
 			payment_hash: None,
+			invoice_recurrence_basetime: None,
+			invoice_recurrence_token: None,
 		};
 
 		let experimental_invoice = ExperimentalInvoiceTlvStreamRef {
@@ -682,6 +688,8 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 				held_htlc_available_paths,
 				payment_hash,
 				amount,
+				invoice_recurrence_basetime,
+				invoice_recurrence_token,
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceTlvStream {
@@ -695,6 +703,10 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		}
 		if amount.is_some() {
 			return Err(Bolt12SemanticError::UnexpectedAmount);
+		}
+
+		if invoice_recurrence_basetime.is_some() || invoice_recurrence_token.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
 		}
 
 		let payment_paths = construct_payment_paths(blindedpay, paths)?;
@@ -720,8 +732,14 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			return Err(Bolt12SemanticError::UnexpectedChain);
 		}
 
+		let offer = OfferContents::try_from((offer_tlv_stream, experimental_offer_tlv_stream))?;
+
+		if offer.offer_recurrence().is_some() {
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
+		}
+
 		Ok(InvoiceContents {
-			offer: OfferContents::try_from((offer_tlv_stream, experimental_offer_tlv_stream))?,
+			offer,
 			payment_paths,
 			held_htlc_available_paths,
 			created_at,
@@ -750,6 +768,7 @@ mod tests {
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::{
 		ExperimentalOfferTlvStreamRef, Offer, OfferBuilder, OfferTlvStreamRef, Quantity,
+		RecurrencePeriod,
 	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::static_invoice::{
@@ -918,6 +937,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: Some(&signing_pubkey),
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceTlvStreamRef {
 					paths: Some(Iterable(
@@ -932,6 +956,8 @@ mod tests {
 					features: None,
 					node_id: Some(&signing_pubkey),
 					held_htlc_available_paths: Some(&paths),
+					invoice_recurrence_basetime: None,
+					invoice_recurrence_token: None,
 				},
 				SignatureTlvStreamRef { signature: Some(&invoice.signature()) },
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
@@ -1690,6 +1716,39 @@ mod tests {
 	}
 
 	#[test]
+	fn fails_parsing_invoice_with_recurrence() {
+		let invoice = invoice();
+		let recurrence_token = vec![1, 2, 3];
+		let mut tlv_stream = invoice.as_tlv_stream();
+		tlv_stream.1.invoice_recurrence_basetime = Some(123_456);
+		tlv_stream.1.invoice_recurrence_token = Some(&recurrence_token);
+
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedRecurrence)
+			),
+		}
+	}
+
+	#[test]
+	fn fails_parsing_invoice_with_offer_recurrence() {
+		let invoice = invoice();
+		let recurrence_period = RecurrencePeriod::Days(14);
+		let mut tlv_stream = invoice.as_tlv_stream();
+		tlv_stream.0.recurrence_optional = Some(&recurrence_period);
+
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(
+				e,
+				Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedRecurrence)
+			),
+		}
+	}
+
+	#[test]
 	fn fails_parsing_invoice_with_invalid_offer_fields() {
 		// Error if the offer is missing paths.
 		let missing_offer_paths_invoice = invoice();
@@ -1755,5 +1814,42 @@ mod tests {
 		.unwrap();
 
 		assert_eq!(invoice.offer_id(), offer_id);
+	}
+
+	#[test]
+	fn fails_building_invoice_from_offer_with_recurrence() {
+		let node_id = recipient_pubkey();
+		let now = now();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
+
+		let recurrence_period = RecurrencePeriod::Days(14);
+		let mut tlv_stream = offer.as_tlv_stream();
+		tlv_stream.0.recurrence_optional = Some(&recurrence_period);
+
+		let mut offer_bytes = Vec::new();
+		tlv_stream.0.write(&mut offer_bytes).unwrap();
+		tlv_stream.1.write(&mut offer_bytes).unwrap();
+		let offer = Offer::try_from(offer_bytes).unwrap();
+
+		match StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths(),
+			vec![blinded_path()],
+			now,
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => assert_eq!(e, Bolt12SemanticError::UnexpectedRecurrence),
+		}
 	}
 }

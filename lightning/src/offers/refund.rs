@@ -781,6 +781,11 @@ impl RefundContents {
 			issuer: self.issuer.as_ref(),
 			quantity_max: None,
 			issuer_id: None,
+			recurrence_compulsory: None,
+			recurrence_optional: None,
+			recurrence_base: None,
+			recurrence_paywindow: None,
+			recurrence_limit: None,
 		};
 
 		let features = {
@@ -800,6 +805,10 @@ impl RefundContents {
 			payer_note: self.payer_note.as_ref(),
 			paths: self.paths.as_ref(),
 			offer_from_hrn: None,
+			recurrence_counter: None,
+			recurrence_start: None,
+			recurrence_cancel: None,
+			recurrence_token: None,
 		};
 
 		let experimental_offer = ExperimentalOfferTlvStreamRef {
@@ -910,6 +919,11 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				issuer,
 				quantity_max,
 				issuer_id,
+				recurrence_compulsory,
+				recurrence_optional,
+				recurrence_base,
+				recurrence_paywindow,
+				recurrence_limit,
 			},
 			InvoiceRequestTlvStream {
 				chain,
@@ -920,6 +934,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				payer_note,
 				paths,
 				offer_from_hrn,
+				recurrence_counter,
+				recurrence_start,
+				recurrence_cancel,
+				recurrence_token: _,
 			},
 			ExperimentalOfferTlvStream {
 				#[cfg(test)]
@@ -971,9 +989,23 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 			return Err(Bolt12SemanticError::UnexpectedIssuerSigningPubkey);
 		}
 
+		if recurrence_compulsory.is_some()
+			|| recurrence_optional.is_some()
+			|| recurrence_base.is_some()
+			|| recurrence_paywindow.is_some()
+			|| recurrence_limit.is_some()
+		{
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
+		}
+
 		if offer_from_hrn.is_some() {
 			// Only offers can be resolved using Human Readable Names
 			return Err(Bolt12SemanticError::UnexpectedHumanReadableName);
+		}
+
+		if recurrence_counter.is_some() || recurrence_start.is_some() || recurrence_cancel.is_some()
+		{
+			return Err(Bolt12SemanticError::UnexpectedRecurrence);
 		}
 
 		let amount_msats = match amount {
@@ -1041,7 +1073,10 @@ mod tests {
 		EXPERIMENTAL_INVOICE_REQUEST_TYPES, INVOICE_REQUEST_TYPES,
 	};
 	use crate::offers::nonce::Nonce;
-	use crate::offers::offer::{ExperimentalOfferTlvStreamRef, OfferTlvStreamRef};
+	use crate::offers::offer::{
+		ExperimentalOfferTlvStreamRef, OfferTlvStreamRef, RecurrenceBase, RecurrenceLimit,
+		RecurrencePaywindow, RecurrencePeriod,
+	};
 	use crate::offers::parse::{Bolt12ParseError, Bolt12SemanticError};
 	use crate::offers::payer::PayerTlvStreamRef;
 	use crate::offers::test_utils::*;
@@ -1100,6 +1135,11 @@ mod tests {
 					issuer: None,
 					quantity_max: None,
 					issuer_id: None,
+					recurrence_compulsory: None,
+					recurrence_optional: None,
+					recurrence_base: None,
+					recurrence_paywindow: None,
+					recurrence_limit: None,
 				},
 				InvoiceRequestTlvStreamRef {
 					chain: None,
@@ -1110,6 +1150,10 @@ mod tests {
 					payer_note: None,
 					paths: None,
 					offer_from_hrn: None,
+					recurrence_counter: None,
+					recurrence_start: None,
+					recurrence_cancel: None,
+					recurrence_token: None,
 				},
 				ExperimentalOfferTlvStreamRef { experimental_foo: None },
 				ExperimentalInvoiceRequestTlvStreamRef { experimental_bar: None },
@@ -1708,6 +1752,51 @@ mod tests {
 					Bolt12ParseError::InvalidSemantics(
 						Bolt12SemanticError::UnexpectedIssuerSigningPubkey
 					)
+				);
+			},
+		}
+	}
+
+	#[test]
+	fn fails_parsing_refund_with_unexpected_recurrence_fields() {
+		let refund =
+			RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000).unwrap().build().unwrap();
+		if let Err(e) = refund.to_string().parse::<Refund>() {
+			panic!("error parsing refund: {:?}", e);
+		}
+
+		let recurrence_period = RecurrencePeriod::Months(1);
+		let recurrence_base = RecurrenceBase { proportional: false, basetime: 123_456 };
+		let recurrence_paywindow =
+			RecurrencePaywindow { seconds_before: 3600, seconds_after: 3600 };
+		let recurrence_limit = RecurrenceLimit(4);
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.1.recurrence_compulsory = Some(&recurrence_period);
+		tlv_stream.1.recurrence_base = Some(&recurrence_base);
+		tlv_stream.1.recurrence_paywindow = Some(&recurrence_paywindow);
+		tlv_stream.1.recurrence_limit = Some(&recurrence_limit);
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedRecurrence)
+				);
+			},
+		}
+
+		let mut tlv_stream = refund.as_tlv_stream();
+		tlv_stream.2.recurrence_counter = Some(1);
+		tlv_stream.2.recurrence_start = Some(2);
+		tlv_stream.2.recurrence_cancel = Some(&());
+
+		match Refund::try_from(tlv_stream.to_bytes()) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedRecurrence)
 				);
 			},
 		}
