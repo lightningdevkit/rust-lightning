@@ -20,6 +20,12 @@ PIN_RELEASE_DEPS # pin the release dependencies
 # Starting with version 1.2.0, the `idna_adapter` crate has an MSRV of rustc 1.81.0.
 [ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
 
+# Starting with version 1.9.0, the `zeroize` crate has an MSRV of rustc 1.85.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p zeroize --precise "1.8.2" --verbose
+
+# Starting with version 0.27.8, the `hyper-rustls` crate has an MSRV of rustc 1.85.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p hyper-rustls --precise "0.27.7" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking Transaction Sync Clients with features."
