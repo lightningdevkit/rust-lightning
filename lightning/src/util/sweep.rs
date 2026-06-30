@@ -1132,7 +1132,6 @@ mod tests {
 	use bitcoin::{Amount, BlockHash, ScriptBuf, Transaction, TxOut, Txid};
 
 	use core::future as core_future;
-	use core::pin::pin;
 	use core::sync::atomic::Ordering;
 	use core::task::Poll;
 
@@ -1238,7 +1237,7 @@ mod tests {
 		// `write` future is `future::pending()`), then drop the future to mimic
 		// cancellation - the sort of thing a `tokio::time::timeout` wrapper produces.
 		{
-			let mut fut = pin!(sweeper.regenerate_and_broadcast_spend_if_necessary());
+			let mut fut = Box::pin(sweeper.regenerate_and_broadcast_spend_if_necessary());
 			let waker = dummy_waker();
 			let mut ctx = task::Context::from_waker(&waker);
 			assert!(matches!(fut.as_mut().poll(&mut ctx), Poll::Pending));

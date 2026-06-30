@@ -21,7 +21,7 @@ RUSTFLAGS="$RUSTFLAGS --cfg=fuzzing" cargo run ../hfuzz_workspace/full_stack_tar
 cargo clean
 popd
 
-cargo install --color always --force honggfuzz --no-default-features
+cargo install --color always --force honggfuzz --no-default-features --version "=0.5.59" --locked
 
 # Because we're fuzzing relatively few iterations, the maximum possible
 # compiler optimizations aren't necessary, so we turn off LTO

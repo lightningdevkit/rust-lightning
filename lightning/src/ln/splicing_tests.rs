@@ -2358,7 +2358,7 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 			// dust limits, but later when we check the balances against those new
 			// dust limits
 			assert_eq!(
-				channel_value_sat.checked_add_signed(funding_contribution_sat).unwrap(),
+				(channel_value_sat as i64 + funding_contribution_sat) as u64,
 				high_dust_limit_satoshis
 			);
 			format!(
