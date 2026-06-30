@@ -8204,6 +8204,7 @@ where
 				let prev_hop_data = HTLCPreviousHopData {
 					prev_outbound_scid_alias,
 					user_channel_id: Some(user_channel_id),
+					amount_msat: Some(htlc.amount_msat),
 					htlc_id: htlc.htlc_id,
 					incoming_packet_shared_secret: *incoming_packet_shared_secret,
 					phantom_shared_secret: *phantom_shared_secret,

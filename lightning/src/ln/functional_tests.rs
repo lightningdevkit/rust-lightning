@@ -1507,8 +1507,10 @@ pub fn test_htlc_on_chain_success() {
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
 			assert_eq!(prev_htlcs[0].channel_id, chan_id);
+			assert_eq!(prev_htlcs[0].amount_msat, Some(3001000));
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
+			assert_eq!(next_htlcs[0].amount_msat, Some(3000000));
 			assert_eq!(outbound_amount_forwarded_msat, 3000000);
 		},
 		_ => panic!(),
@@ -1524,8 +1526,10 @@ pub fn test_htlc_on_chain_success() {
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
 			assert_eq!(prev_htlcs[0].channel_id, chan_id);
+			assert_eq!(prev_htlcs[0].amount_msat, Some(3001000));
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
+			assert_eq!(next_htlcs[0].amount_msat, Some(3000000));
 			assert_eq!(outbound_amount_forwarded_msat, 3000000);
 		},
 		_ => panic!(),
