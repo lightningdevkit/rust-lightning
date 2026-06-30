@@ -4233,7 +4233,7 @@ impl<
 									channel_id: *chan_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
-									contribution,
+									contribution: Some(contribution),
 									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
@@ -4539,7 +4539,7 @@ impl<
 						channel_id: shutdown_res.channel_id,
 						counterparty_node_id: shutdown_res.counterparty_node_id,
 						user_channel_id: shutdown_res.user_channel_id,
-						contribution,
+						contribution: Some(contribution),
 						reason: events::NegotiationFailureReason::ChannelClosing,
 					},
 					None,
@@ -6729,7 +6729,7 @@ impl<
 						counterparty_node_id,
 						user_channel_id,
 						reason,
-						contribution,
+						contribution: Some(contribution),
 					},
 					None,
 				));
@@ -12046,7 +12046,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					channel_id,
 					counterparty_node_id: *counterparty_node_id,
 					user_channel_id,
-					contribution,
+					contribution: Some(contribution),
 					reason,
 				},
 				None,
@@ -12384,7 +12384,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_id: msg.channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan_entry.get().context().get_user_id(),
-								contribution,
+								contribution: Some(contribution),
 								reason: events::NegotiationFailureReason::CounterpartyAborted {
 									msg: UntrustedString(
 										String::from_utf8_lossy(&msg.data).to_string(),
@@ -12549,7 +12549,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									channel_id: msg.channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
-									contribution,
+									contribution: Some(contribution),
 									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
@@ -15794,7 +15794,7 @@ impl<
 								channel_id: chan.context().channel_id(),
 								counterparty_node_id,
 								user_channel_id: chan.context().get_user_id(),
-								contribution,
+								contribution: Some(contribution),
 								reason: events::NegotiationFailureReason::PeerDisconnected,
 							});
 						}
@@ -18435,7 +18435,7 @@ impl<
 							counterparty_node_id: chan.context.get_counterparty_node_id(),
 							user_channel_id: chan.context.get_user_id(),
 							reason: events::NegotiationFailureReason::PeerDisconnected,
-							contribution,
+							contribution: Some(contribution),
 						},
 						None,
 					));
