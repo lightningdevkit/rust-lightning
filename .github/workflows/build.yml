@@ -266,9 +266,15 @@ jobs:
           cd fuzz && cargo update -p regex --precise "1.9.6" && cargo update -p syn --precise "2.0.106" && cargo update -p quote --precise "1.0.41"
           cargo update -p proc-macro2 --precise "1.0.103" --verbose && cargo update -p serde_json --precise "1.0.145" --verbose
           cargo update -p itoa --precise "1.0.15" --verbose && cargo update -p ryu --precise "1.0.20" --verbose
+          cargo update -p libc --precise 0.2.183
+          cargo update -p unicode-ident --precise 1.0.22
+          cargo update -p honggfuzz --precise 0.5.59
+          cargo update -p semver --precise 1.0.27
           cd write-seeds && cargo update -p regex --precise "1.9.6" && cargo update -p syn --precise "2.0.106" && cargo update -p quote --precise "1.0.41"
           cargo update -p proc-macro2 --precise "1.0.103" --verbose && cargo update -p serde_json --precise "1.0.145" --verbose
           cargo update -p itoa --precise "1.0.15" --verbose && cargo update -p ryu --precise "1.0.20" --verbose
+          cargo update -p libc --precise 0.2.183
+          cargo update -p unicode-ident --precise 1.0.22
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz

@@ -62,9 +62,8 @@ use crate::offers::nonce::Nonce;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, PADDED_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
-use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{PaymentParameters, RouteParameters, RouteParametersConfig};
-use crate::sign::{NodeSigner, Recipient};
+use crate::sign::NodeSigner;
 use crate::util::ser::Writeable;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
