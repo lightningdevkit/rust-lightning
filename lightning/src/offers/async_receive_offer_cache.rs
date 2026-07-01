@@ -11,6 +11,8 @@
 //! server as an async recipient. The static invoice server will serve the resulting invoices to
 //! payers on our behalf when we're offline.
 
+use alloc::collections::BTreeMap;
+
 use crate::blinded_path::message::{AsyncPaymentsContext, BlindedMessagePath};
 use crate::io;
 use crate::io::Read;
@@ -19,7 +21,7 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::Offer;
 use crate::onion_message::messenger::Responder;
 use crate::prelude::*;
-use crate::util::ser::{Readable, Writeable, Writer};
+use crate::util::ser::{BigSizeKeyedMap, Readable, Writeable, Writer};
 use core::time::Duration;
 
 /// The status of this offer in the cache.
@@ -62,6 +64,7 @@ struct AsyncReceiveOffer {
 	/// payment paths become otherwise outdated.
 	offer_nonce: Nonce,
 	update_static_invoice_path: Responder,
+	payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 }
 
 impl AsyncReceiveOffer {
@@ -92,6 +95,7 @@ impl_ser_tlv_based!(AsyncReceiveOffer, {
 	(4, status, required),
 	(6, update_static_invoice_path, required),
 	(8, created_at, required),
+	(10, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
 });
 
 /// If we are an often-offline recipient, we'll want to interactively build offers and static
@@ -147,6 +151,8 @@ pub struct AsyncReceiveOfferCache {
 	/// Blinded paths used to request offer paths from the static invoice server.
 	#[allow(unused)] // TODO: remove when we get rid of async payments cfg flag
 	paths_to_static_invoice_server: Vec<BlindedMessagePath>,
+	/// Payment metadata associated with offer-path requests in flight.
+	pending_offer_payment_metadata: BTreeMap<u16, Option<BTreeMap<u64, Vec<u8>>>>,
 }
 
 impl AsyncReceiveOfferCache {
@@ -158,6 +164,7 @@ impl AsyncReceiveOfferCache {
 			offers: Vec::new(),
 			offer_paths_request_attempts: 0,
 			paths_to_static_invoice_server: Vec::new(),
+			pending_offer_payment_metadata: BTreeMap::new(),
 		}
 	}
 
@@ -258,6 +265,15 @@ impl AsyncReceiveOfferCache {
 			.ok_or(())
 	}
 
+	/// Returns whether [`Self::get_async_receive_offer`] would return an offer without marking an
+	/// unused offer as used.
+	pub(super) fn has_async_receive_offer(&self, duration_since_epoch: Duration) -> bool {
+		self.offers_with_idx().any(|(_, offer)| {
+			!offer.offer.is_expired_no_std(duration_since_epoch)
+				&& matches!(offer.status, OfferStatus::Ready { .. } | OfferStatus::Used { .. })
+		})
+	}
+
 	/// Remove expired offers from the cache, returning the first slot number in the cache that needs
 	/// a new offer, if any exist.
 	pub(super) fn prune_expired_offers(
@@ -320,6 +336,7 @@ impl AsyncReceiveOfferCache {
 	pub(super) fn cache_pending_offer(
 		&mut self, offer: Offer, offer_paths_absolute_expiry_secs: Option<u64>, offer_nonce: Nonce,
 		update_static_invoice_path: Responder, duration_since_epoch: Duration, slot: u16,
+		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(), ()> {
 		self.prune_expired_offers(duration_since_epoch, false);
 
@@ -340,6 +357,7 @@ impl AsyncReceiveOfferCache {
 					offer_nonce,
 					status: OfferStatus::Pending,
 					update_static_invoice_path,
+					payment_metadata,
 				})
 			},
 			None => {
@@ -347,6 +365,7 @@ impl AsyncReceiveOfferCache {
 				return Err(());
 			},
 		}
+		self.pending_offer_payment_metadata.remove(&slot);
 
 		Ok(())
 	}
@@ -433,8 +452,11 @@ impl AsyncReceiveOfferCache {
 
 	// Indicates that onion messages requesting new offer paths have been sent to the static invoice
 	// server. Calling this method allows the cache to self-limit how many requests are sent.
-	pub(super) fn new_offers_requested(&mut self) {
+	pub(super) fn new_offers_requested(
+		&mut self, slot: u16, payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
+	) {
 		self.offer_paths_request_attempts += 1;
+		self.pending_offer_payment_metadata.insert(slot, payment_metadata);
 	}
 
 	/// Called on timer tick (roughly once per minute) to allow another [`MAX_UPDATE_ATTEMPTS`] offer
@@ -447,7 +469,7 @@ impl AsyncReceiveOfferCache {
 	/// the static invoice server.
 	pub(super) fn offers_needing_invoice_refresh(
 		&self, duration_since_epoch: Duration,
-	) -> impl Iterator<Item = (&Offer, Nonce, &Responder)> {
+	) -> impl Iterator<Item = (&Offer, Nonce, &Responder, Option<BTreeMap<u64, Vec<u8>>>)> {
 		// For any offers which are either in use or pending confirmation by the server, we should send
 		// them a fresh invoice on each timer tick.
 		self.offers_with_idx().filter_map(move |(_, offer)| {
@@ -462,10 +484,41 @@ impl AsyncReceiveOfferCache {
 				OfferStatus::Ready { .. } => false,
 			};
 			if needs_invoice_update {
-				Some((&offer.offer, offer.offer_nonce, &offer.update_static_invoice_path))
+				Some((
+					&offer.offer,
+					offer.offer_nonce,
+					&offer.update_static_invoice_path,
+					offer.payment_metadata.clone(),
+				))
 			} else {
 				None
 			}
+		})
+	}
+
+	/// Returns the payment metadata that should be attached to a replacement offer in `slot`.
+	pub(super) fn payment_metadata_for_new_offer(
+		&self, slot: u16, payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
+	) -> Option<BTreeMap<u64, Vec<u8>>> {
+		payment_metadata
+			.or_else(|| self.pending_offer_payment_metadata.get(&slot).cloned().flatten())
+			.or_else(|| {
+				self.offers
+					.get(slot as usize)
+					.and_then(|offer| offer.as_ref())
+					.and_then(|offer| offer.payment_metadata.clone())
+			})
+	}
+
+	/// Returns the payment metadata associated with an incoming offer-path response for `slot`.
+	pub(super) fn payment_metadata_for_offer_slot(
+		&self, slot: u16,
+	) -> Option<BTreeMap<u64, Vec<u8>>> {
+		self.pending_offer_payment_metadata.get(&slot).cloned().flatten().or_else(|| {
+			self.offers
+				.get(slot as usize)
+				.and_then(|offer| offer.as_ref())
+				.and_then(|offer| offer.payment_metadata.clone())
 		})
 	}
 
@@ -536,6 +589,11 @@ impl Readable for AsyncReceiveOfferCache {
 			(2, paths_to_static_invoice_server, required_vec),
 		});
 		let offers: Vec<Option<AsyncReceiveOffer>> = offers;
-		Ok(Self { offers, offer_paths_request_attempts: 0, paths_to_static_invoice_server })
+		Ok(Self {
+			offers,
+			offer_paths_request_attempts: 0,
+			paths_to_static_invoice_server,
+			pending_offer_payment_metadata: BTreeMap::new(),
+		})
 	}
 }

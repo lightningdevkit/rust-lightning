@@ -1094,6 +1094,32 @@ fn ignore_duplicate_invoice() {
 }
 
 #[test]
+fn async_receive_offer_ready_future_completes_when_offer_already_ready() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let mut allow_priv_chan_fwds_cfg = test_default_channel_config();
+	allow_priv_chan_fwds_cfg.accept_forwards_to_priv_channels = true;
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[None, Some(allow_priv_chan_fwds_cfg), None]);
+
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
+
+	pass_static_invoice_server_messages(&nodes[1], &nodes[2], recipient_id.clone());
+
+	assert!(nodes[2].node.get_async_receive_offer_ready_future().poll_is_complete());
+	assert!(nodes[2].node.get_async_receive_offer_ready_future().poll_is_complete());
+}
+
+#[test]
 fn async_receive_flow_success() {
 	// Test that an always-online sender can successfully pay an async receiver.
 

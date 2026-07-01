@@ -1,0 +1,12 @@
+## Backwards Compatibility
+
+If you manually persist `Event::OnionMessageIntercepted` events and construct
+your `OnionMessenger` via `OnionMessenger::new_with_offline_peer_interception`
+with `intercept_for_unknown_scids` set to `true`, you may not be able to
+downgrade to LDK v0.2 or prior: persisted events carrying the new
+`NextMessageHop::ShortChannelId` next hop will fail to deserialize on the
+older version.
+
+LDK does not persist `OnionMessageIntercepted` events itself. Users who do
+not persist these events manually, or who leave `intercept_for_unknown_scids`
+disabled, are unaffected.

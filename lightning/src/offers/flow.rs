@@ -63,6 +63,7 @@ use crate::sync::{Mutex, RwLock};
 use crate::types::payment::{PaymentHash, PaymentSecret};
 use crate::util::logger::Logger;
 use crate::util::ser::Writeable;
+use crate::util::wakers::{Future, Notifier};
 
 /// A BOLT12 offers code and flow utility provider, which facilitates
 /// BOLT12 builder generation and onion message handling.
@@ -89,6 +90,7 @@ pub struct OffersMessageFlow<MR: MessageRouter, L: Logger> {
 
 	pending_async_payments_messages: Mutex<Vec<(AsyncPaymentsMessage, MessageSendInstructions)>>,
 	async_receive_offer_cache: Mutex<AsyncReceiveOfferCache>,
+	async_receive_offer_ready_notifier: Notifier,
 
 	logger: L,
 }
@@ -118,6 +120,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			pending_async_payments_messages: Mutex::new(Vec::new()),
 
 			async_receive_offer_cache: Mutex::new(AsyncReceiveOfferCache::new()),
+			async_receive_offer_ready_notifier: Notifier::new(),
 
 			logger,
 		}
@@ -154,7 +157,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 		// We'll only fail here if no peers are connected yet for us to create reply paths to outbound
 		// offer_paths_requests, so ignore the error.
-		let _ = self.check_refresh_async_offers(peers, false);
+		let _ = self.check_refresh_async_offers(peers, false, None);
 
 		Ok(())
 	}
@@ -1338,6 +1341,19 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
 		timer_tick_occurred: bool,
 	) -> Result<(), ()> {
+		self.check_refresh_async_receive_offer_cache_with_payment_metadata(
+			peers,
+			usable_channels,
+			router,
+			timer_tick_occurred,
+			None,
+		)
+	}
+
+	pub(crate) fn check_refresh_async_receive_offer_cache_with_payment_metadata<R: Router>(
+		&self, peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, router: R,
+		timer_tick_occurred: bool, payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
+	) -> Result<(), ()> {
 		// Terminate early if this node does not intend to receive async payments.
 		{
 			let cache = self.async_receive_offer_cache.lock().unwrap();
@@ -1346,7 +1362,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			}
 		}
 
-		self.check_refresh_async_offers(peers.clone(), timer_tick_occurred)?;
+		self.check_refresh_async_offers(peers.clone(), timer_tick_occurred, payment_metadata)?;
 
 		if timer_tick_occurred {
 			self.check_refresh_static_invoices(peers, usable_channels, router);
@@ -1357,6 +1373,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 
 	fn check_refresh_async_offers(
 		&self, peers: Vec<MessageForwardNode>, timer_tick_occurred: bool,
+		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(), ()> {
 		let duration_since_epoch = self.duration_since_epoch();
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
@@ -1368,6 +1385,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				Some(idx) => idx,
 				None => return Ok(()),
 			};
+		let payment_metadata =
+			cache.payment_metadata_for_new_offer(needs_new_offer_slot, payment_metadata);
 
 		// If we need new offers, send out offer paths request messages to the static invoice server.
 		let context = MessageContext::AsyncPayments(AsyncPaymentsContext::OfferPaths {
@@ -1387,7 +1406,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		};
 
 		// We can't fail past this point, so indicate to the cache that we've requested new offers.
-		cache.new_offers_requested();
+		cache.new_offers_requested(needs_new_offer_slot, payment_metadata);
 
 		let mut pending_async_payments_messages =
 			self.pending_async_payments_messages.lock().unwrap();
@@ -1414,7 +1433,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			let duration_since_epoch = self.duration_since_epoch();
 			let cache = self.async_receive_offer_cache.lock().unwrap();
 			for offer_and_metadata in cache.offers_needing_invoice_refresh(duration_since_epoch) {
-				let (offer, offer_nonce, update_static_invoice_path) = offer_and_metadata;
+				let (offer, offer_nonce, update_static_invoice_path, payment_metadata) =
+					offer_and_metadata;
 
 				let (invoice, forward_invreq_path) = match self.create_static_invoice_for_server(
 					offer,
@@ -1422,6 +1442,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 					peers.clone(),
 					usable_channels.clone(),
 					&router,
+					payment_metadata,
 				) {
 					Ok((invoice, path)) => (invoice, path),
 					Err(()) => continue,
@@ -1545,7 +1566,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			_ => return None,
 		};
 
-		{
+		let payment_metadata = {
 			// Only respond with `ServeStaticInvoice` if we actually need a new offer built.
 			let mut cache = self.async_receive_offer_cache.lock().unwrap();
 			cache.prune_expired_offers(duration_since_epoch, false);
@@ -1557,7 +1578,8 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			) {
 				return None;
 			}
-		}
+			cache.payment_metadata_for_offer_slot(invoice_slot)
+		};
 
 		let (mut offer_builder, offer_nonce) =
 			match self.create_async_receive_offer_builder(&entropy, message.paths) {
@@ -1583,6 +1605,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			peers,
 			usable_channels,
 			router,
+			payment_metadata.clone(),
 		) {
 			Ok(res) => res,
 			Err(()) => {
@@ -1598,6 +1621,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			responder,
 			duration_since_epoch,
 			invoice_slot,
+			payment_metadata,
 		) {
 			log_error!(self.logger, "Failed to cache pending offer");
 			return None;
@@ -1619,6 +1643,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	fn create_static_invoice_for_server<R: Router>(
 		&self, offer: &Offer, offer_nonce: Nonce, peers: Vec<MessageForwardNode>,
 		usable_channels: Vec<ChannelDetails>, router: R,
+		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(StaticInvoice, BlindedMessagePath), ()> {
 		let expanded_key = &self.inbound_payment_key;
 		let duration_since_epoch = self.duration_since_epoch();
@@ -1650,14 +1675,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 				offer_relative_expiry,
 				usable_channels,
 				peers.clone(),
-				None,
+				payment_metadata.clone(),
 			)
 			.and_then(|builder| builder.build_and_sign(secp_ctx))
 			.map_err(|_| ())?;
 
 		let context = MessageContext::Offers(OffersContext::InvoiceRequest {
 			nonce: offer_nonce,
-			payment_metadata: None,
+			payment_metadata,
 		});
 		let forward_invoice_request_path = self
 			.create_blinded_paths(peers, context)
@@ -1722,7 +1747,31 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// [`StaticInvoicePersisted`]: crate::onion_message::async_payments::StaticInvoicePersisted
 	pub fn handle_static_invoice_persisted(&self, context: AsyncPaymentsContext) -> bool {
 		let mut cache = self.async_receive_offer_cache.lock().unwrap();
-		cache.static_invoice_persisted(context)
+		let updated = cache.static_invoice_persisted(context);
+		if updated {
+			self.async_receive_offer_ready_notifier.notify();
+		}
+		updated
+	}
+
+	/// Returns a [`Future`] that completes when an async receive offer is ready, i.e., after the
+	/// interactive static-invoice protocol completes. If an offer is already ready, the returned
+	/// [`Future`] will already be complete.
+	///
+	/// Callers can `.await` the returned [`Future`] in an async context.
+	#[cfg_attr(
+		feature = "std",
+		doc = "Synchronous callers can instead call [`Future::wait_timeout`] on it."
+	)]
+	///
+	/// After it completes, use [`Self::get_async_receive_offer`] to retrieve the offer.
+	pub fn get_async_receive_offer_ready_future(&self) -> Future {
+		let cache = self.async_receive_offer_cache.lock().unwrap();
+		if cache.has_async_receive_offer(self.duration_since_epoch()) {
+			Future::completed()
+		} else {
+			self.async_receive_offer_ready_notifier.get_future()
+		}
 	}
 
 	/// Get the encoded [`AsyncReceiveOfferCache`] for persistence.
