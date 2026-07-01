@@ -7185,6 +7185,9 @@ pub struct SpliceFundingNegotiated {
 	/// The outpoint of the channel's splice funding transaction.
 	pub funding_txo: bitcoin::OutPoint,
 
+	/// Whether the holder contributed local inputs or outputs to the negotiated splice.
+	pub has_local_contribution: bool,
+
 	/// The features that this channel will operate with.
 	pub channel_type: ChannelTypeFeatures,
 
@@ -7224,8 +7227,7 @@ impl SpliceFundingFailed {
 }
 
 macro_rules! splice_funding_failed_for {
-	($self: expr, $is_initiator: expr, $contribution: expr,
-	 $contributed_inputs: ident, $contributed_outputs: ident) => {{
+	($self: expr, $contribution: expr, $contributed_inputs: ident, $contributed_outputs: ident) => {{
 		let contribution = $contribution;
 		let existing_inputs =
 			$self.pending_splice.as_ref().into_iter().flat_map(|ps| ps.$contributed_inputs());
@@ -7234,17 +7236,16 @@ macro_rules! splice_funding_failed_for {
 		let filtered =
 			contribution.clone().into_unique_contributions(existing_inputs, existing_outputs);
 		match filtered {
-			None if !$is_initiator => None,
-			None => Some(SpliceFundingFailed {
+			None => SpliceFundingFailed {
 				contributed_inputs: vec![],
 				contributed_outputs: vec![],
 				contribution: Some(contribution),
-			}),
-			Some((contributed_inputs, contributed_outputs)) => Some(SpliceFundingFailed {
+			},
+			Some((contributed_inputs, contributed_outputs)) => SpliceFundingFailed {
 				contributed_inputs,
 				contributed_outputs,
 				contribution: Some(contribution),
-			}),
+			},
 		}
 	}};
 }
@@ -7277,14 +7278,7 @@ where
 	fn splice_funding_failed_for(&self, contribution: FundingContribution) -> SpliceFundingFailed {
 		// The contribution was never pushed to `contributions`, so `contributed_inputs()` and
 		// `contributed_outputs()` return only prior rounds' entries for filtering.
-		splice_funding_failed_for!(
-			self,
-			true,
-			contribution,
-			contributed_inputs,
-			contributed_outputs
-		)
-		.expect("is_initiator is true so this always returns Some")
+		splice_funding_failed_for!(self, contribution, contributed_inputs, contributed_outputs)
 	}
 
 	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
@@ -7426,11 +7420,7 @@ where
 			pending_splice.funding_negotiation.is_some(),
 			"reset_pending_splice_state requires an active funding negotiation"
 		);
-		let is_initiator = pending_splice
-			.funding_negotiation
-			.take()
-			.map(|negotiation| negotiation.is_initiator())
-			.unwrap_or(false);
+		pending_splice.funding_negotiation.take();
 		let contribution = pending_splice.contributions.pop();
 		if let Some(ref contribution) = contribution {
 			debug_assert!(
@@ -7444,14 +7434,8 @@ where
 
 		// After pop, `contributed_inputs()` / `contributed_outputs()` return only prior
 		// rounds for filtering.
-		let splice_funding_failed = contribution.and_then(|contribution| {
-			splice_funding_failed_for!(
-				self,
-				is_initiator,
-				contribution,
-				contributed_inputs,
-				contributed_outputs
-			)
+		let splice_funding_failed = contribution.map(|contribution| {
+			splice_funding_failed_for!(self, contribution, contributed_inputs, contributed_outputs)
 		});
 
 		if self.pending_funding().is_empty() {
@@ -7476,19 +7460,13 @@ where
 			pending_splice.funding_negotiation.is_some(),
 			"maybe_splice_funding_failed requires an active funding negotiation"
 		);
-		let is_initiator = pending_splice
-			.funding_negotiation
-			.as_ref()
-			.map(|negotiation| negotiation.is_initiator())
-			.unwrap_or(false);
 		let contribution = pending_splice.contributions.last().cloned()?;
-		splice_funding_failed_for!(
+		Some(splice_funding_failed_for!(
 			self,
-			is_initiator,
 			contribution,
 			prior_contributed_inputs,
 			prior_contributed_outputs
-		)
+		))
 	}
 
 	#[rustfmt::skip]
@@ -9559,11 +9537,18 @@ where
 					funding.get_funding_txo().expect("funding outpoint should be set");
 				let channel_type = funding.get_channel_type().clone();
 				let funding_redeem_script = funding.get_funding_redeemscript();
+				let has_local_contribution = self
+					.context
+					.interactive_tx_signing_session
+					.as_ref()
+					.map(|signing_session| signing_session.has_local_contribution())
+					.unwrap_or(false);
 
 				pending_splice.negotiated_candidates.push(funding);
 
 				let splice_negotiated = SpliceFundingNegotiated {
 					funding_txo: funding_txo.into_bitcoin_outpoint(),
+					has_local_contribution,
 					channel_type,
 					funding_redeem_script,
 				};
@@ -13158,11 +13143,13 @@ where
 
 	/// Checks during handling splice_init
 	pub fn validate_splice_init(&self, msg: &msgs::SpliceInit) -> Result<(), ChannelError> {
-		if self.holder_commitment_point.current_point().is_none() {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} commitment point needs to be advanced once before spliced",
-				self.context.channel_id(),
-			)));
+		// - If it has received shutdown:
+		//   MUST send a warning and close the connection or send an error
+		//   and fail the channel.
+		if !self.context.is_live() {
+			return Err(ChannelError::WarnAndDisconnect(
+				"Splicing requested on a channel that is not live".to_owned(),
+			));
 		}
 
 		if !self.context.channel_state.is_quiescent() {
@@ -13177,20 +13164,17 @@ where
 			)));
 		}
 
-		// - If it has received shutdown:
-		//   MUST send a warning and close the connection or send an error
-		//   and fail the channel.
-		if !self.context.is_live() {
-			return Err(ChannelError::WarnAndDisconnect(
-				"Splicing requested on a channel that is not live".to_owned(),
-			));
-		}
-
 		let their_funding_contribution = SignedAmount::from_sat(msg.funding_contribution_satoshis);
 		if their_funding_contribution == SignedAmount::ZERO {
 			return Err(ChannelError::WarnAndDisconnect(format!(
 				"Channel {} cannot be spliced; they are the initiator, and their contribution is zero",
 				self.context.channel_id(),
+			)));
+		}
+
+		if self.holder_commitment_point.current_point().is_none() {
+			return Err(ChannelError::Abort(AbortReason::InternalError(
+				"Commitment point needs to be advanced once before spliced".into(),
 			)));
 		}
 
@@ -13210,13 +13194,10 @@ where
 			counterparty_funding_pubkey,
 			our_new_holder_keys,
 			min_funding_satoshis,
-		)
-		.map_err(|e| format!("Channel {} cannot be spliced; {}", self.context.channel_id(), e))?;
+		)?;
 
 		let (post_splice_holder_balance, post_splice_counterparty_balance) =
-			self.get_holder_counterparty_balances_floor_incl_fee(&candidate_scope).map_err(
-				|e| format!("Channel {} cannot be spliced; {}", self.context.channel_id(), e),
-			)?;
+			self.get_holder_counterparty_balances_floor_incl_fee(&candidate_scope)?;
 
 		let holder_selected_channel_reserve =
 			Amount::from_sat(candidate_scope.holder_selected_channel_reserve_satoshis);
@@ -13226,25 +13207,23 @@ where
 
 		// We allow parties to draw from their previous reserve, as long as they satisfy their v2 reserve
 		if our_funding_contribution != SignedAmount::ZERO {
-			post_splice_holder_balance.checked_sub(counterparty_selected_channel_reserve)
-				.ok_or(format!(
-						"Channel {} cannot be {}; our post-splice channel balance {} is smaller than their selected v2 reserve {}",
-						self.context.channel_id(),
-						if our_funding_contribution.is_positive() { "spliced in" } else { "spliced out" },
-						post_splice_holder_balance,
-						counterparty_selected_channel_reserve,
-					))?;
+			post_splice_holder_balance.checked_sub(counterparty_selected_channel_reserve).ok_or(
+				format!(
+					"Our post-splice channel balance {} is smaller than their selected v2 reserve {}",
+					post_splice_holder_balance,
+					counterparty_selected_channel_reserve,
+				),
+			)?;
 		}
 
 		if their_funding_contribution != SignedAmount::ZERO {
-			post_splice_counterparty_balance.checked_sub(holder_selected_channel_reserve)
-				.ok_or(format!(
-						"Channel {} cannot be {}; their post-splice channel balance {} is smaller than our selected v2 reserve {}",
-						self.context.channel_id(),
-						if their_funding_contribution.is_positive() { "spliced in" } else { "spliced out" },
-						post_splice_counterparty_balance,
-						holder_selected_channel_reserve,
-					))?;
+			post_splice_counterparty_balance.checked_sub(holder_selected_channel_reserve).ok_or(
+				format!(
+					"Their post-splice channel balance {} is smaller than our selected v2 reserve {}",
+					post_splice_counterparty_balance,
+					holder_selected_channel_reserve,
+				),
+			)?;
 		}
 
 		#[cfg(debug_assertions)]
@@ -13355,7 +13334,11 @@ where
 				holder_pubkeys,
 				min_funding_satoshis,
 			)
-			.map_err(|e| self.quiescent_negotiation_err(ChannelError::WarnAndDisconnect(e)))?;
+			.map_err(|e| {
+				self.quiescent_negotiation_err(ChannelError::Abort(
+					AbortReason::InvalidContribution(e),
+				))
+			})?;
 
 		// Adjust for the feerate and clone so we can store it for future RBF re-use.
 		let (adjusted_contribution, our_funding_inputs, our_funding_outputs) =
@@ -13414,56 +13397,55 @@ where
 	fn validate_tx_init_rbf<F: FeeEstimator>(
 		&self, msg: &msgs::TxInitRbf, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Result<(ChannelPublicKeys, PublicKey), ChannelError> {
-		if self.holder_commitment_point.current_point().is_none() {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} commitment point needs to be advanced once before RBF",
-				self.context.channel_id(),
-			)));
+		if !self.context.is_live() {
+			return Err(ChannelError::WarnAndDisconnect(
+				"RBF requested on a channel that is not live".to_owned(),
+			));
 		}
-
 		if !self.context.channel_state.is_quiescent() {
 			return Err(ChannelError::WarnAndDisconnect("Quiescence needed for RBF".to_owned()));
 		}
 
-		self.is_rbf_compatible().map_err(|msg| ChannelError::WarnAndDisconnect(msg))?;
+		if self.holder_commitment_point.current_point().is_none() {
+			return Err(ChannelError::Abort(AbortReason::InternalError(
+				"Commitment point needs to be advanced once before RBF".into(),
+			)));
+		}
 
-		let pending_splice = match &self.pending_splice {
-			Some(pending_splice) => pending_splice,
-			None => {
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Channel {} has no pending splice to RBF",
-					self.context.channel_id(),
-				)));
-			},
-		};
+		self.is_rbf_compatible()
+			.map_err(|msg| ChannelError::Abort(AbortReason::RbfUnavailable(msg)))?;
+
+		let (pending_splice, last_candidate) = self
+			.pending_splice
+			.as_ref()
+			.filter(|pending_splice| !pending_splice.negotiated_candidates.is_empty())
+			.map(|pending_splice| {
+				(
+					pending_splice,
+					pending_splice.negotiated_candidates.last().expect("checked above"),
+				)
+			})
+			.ok_or_else(|| {
+				ChannelError::Abort(AbortReason::RbfUnavailable(
+					"No pending splice available to RBF".into(),
+				))
+			})?;
 
 		if pending_splice.funding_negotiation.is_some() {
 			return Err(ChannelError::Abort(AbortReason::NegotiationInProgress));
 		}
 
 		if pending_splice.received_funding_txid.is_some() {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} counterparty already sent splice_locked, cannot RBF",
-				self.context.channel_id(),
+			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
+				"Already received splice_locked".into(),
 			)));
 		}
 
 		if pending_splice.sent_funding_txid.is_some() {
-			return Err(ChannelError::WarnAndDisconnect(format!(
-				"Channel {} already sent splice_locked, cannot RBF",
-				self.context.channel_id(),
+			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
+				"Already sent splice_locked".into(),
 			)));
 		}
-
-		let last_candidate = match pending_splice.negotiated_candidates.last() {
-			Some(candidate) => candidate,
-			None => {
-				return Err(ChannelError::WarnAndDisconnect(format!(
-					"Channel {} has no negotiated splice candidates to RBF",
-					self.context.channel_id(),
-				)));
-			},
-		};
 
 		let prev_feerate =
 			pending_splice.last_funding_feerate_sat_per_1000_weight.unwrap_or_else(|| {
@@ -13538,7 +13520,11 @@ where
 				holder_pubkeys,
 				min_funding_satoshis,
 			)
-			.map_err(|e| self.quiescent_negotiation_err(ChannelError::WarnAndDisconnect(e)))?;
+			.map_err(|e| {
+				self.quiescent_negotiation_err(ChannelError::Abort(
+					AbortReason::InvalidContribution(e),
+				))
+			})?;
 
 		// Consume the appropriate contribution source.
 		let (our_funding_inputs, our_funding_outputs) = if queued_net_value.is_some() {
@@ -13625,7 +13611,9 @@ where
 		};
 
 		let last_candidate = pending_splice.negotiated_candidates.last().ok_or_else(|| {
-			ChannelError::WarnAndDisconnect("No negotiated splice candidates for RBF".to_owned())
+			ChannelError::Abort(AbortReason::RbfUnavailable(
+				"No pending splice available to RBF".into(),
+			))
 		})?;
 		let holder_pubkeys = last_candidate.get_holder_pubkeys().clone();
 		let counterparty_funding_pubkey = *last_candidate.counterparty_funding_pubkey();
@@ -13638,7 +13626,7 @@ where
 				holder_pubkeys,
 				min_funding_satoshis,
 			)
-			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
+			.map_err(|e| ChannelError::Abort(AbortReason::InvalidContribution(e)))?;
 
 		Ok(new_funding)
 	}
@@ -13715,8 +13703,6 @@ where
 	fn validate_splice_ack(
 		&self, msg: &msgs::SpliceAck, min_funding_satoshis: u64,
 	) -> Result<FundingScope, ChannelError> {
-		// TODO(splicing): Add check that we are the splice (quiescence) initiator
-
 		let pending_splice = self
 			.pending_splice
 			.as_ref()
@@ -13739,7 +13725,7 @@ where
 				new_keys,
 				min_funding_satoshis,
 			)
-			.map_err(|e| ChannelError::WarnAndDisconnect(e))?;
+			.map_err(|e| ChannelError::Abort(AbortReason::InvalidContribution(e)))?;
 
 		Ok(new_funding)
 	}
