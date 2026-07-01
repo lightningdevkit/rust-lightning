@@ -33,7 +33,9 @@ use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent};
 use crate::ln::script::ShutdownScript;
 use crate::ln::types::ChannelId;
 use crate::ln::{msgs, wire};
+use crate::offers::currency::{CurrencyConversion, ExchangeRate, ExchangeRateBound, Tolerance};
 use crate::offers::invoice::UnsignedBolt12Invoice;
+use crate::offers::offer::CurrencyCode;
 use crate::onion_message::messenger::{
 	DefaultMessageRouter, Destination, MessageRouter, NodeIdMessageRouter, OnionMessagePath,
 };
@@ -460,6 +462,20 @@ impl<'a> MessageRouter for TestMessageRouter<'a> {
 				peers,
 				secp_ctx,
 			),
+		}
+	}
+}
+
+pub struct TestCurrencyConversion {}
+
+impl CurrencyConversion for TestCurrencyConversion {
+	fn conversion_range(&self, currency: CurrencyCode) -> Result<ExchangeRateBound, ()> {
+		if currency.as_str() == "USD" {
+			let exchange_rate = ExchangeRate::new(1000);
+			let tolerance = Tolerance::BasisPoints(0);
+			ExchangeRateBound::new(exchange_rate, tolerance, tolerance)
+		} else {
+			Err(())
 		}
 	}
 }

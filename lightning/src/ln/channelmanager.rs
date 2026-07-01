@@ -94,6 +94,9 @@ use crate::ln::outbound_payment::{
 };
 use crate::ln::types::ChannelId;
 use crate::offers::async_receive_offer_cache::AsyncReceiveOfferCache;
+use crate::offers::currency::CurrencyConversion;
+#[cfg(not(c_bindings))]
+use crate::offers::currency::NullCurrencyConversion;
 use crate::offers::flow::{HeldHtlcReplyPath, InvreqResponseInstructions, OffersMessageFlow};
 use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
@@ -1979,6 +1982,7 @@ pub type SimpleArcChannelManager<M, T, F, L> = ChannelManager<
 		>,
 	>,
 	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
+	Arc<NullCurrencyConversion>,
 	Arc<L>,
 >;
 
@@ -2010,6 +2014,7 @@ pub type SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>
 		ProbabilisticScorer<&'f NetworkGraph<&'g L>, &'g L>,
 	>,
 	&'i DefaultMessageRouter<&'f NetworkGraph<&'g L>, &'g L, &'c KeysManager>,
+	&'i NullCurrencyConversion,
 	&'g L,
 >;
 
@@ -2036,6 +2041,8 @@ pub trait AChannelManager {
 	type Router: Router;
 	/// A type implementing [`MessageRouter`].
 	type MessageRouter: MessageRouter;
+	/// A type implementing [`CurrencyConversion`].
+	type CurrencyConversion: CurrencyConversion;
 	/// A type implementing [`Logger`].
 	type Logger: Logger;
 	/// Returns a reference to the actual [`ChannelManager`] object.
@@ -2050,6 +2057,7 @@ pub trait AChannelManager {
 		Self::FeeEstimator,
 		Self::Router,
 		Self::MessageRouter,
+		Self::CurrencyConversion,
 		Self::Logger,
 	>;
 }
@@ -2063,8 +2071,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AChannelManager for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	type Watch = M;
 	type Broadcaster = T;
@@ -2075,8 +2084,9 @@ impl<
 	type FeeEstimator = F;
 	type Router = R;
 	type MessageRouter = MR;
+	type CurrencyConversion = CC;
 	type Logger = L;
-	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, L> {
+	fn get_cm(&self) -> &ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L> {
 		self
 	}
 }
@@ -2156,6 +2166,7 @@ impl<
 /// #     tx_broadcaster: &dyn lightning::chain::chaininterface::BroadcasterInterface,
 /// #     router: &lightning::routing::router::DefaultRouter<&NetworkGraph<&'a L>, &'a L, &ES, &S, SP, SL>,
 /// #     message_router: &lightning::onion_message::messenger::DefaultMessageRouter<&NetworkGraph<&'a L>, &'a L, &ES>,
+/// #     currency_conversion: &lightning::offers::currency::NullCurrencyConversion,
 /// #     logger: &L,
 /// #     entropy_source: &ES,
 /// #     node_signer: &dyn lightning::sign::NodeSigner,
@@ -2171,18 +2182,18 @@ impl<
 /// };
 /// let config = UserConfig::default();
 /// let channel_manager = ChannelManager::new(
-///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, logger,
-///     entropy_source, node_signer, signer_provider, config.clone(), params, current_timestamp,
+///     fee_estimator, chain_monitor, tx_broadcaster, router, message_router, currency_conversion,
+///     logger, entropy_source, node_signer, signer_provider, config.clone(), params, current_timestamp,
 /// );
 ///
 /// // Restart from deserialized data
 /// let mut channel_monitors = read_channel_monitors();
 /// let args = ChannelManagerReadArgs::new(
 ///     entropy_source, node_signer, signer_provider, fee_estimator, chain_monitor, tx_broadcaster,
-///     router, message_router, logger, config, channel_monitors.iter().collect(),
+///     router, message_router, currency_conversion, logger, config, channel_monitors.iter().collect(),
 /// );
 /// let (best_block, channel_manager) =
-///     <(BlockLocator, ChannelManager<_, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
+///     <(BlockLocator, ChannelManager<_, _, _, _, _, _, _, _, _, _>)>::read(&mut reader, args)?;
 ///
 /// // Update the ChannelManager and ChannelMonitors with the latest chain data
 /// // ...
@@ -2539,7 +2550,7 @@ impl<
 ///     .create_offer_builder()?
 /// # ;
 /// # // Needed for compiling for c_bindings
-/// # let builder: lightning::offers::offer::OfferBuilder<_, _> = offer.into();
+/// # let builder: lightning::offers::offer::OfferBuilder<_, _, _> = offer.into();
 /// # let offer = builder
 ///     .description("coffee".to_string())
 ///     .amount_msats(10_000_000)
@@ -2829,6 +2840,7 @@ pub struct ChannelManager<
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
+	CC: CurrencyConversion,
 	L: Logger,
 > {
 	config: RwLock<UserConfig>,
@@ -2842,6 +2854,10 @@ pub struct ChannelManager<
 	pub(super) flow: OffersMessageFlow<MR, L>,
 	#[cfg(not(test))]
 	flow: OffersMessageFlow<MR, L>,
+	#[cfg(test)]
+	pub(super) currency_conversion: CC,
+	#[cfg(not(test))]
+	currency_conversion: CC,
 
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(super) best_block: RwLock<BlockLocator>,
@@ -3684,8 +3700,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Constructs a new `ChannelManager` to hold several channels and route between them.
 	///
@@ -3706,9 +3723,9 @@ impl<
 	/// [`params.best_block.block_hash`]: chain::BlockLocator::block_hash
 	#[rustfmt::skip]
 	pub fn new(
-		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		entropy_source: ES, node_signer: NS, signer_provider: SP, config: UserConfig,
-		params: ChainParameters, current_timestamp: u32,
+		fee_est: F, chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR,
+		currency_conversion: CC, logger: L, entropy_source: ES, node_signer: NS,
+		signer_provider: SP, config: UserConfig, params: ChainParameters, current_timestamp: u32,
 	) -> Self
 	where
 		L: Clone,
@@ -3722,7 +3739,8 @@ impl<
 		let flow = OffersMessageFlow::new(
 			ChainHash::using_genesis_block(params.network), params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
-			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
+			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router,
+			logger.clone(),
 		);
 
 		ChannelManager {
@@ -3733,6 +3751,7 @@ impl<
 			tx_broadcaster,
 			router,
 			flow,
+			currency_conversion,
 
 			best_block: RwLock::new(params.best_block),
 
@@ -5844,6 +5863,13 @@ impl<
 	///   offer, or
 	/// - the refund corresponding to the invoice has already expired.
 	///
+	/// If the invoice corresponds to a currency-denominated offer and the invoice request did not
+	/// specify an explicit amount, the invoice amount is checked against the maximum amount payable
+	/// using the configured currency conversion. [`Bolt12PaymentError::UnverifiableAmount`] is
+	/// returned if the invoice amount could not be verified against the converted offer amount, and
+	/// [`Bolt12PaymentError::ExcessiveAmount`] is returned if the invoice quotes more than the
+	/// maximum amount we are willing to pay for the offer.
+	///
 	/// To retry the payment, request another invoice using a new `payment_id`.
 	///
 	/// Attempting to pay the same invoice twice while the first payment is still pending will
@@ -5856,9 +5882,16 @@ impl<
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
-		match self.flow.verify_bolt12_invoice(invoice, context) {
+		match self.flow.verify_bolt12_invoice(invoice, &self.currency_conversion, context) {
 			Ok(payment_id) => self.send_payment_for_verified_bolt12_invoice(invoice, payment_id),
-			Err(()) => Err(Bolt12PaymentError::UnexpectedInvoice),
+			Err(Bolt12SemanticError::UnexpectedAmount) => {
+				Err(Bolt12PaymentError::UnexpectedInvoice)
+			},
+			Err(Bolt12SemanticError::UnsupportedCurrency)
+			| Err(Bolt12SemanticError::MissingAmount)
+			| Err(Bolt12SemanticError::InvalidAmount) => Err(Bolt12PaymentError::UnverifiableAmount),
+			Err(Bolt12SemanticError::ExcessiveAmount) => Err(Bolt12PaymentError::ExcessiveAmount),
+			_ => Err(Bolt12PaymentError::UnexpectedInvoice),
 		}
 	}
 
@@ -5945,6 +5978,7 @@ impl<
 			let outbound_pmts_res = self.pending_outbound_payments.static_invoice_received(
 				invoice,
 				payment_id,
+				&self.currency_conversion,
 				features,
 				best_block_height,
 				self.duration_since_epoch(),
@@ -8714,7 +8748,7 @@ impl<
 									},
 								};
 
-								let verify_opt = invoice_request_opt.and_then(|invreq| {
+								let verified_invreq = match invoice_request_opt.and_then(|invreq| {
 									invreq
 										.verify_using_recipient_data(
 											offer_nonce,
@@ -8722,22 +8756,28 @@ impl<
 											&self.secp_ctx,
 										)
 										.ok()
-								});
-								let verified_invreq = match verify_opt {
-									Some(verified_invreq) => {
-										if let Some(invreq_amt_msat) =
-											verified_invreq.amount_msats()
-										{
-											if payment_data.total_msat < invreq_amt_msat {
-												fail_htlc!(payment_hash);
-											}
-										}
-										verified_invreq
-									},
+								}) {
+									Some(verified_invreq) => verified_invreq,
 									None => {
 										fail_htlc!(payment_hash);
 									},
 								};
+
+								match verified_invreq
+									.payable_amount_msats(&self.currency_conversion)
+								{
+									Ok(invreq_amt_msat) => {
+										if payment_data.total_msat < invreq_amt_msat {
+											fail_htlc!(payment_hash);
+										}
+									},
+									// If we cannot check the offer amount, reject the payment instead of risking
+									// accepting an underpayment.
+									Err(_) => {
+										fail_htlc!(payment_hash);
+									},
+								}
+
 								let payment_purpose_context =
 									PaymentContext::Bolt12Offer(Bolt12OfferContext {
 										offer_id: verified_invreq.offer_id(),
@@ -14679,12 +14719,17 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 	///
 	/// Errors if the parameterized [`MessageRouter`] is unable to create a blinded path for the offer.
 	///
+	/// Currency-denominated amounts set on the returned builder are validated
+	/// with the [`ChannelManager`]'s configured [`CurrencyConversion`] when the
+	/// offer is built.
+	///
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
+	/// [`CurrencyConversion`]: crate::offers::currency::CurrencyConversion
 	/// [`Offer`]: crate::offers::offer::Offer
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	pub fn create_offer_builder(&$self) -> Result<$builder, Bolt12SemanticError> {
 		let builder = $self.flow.create_offer_builder(
-			&$self.entropy_source, $self.get_peers_for_blinded_path()
+			&$self.entropy_source, &$self.currency_conversion, $self.get_peers_for_blinded_path()
 		)?;
 
 		Ok(builder.into())
@@ -14706,7 +14751,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		router: ME,
 	) -> Result<$builder, Bolt12SemanticError> {
 		let builder = $self.flow.create_offer_builder_using_router(
-			router, &$self.entropy_source, $self.get_peers_for_blinded_path()
+			router, &$self.entropy_source, &$self.currency_conversion, $self.get_peers_for_blinded_path()
 		)?;
 
 		Ok(builder.into())
@@ -14747,7 +14792,7 @@ macro_rules! create_offer_builder { ($self: ident, $builder: ty) => {
 		}
 
 		let builder = $self.flow.create_phantom_offer_builder(
-			&$self.entropy_source, peers, path_count_limit
+			&$self.entropy_source, &$self.currency_conversion, peers, path_count_limit
 		)?;
 
 		Ok(builder.into())
@@ -14869,16 +14914,17 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[cfg(not(c_bindings))]
-	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All>);
+	create_offer_builder!(self, OfferBuilder<'_, DerivedMetadata, secp256k1::All, CC>);
 	#[cfg(not(c_bindings))]
 	create_refund_builder!(self, RefundBuilder<'_, secp256k1::All>);
 
 	#[cfg(c_bindings)]
-	create_offer_builder!(self, OfferWithDerivedMetadataBuilder);
+	create_offer_builder!(self, OfferWithDerivedMetadataBuilder<'_, CC>);
 	#[cfg(c_bindings)]
 	create_refund_builder!(self, RefundMaybeWithDerivedMetadataBuilder);
 
@@ -14922,6 +14968,12 @@ impl<
 	///
 	/// `amount_msats` allows you to overpay what is required to satisfy the offer, or may be
 	/// required if the offer does not require a specific amount.
+	///
+	/// If the offer specifies an amount in a fiat currency, `amount_msats` is not locally
+	/// checked against the offer amount when building the [`InvoiceRequest`]. Instead, the
+	/// payee verifies whether the requested amount is sufficient when deciding whether to
+	/// issue a [`Bolt12Invoice`]. If `amount_msats` is omitted, the payee may determine the
+	/// final invoice amount.
 	///
 	/// If the [`Offer`] was built from a human readable name resolved using BIP 353, you *must*
 	/// instead call [`Self::pay_for_offer_from_hrn`].
@@ -15742,8 +15794,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> BaseMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn provided_node_features(&self) -> NodeFeatures {
 		provided_node_features(&self.config.read().unwrap())
@@ -16124,8 +16177,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> EventsProvider for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Processes events that must be periodically handled.
 	///
@@ -16149,8 +16203,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
 		{
@@ -16200,8 +16255,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> chain::Confirm for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[rustfmt::skip]
 	fn transactions_confirmed(&self, header: &Header, txdata: &TransactionData, height: u32) {
@@ -16363,8 +16419,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Calls a function which handles an on-chain event (blocks dis/connected, transactions
 	/// un/confirmed, etc) on each channel, handling any resulting errors or messages generated by
@@ -16716,8 +16773,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn handle_open_channel(&self, counterparty_node_id: PublicKey, message: &msgs::OpenChannel) {
 		// Note that we never need to persist the updated ChannelManager for an inbound
@@ -17276,8 +17334,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> OffersMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[rustfmt::skip]
 	fn handle_message(
@@ -17304,6 +17363,9 @@ impl<
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Err(Bolt12PaymentError::UnverifiableAmount)
+						| Err(Bolt12PaymentError::InsufficientAmount)
+						| Err(Bolt12PaymentError::ExcessiveAmount)
 						| Ok(()) => return None,
 				};
 
@@ -17359,6 +17421,7 @@ impl<
 						let result = self.flow.create_invoice_builder_from_invoice_request_with_keys(
 							&self.router,
 							&request,
+							&self.currency_conversion,
 							self.list_usable_channels(),
 							get_payment_info,
 							payment_metadata,
@@ -17384,6 +17447,7 @@ impl<
 						let result = self.flow.create_invoice_builder_from_invoice_request_without_keys(
 							&self.router,
 							&request,
+							&self.currency_conversion,
 							self.list_usable_channels(),
 							get_payment_info,
 							payment_metadata,
@@ -17425,9 +17489,9 @@ impl<
 				})
 			},
 			OffersMessage::Invoice(invoice) => {
-				let payment_id = match self.flow.verify_bolt12_invoice(&invoice, context.as_ref()) {
+				let payment_id = match self.flow.verify_bolt12_invoice(&invoice, &self.currency_conversion, context.as_ref()) {
 					Ok(payment_id) => payment_id,
-					Err(()) => return None,
+					Err(_) => return None,
 				};
 
 				let logger = WithContext::for_payment(
@@ -17496,8 +17560,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> AsyncPaymentsMessageHandler for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn handle_offer_paths_request(
 		&self, message: OfferPathsRequest, context: AsyncPaymentsContext,
@@ -17526,6 +17591,7 @@ impl<
 			self.get_peers_for_blinded_path(),
 			self.list_usable_channels(),
 			&self.entropy_source,
+			&self.currency_conversion,
 			&self.router,
 		) {
 			Some((msg, ctx)) => (msg, ctx),
@@ -17754,8 +17820,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
 		self.short_to_chan_info.read().unwrap().get(&short_channel_id).map(|(pubkey, _)| *pubkey)
@@ -18281,8 +18348,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger,
-	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> Writeable for ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	#[rustfmt::skip]
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
@@ -19019,6 +19087,7 @@ pub struct ChannelManagerReadArgs<
 	F: FeeEstimator,
 	R: Router,
 	MR: MessageRouter,
+	CC: CurrencyConversion,
 	L: Logger + Clone,
 > {
 	/// A cryptographically secure source of entropy.
@@ -19057,6 +19126,11 @@ pub struct ChannelManagerReadArgs<
 	///
 	/// [`BlindedMessagePath`]: crate::blinded_path::message::BlindedMessagePath
 	pub message_router: MR,
+	/// The [`CurrencyConversion`] used for supporting and interpreting [`Offer`] amount
+	/// denoted in [`Amount::Currency`].
+	///
+	/// [`Amount::Currency`]: crate::offers::offer::Amount::Currency
+	pub currency_conversion: CC,
 	/// The Logger for use in the ChannelManager and which may be used to log information during
 	/// deserialization.
 	pub logger: L,
@@ -19097,16 +19171,18 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Simple utility function to create a ChannelManagerReadArgs which creates the monitor
 	/// HashMap for you. This is primarily useful for C bindings where it is not practical to
 	/// populate a HashMap directly from C.
 	pub fn new(
 		entropy_source: ES, node_signer: NS, signer_provider: SP, fee_estimator: F,
-		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR, logger: L,
-		config: UserConfig, mut channel_monitors: Vec<&'a ChannelMonitor<SP::EcdsaSigner>>,
+		chain_monitor: M, tx_broadcaster: T, router: R, message_router: MR,
+		currency_conversion: CC, logger: L, config: UserConfig,
+		mut channel_monitors: Vec<&'a ChannelMonitor<SP::EcdsaSigner>>,
 	) -> Self {
 		Self {
 			entropy_source,
@@ -19117,6 +19193,7 @@ impl<
 			tx_broadcaster,
 			router,
 			message_router,
+			currency_conversion,
 			logger,
 			config,
 			channel_monitors: hash_map_from_iter(
@@ -19174,15 +19251,18 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockLocator, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, L>>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>>
+	for (BlockLocator, Arc<ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>>)
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>,
 	) -> Result<Self, DecodeError> {
-		let (best_block, chan_manager) =
-			<(BlockLocator, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)>::read(reader, args)?;
+		let (best_block, chan_manager) = <(
+			BlockLocator,
+			ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>,
+		)>::read(reader, args)?;
 		Ok((best_block, Arc::new(chan_manager)))
 	}
 }
@@ -19197,12 +19277,13 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>>
-	for (BlockLocator, ChannelManager<M, T, ES, NS, SP, F, R, MR, L>)
+	> ReadableArgs<ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>>
+	for (BlockLocator, ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>)
 {
 	fn read<Reader: io::Read>(
-		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, L>,
+		reader: &mut Reader, args: ChannelManagerReadArgs<'a, M, T, ES, NS, SP, F, R, MR, CC, L>,
 	) -> Result<Self, DecodeError> {
 		// Stage 1: Pure deserialization into DTO
 		let data: ChannelManagerData<SP> = ChannelManagerData::read(
@@ -19229,8 +19310,9 @@ impl<
 		F: FeeEstimator,
 		R: Router,
 		MR: MessageRouter,
+		CC: CurrencyConversion,
 		L: Logger + Clone,
-	> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
+	> ChannelManager<M, T, ES, NS, SP, F, R, MR, CC, L>
 {
 	/// Constructs a `ChannelManager` from deserialized data and runtime dependencies.
 	///
@@ -19242,7 +19324,7 @@ impl<
 	/// [`ChannelMonitorUpdate`]s.
 	pub(super) fn from_channel_manager_data(
 		data: ChannelManagerData<SP>,
-		mut args: ChannelManagerReadArgs<'_, M, T, ES, NS, SP, F, R, MR, L>,
+		mut args: ChannelManagerReadArgs<'_, M, T, ES, NS, SP, F, R, MR, CC, L>,
 	) -> Result<(BlockLocator, Self), DecodeError> {
 		let ChannelManagerData {
 			chain_hash,
@@ -20479,6 +20561,7 @@ impl<
 			tx_broadcaster: args.tx_broadcaster,
 			router: args.router,
 			flow,
+			currency_conversion: args.currency_conversion,
 
 			best_block: RwLock::new(best_block),
 
@@ -22095,6 +22178,7 @@ pub mod bench {
 		&'a test_utils::TestFeeEstimator,
 		&'a test_utils::TestRouter<'a>,
 		&'a test_utils::TestMessageRouter<'a>,
+		&'a test_utils::TestCurrencyConversion,
 		&'a test_utils::TestLogger,
 	>;
 
@@ -22133,6 +22217,7 @@ pub mod bench {
 		let entropy = test_utils::TestKeysInterface::new(&[0u8; 32], network);
 		let router = test_utils::TestRouter::new(Arc::new(NetworkGraph::new(network, &logger_a)), &logger_a, &scorer);
 		let message_router = test_utils::TestMessageRouter::new_default(Arc::new(NetworkGraph::new(network, &logger_a)), &entropy);
+		let currency_conversion = test_utils::TestCurrencyConversion {};
 
 		let mut config: UserConfig = Default::default();
 		config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(5_000_000 / 253);
@@ -22141,7 +22226,7 @@ pub mod bench {
 		let seed_a = [1u8; 32];
 		let keys_manager_a = KeysManager::new(&seed_a, 42, 42, true);
 		let chain_monitor_a = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_a, &keys_manager_a, keys_manager_a.get_peer_storage_key(), false);
-		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &message_router, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
+		let node_a = ChannelManager::new(&fee_estimator, &chain_monitor_a, &tx_broadcaster, &router, &message_router, &currency_conversion, &logger_a, &keys_manager_a, &keys_manager_a, &keys_manager_a, config.clone(), ChainParameters {
 			network,
 			best_block: BlockLocator::from_network(network),
 		}, genesis_block.header.time);
@@ -22151,7 +22236,7 @@ pub mod bench {
 		let seed_b = [2u8; 32];
 		let keys_manager_b = KeysManager::new(&seed_b, 42, 42, true);
 		let chain_monitor_b = ChainMonitor::new(None, &tx_broadcaster, &logger_a, &fee_estimator, &persister_b, &keys_manager_b, keys_manager_b.get_peer_storage_key(), false);
-		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &message_router, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
+		let node_b = ChannelManager::new(&fee_estimator, &chain_monitor_b, &tx_broadcaster, &router, &message_router, &currency_conversion, &logger_b, &keys_manager_b, &keys_manager_b, &keys_manager_b, config.clone(), ChainParameters {
 			network,
 			best_block: BlockLocator::from_network(network),
 		}, genesis_block.header.time);

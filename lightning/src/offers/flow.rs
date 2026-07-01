@@ -27,7 +27,7 @@ use crate::blinded_path::payment::{
 	PaymentConstraints, PaymentContext, ReceiveTlvs,
 };
 use crate::chain::channelmonitor::LATENCY_GRACE_PERIOD_BLOCKS;
-
+use crate::offers::currency::CurrencyConversion;
 #[allow(unused_imports)]
 use crate::prelude::*;
 
@@ -487,19 +487,25 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Verifies a [`Bolt12Invoice`] using the invoice's payer metadata, returning the
 	/// corresponding [`PaymentId`] if successful.
 	///
+	/// This also verifies that the invoice amount is consistent with the underlying
+	/// offer or refund. For currency-denominated offers, this includes validating
+	/// the invoice amount against the payable amount derived using the provided
+	/// [`CurrencyConversion`] when the invoice request did not carry an explicit
+	/// amount.
+	///
 	/// - If an [`OffersContext::OutboundPaymentForOffer`] or
 	///   [`OffersContext::OutboundPaymentForRefund`] is provided, the extracted [`PaymentId`] must
 	///   also match the context's `payment_id`.
 	/// - If no context is provided, the invoice must correspond to a [`Refund`] without blinded
 	///   paths.
 	/// - If neither condition is met, verification fails.
-	pub fn verify_bolt12_invoice(
-		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
-	) -> Result<PaymentId, ()> {
+	pub fn verify_bolt12_invoice<CC: CurrencyConversion>(
+		&self, invoice: &Bolt12Invoice, converter: &CC, context: Option<&OffersContext>,
+	) -> Result<PaymentId, Bolt12SemanticError> {
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 
-		match context {
+		let payment_id = match context {
 			None if invoice.is_for_refund_without_paths() => {
 				invoice.verify_using_metadata(expanded_key, secp_ctx)
 			},
@@ -523,6 +529,11 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			},
 			_ => Err(()),
 		}
+		.map_err(|_| Bolt12SemanticError::UnexpectedAmount)?;
+
+		invoice.verify_amount_acceptable_for_payment(converter)?;
+
+		Ok(payment_id)
 	}
 
 	/// Verifies the provided [`AsyncPaymentsContext`] for an inbound [`HeldHtlcAvailable`] message.
@@ -548,9 +559,9 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		}
 	}
 
-	fn create_offer_builder_intern<ES: EntropySource, PF, I>(
-		&self, entropy_source: ES, make_paths: PF,
-	) -> Result<(OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError>
+	fn create_offer_builder_intern<'a, ES: EntropySource, CC: CurrencyConversion, PF, I>(
+		&'a self, entropy_source: ES, converter: &'a CC, make_paths: PF,
+	) -> Result<(OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Nonce), Bolt12SemanticError>
 	where
 		PF: FnOnce(
 			PublicKey,
@@ -568,9 +579,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let context =
 			MessageContext::Offers(OffersContext::InvoiceRequest { nonce, payment_metadata: None });
 
-		let mut builder =
-			OfferBuilder::deriving_signing_pubkey(node_id, expanded_key, nonce, secp_ctx)
-				.chain_hash(self.chain_hash);
+		let mut builder = OfferBuilder::deriving_signing_pubkey(
+			node_id,
+			expanded_key,
+			nonce,
+			converter,
+			secp_ctx,
+		)
+		.chain_hash(self.chain_hash);
 
 		for path in make_paths(node_id, context, secp_ctx)? {
 			builder = builder.path(path)
@@ -601,13 +617,16 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Returns an error if the parameterized [`Router`] is unable to create a blinded path for the offer.
 	///
+	/// Currency-denominated amounts set on the returned builder are validated
+	/// with `converter` when the offer is built.
+	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// [`DefaultMessageRouter`]: crate::onion_message::messenger::DefaultMessageRouter
-	pub fn create_offer_builder<ES: EntropySource>(
-		&self, entropy_source: ES, peers: Vec<MessageForwardNode>,
-	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
-		self.create_offer_builder_intern(&entropy_source, |_, context, _| {
+	pub fn create_offer_builder<'a, ES: EntropySource, CC: CurrencyConversion>(
+		&'a self, entropy_source: ES, converter: &'a CC, peers: Vec<MessageForwardNode>,
+	) -> Result<OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Bolt12SemanticError> {
+		self.create_offer_builder_intern(&entropy_source, converter, |_, context, _| {
 			self.create_blinded_paths(peers, context)
 				.map(|paths| paths.into_iter().take(1))
 				.map_err(|_| Bolt12SemanticError::MissingPaths)
@@ -624,16 +643,25 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
 	///
 	/// See [`Self::create_offer_builder`] for more details on usage.
-	pub fn create_offer_builder_using_router<ME: MessageRouter, ES: EntropySource>(
-		&self, router: ME, entropy_source: ES, peers: Vec<MessageForwardNode>,
-	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
+	pub fn create_offer_builder_using_router<
+		'a,
+		ME: MessageRouter,
+		ES: EntropySource,
+		CC: CurrencyConversion,
+	>(
+		&'a self, router: ME, entropy_source: ES, converter: &'a CC, peers: Vec<MessageForwardNode>,
+	) -> Result<OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Bolt12SemanticError> {
 		let receive_key = self.get_receive_auth_key();
-		self.create_offer_builder_intern(&entropy_source, |node_id, context, secp_ctx| {
-			router
-				.create_blinded_paths(node_id, receive_key, context, peers, secp_ctx)
-				.map(|paths| paths.into_iter().take(1))
-				.map_err(|_| Bolt12SemanticError::MissingPaths)
-		})
+		self.create_offer_builder_intern(
+			&entropy_source,
+			converter,
+			|node_id, context, secp_ctx| {
+				router
+					.create_blinded_paths(node_id, receive_key, context, peers, secp_ctx)
+					.map(|paths| paths.into_iter().take(1))
+					.map_err(|_| Bolt12SemanticError::MissingPaths)
+			},
+		)
 		.map(|(builder, _)| builder)
 	}
 
@@ -647,10 +675,12 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///    aforementioned always-online node.
 	///
 	/// This is not exported to bindings users as builder patterns don't map outside of move semantics.
-	pub fn create_async_receive_offer_builder<ES: EntropySource>(
-		&self, entropy_source: ES, message_paths_to_always_online_node: Vec<BlindedMessagePath>,
-	) -> Result<(OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Nonce), Bolt12SemanticError> {
-		self.create_offer_builder_intern(&entropy_source, |_, _, _| {
+	pub fn create_async_receive_offer_builder<'a, ES: EntropySource, CC: CurrencyConversion>(
+		&'a self, entropy_source: ES, converter: &'a CC,
+		message_paths_to_always_online_node: Vec<BlindedMessagePath>,
+	) -> Result<(OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Nonce), Bolt12SemanticError>
+	{
+		self.create_offer_builder_intern(&entropy_source, converter, |_, _, _| {
 			Ok(message_paths_to_always_online_node)
 		})
 	}
@@ -663,11 +693,11 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// See [`Self::create_offer_builder`] for more details on privacy and limitations.
 	///
 	/// [`ExpandedKey`]: inbound_payment::ExpandedKey
-	pub fn create_phantom_offer_builder<ES: EntropySource>(
-		&self, entropy_source: ES, per_node_peers: Vec<(PublicKey, Vec<MessageForwardNode>)>,
-		path_count_limit: usize,
-	) -> Result<OfferBuilder<'_, DerivedMetadata, secp256k1::All>, Bolt12SemanticError> {
-		self.create_offer_builder_intern(entropy_source, |_, context, _| {
+	pub fn create_phantom_offer_builder<'a, ES: EntropySource, CC: CurrencyConversion>(
+		&'a self, entropy_source: ES, converter: &'a CC,
+		per_node_peers: Vec<(PublicKey, Vec<MessageForwardNode>)>, path_count_limit: usize,
+	) -> Result<OfferBuilder<'a, DerivedMetadata, secp256k1::All, CC>, Bolt12SemanticError> {
+		self.create_offer_builder_intern(entropy_source, converter, |_, context, _| {
 			self.blinded_paths_for_phantom_offer(per_node_peers, path_count_limit, context)
 				.map_err(|_| Bolt12SemanticError::MissingPaths)
 		})
@@ -971,9 +1001,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_with_keys<'a, R: Router, F>(
+	pub fn create_invoice_builder_from_invoice_request_with_keys<
+		'a,
+		R: Router,
+		CC: CurrencyConversion,
+		F,
+	>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<DerivedSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		converter: &'a CC, usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(InvoiceBuilder<'a, DerivedSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
@@ -981,8 +1016,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			converter,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1004,14 +1041,21 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(all(feature = "std", not(fuzzing)))]
-		let builder = invoice_request.respond_using_derived_keys(payment_paths, payment_hash);
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("time must be after unix epoch");
+
 		#[cfg(any(not(feature = "std"), fuzzing))]
-		let builder = invoice_request.respond_using_derived_keys_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+
+		let builder = invoice_request
+			.respond_using_derived_keys_with_amount(
+				amount_msats,
+				payment_paths,
+				payment_hash,
+				created_at,
+			)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
@@ -1032,9 +1076,14 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// Returns a [`Bolt12SemanticError`] if:
 	/// - Valid blinded payment paths could not be generated for the [`Bolt12Invoice`].
 	/// - The [`InvoiceBuilder`] could not be created from the [`InvoiceRequest`].
-	pub fn create_invoice_builder_from_invoice_request_without_keys<'a, R: Router, F>(
+	pub fn create_invoice_builder_from_invoice_request_without_keys<
+		'a,
+		R: Router,
+		CC: CurrencyConversion,
+		F,
+	>(
 		&self, router: &R, invoice_request: &'a VerifiedInvoiceRequest<ExplicitSigningPubkey>,
-		usable_channels: Vec<ChannelDetails>, get_payment_info: F,
+		converter: &'a CC, usable_channels: Vec<ChannelDetails>, get_payment_info: F,
 		payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
 	) -> Result<(InvoiceBuilder<'a, ExplicitSigningPubkey>, MessageContext), Bolt12SemanticError>
 	where
@@ -1042,8 +1091,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	{
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
-		let amount_msats =
-			InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(&invoice_request.inner)?;
+		let amount_msats = InvoiceBuilder::<DerivedSigningPubkey>::amount_msats(
+			&invoice_request.inner,
+			converter,
+		)?;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
 
@@ -1065,15 +1116,16 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
 		#[cfg(all(feature = "std", not(fuzzing)))]
-		let builder = invoice_request.respond_with(payment_paths, payment_hash);
-		#[cfg(any(not(feature = "std"), fuzzing))]
-		let builder = invoice_request.respond_with_no_std(
-			payment_paths,
-			payment_hash,
-			Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64),
-		);
+		let created_at = std::time::SystemTime::now()
+			.duration_since(std::time::SystemTime::UNIX_EPOCH)
+			.expect("time must be after unix epoch");
 
-		let builder = builder.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
+		#[cfg(any(not(feature = "std"), fuzzing))]
+		let created_at = Duration::from_secs(self.highest_seen_timestamp.load(Ordering::Acquire) as u64);
+
+		let builder = invoice_request
+			.respond_with_amount(amount_msats, payment_paths, payment_hash, created_at)
+			.map(|b| InvoiceBuilder::from(b).allow_mpp())?;
 
 		let context = MessageContext::Offers(OffersContext::InboundPayment { payment_hash });
 
@@ -1529,10 +1581,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	///
 	/// Returns `None` if we have enough offers cached already, verification of `message` fails, or we
 	/// fail to create blinded paths.
-	pub fn handle_offer_paths<ES: EntropySource, R: Router>(
-		&self, message: OfferPaths, context: AsyncPaymentsContext, responder: Responder,
+	pub fn handle_offer_paths<'a, ES: EntropySource, CC: CurrencyConversion, R: Router>(
+		&'a self, message: OfferPaths, context: AsyncPaymentsContext, responder: Responder,
 		peers: Vec<MessageForwardNode>, usable_channels: Vec<ChannelDetails>, entropy: ES,
-		router: R,
+		converter: &'a CC, router: R,
 	) -> Option<(ServeStaticInvoice, MessageContext)> {
 		let duration_since_epoch = self.duration_since_epoch();
 		let invoice_slot = match context {
@@ -1560,7 +1612,7 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		}
 
 		let (mut offer_builder, offer_nonce) =
-			match self.create_async_receive_offer_builder(&entropy, message.paths) {
+			match self.create_async_receive_offer_builder(&entropy, converter, message.paths) {
 				Ok((builder, nonce)) => (builder, nonce),
 				Err(_) => return None, // Only reachable if OfferPaths::paths is empty
 			};
