@@ -3652,6 +3652,14 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.chain_state.relay_transactions(txs);
 	}
 
+	fn relay_all_broadcasts(&mut self) {
+		let mut txs = Vec::new();
+		for node in &self.nodes {
+			txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
+		}
+		self.chain_state.relay_transactions(txs);
+	}
+
 	fn earliest_pending_htlc_expiry(&self) -> Option<u32> {
 		let mut earliest_expiry: Option<u32> = None;
 		for node in &self.nodes {
@@ -3738,11 +3746,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 
 	fn mine_relayed_txs_until_quiet(&mut self) {
 		for _ in 0..MAX_FINISH_RELAY_MINE_ROUNDS {
-			let mut txs = Vec::new();
-			for node in &self.nodes {
-				txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
-			}
-			self.chain_state.relay_transactions(txs);
+			self.relay_all_broadcasts();
 			if self.chain_state.pending_txs.is_empty() {
 				return;
 			}
