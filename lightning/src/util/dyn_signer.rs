@@ -157,7 +157,7 @@ inner,
 delegate!(DynKeysInterface, SignerProvider,
 	inner,
 	fn get_destination_script(, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()>,
-	fn get_shutdown_scriptpubkey(,) -> Result<ShutdownScript, ()>,
+	fn get_shutdown_scriptpubkey(, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()>,
 	fn generate_channel_keys_id(, _inbound: bool, _user_channel_id: u128) -> [u8; 32],
 	fn derive_channel_signer(, _channel_keys_id: [u8; 32]) -> Self::EcdsaSigner;
 	type EcdsaSigner = DynSigner,
@@ -213,8 +213,8 @@ impl SignerProvider for DynPhantomKeysInterface {
 		self.inner.get_destination_script(channel_keys_id)
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
-		self.inner.get_shutdown_scriptpubkey()
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		self.inner.get_shutdown_scriptpubkey(channel_keys_id)
 	}
 
 	fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {

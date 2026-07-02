@@ -1121,8 +1121,9 @@ pub trait SignerProvider {
 	/// channel force close.
 	///
 	/// This method should return a different value each time it is called, to avoid linking
-	/// on-chain funds across channels as controlled to the same user.
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()>;
+	/// on-chain funds across channels as controlled to the same user. `channel_keys_id` may be
+	/// used to derive a unique value for each channel.
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()>;
 }
 
 impl<T: SignerProvider + ?Sized, SP: Deref<Target = T>> SignerProvider for SP {
@@ -1140,8 +1141,8 @@ impl<T: SignerProvider + ?Sized, SP: Deref<Target = T>> SignerProvider for SP {
 		self.deref().get_destination_script(channel_keys_id)
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
-		self.deref().get_shutdown_scriptpubkey()
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		self.deref().get_shutdown_scriptpubkey(channel_keys_id)
 	}
 }
 
@@ -1977,6 +1978,8 @@ pub struct KeysManager {
 	inbound_payment_key: ExpandedKey,
 	destination_script: ScriptBuf,
 	shutdown_pubkey: PublicKey,
+	destination_key: Xpriv,
+	shutdown_key: Xpriv,
 	channel_master_key: Xpriv,
 	static_payment_key: Xpriv,
 	v2_remote_key_derivation: bool,
@@ -2016,6 +2019,13 @@ impl KeysManager {
 	/// possible `script_pubkey`s. This only applies to new or spliced channels, however if this is
 	/// set you *MUST NOT* downgrade to a version of LDK prior to 0.2.
 	///
+	/// If `v2_remote_key_derivation` is set, a fresh destination `script_pubkey` (where we receive
+	/// funds when claiming on-chain contestable outputs) and a fresh cooperative-close
+	/// `script_pubkey` are derived for each new or spliced channel, rather than reusing a single
+	/// `script_pubkey` across all channels. This avoids linking our on-chain funds across channels.
+	/// Funds paid to these scripts remain recoverable from the `seed` alone by scanning the chain
+	/// for the `script_pubkey's` returned by [`KeysManager::possible_v2_static_output_spks`].
+	///
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	pub fn new(
 		seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32,
@@ -2040,24 +2050,22 @@ impl KeysManager {
 					.expect("Your RNG is busted")
 					.private_key;
 				let node_id = PublicKey::from_secret_key(&secp_ctx, &node_secret);
-				let destination_script =
-					match master_key.derive_priv(&secp_ctx, &DESTINATION_SCRIPT_INDEX) {
-						Ok(destination_key) => {
-							let wpubkey_hash = WPubkeyHash::hash(
-								&Xpub::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes(),
-							);
-							Builder::new()
-								.push_opcode(opcodes::all::OP_PUSHBYTES_0)
-								.push_slice(&wpubkey_hash.to_byte_array())
-								.into_script()
-						},
-						Err(_) => panic!("Your RNG is busted"),
-					};
-				let shutdown_pubkey =
-					match master_key.derive_priv(&secp_ctx, &SHUTDOWN_PUBKEY_INDEX) {
-						Ok(shutdown_key) => Xpub::from_priv(&secp_ctx, &shutdown_key).public_key,
-						Err(_) => panic!("Your RNG is busted"),
-					};
+				let destination_key = master_key
+					.derive_priv(&secp_ctx, &DESTINATION_SCRIPT_INDEX)
+					.expect("Your RNG is busted");
+				let destination_script = {
+					let wpubkey_hash = WPubkeyHash::hash(
+						&Xpub::from_priv(&secp_ctx, &destination_key).to_pub().to_bytes(),
+					);
+					Builder::new()
+						.push_opcode(opcodes::all::OP_PUSHBYTES_0)
+						.push_slice(&wpubkey_hash.to_byte_array())
+						.into_script()
+				};
+				let shutdown_key = master_key
+					.derive_priv(&secp_ctx, &SHUTDOWN_PUBKEY_INDEX)
+					.expect("Your RNG is busted");
+				let shutdown_pubkey = Xpub::from_priv(&secp_ctx, &shutdown_key).public_key;
 				let channel_master_key = master_key
 					.derive_priv(&secp_ctx, &CHANNEL_MASTER_KEY_INDEX)
 					.expect("Your RNG is busted");
@@ -2100,6 +2108,8 @@ impl KeysManager {
 
 					destination_script,
 					shutdown_pubkey,
+					destination_key,
+					shutdown_key,
 
 					channel_master_key,
 					channel_child_index: AtomicUsize::new(0),
@@ -2169,6 +2179,101 @@ impl KeysManager {
 			)
 			.expect("Your RNG is busted")
 			.private_key
+	}
+
+	/// Derives the index into the static destination/shutdown key set for a given channel.
+	///
+	/// The index is a pure function of `channel_keys_id` so that the same script can be re-derived
+	/// both when handing the script out (e.g. in [`SignerProvider::get_destination_script`]) and
+	/// when later signing a spend of an output paying to it. By offsetting the per-channel counter
+	/// (the first four bytes of a [`KeysManager`]-generated `channel_keys_id`) by an
+	/// instance-specific value, the first [`STATIC_PAYMENT_KEY_COUNT`] channels opened in a process
+	/// are guaranteed to use distinct indices, avoiding script reuse for privacy.
+	fn static_output_key_idx(channel_keys_id: &[u8; 32]) -> u16 {
+		let counter = u32::from_be_bytes(channel_keys_id[0..4].try_into().unwrap());
+		let mut engine = Sha256::engine();
+		engine.input(b"LDK Static Output Key Index Offset");
+		engine.input(&channel_keys_id[4..16]);
+		let hash = Sha256::from_engine(engine).to_byte_array();
+		let offset = u32::from_be_bytes(hash[0..4].try_into().unwrap());
+		(counter.wrapping_add(offset) % u32::from(STATIC_PAYMENT_KEY_COUNT)) as u16
+	}
+
+	/// Derives the `idx`th hardened child of one of the static destination/shutdown key roots.
+	fn derive_static_output_key(&self, root: &Xpriv, idx: u16) -> Xpriv {
+		root.derive_priv(
+			&self.secp_ctx,
+			&ChildNumber::from_hardened_idx(u32::from(idx)).expect("key space exhausted"),
+		)
+		.expect("Your RNG is busted")
+	}
+
+	/// Returns the P2WPKH `script_pubkey` controlled by the given key.
+	fn p2wpkh_spk_for_key(&self, key: &Xpriv) -> ScriptBuf {
+		let pubkey = Xpub::from_priv(&self.secp_ctx, key).to_pub();
+		bitcoin::Address::p2wpkh(&pubkey, Network::Testnet).script_pubkey()
+	}
+
+	/// Finds the key controlling the given `script_pubkey` for a [`SpendableOutputDescriptor::StaticOutput`].
+	///
+	/// This checks both the legacy single destination/shutdown keys (used by all channels opened
+	/// without `v2_remote_key_derivation`) and, if a `channel_keys_id` is available, the
+	/// per-channel destination/shutdown keys derived for `v2_remote_key_derivation` channels.
+	fn find_static_output_key(
+		&self, channel_keys_id: Option<[u8; 32]>, script_pubkey: &ScriptBuf,
+	) -> Option<Xpriv> {
+		if &self.p2wpkh_spk_for_key(&self.destination_key) == script_pubkey {
+			return Some(self.destination_key);
+		}
+		if &self.p2wpkh_spk_for_key(&self.shutdown_key) == script_pubkey {
+			return Some(self.shutdown_key);
+		}
+		if let Some(channel_keys_id) = channel_keys_id {
+			let idx = Self::static_output_key_idx(&channel_keys_id);
+			let destination_key = self.derive_static_output_key(&self.destination_key, idx);
+			if &self.p2wpkh_spk_for_key(&destination_key) == script_pubkey {
+				return Some(destination_key);
+			}
+			let shutdown_key = self.derive_static_output_key(&self.shutdown_key, idx);
+			if &self.p2wpkh_spk_for_key(&shutdown_key) == script_pubkey {
+				return Some(shutdown_key);
+			}
+		} else {
+			// Without a `channel_keys_id` (e.g. when recovering from the seed alone) we don't know
+			// which per-channel index was used, so scan the full set of possible per-channel
+			// destination/shutdown keys (the same set returned by
+			// `possible_v2_static_output_spks`).
+			for idx in 0..STATIC_PAYMENT_KEY_COUNT {
+				let destination_key = self.derive_static_output_key(&self.destination_key, idx);
+				if &self.p2wpkh_spk_for_key(&destination_key) == script_pubkey {
+					return Some(destination_key);
+				}
+				let shutdown_key = self.derive_static_output_key(&self.shutdown_key, idx);
+				if &self.p2wpkh_spk_for_key(&shutdown_key) == script_pubkey {
+					return Some(shutdown_key);
+				}
+			}
+		}
+		None
+	}
+
+	/// Gets the set of possible `script_pubkey`s which can appear on chain paying to our
+	/// destination or cooperative-close scripts for channels opened (or spliced) while using a
+	/// [`KeysManager`] with the `v2_remote_key_derivation` argument to [`KeysManager::new`] set.
+	///
+	/// If you've lost all data except your seed, scanning the chain for these `script_pubkey`s can
+	/// allow you to recover (some of) your funds even without the corresponding [`ChannelMonitor`].
+	///
+	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
+	pub fn possible_v2_static_output_spks(&self) -> Vec<ScriptBuf> {
+		let mut res = Vec::with_capacity(usize::from(STATIC_PAYMENT_KEY_COUNT) * 2);
+		for idx in 0..STATIC_PAYMENT_KEY_COUNT {
+			let destination_key = self.derive_static_output_key(&self.destination_key, idx);
+			res.push(self.p2wpkh_spk_for_key(&destination_key));
+			let shutdown_key = self.derive_static_output_key(&self.shutdown_key, idx);
+			res.push(self.p2wpkh_spk_for_key(&shutdown_key));
+		}
+		res
 	}
 
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
@@ -2297,30 +2402,29 @@ impl KeysManager {
 					)?;
 					psbt.inputs[input_idx].final_script_witness = Some(witness);
 				},
-				SpendableOutputDescriptor::StaticOutput { ref outpoint, ref output, .. } => {
+				SpendableOutputDescriptor::StaticOutput {
+					ref outpoint,
+					ref output,
+					channel_keys_id,
+				} => {
 					let input_idx = get_input_idx(outpoint)?;
-					let derivation_idx =
-						if output.script_pubkey == self.destination_script { 1 } else { 2 };
-					let secret = {
-						// Note that when we aren't serializing the key, network doesn't matter
-						match Xpriv::new_master(Network::Testnet, &self.seed) {
-							Ok(master_key) => {
-								match master_key.derive_priv(
-									&secp_ctx,
-									&ChildNumber::from_hardened_idx(derivation_idx)
-										.expect("key space exhausted"),
-								) {
-									Ok(key) => key,
-									Err(_) => panic!("Your RNG is busted"),
-								}
-							},
-							Err(_) => panic!("Your rng is busted"),
-						}
-					};
-					let pubkey = Xpub::from_priv(&secp_ctx, &secret).to_pub();
-					if derivation_idx == 2 {
-						assert_eq!(pubkey.0, self.shutdown_pubkey);
+					let secret = self
+						.find_static_output_key(*channel_keys_id, &output.script_pubkey)
+						.ok_or(())?;
+					#[cfg(test)]
+					if self.v2_remote_key_derivation
+						&& output.script_pubkey != self.destination_script
+						&& output.script_pubkey
+							!= ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey)
+								.into_inner()
+					{
+						// In tests, use this opportunity to ensure per-channel static output
+						// scripts are recoverable by scanning the chain via
+						// `possible_v2_static_output_spks`.
+						let possible_spks = self.possible_v2_static_output_spks();
+						assert!(possible_spks.contains(&output.script_pubkey));
 					}
+					let pubkey = Xpub::from_priv(&secp_ctx, &secret).to_pub();
 					let witness_script =
 						bitcoin::Address::p2pkh(&pubkey, Network::Testnet).script_pubkey();
 					let payment_script =
@@ -2484,11 +2588,28 @@ impl SignerProvider for KeysManager {
 		self.derive_channel_keys(&channel_keys_id)
 	}
 
-	fn get_destination_script(&self, _channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+	fn get_destination_script(&self, channel_keys_id: [u8; 32]) -> Result<ScriptBuf, ()> {
+		if self.v2_remote_key_derivation {
+			// Derive a fresh per-channel destination script for privacy. Funds paid to it remain
+			// recoverable from the seed alone by scanning the chain for the scripts returned by
+			// `possible_v2_static_output_spks`.
+			let idx = Self::static_output_key_idx(&channel_keys_id);
+			let key = self.derive_static_output_key(&self.destination_key, idx);
+			return Ok(self.p2wpkh_spk_for_key(&key));
+		}
 		Ok(self.destination_script.clone())
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		if self.v2_remote_key_derivation {
+			// Derive a fresh per-channel cooperative-close script for privacy. Funds paid to it
+			// remain recoverable from the seed alone by scanning the chain for the scripts
+			// returned by `possible_v2_static_output_spks`.
+			let idx = Self::static_output_key_idx(&channel_keys_id);
+			let key = self.derive_static_output_key(&self.shutdown_key, idx);
+			let pubkey = Xpub::from_priv(&self.secp_ctx, &key).public_key;
+			return Ok(ShutdownScript::new_p2wpkh_from_pubkey(pubkey));
+		}
 		Ok(ShutdownScript::new_p2wpkh_from_pubkey(self.shutdown_pubkey.clone()))
 	}
 }
@@ -2623,8 +2744,8 @@ impl SignerProvider for PhantomKeysManager {
 		self.inner.get_destination_script(channel_keys_id)
 	}
 
-	fn get_shutdown_scriptpubkey(&self) -> Result<ShutdownScript, ()> {
-		self.inner.get_shutdown_scriptpubkey()
+	fn get_shutdown_scriptpubkey(&self, channel_keys_id: [u8; 32]) -> Result<ShutdownScript, ()> {
+		self.inner.get_shutdown_scriptpubkey(channel_keys_id)
 	}
 }
 
@@ -2761,5 +2882,114 @@ pub mod benches {
 		for handle in handles {
 			handle.join().unwrap();
 		}
+	}
+}
+
+#[cfg(test)]
+mod static_output_tests {
+	use super::{KeysManager, STATIC_PAYMENT_KEY_COUNT};
+	use crate::sign::SignerProvider;
+
+	fn keys_id(counter: u32) -> [u8; 32] {
+		let mut id = [7u8; 32];
+		id[0..4].copy_from_slice(&counter.to_be_bytes());
+		id
+	}
+
+	#[test]
+	fn v2_destination_and_shutdown_scripts_are_per_channel() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, true);
+
+		let dest_a = keys.get_destination_script(keys_id(0)).unwrap();
+		let dest_b = keys.get_destination_script(keys_id(1)).unwrap();
+		let shutdown_a = keys.get_shutdown_scriptpubkey(keys_id(0)).unwrap().into_inner();
+		let shutdown_b = keys.get_shutdown_scriptpubkey(keys_id(1)).unwrap().into_inner();
+
+		// Distinct channels get distinct destination and shutdown scripts.
+		assert_ne!(dest_a, dest_b);
+		assert_ne!(shutdown_a, shutdown_b);
+		// Destination and shutdown scripts for the same channel are independent.
+		assert_ne!(dest_a, shutdown_a);
+		// They are not the single legacy script.
+		assert_ne!(dest_a, keys.destination_script);
+	}
+
+	#[test]
+	fn v1_scripts_are_static() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, false);
+
+		let dest_a = keys.get_destination_script(keys_id(0)).unwrap();
+		let dest_b = keys.get_destination_script(keys_id(1)).unwrap();
+		let shutdown_a = keys.get_shutdown_scriptpubkey(keys_id(0)).unwrap().into_inner();
+		let shutdown_b = keys.get_shutdown_scriptpubkey(keys_id(1)).unwrap().into_inner();
+
+		assert_eq!(dest_a, dest_b);
+		assert_eq!(dest_a, keys.destination_script);
+		assert_eq!(shutdown_a, shutdown_b);
+	}
+
+	#[test]
+	fn v2_scripts_are_re_derivable_across_restart() {
+		// `starting_time_*` differ but the seed and `channel_keys_id` are the same, so the same
+		// scripts must be re-derived (these only depend on the seed and `channel_keys_id`).
+		let keys_a = KeysManager::new(&[42; 32], 1, 2, true);
+		let keys_b = KeysManager::new(&[42; 32], 3, 4, true);
+
+		assert_eq!(
+			keys_a.get_destination_script(keys_id(5)).unwrap(),
+			keys_b.get_destination_script(keys_id(5)).unwrap()
+		);
+		assert_eq!(
+			keys_a.get_shutdown_scriptpubkey(keys_id(5)).unwrap().into_inner(),
+			keys_b.get_shutdown_scriptpubkey(keys_id(5)).unwrap().into_inner()
+		);
+	}
+
+	#[test]
+	fn v2_scripts_are_recoverable_via_chain_scan() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, true);
+		let possible_spks = keys.possible_v2_static_output_spks();
+		assert_eq!(possible_spks.len(), usize::from(STATIC_PAYMENT_KEY_COUNT) * 2);
+
+		for counter in 0..16 {
+			let id = keys_id(counter);
+			let dest = keys.get_destination_script(id).unwrap();
+			let shutdown = keys.get_shutdown_scriptpubkey(id).unwrap().into_inner();
+			assert!(possible_spks.contains(&dest));
+			assert!(possible_spks.contains(&shutdown));
+		}
+	}
+
+	#[test]
+	fn find_static_output_key_matches_handed_out_scripts() {
+		let keys = KeysManager::new(&[42; 32], 0, 0, true);
+		let id = keys_id(3);
+
+		// Per-channel destination key resolves with the matching `channel_keys_id`.
+		let dest = keys.get_destination_script(id).unwrap();
+		let dest_key = keys.find_static_output_key(Some(id), &dest).expect("destination key");
+		assert_eq!(keys.p2wpkh_spk_for_key(&dest_key), dest);
+
+		// Per-channel shutdown key resolves with the matching `channel_keys_id`.
+		let shutdown = keys.get_shutdown_scriptpubkey(id).unwrap().into_inner();
+		let shutdown_key = keys.find_static_output_key(Some(id), &shutdown).expect("shutdown key");
+		assert_eq!(keys.p2wpkh_spk_for_key(&shutdown_key), shutdown);
+
+		// A per-channel script does not resolve under the wrong `channel_keys_id`.
+		assert!(keys.find_static_output_key(Some(keys_id(4)), &dest).is_none());
+
+		// Per-channel scripts also resolve without a `channel_keys_id` (seed-only recovery) by
+		// scanning the full set of possible keys.
+		let recovered =
+			keys.find_static_output_key(None, &dest).expect("recovered destination key");
+		assert_eq!(keys.p2wpkh_spk_for_key(&recovered), dest);
+
+		// Legacy scripts always resolve, even without a `channel_keys_id`.
+		let legacy_dest = keys.destination_script.clone();
+		assert!(keys.find_static_output_key(None, &legacy_dest).is_some());
+
+		// Unknown scripts never resolve.
+		let unknown = keys.get_destination_script(keys_id(9)).unwrap();
+		assert!(keys.find_static_output_key(Some(keys_id(8)), &unknown).is_none());
 	}
 }

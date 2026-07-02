@@ -74,6 +74,7 @@ use crate::prelude::*;
 use crate::sync::{Arc, Mutex, RwLock};
 use alloc::collections::BTreeSet;
 use bitcoin::hashes::Hash;
+use bitcoin::hex::FromHex;
 use core::iter::repeat;
 use lightning_macros::xtest;
 
@@ -1030,7 +1031,19 @@ fn do_test_forming_justice_tx_from_monitor_updates(broadcast_initial_commitment:
 	// is properly formed and can be broadcasted/confirmed successfully in the event
 	// that a revoked commitment transaction is broadcasted
 	// (Similar to `revoked_output_claim` test but we get the justice tx + broadcast manually)
-	let chanmon_cfgs = create_chanmon_cfgs(2);
+	//
+	// Use legacy (V1) key derivation so that the destination scripts we hand to the watchtower
+	// match the per-node static destination scripts that the channels close to. With per-channel
+	// (V2) derivation each channel uses a distinct destination script which we cannot predict
+	// before the channel is created.
+	let node0_key_id =
+		<[u8; 32]>::from_hex("0000000000000000000000004D49E5DA0000000000000000000000000000002A")
+			.unwrap();
+	let node1_key_id =
+		<[u8; 32]>::from_hex("0000000000000000000000004D49E5DAD000D6201F116BAFD379F1D61DF161B9")
+			.unwrap();
+	let predefined_key_ids = Some(vec![node0_key_id, node1_key_id]);
+	let chanmon_cfgs = create_chanmon_cfgs_with_legacy_keys(2, predefined_key_ids);
 	let destination_script0 = chanmon_cfgs[0].keys_manager.get_destination_script([0; 32]).unwrap();
 	let destination_script1 = chanmon_cfgs[1].keys_manager.get_destination_script([0; 32]).unwrap();
 	let persisters = [

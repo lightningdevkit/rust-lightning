@@ -1437,8 +1437,9 @@ fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	if extra_closing_signed {
 		let node_1_closing_signed_2_bad = {
 			let mut node_1_closing_signed_2 = node_1_closing_signed.clone();
-			let holder_script = nodes[0].keys_manager.get_shutdown_scriptpubkey().unwrap();
-			let counterparty_script = nodes[1].keys_manager.get_shutdown_scriptpubkey().unwrap();
+			let holder_script = nodes[0].keys_manager.get_shutdown_scriptpubkey([0; 32]).unwrap();
+			let counterparty_script =
+				nodes[1].keys_manager.get_shutdown_scriptpubkey([0; 32]).unwrap();
 			let funding_outpoint = bitcoin::OutPoint { txid: funding_tx.compute_txid(), vout: 0 };
 			let closing_tx_2 = ClosingTransaction::new(
 				50000,

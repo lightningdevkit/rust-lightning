@@ -1,0 +1,17 @@
+## API Updates
+* `SignerProvider::get_shutdown_scriptpubkey` now takes a `channel_keys_id` argument (matching
+`get_destination_script`), allowing implementations to derive a unique cooperative-close
+`script_pubkey` for each channel (#1139).
+
+## Privacy
+* When a `KeysManager` is built with `v2_remote_key_derivation` set, it now derives a fresh
+destination `script_pubkey` and cooperative-close `script_pubkey` for each new or spliced  channel,
+rather than reusing a single `script_pubkey` across all channels, avoiding linking our on-chain
+funds across channels. Funds paid to these scripts remain recoverable from the seed alone via
+`KeysManager::possible_v2_static_output_spks` (#1139).
+
+## Backwards Compat
+* Channels opened (or spliced) by a `KeysManager` built with `v2_remote_key_derivation` set now
+close to per-channel destination and cooperative-close `script_pubkey`s. As with the
+`v2_remote_key_derivation` remote-key changes, if this is set you *MUST NOT* downgrade to a version
+of LDK prior to 0.2 (#1139).
