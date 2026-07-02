@@ -401,10 +401,15 @@ impl FromStr for SignedRawBolt11Invoice {
 			return Err(Bolt11ParseError::TooShortDataPart);
 		}
 
-		let raw_hrp: RawHrp = hrp.to_string().to_lowercase().parse()?;
-		let data_part = RawDataPart::from_base32(&data[..data.len() - SIGNATURE_LEN_5])?;
+		let raw_hrp_str = hrp.to_string().to_lowercase();
+		let raw_hrp: RawHrp = raw_hrp_str.parse()?;
+		let data_without_signature = &data[..data.len() - SIGNATURE_LEN_5];
+		let data_part = RawDataPart::from_base32(data_without_signature)?;
 		let raw_invoice = RawBolt11Invoice { hrp: raw_hrp, data: data_part };
-		let hash = raw_invoice.signable_hash();
+		let hash = RawBolt11Invoice::hash_from_parts(
+			raw_hrp_str.as_bytes(),
+			data_without_signature.iter().copied(),
+		);
 
 		Ok(SignedRawBolt11Invoice {
 			raw_invoice,
@@ -1458,5 +1463,35 @@ mod test {
 		// Test with 53 characters (too long).
 		let input = vec![Fe32::try_from(0).unwrap(); 53];
 		assert!(PaymentHash::from_base32(&input).is_err());
+	}
+
+	#[test]
+	fn test_deserialized_signable_hash_binds_to_original_bytes() {
+		use crate::{Bolt11Bech32, SignedRawBolt11Invoice};
+		use bech32::primitives::decode::CheckedHrpstring;
+		use bech32::{Fe32IterExt, Hrp};
+
+		let canonical_str = "lnbc25m1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5vdhkven9v5sxyetpdeessp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs9q5sqqqqqqqqqqqqqqqpqsq67gye39hfg3zd8rgc80k32tvy9xk2xunwm5lzexnvpx6fd77en8qaq424dxgt56cag2dpt359k3ssyhetktkpqh24jqnjyw6uqd08sgptq44qu";
+		let parsed = CheckedHrpstring::new::<Bolt11Bech32>(canonical_str).unwrap();
+		let data_fes = parsed.fe32_iter::<&mut dyn Iterator<Item = u8>>().collect::<Vec<_>>();
+
+		let malleated_hrp = Hrp::parse_unchecked("lnbc025m");
+		let malleated_str = data_fes
+			.iter()
+			.copied()
+			.with_checksum::<Bolt11Bech32>(&malleated_hrp)
+			.chars()
+			.collect::<String>();
+		assert_ne!(canonical_str, malleated_str.as_str());
+
+		let canonical: SignedRawBolt11Invoice = canonical_str.parse().unwrap();
+		let malleated: SignedRawBolt11Invoice = malleated_str.parse().unwrap();
+
+		assert_eq!(canonical.signature(), malleated.signature());
+		assert_ne!(canonical.signable_hash(), malleated.signable_hash());
+		assert_ne!(
+			canonical.recover_payee_pub_key().unwrap(),
+			malleated.recover_payee_pub_key().unwrap()
+		);
 	}
 }
