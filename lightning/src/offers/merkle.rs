@@ -49,13 +49,10 @@ impl TaggedHash {
 	/// Creates a tagged hash with the given parameters.
 	///
 	/// Panics if `tlv_stream` is not a well-formed TLV stream containing at least one TLV record.
-	pub(super) fn from_tlv_stream<'a, I: core::iter::Iterator<Item = TlvRecord<'a>>>(
+	pub(super) fn from_tlv_stream<'a, I: core::iter::Iterator<Item = TlvRecord<'a>> + 'a>(
 		tag: &'static str, tlv_stream: I,
 	) -> Self {
-		let tag_hash = sha256::Hash::hash(tag.as_bytes());
-		let merkle_root = root_hash(tlv_stream);
-		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
-		Self { tag, merkle_root, digest }
+		Self::from_merkle_root(tag, root_hash(tlv_stream))
 	}
 
 	/// Returns the digest to sign.
@@ -71,6 +68,13 @@ impl TaggedHash {
 	/// Returns the merkle root used in the tagged hash.
 	pub fn merkle_root(&self) -> sha256::Hash {
 		self.merkle_root
+	}
+
+	/// Creates a tagged hash from a pre-computed merkle root.
+	pub(super) fn from_merkle_root(tag: &'static str, merkle_root: sha256::Hash) -> Self {
+		let tag_hash = sha256::Hash::hash(tag.as_bytes());
+		let digest = Message::from_digest(tagged_hash(tag_hash, merkle_root).to_byte_array());
+		Self { tag, merkle_root, digest }
 	}
 
 	pub(super) fn to_bytes(&self) -> [u8; 32] {
@@ -146,9 +150,27 @@ pub fn verify_signature(
 	secp_ctx.verify_schnorr(signature, digest, &pubkey)
 }
 
-/// Computes a merkle root hash for the given data, which must be a well-formed TLV stream
-/// containing at least one TLV record.
-fn root_hash<'a, I: core::iter::Iterator<Item = TlvRecord<'a>>>(tlv_stream: I) -> sha256::Hash {
+/// Per-TLV merkle data shared by [`root_hash`] and the selective-disclosure code: the branch hash
+/// of each non-signature record together with the pieces the disclosure layer needs to rebuild the
+/// tree. Keeping this in one place ensures the signed invoice root and the payer-proof
+/// reconstruction hash identical inputs the exact same way.
+pub(super) struct TlvMerkleData {
+	pub(super) tlv_type: u64,
+	pub(super) nonce_hash: sha256::Hash,
+	pub(super) per_tlv_hash: sha256::Hash,
+	pub(super) is_included: bool,
+}
+
+/// Computes the per-TLV branch hashes for every non-signature record in `tlv_stream`, tagging each
+/// with the `is_included` predicate for the selective-disclosure layer. Returns the iterator plus
+/// the shared `LnBranch` tag engine used to combine hashes into the root.
+pub(super) fn merkle_tlv_data<'a, I, F>(
+	tlv_stream: I, mut is_included: F,
+) -> (impl Iterator<Item = TlvMerkleData> + 'a, sha256::HashEngine)
+where
+	I: core::iter::Iterator<Item = TlvRecord<'a>> + 'a,
+	F: FnMut(u64) -> bool + 'a,
+{
 	let mut tlv_stream = tlv_stream.peekable();
 	let nonce_tag = tagged_hash_engine(sha256::Hash::from_engine({
 		let first_tlv_record = tlv_stream.peek().unwrap();
@@ -159,12 +181,34 @@ fn root_hash<'a, I: core::iter::Iterator<Item = TlvRecord<'a>>>(tlv_stream: I) -
 	}));
 	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
 	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
+	let iter_branch_tag = branch_tag.clone();
 
-	let mut leaves = Vec::new();
-	for record in tlv_stream.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type)) {
-		leaves.push(tagged_hash_from_engine(leaf_tag.clone(), &record.record_bytes));
-		leaves.push(tagged_hash_from_engine(nonce_tag.clone(), &record.type_bytes));
-	}
+	let tlv_data =
+		tlv_stream.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type)).map(move |record| {
+			let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
+			let nonce_hash = tagged_hash_from_engine(nonce_tag.clone(), record.type_bytes);
+			let per_tlv_hash =
+				tagged_branch_hash_from_engine(iter_branch_tag.clone(), leaf_hash, nonce_hash);
+
+			TlvMerkleData {
+				tlv_type: record.r#type,
+				nonce_hash,
+				per_tlv_hash,
+				is_included: is_included(record.r#type),
+			}
+		});
+
+	(tlv_data, branch_tag)
+}
+
+/// Computes a merkle root hash for the given data, which must be a well-formed TLV stream
+/// containing at least one TLV record.
+fn root_hash<'a, I: core::iter::Iterator<Item = TlvRecord<'a>> + 'a>(
+	tlv_stream: I,
+) -> sha256::Hash {
+	let (tlv_data, branch_tag) = merkle_tlv_data(tlv_stream, |_| false);
+	let mut leaves: Vec<sha256::Hash> = tlv_data.map(|data| data.per_tlv_hash).collect();
+	assert!(!leaves.is_empty(), "TLV stream must contain at least one non-signature record");
 
 	// Calculate the merkle root hash in place.
 	let num_leaves = leaves.len();
@@ -190,19 +234,21 @@ fn tagged_hash<T: AsRef<[u8]>>(tag: sha256::Hash, msg: T) -> sha256::Hash {
 	tagged_hash_from_engine(engine, msg)
 }
 
-fn tagged_hash_engine(tag: sha256::Hash) -> sha256::HashEngine {
+pub(super) fn tagged_hash_engine(tag: sha256::Hash) -> sha256::HashEngine {
 	let mut engine = sha256::Hash::engine();
 	engine.input(tag.as_ref());
 	engine.input(tag.as_ref());
 	engine
 }
 
-fn tagged_hash_from_engine<T: AsRef<[u8]>>(mut engine: sha256::HashEngine, msg: T) -> sha256::Hash {
+pub(super) fn tagged_hash_from_engine<T: AsRef<[u8]>>(
+	mut engine: sha256::HashEngine, msg: T,
+) -> sha256::Hash {
 	engine.input(msg.as_ref());
 	sha256::Hash::from_engine(engine)
 }
 
-fn tagged_branch_hash_from_engine(
+pub(super) fn tagged_branch_hash_from_engine(
 	mut engine: sha256::HashEngine, leaf1: sha256::Hash, leaf2: sha256::Hash,
 ) -> sha256::Hash {
 	if leaf1 < leaf2 {
@@ -243,7 +289,21 @@ pub(super) struct TlvRecord<'a> {
 	type_bytes: &'a [u8],
 	// The entire TLV record.
 	pub(super) record_bytes: &'a [u8],
+	// The value portion of the TLV record (after type and length).
+	pub(super) value_bytes: &'a [u8],
 	pub(super) end: usize,
+}
+
+impl<'a> TlvRecord<'a> {
+	/// Read a value from this TLV record's value bytes using [`Readable`].
+	pub(super) fn read_value<T: Readable>(&self) -> Result<T, crate::ln::msgs::DecodeError> {
+		let mut value_bytes = self.value_bytes;
+		let value = Readable::read(&mut value_bytes)?;
+		if !value_bytes.is_empty() {
+			return Err(crate::ln::msgs::DecodeError::InvalidValue);
+		}
+		Ok(value)
+	}
 }
 
 impl<'a> Iterator for TlvStream<'a> {
@@ -261,12 +321,12 @@ impl<'a> Iterator for TlvStream<'a> {
 			let offset = self.data.position();
 			let end = offset + length;
 
-			let _value = &self.data.get_ref()[offset as usize..end as usize];
 			let record_bytes = &self.data.get_ref()[start as usize..end as usize];
+			let value_bytes = &self.data.get_ref()[offset as usize..end as usize];
 
 			self.data.set_position(end);
 
-			Some(TlvRecord { r#type, type_bytes, record_bytes, end: end as usize })
+			Some(TlvRecord { r#type, type_bytes, record_bytes, value_bytes, end: end as usize })
 		} else {
 			None
 		}
@@ -496,5 +556,24 @@ mod tests {
 		fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
 			self.fmt_bech32_str(f)
 		}
+	}
+
+	#[test]
+	fn test_tlv_record_read_value_rejects_trailing_bytes() {
+		use bitcoin::secp256k1::PublicKey;
+
+		use crate::offers::test_utils::payer_pubkey;
+		use crate::util::ser::{BigSize, Writeable};
+
+		let pubkey = payer_pubkey();
+		let mut tlv_bytes = Vec::new();
+		BigSize(88).write(&mut tlv_bytes).unwrap();
+		BigSize(35).write(&mut tlv_bytes).unwrap();
+		pubkey.write(&mut tlv_bytes).unwrap();
+		tlv_bytes.extend_from_slice(&[0x00, 0x01]);
+
+		let record = TlvStream::new(&tlv_bytes).next().unwrap();
+		let result: Result<PublicKey, _> = record.read_value();
+		assert!(matches!(result, Err(crate::ln::msgs::DecodeError::InvalidValue)));
 	}
 }

@@ -1207,6 +1207,21 @@ impl Readable for SecretKey {
 	}
 }
 
+impl Writeable for Sha256 {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		w.write_all(&self[..])
+	}
+}
+
+impl Readable for Sha256 {
+	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+		use bitcoin::hashes::Hash;
+
+		let buf: [u8; 32] = Readable::read(r)?;
+		Ok(Sha256::from_byte_array(buf))
+	}
+}
+
 impl Writeable for Hmac<Sha256> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		w.write_all(&self[..])
