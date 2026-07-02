@@ -120,7 +120,35 @@ impl BlindedPaymentPath {
 		BlindedPaymentPath::new_inner(
 			intermediate_nodes,
 			payee_node_id,
-			local_node_receive_key,
+			Some(local_node_receive_key),
+			&[],
+			payee_tlvs,
+			htlc_maximum_msat,
+			min_final_cltv_expiry_delta,
+			entropy_source,
+			secp_ctx,
+		)
+	}
+
+	/// Create a blinded path for a payment to a recipient that is not an LDK node (e.g. CLN).
+	///
+	/// The other constructors authenticate the payee hop with a [`ReceiveAuthKey`], which a non-LDK
+	/// node cannot decrypt. This instead builds a standard BOLT-4 payee hop (no [`ReceiveAuthKey`]),
+	/// dropping the [`ReceiveAuthKey`]-based deanonymization protections and adding no dummy hops.
+	///
+	/// See [`BlindedPaymentPath::new`] regarding errors.
+	pub fn new_for_external_recipient<
+		ES: EntropySource,
+		T: secp256k1::Signing + secp256k1::Verification,
+	>(
+		intermediate_nodes: &[PaymentForwardNode], payee_node_id: PublicKey,
+		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
+		entropy_source: ES, secp_ctx: &Secp256k1<T>,
+	) -> Result<Self, ()> {
+		BlindedPaymentPath::new_inner(
+			intermediate_nodes,
+			payee_node_id,
+			None,
 			&[],
 			payee_tlvs,
 			htlc_maximum_msat,
@@ -153,7 +181,7 @@ impl BlindedPaymentPath {
 		BlindedPaymentPath::new_inner(
 			intermediate_nodes,
 			payee_node_id,
-			local_node_receive_key,
+			Some(local_node_receive_key),
 			dummy_tlvs,
 			payee_tlvs,
 			htlc_maximum_msat,
@@ -176,7 +204,7 @@ impl BlindedPaymentPath {
 		Self::new_inner(
 			intermediate_nodes,
 			payee_node_id,
-			local_node_receive_key,
+			Some(local_node_receive_key),
 			&[],
 			payee_tlvs,
 			htlc_maximum_msat,
@@ -192,9 +220,9 @@ impl BlindedPaymentPath {
 		T: secp256k1::Signing + secp256k1::Verification,
 	>(
 		intermediate_nodes: &[ForwardNode<F>], payee_node_id: PublicKey,
-		local_node_receive_key: ReceiveAuthKey, dummy_tlvs: &[DummyTlvs], payee_tlvs: ReceiveTlvs,
-		htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16, entropy_source: ES,
-		secp_ctx: &Secp256k1<T>,
+		local_node_receive_key: Option<ReceiveAuthKey>, dummy_tlvs: &[DummyTlvs],
+		payee_tlvs: ReceiveTlvs, htlc_maximum_msat: u64, min_final_cltv_expiry_delta: u16,
+		entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, ()> {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(payee_node_id, |n| n.node_id),
@@ -884,13 +912,13 @@ pub(crate) const PAYMENT_PADDING_ROUND_OFF: usize = 30;
 pub(super) fn blinded_hops<F: ForwardTlvsInfo, T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[ForwardNode<F>], payee_node_id: PublicKey,
 	dummy_tlvs: &[DummyTlvs], payee_tlvs: ReceiveTlvs, session_priv: &SecretKey,
-	local_node_receive_key: ReceiveAuthKey,
+	local_node_receive_key: Option<ReceiveAuthKey>,
 ) -> Vec<BlindedHop> {
 	let pks = intermediate_nodes
 		.iter()
 		.map(|node| (node.node_id, None))
-		.chain(dummy_tlvs.iter().map(|_| (payee_node_id, Some(local_node_receive_key))))
-		.chain(core::iter::once((payee_node_id, Some(local_node_receive_key))));
+		.chain(dummy_tlvs.iter().map(|_| (payee_node_id, local_node_receive_key)))
+		.chain(core::iter::once((payee_node_id, local_node_receive_key)));
 	let tlvs = intermediate_nodes
 		.iter()
 		.map(|node| BlindedPaymentTlvsRef::Forward(&node.tlvs))
@@ -1126,13 +1154,19 @@ impl_ser_tlv_based!(Bolt12RefundContext, {
 #[cfg(test)]
 mod tests {
 	use crate::blinded_path::payment::{
-		Bolt12RefundContext, ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode,
-		PaymentRelay, ReceiveTlvs,
+		BlindedPaymentPath, BlindedPaymentTlvs, Bolt12RefundContext, ForwardTlvs,
+		PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 	};
+	use crate::crypto::streams::ChaChaPolyReadAdapter;
+	use crate::io;
 	use crate::ln::functional_test_utils::TEST_FINAL_CLTV;
+	use crate::ln::onion_utils::gen_rho_from_shared_secret;
+	use crate::sign::RandomBytes;
 	use crate::types::features::BlindedHopFeatures;
 	use crate::types::payment::PaymentSecret;
-	use bitcoin::secp256k1::PublicKey;
+	use crate::util::ser::{FixedLengthReader, LengthReadableArgs};
+	use bitcoin::secp256k1::ecdh::SharedSecret;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
 	#[test]
 	fn compute_payinfo() {
@@ -1429,5 +1463,49 @@ mod tests {
 			fee_base_msat: 1,
 		};
 		assert!(super::amt_to_forward_msat(2, &payment_relay).is_none());
+	}
+
+	#[test]
+	fn blinded_path_for_external_recipient() {
+		// Check the payee hop of a path for a non-LDK recipient can be read by a spec-standard
+		// ChaCha20Poly1305 decryptor keyed on `rho` (no `ReceiveAuthKey`, no swapped AAD).
+		let secp_ctx = Secp256k1::new();
+		let entropy_source = RandomBytes::new([42; 32]);
+		let payee_secret = SecretKey::from_slice(&[2; 32]).unwrap();
+		let payee_node_id = PublicKey::from_secret_key(&secp_ctx, &payee_secret);
+		let payment_secret = PaymentSecret([3; 32]);
+		let payee_tlvs = ReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+			}),
+		};
+
+		let path = BlindedPaymentPath::new_for_external_recipient(
+			&[],
+			payee_node_id,
+			payee_tlvs,
+			u64::max_value(),
+			TEST_FINAL_CLTV as u16,
+			&entropy_source,
+			&secp_ctx,
+		)
+		.unwrap();
+
+		// The payee hop must decrypt under standard BOLT-4 rho, i.e. without swapped-AAD framing.
+		let ss = SharedSecret::new(&path.blinding_point(), &payee_secret);
+		let rho = gen_rho_from_shared_secret(&ss.secret_bytes());
+		let encrypted_payload = &path.blinded_hops()[0].encrypted_payload;
+		let mut s = io::Cursor::new(encrypted_payload);
+		let mut reader = FixedLengthReader::new(&mut s, encrypted_payload.len() as u64);
+		let ChaChaPolyReadAdapter { readable } =
+			<ChaChaPolyReadAdapter<BlindedPaymentTlvs>>::read(&mut reader, rho).unwrap();
+		match readable {
+			BlindedPaymentTlvs::Receive(tlvs) => {
+				assert_eq!(tlvs.payment_secret, payment_secret);
+			},
+			_ => panic!("Expected a receive-hop payment TLV"),
+		}
 	}
 }

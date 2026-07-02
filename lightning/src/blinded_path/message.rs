@@ -114,6 +114,50 @@ impl BlindedMessagePath {
 		dummy_hop_count: usize, local_node_receive_key: ReceiveAuthKey, context: MessageContext,
 		compact_padding: bool, entropy_source: ES, secp_ctx: &Secp256k1<T>,
 	) -> Self {
+		Self::new_inner(
+			intermediate_nodes,
+			recipient_node_id,
+			dummy_hop_count,
+			Some(local_node_receive_key),
+			Some(context),
+			compact_padding,
+			entropy_source,
+			secp_ctx,
+		)
+	}
+
+	/// Create a path for a message to a recipient that is not an LDK node (e.g. CLN).
+	///
+	/// The other constructors authenticate the recipient hop with a [`ReceiveAuthKey`] and require a
+	/// [`MessageContext`], which a non-LDK node cannot decrypt. This drops deanonymization protections
+	/// and adds no dummy hops.
+	///
+	/// See [`BlindedMessagePath::new`] regarding `compact_padding`.
+	pub fn new_for_external_recipient<
+		ES: EntropySource,
+		T: secp256k1::Signing + secp256k1::Verification,
+	>(
+		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
+		compact_padding: bool, entropy_source: ES, secp_ctx: &Secp256k1<T>,
+	) -> Self {
+		Self::new_inner(
+			intermediate_nodes,
+			recipient_node_id,
+			0,
+			None,
+			None,
+			compact_padding,
+			entropy_source,
+			secp_ctx,
+		)
+	}
+
+	fn new_inner<ES: EntropySource, T: secp256k1::Signing + secp256k1::Verification>(
+		intermediate_nodes: &[MessageForwardNode], recipient_node_id: PublicKey,
+		dummy_hop_count: usize, local_node_receive_key: Option<ReceiveAuthKey>,
+		context: Option<MessageContext>, compact_padding: bool, entropy_source: ES,
+		secp_ctx: &Secp256k1<T>,
+	) -> Self {
 		let introduction_node = IntroductionNode::NodeId(
 			intermediate_nodes.first().map_or(recipient_node_id, |n| n.node_id),
 		);
@@ -760,17 +804,16 @@ pub const MAX_DUMMY_HOPS_COUNT: usize = 10;
 /// Construct blinded onion message hops for the given `intermediate_nodes` and `recipient_node_id`.
 pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	secp_ctx: &Secp256k1<T>, intermediate_nodes: &[MessageForwardNode],
-	recipient_node_id: PublicKey, dummy_hop_count: usize, context: MessageContext,
-	session_priv: &SecretKey, local_node_receive_key: ReceiveAuthKey, compact_padding: bool,
+	recipient_node_id: PublicKey, dummy_hop_count: usize, context: Option<MessageContext>,
+	session_priv: &SecretKey, local_node_receive_key: Option<ReceiveAuthKey>,
+	compact_padding: bool,
 ) -> Vec<BlindedHop> {
 	let dummy_count = cmp::min(dummy_hop_count, MAX_DUMMY_HOPS_COUNT);
 	let pks = intermediate_nodes
 		.iter()
 		.map(|node| (node.node_id, None))
-		.chain(
-			core::iter::repeat((recipient_node_id, Some(local_node_receive_key))).take(dummy_count),
-		)
-		.chain(core::iter::once((recipient_node_id, Some(local_node_receive_key))));
+		.chain(core::iter::repeat((recipient_node_id, local_node_receive_key)).take(dummy_count))
+		.chain(core::iter::once((recipient_node_id, local_node_receive_key)));
 
 	let intermediate_tlvs = pks
 		.clone()
@@ -816,7 +859,7 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 			res
 		})
 		.chain(core::iter::once(BlindedPathWithPadding {
-			tlvs: ControlTlvs::Receive(ReceiveTlvs { context: Some(context) }),
+			tlvs: ControlTlvs::Receive(ReceiveTlvs { context }),
 			round_off: if compact_padding { 0 } else { MESSAGE_PADDING_ROUND_OFF },
 		}));
 
