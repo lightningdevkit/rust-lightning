@@ -555,6 +555,25 @@ impl<'a> TestChainMonitor<'a> {
 		)
 	}
 
+	#[cfg(feature = "_test_utils")]
+	pub fn new_with_event_notifier(
+		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
+		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
+		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface,
+		event_notifier: Arc<Notifier>,
+	) -> Self {
+		Self::with_deferred_and_event_notifier(
+			chain_source,
+			broadcaster,
+			logger,
+			fee_estimator,
+			persister,
+			keys_manager,
+			false,
+			Some(event_notifier),
+		)
+	}
+
 	pub fn new_deferred(
 		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
 		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
@@ -576,11 +595,27 @@ impl<'a> TestChainMonitor<'a> {
 		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
 		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface, deferred: bool,
 	) -> Self {
-		Self {
-			added_monitors: Mutex::new(Vec::new()),
-			monitor_updates: Mutex::new(new_hash_map()),
-			latest_monitor_update_id: Mutex::new(new_hash_map()),
-			chain_monitor: ChainMonitor::new(
+		Self::with_deferred_and_event_notifier(
+			chain_source,
+			broadcaster,
+			logger,
+			fee_estimator,
+			persister,
+			keys_manager,
+			deferred,
+			None,
+		)
+	}
+
+	fn with_deferred_and_event_notifier(
+		chain_source: Option<&'a TestChainSource>, broadcaster: &'a dyn SyncBroadcaster,
+		logger: &'a TestLogger, fee_estimator: &'a TestFeeEstimator,
+		persister: &'a dyn SyncPersist, keys_manager: &'a TestKeysInterface, deferred: bool,
+		event_notifier: Option<Arc<Notifier>>,
+	) -> Self {
+		#[cfg(feature = "_test_utils")]
+		let chain_monitor = if let Some(event_notifier) = event_notifier {
+			ChainMonitor::new_with_event_notifier(
 				chain_source,
 				broadcaster,
 				logger,
@@ -589,7 +624,39 @@ impl<'a> TestChainMonitor<'a> {
 				keys_manager,
 				keys_manager.get_peer_storage_key(),
 				deferred,
-			),
+				event_notifier,
+			)
+		} else {
+			ChainMonitor::new(
+				chain_source,
+				broadcaster,
+				logger,
+				fee_estimator,
+				persister,
+				keys_manager,
+				keys_manager.get_peer_storage_key(),
+				deferred,
+			)
+		};
+		#[cfg(not(feature = "_test_utils"))]
+		let chain_monitor = {
+			let _ = event_notifier;
+			ChainMonitor::new(
+				chain_source,
+				broadcaster,
+				logger,
+				fee_estimator,
+				persister,
+				keys_manager,
+				keys_manager.get_peer_storage_key(),
+				deferred,
+			)
+		};
+		Self {
+			added_monitors: Mutex::new(Vec::new()),
+			monitor_updates: Mutex::new(new_hash_map()),
+			latest_monitor_update_id: Mutex::new(new_hash_map()),
+			chain_monitor,
 			keys_manager,
 			logger,
 			expect_channel_force_closed: Mutex::new(None),

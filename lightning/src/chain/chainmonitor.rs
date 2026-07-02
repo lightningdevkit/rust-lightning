@@ -278,6 +278,31 @@ pub struct AsyncPersister<
 	event_notifier: Arc<Notifier>,
 }
 
+#[cfg(feature = "_test_utils")]
+impl<
+		K: KVStore + MaybeSend + MaybeSync + 'static,
+		S: FutureSpawner,
+		L: Logger + MaybeSend + MaybeSync + 'static,
+		ES: EntropySource + MaybeSend + MaybeSync + 'static,
+		SP: SignerProvider + MaybeSend + MaybeSync + 'static,
+		BI: BroadcasterInterface + MaybeSend + MaybeSync + 'static,
+		FE: FeeEstimator + MaybeSend + MaybeSync + 'static,
+	> AsyncPersister<K, S, L, ES, SP, BI, FE>
+where
+	SP::EcdsaSigner: MaybeSend + 'static,
+{
+	/// Constructs a test-only [`AsyncPersister`] with the given event notifier.
+	///
+	/// The same notifier should be passed to the [`ChainMonitor`] which consumes this persister so
+	/// that async persistence completions wake the monitor's update future.
+	pub fn new_test(
+		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, BI, FE>,
+		event_notifier: Arc<Notifier>,
+	) -> Self {
+		Self { persister, event_notifier }
+	}
+}
+
 impl<
 		K: KVStore + MaybeSend + MaybeSync + 'static,
 		S: FutureSpawner,
@@ -649,6 +674,43 @@ where
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
 		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
 	) -> Self {
+		Self::with_event_notifier(
+			chain_source,
+			broadcaster,
+			logger,
+			feeest,
+			persister,
+			_entropy_source,
+			_our_peerstorage_encryption_key,
+			deferred,
+			Arc::new(Notifier::new()),
+		)
+	}
+
+	#[cfg(feature = "_test_utils")]
+	pub(crate) fn new_with_event_notifier(
+		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
+		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
+		event_notifier: Arc<Notifier>,
+	) -> Self {
+		Self::with_event_notifier(
+			chain_source,
+			broadcaster,
+			logger,
+			feeest,
+			persister,
+			_entropy_source,
+			_our_peerstorage_encryption_key,
+			deferred,
+			event_notifier,
+		)
+	}
+
+	fn with_event_notifier(
+		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
+		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
+		event_notifier: Arc<Notifier>,
+	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
 			chain_source,
@@ -659,7 +721,7 @@ where
 			_entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
-			event_notifier: Arc::new(Notifier::new()),
+			event_notifier,
 			pending_send_only_events: Mutex::new(Vec::new()),
 			#[cfg(peer_storage)]
 			our_peerstorage_encryption_key: _our_peerstorage_encryption_key,
