@@ -1549,10 +1549,18 @@ impl<
 		// completion of the write. This ensures monitor persistence ordering is preserved.
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		// There's no real reason why this needs to be boxed, but dropping it rams into the "hidden
-		// type for impl... captures lifetime that does not appear in bounds" issue. This can
-		// trivially be dropped once we upgrade to edition 2024/MSRV 1.85.
+		// There's no real reason why this and `persist_monitor_update` need to be boxed, but
+		// dropping it rams into the "hidden type for impl... captures lifetime that does not
+		// appear in bounds" issue. This can trivially be dropped once we upgrade to edition
+		// 2024/MSRV 1.85.
 		Box::pin(self.kv_store.write(primary, secondary, monitor_key.as_str(), monitor_bytes))
+	}
+
+	fn persist_monitor_update(
+		&self, monitor_key: &str, update_name: &str, encoded: Vec<u8>,
+	) -> Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>> {
+		let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+		Box::pin(self.kv_store.write(primary, monitor_key, update_name, encoded))
 	}
 
 	fn update_persisted_channel<'a, ChannelSigner: EcdsaChannelSigner + 'a>(
@@ -1573,15 +1581,14 @@ impl<
 			if persist_update {
 				let monitor_key = monitor_name.to_string();
 				let update_name = UpdateName::from(update.update_id);
-				let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved.
 				let encoded = update.encode();
-				res_a = Some(async move {
-					self.kv_store.write(primary, &monitor_key, update_name.as_str(), encoded).await
-				});
+				let write_fut =
+					self.persist_monitor_update(&monitor_key, update_name.as_str(), encoded);
+				res_a = Some(async move { write_fut.await });
 			} else {
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
