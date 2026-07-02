@@ -274,6 +274,11 @@ impl MockTimeProvider {
 		let mut time = self.current_time.write().unwrap();
 		*time += Duration::from_secs(seconds);
 	}
+
+	fn advance_time_millis(&self, milliseconds: u64) {
+		let mut time = self.current_time.write().unwrap();
+		*time += Duration::from_millis(milliseconds);
+	}
 }
 
 impl TimeProvider for MockTimeProvider {
@@ -1409,7 +1414,7 @@ fn test_notifications_and_peer_connected_reset_is_throttled() {
 	);
 
 	// 7. Once the reset throttle has elapsed, peer_connected can reset the cooldown again.
-	mock_time_provider.advance_time(11);
+	mock_time_provider.advance_time_millis(100);
 	service_node.liquidity_manager.peer_connected(client_node_id, &init_msg, false).unwrap();
 	let _ = service_handler.notify_payment_incoming(client_node_id);
 	let event = service_node.liquidity_manager.next_event().unwrap();
