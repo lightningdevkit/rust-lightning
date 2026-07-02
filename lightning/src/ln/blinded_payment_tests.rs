@@ -2580,6 +2580,39 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 	let override_random_bytes = [42; 32];
 	*nodes[0].keys_manager.override_random_bytes.lock().unwrap() = Some(override_random_bytes);
 
+	// Create a blinded tail where Carol is receiving. In our unblinded test cases, we'll
+	// override this anyway (with a tail sending to an unblinded receive, which LDK doesn't
+	// allow).
+	let (blinded_tail, blinded_path) = create_trampoline_forward_blinded_tail(
+		&secp_ctx,
+		&nodes[2].keys_manager,
+		&[],
+		carol_node_id,
+		nodes[2].keys_manager.get_receive_auth_key(),
+		ReceiveTlvs {
+			payment_secret,
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: original_amt_msat,
+			},
+			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+			}),
+		},
+		original_trampoline_cltv,
+		excess_final_cltv,
+		original_amt_msat,
+	);
+
+	// When Carol receives over the blinded path, register it in the payment parameters as we
+	// would for a real blinded payment. In the unblinded test cases the blinded tail is overridden,
+	// so the payee is just Carol's unblinded node id.
+	let payment_params = if blinded {
+		PaymentParameters::blinded(vec![blinded_path])
+	} else {
+		PaymentParameters::from_node_id(carol_node_id, original_trampoline_cltv + excess_final_cltv)
+	};
+
 	let route = Route {
 		paths: vec![Path {
 			hops: vec![
@@ -2602,35 +2635,10 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 					maybe_announced_channel: false,
 				},
 			],
-			// Create a blinded tail where Carol is receiving. In our unblinded test cases, we'll
-			// override this anyway (with a tail sending to an unblinded receive, which LDK doesn't
-			// allow).
-			blinded_tail: Some(create_trampoline_forward_blinded_tail(
-				&secp_ctx,
-				&nodes[2].keys_manager,
-				&[],
-				carol_node_id,
-				nodes[2].keys_manager.get_receive_auth_key(),
-				ReceiveTlvs {
-					payment_secret,
-					payment_constraints: PaymentConstraints {
-						max_cltv_expiry: u32::max_value(),
-						htlc_minimum_msat: original_amt_msat,
-					},
-					payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
-						payment_metadata: None,
-					}),
-				},
-				original_trampoline_cltv,
-				excess_final_cltv,
-				original_amt_msat,
-			)),
+			blinded_tail: Some(blinded_tail),
 		}],
 		route_params: RouteParameters::from_payment_params_and_value(
-			PaymentParameters::from_node_id(
-				carol_node_id,
-				original_trampoline_cltv + excess_final_cltv,
-			),
+			payment_params,
 			original_amt_msat,
 		),
 	};
