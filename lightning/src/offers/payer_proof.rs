@@ -32,16 +32,14 @@ use crate::offers::invoice::{
 use crate::offers::invoice_request::{
 	ExperimentalInvoiceRequestTlvStream, InvoiceRequestTlvStream, INVOICE_REQUEST_PAYER_ID_TYPE,
 };
-use crate::offers::merkle::{
-	self, SelectiveDisclosure, SelectiveDisclosureError, SignError, TaggedHash, TlvRecord,
-	TlvStream, SIGNATURE_TYPES,
-};
+use crate::offers::merkle::{self, SignError, TaggedHash, TlvRecord, TlvStream, SIGNATURE_TYPES};
 use crate::offers::offer::{
 	ExperimentalOfferTlvStream, OfferTlvStream, EXPERIMENTAL_OFFER_TYPES, OFFER_DESCRIPTION_TYPE,
 	OFFER_ISSUER_TYPE,
 };
 use crate::offers::parse::{Bech32Encode, Bolt12ParseError, Bolt12SemanticError, ParsedMessage};
 use crate::offers::payer::PAYER_METADATA_TYPE;
+use crate::offers::selective_disclosure::{self, SelectiveDisclosure, SelectiveDisclosureError};
 use crate::offers::static_invoice::StaticInvoice;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::ser::{
@@ -405,7 +403,7 @@ impl<S: SigningPubkeyStrategy> PayerProofBuilder<S> {
 				self.included_types.contains(&r.r#type) && !SIGNATURE_TYPES.contains(&r.r#type)
 			}))?;
 
-		let disclosure = merkle::compute_selective_disclosure(
+		let disclosure = selective_disclosure::compute_selective_disclosure(
 			TlvStream::new(&self.invoice_bytes),
 			&self.included_types,
 		);
@@ -893,7 +891,7 @@ impl TryFrom<Vec<u8>> for PayerProof {
 			return Err(Bolt12ParseError::Decode(DecodeError::InvalidValue));
 		}
 
-		let merkle_root = merkle::reconstruct_merkle_root(
+		let merkle_root = selective_disclosure::reconstruct_merkle_root(
 			&included_records,
 			&leaf_hashes,
 			&omitted_markers,
@@ -962,8 +960,8 @@ fn validate_omitted_markers_for_parsing(
 	}
 
 	// Ordering, non-zero, not-an-included-type, and minimization are enforced by the merkle layer,
-	// the single source of truth for marker validity (see `merkle::validate_omitted_markers`).
-	merkle::validate_omitted_markers(omitted_markers, included_types)
+	// the single source of truth for marker validity (see `selective_disclosure::validate_omitted_markers`).
+	selective_disclosure::validate_omitted_markers(omitted_markers, included_types)
 		.map_err(|_| DecodeError::InvalidValue)
 }
 
@@ -986,12 +984,12 @@ mod tests {
 	use super::*;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::inbound_payment::ExpandedKey;
-	use crate::offers::merkle::compute_selective_disclosure;
 	use crate::offers::nonce::Nonce;
 	#[cfg(not(c_bindings))]
 	use crate::offers::refund::RefundBuilder;
 	#[cfg(c_bindings)]
 	use crate::offers::refund::RefundMaybeWithDerivedMetadataBuilder as RefundBuilder;
+	use crate::offers::selective_disclosure::compute_selective_disclosure;
 	use crate::offers::test_utils::*;
 	use crate::util::ser::Readable;
 	use bitcoin::hashes::Hash;
