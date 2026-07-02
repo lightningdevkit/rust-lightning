@@ -11,12 +11,12 @@
 
 use alloc::collections::BTreeSet;
 
-use bitcoin::hashes::{sha256, Hash, HashEngine};
+use bitcoin::hashes::{sha256, Hash};
 
 use crate::offers::invoice::INVOICE_TYPES;
 use crate::offers::merkle::{
-	tagged_branch_hash_from_engine, tagged_hash_engine, tagged_hash_from_engine, TlvRecord,
-	SIGNATURE_TYPES,
+	merkle_tlv_data, tagged_branch_hash_from_engine, tagged_hash_engine, tagged_hash_from_engine,
+	TlvMerkleData, TlvRecord,
 };
 use crate::offers::offer::EXPERIMENTAL_OFFER_TYPES;
 use crate::offers::payer::PAYER_METADATA_TYPE;
@@ -51,51 +51,6 @@ pub(super) struct SelectiveDisclosure {
 	pub(super) missing_hashes: Vec<sha256::Hash>,
 	/// The complete merkle root.
 	pub(super) merkle_root: sha256::Hash,
-}
-
-/// Internal data for each TLV during tree construction.
-struct TlvMerkleData {
-	tlv_type: u64,
-	nonce_hash: sha256::Hash,
-	per_tlv_hash: sha256::Hash,
-	is_included: bool,
-}
-
-fn merkle_tlv_data<'a, I, F>(
-	tlv_stream: I, mut is_included: F,
-) -> (impl Iterator<Item = TlvMerkleData> + 'a, sha256::HashEngine)
-where
-	I: core::iter::Iterator<Item = TlvRecord<'a>> + 'a,
-	F: FnMut(u64) -> bool + 'a,
-{
-	let mut tlv_stream = tlv_stream.peekable();
-	let nonce_tag = tagged_hash_engine(sha256::Hash::from_engine({
-		let first_tlv_record = tlv_stream.peek().unwrap();
-		let mut engine = sha256::Hash::engine();
-		engine.input("LnNonce".as_bytes());
-		engine.input(first_tlv_record.record_bytes);
-		engine
-	}));
-	let leaf_tag = tagged_hash_engine(sha256::Hash::hash("LnLeaf".as_bytes()));
-	let branch_tag = tagged_hash_engine(sha256::Hash::hash("LnBranch".as_bytes()));
-	let iter_branch_tag = branch_tag.clone();
-
-	let tlv_data =
-		tlv_stream.filter(|record| !SIGNATURE_TYPES.contains(&record.r#type)).map(move |record| {
-			let leaf_hash = tagged_hash_from_engine(leaf_tag.clone(), record.record_bytes);
-			let nonce_hash = tagged_hash_from_engine(nonce_tag.clone(), record.type_bytes);
-			let per_tlv_hash =
-				tagged_branch_hash_from_engine(iter_branch_tag.clone(), leaf_hash, nonce_hash);
-
-			TlvMerkleData {
-				tlv_type: record.r#type,
-				nonce_hash,
-				per_tlv_hash,
-				is_included: is_included(record.r#type),
-			}
-		});
-
-	(tlv_data, branch_tag)
 }
 
 /// Compute selective disclosure data from a TLV stream.
