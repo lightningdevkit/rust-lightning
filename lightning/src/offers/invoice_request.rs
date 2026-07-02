@@ -186,7 +186,7 @@ macro_rules! invoice_request_builder_methods { (
 		InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer: PayerContents(metadata), offer, chain: None, amount_msats: None,
 			features: InvoiceRequestFeatures::empty(), quantity: None, payer_note: None,
-			offer_from_hrn: None,
+			offer_from_hrn: None, bolt11_invoice: false,
 			#[cfg(test)]
 			experimental_bar: None,
 		}
@@ -255,6 +255,25 @@ macro_rules! invoice_request_builder_methods { (
 		$return_value
 	}
 
+	/// Requests that the recipient send a BOLT 11 invoice in response instead of a BOLT 12
+	/// invoice.
+	///
+	/// Errors if the originating [`Offer`] did not advertise
+	/// [`OfferFeatures::supports_bolt11_request`] or if a quantity was already set.
+	///
+	/// [`Offer`]: crate::offers::offer::Offer
+	/// [`OfferFeatures::supports_bolt11_request`]: crate::types::features::Features::supports_bolt11_request
+	pub fn request_bolt11_invoice($($self_mut)* $self: $self_type) -> Result<$return_type, Bolt12SemanticError> {
+		if !$self.invoice_request.offer.features().supports_bolt11_request() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+		}
+		if $self.invoice_request.quantity.is_some() {
+			return Err(Bolt12SemanticError::UnexpectedQuantity);
+		}
+		$self.invoice_request.bolt11_invoice = true;
+		Ok($return_value)
+	}
+
 	fn build_with_checks($($self_mut)* $self: $self_type) -> Result<
 		(UnsignedInvoiceRequest, Option<Keypair>, Option<&'b Secp256k1<$secp_context>>),
 		Bolt12SemanticError
@@ -282,6 +301,15 @@ macro_rules! invoice_request_builder_methods { (
 		$self.invoice_request.offer.check_amount_msats_for_quantity(
 			$self.invoice_request.amount_msats, $self.invoice_request.quantity
 		)?;
+
+		if $self.invoice_request.bolt11_invoice {
+			if !$self.invoice_request.offer.features().supports_bolt11_request() {
+				return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+			}
+			if $self.invoice_request.quantity.is_some() {
+				return Err(Bolt12SemanticError::UnexpectedQuantity);
+			}
+		}
 
 		Ok($self.build_without_checks())
 	}
@@ -686,6 +714,7 @@ pub(super) struct InvoiceRequestContentsWithoutPayerSigningPubkey {
 	quantity: Option<u64>,
 	payer_note: Option<String>,
 	offer_from_hrn: Option<HumanReadableName>,
+	bolt11_invoice: bool,
 	#[cfg(test)]
 	experimental_bar: Option<u64>,
 }
@@ -746,6 +775,11 @@ macro_rules! invoice_request_accessors { ($self: ident, $contents: expr) => {
 	/// builder to indicate the original [`HumanReadableName`] which was resolved.
 	pub fn offer_from_hrn(&$self) -> &Option<HumanReadableName> {
 		$contents.offer_from_hrn()
+	}
+
+	/// Whether this request asks the recipient to respond with a BOLT 11 invoice.
+	pub fn requests_bolt11_invoice(&$self) -> bool {
+		$contents.requests_bolt11_invoice()
 	}
 } }
 
@@ -1179,6 +1213,10 @@ impl InvoiceRequestContents {
 		&self.inner.offer_from_hrn
 	}
 
+	pub(super) fn requests_bolt11_invoice(&self) -> bool {
+		self.inner.bolt11_invoice
+	}
+
 	pub(super) fn as_tlv_stream(&self) -> PartialInvoiceRequestTlvStreamRef<'_> {
 		let (payer, offer, mut invoice_request, experimental_offer, experimental_invoice_request) =
 			self.inner.as_tlv_stream();
@@ -1221,6 +1259,7 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 			payer_id: None,
 			payer_note: self.payer_note.as_ref(),
 			offer_from_hrn: self.offer_from_hrn.as_ref(),
+			bolt11_invoice: if self.bolt11_invoice { Some(&()) } else { None },
 			paths: None,
 		};
 
@@ -1282,6 +1321,7 @@ tlv_stream!(InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef<'a>, INVOICE_REQ
 	// Only used for Refund since the onion message of an InvoiceRequest has a reply path.
 	(90, paths: (Vec<BlindedMessagePath>, WithoutLength)),
 	(91, offer_from_hrn: HumanReadableName),
+	(92, bolt11_invoice: ()),
 });
 
 /// Valid type range for experimental invoice_request TLV records.
@@ -1434,6 +1474,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				payer_note,
 				paths,
 				offer_from_hrn,
+				bolt11_invoice,
 			},
 			experimental_offer_tlv_stream,
 			ExperimentalInvoiceRequestTlvStream {
@@ -1480,6 +1521,7 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 				quantity,
 				payer_note,
 				offer_from_hrn,
+				bolt11_invoice: bolt11_invoice.is_some(),
 				#[cfg(test)]
 				experimental_bar,
 			},
@@ -1602,6 +1644,8 @@ mod tests {
 
 		let mut buffer = Vec::new();
 		invoice_request.write(&mut buffer).unwrap();
+		let mut expected_offer_features = OfferFeatures::empty();
+		expected_offer_features.set_bolt11_request_optional();
 
 		assert_eq!(invoice_request.bytes, buffer.as_slice());
 		assert_eq!(invoice_request.payer_metadata(), payer_metadata.as_slice());
@@ -1612,7 +1656,7 @@ mod tests {
 		assert_eq!(invoice_request.metadata(), None);
 		assert_eq!(invoice_request.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(invoice_request.description(), Some(PrintableString("")));
-		assert_eq!(invoice_request.offer_features(), &OfferFeatures::empty());
+		assert_eq!(invoice_request.offer_features(), &expected_offer_features);
 		assert_eq!(invoice_request.absolute_expiry(), None);
 		assert_eq!(invoice_request.paths(), &[]);
 		assert_eq!(invoice_request.issuer(), None);
@@ -1643,7 +1687,7 @@ mod tests {
 					currency: None,
 					amount: Some(1000),
 					description: Some(&String::from("")),
-					features: None,
+					features: Some(&expected_offer_features),
 					absolute_expiry: None,
 					paths: None,
 					issuer: None,
@@ -1655,6 +1699,7 @@ mod tests {
 					amount: None,
 					features: None,
 					quantity: None,
+					bolt11_invoice: None,
 					payer_id: Some(&invoice_request.payer_signing_pubkey()),
 					payer_note: None,
 					paths: None,

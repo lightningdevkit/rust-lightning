@@ -796,6 +796,7 @@ impl RefundContents {
 			amount: Some(self.amount_msats),
 			features,
 			quantity: self.quantity,
+			bolt11_invoice: None,
 			payer_id: Some(&self.payer_signing_pubkey),
 			payer_note: self.payer_note.as_ref(),
 			paths: self.paths.as_ref(),
@@ -916,6 +917,7 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				amount,
 				features,
 				quantity,
+				bolt11_invoice,
 				payer_id,
 				payer_note,
 				paths,
@@ -930,6 +932,10 @@ impl TryFrom<RefundTlvStream> for RefundContents {
 				experimental_bar,
 			},
 		) = tlv_stream;
+
+		if bolt11_invoice.is_some() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+		}
 
 		let payer = match payer_metadata {
 			None => return Err(Bolt12SemanticError::MissingPayerMetadata),
@@ -1106,6 +1112,7 @@ mod tests {
 					amount: Some(1000),
 					features: None,
 					quantity: None,
+					bolt11_invoice: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 					paths: None,

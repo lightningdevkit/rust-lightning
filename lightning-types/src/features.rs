@@ -83,6 +83,8 @@
 //!   (see [BOLT PR #1160](https://github.com/lightning/bolts/pull/1160) for more information).
 //! - `HtlcHold` - requires/supports holding HTLCs and forwarding on receipt of an onion message
 //!   (see [BOLT-2](https://github.com/lightning/bolts/pull/989/files) for more information).
+//! - `Bolt11Request` - supports requesting a BOLT 11 invoice from a BOLT 12 offer
+//!   (see [BOLT PR #1336](https://github.com/lightning/bolts/pull/1336) for more information).
 //!
 //! LDK knows about the following features, but does not support them:
 //! - `AnchorsNonzeroFeeHtlcTx` - the initial version of anchor outputs, which was later found to be
@@ -221,7 +223,13 @@ mod sealed {
 		// Byte 7
 		Trampoline,
 	]);
-	define_context!(OfferContext, []);
+	define_context!(
+		OfferContext,
+		[
+			// Byte 0
+			Bolt11Request,
+		]
+	);
 	define_context!(InvoiceRequestContext, []);
 	define_context!(Bolt12InvoiceContext, [
 		// Byte 0
@@ -417,6 +425,17 @@ mod sealed {
 		clear_data_loss_protect,
 		supports_data_loss_protect,
 		requires_data_loss_protect
+	);
+	define_feature!(
+		3,
+		Bolt11Request,
+		[OfferContext],
+		"Feature flags for `option_bolt11_request`.",
+		set_bolt11_request_optional,
+		set_bolt11_request_required,
+		clear_bolt11_request,
+		supports_bolt11_request,
+		requires_bolt11_request
 	);
 	// NOTE: Per Bolt #9, initial_routing_sync has no even bit.
 	define_feature!(

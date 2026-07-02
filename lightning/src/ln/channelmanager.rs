@@ -99,7 +99,7 @@ use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice};
 use crate::offers::invoice_error::InvoiceError;
 use crate::offers::invoice_request::{InvoiceRequest, InvoiceRequestVerifiedFromOffer};
 use crate::offers::nonce::Nonce;
-use crate::offers::offer::{Offer, OfferFromHrn};
+use crate::offers::offer::{Amount, Offer, OfferFromHrn};
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::refund::Refund;
 use crate::offers::static_invoice::StaticInvoice;
@@ -5883,6 +5883,32 @@ impl<
 			&self.pending_events,
 			|args| self.send_payment_along_path(args),
 			&WithContext::for_payment(&self.logger, None, None, None, payment_id),
+		)
+	}
+
+	fn send_payment_for_bolt11_invoice_from_offer(
+		&self, invoice: &Bolt11Invoice, payment_id: PaymentId,
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		self.pending_outbound_payments.send_payment_for_bolt11_invoice_from_offer(
+			invoice,
+			payment_id,
+			&self.router,
+			self.list_usable_channels(),
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			best_block_height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+			&WithContext::for_payment(
+				&self.logger,
+				None,
+				None,
+				Some(invoice.payment_hash()),
+				payment_id,
+			),
 		)
 	}
 
@@ -14986,6 +15012,46 @@ impl<
 			optional_params.payer_note,
 			payment_id,
 			None,
+			false,
+			create_pending_payment_fn,
+		)
+	}
+
+	/// Pays for an [`Offer`] by requesting a [`Bolt11Invoice`] instead of a [`Bolt12Invoice`].
+	///
+	/// This is only supported for offers that advertise `option_bolt11_request` and do not require
+	/// a quantity.
+	pub fn pay_for_offer_requesting_bolt11_invoice(
+		&self, offer: &Offer, amount_msats: Option<u64>, payment_id: PaymentId,
+		optional_params: OptionalOfferPaymentParams,
+	) -> Result<(), Bolt12SemanticError> {
+		if !offer.offer_features().supports_bolt11_request() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+		}
+		if offer.expects_quantity() {
+			return Err(Bolt12SemanticError::UnexpectedQuantity);
+		}
+
+		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
+			self.pending_outbound_payments
+				.add_new_awaiting_bolt11_invoice(
+					payment_id,
+					StaleExpiration::TimerTicks(1),
+					optional_params.retry_strategy,
+					optional_params.route_params_config,
+					Some(retryable_invoice_request),
+				)
+				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+		};
+
+		self.pay_for_offer_intern(
+			offer,
+			None,
+			amount_msats,
+			optional_params.payer_note,
+			payment_id,
+			None,
+			true,
 			create_pending_payment_fn,
 		)
 	}
@@ -15015,6 +15081,44 @@ impl<
 			optional_params.payer_note,
 			payment_id,
 			Some(offer.hrn),
+			false,
+			create_pending_payment_fn,
+		)
+	}
+
+	/// Pays for an [`OfferFromHrn`] by requesting a [`Bolt11Invoice`] instead of a
+	/// [`Bolt12Invoice`].
+	pub fn pay_for_offer_from_hrn_requesting_bolt11_invoice(
+		&self, offer: &OfferFromHrn, amount_msats: u64, payment_id: PaymentId,
+		optional_params: OptionalOfferPaymentParams,
+	) -> Result<(), Bolt12SemanticError> {
+		if !offer.offer.offer_features().supports_bolt11_request() {
+			return Err(Bolt12SemanticError::UnknownRequiredFeatures);
+		}
+		if offer.offer.expects_quantity() {
+			return Err(Bolt12SemanticError::UnexpectedQuantity);
+		}
+
+		let create_pending_payment_fn = |retryable_invoice_request: RetryableInvoiceRequest| {
+			self.pending_outbound_payments
+				.add_new_awaiting_bolt11_invoice(
+					payment_id,
+					StaleExpiration::TimerTicks(1),
+					optional_params.retry_strategy,
+					optional_params.route_params_config,
+					Some(retryable_invoice_request),
+				)
+				.map_err(|_| Bolt12SemanticError::DuplicatePaymentId)
+		};
+
+		self.pay_for_offer_intern(
+			&offer.offer,
+			None,
+			Some(amount_msats),
+			optional_params.payer_note,
+			payment_id,
+			Some(offer.hrn),
+			true,
 			create_pending_payment_fn,
 		)
 	}
@@ -15057,6 +15161,7 @@ impl<
 			optional_params.payer_note,
 			payment_id,
 			None,
+			false,
 			create_pending_payment_fn,
 		)
 	}
@@ -15065,7 +15170,8 @@ impl<
 	fn pay_for_offer_intern<CPP: FnOnce(RetryableInvoiceRequest) -> Result<(), Bolt12SemanticError>>(
 		&self, offer: &Offer, quantity: Option<u64>, amount_msats: Option<u64>,
 		payer_note: Option<String>, payment_id: PaymentId,
-		human_readable_name: Option<HumanReadableName>, create_pending_payment: CPP,
+		human_readable_name: Option<HumanReadableName>, request_bolt11_invoice: bool,
+		create_pending_payment: CPP,
 	) -> Result<(), Bolt12SemanticError> {
 		let entropy = &self.entropy_source;
 		let nonce = Nonce::from_entropy_source(entropy);
@@ -15089,6 +15195,11 @@ impl<
 		let builder = match human_readable_name {
 			None => builder,
 			Some(hrn) => builder.sourced_from_human_readable_name(hrn),
+		};
+		let builder = if request_bolt11_invoice {
+			builder.request_bolt11_invoice()?
+		} else {
+			builder
 		};
 
 		let invoice_request = builder.build_and_sign()?;
@@ -17316,6 +17427,36 @@ impl<
 				}
 			}}
 		}
+		macro_rules! handle_pay_bolt11_invoice_res {
+			($res: expr, $logger: expr) => {{
+				let error = match $res {
+					Err(Bolt12PaymentError::UnknownRequiredFeatures) => {
+						log_trace!($logger, "BOLT 11 invoice required unknown features");
+						InvoiceError::from(Bolt12SemanticError::UnknownRequiredFeatures)
+					},
+					Err(Bolt12PaymentError::SendingFailed(e)) => {
+						log_trace!($logger, "Failed paying BOLT 11 invoice: {:?}", e);
+						InvoiceError::from_string(format!("{:?}", e))
+					},
+					Err(Bolt12PaymentError::BlindedPathCreationFailed) => {
+						let err_msg = "Failed to create a blinded path back to ourselves";
+						log_trace!($logger, "{}", err_msg);
+						InvoiceError::from_string(err_msg.to_string())
+					},
+					Err(Bolt12PaymentError::UnexpectedInvoice)
+						| Err(Bolt12PaymentError::DuplicateInvoice)
+						| Ok(()) => return None,
+				};
+
+				match responder {
+					Some(responder) => return Some((OffersMessage::InvoiceError(error), responder.respond())),
+					None => {
+						log_trace!($logger, "No reply path to send error: {:?}", error);
+						return None
+					},
+				}
+			}}
+		}
 
 		match message {
 			OffersMessage::InvoiceRequest(invoice_request) => {
@@ -17342,6 +17483,91 @@ impl<
 					},
 					Err(_) => return None,
 				};
+
+				if invoice_request.inner().requests_bolt11_invoice() {
+					let request = invoice_request.inner();
+					if !request.offer_features().supports_bolt11_request() {
+						return Some((
+							OffersMessage::InvoiceError(InvoiceError::from(
+								Bolt12SemanticError::UnknownRequiredFeatures,
+							)),
+							responder.respond(),
+						));
+					}
+					if request.quantity().is_some() {
+						return Some((
+							OffersMessage::InvoiceError(InvoiceError::from(
+								Bolt12SemanticError::UnexpectedQuantity,
+							)),
+							responder.respond(),
+						));
+					}
+
+					let amount_msats = match request.amount() {
+						Some(Amount::Bitcoin { amount_msats }) => {
+							if request.has_amount_msats() && request.amount_msats() != Some(amount_msats) {
+								return Some((
+									OffersMessage::InvoiceError(InvoiceError::from(
+										Bolt12SemanticError::InvalidAmount,
+									)),
+									responder.respond(),
+								));
+							}
+							amount_msats
+						},
+						Some(Amount::Currency { .. }) => {
+							return Some((
+								OffersMessage::InvoiceError(InvoiceError::from(
+									Bolt12SemanticError::UnsupportedCurrency,
+								)),
+								responder.respond(),
+							));
+						},
+						None => match (request.has_amount_msats(), request.amount_msats()) {
+							(true, Some(amount_msats)) => amount_msats,
+							_ => {
+								return Some((
+									OffersMessage::InvoiceError(InvoiceError::from(
+										Bolt12SemanticError::InvalidAmount,
+									)),
+									responder.respond(),
+								));
+							},
+						},
+					};
+					let description = request
+						.description()
+						.map(|description| description.to_string())
+						.unwrap_or_else(String::new);
+					let description = match Description::new(description) {
+						Ok(description) => description,
+						Err(error) => {
+							return Some((
+								OffersMessage::InvoiceError(InvoiceError::from_string(format!(
+									"{:?}", error
+								))),
+								responder.respond(),
+							));
+						},
+					};
+					let invoice = match self.create_bolt11_invoice(Bolt11InvoiceParameters {
+						amount_msats: Some(amount_msats),
+						description: Bolt11InvoiceDescription::Direct(description),
+						..Default::default()
+					}) {
+						Ok(invoice) => invoice,
+						Err(error) => {
+							return Some((
+								OffersMessage::InvoiceError(InvoiceError::from_string(format!(
+									"{:?}", error
+								))),
+								responder.respond(),
+							));
+						},
+					};
+
+					return Some((OffersMessage::Bolt11Invoice(invoice), responder.respond()));
+				}
 
 				let get_payment_info = |amount_msats, relative_expiry| {
 					self.create_inbound_payment(
@@ -17449,6 +17675,18 @@ impl<
 
 				let res = self.send_payment_for_verified_bolt12_invoice(&invoice, payment_id);
 				handle_pay_invoice_res!(res, invoice, logger);
+			},
+			OffersMessage::Bolt11Invoice(invoice) => {
+				let payment_id = match context {
+					Some(OffersContext::OutboundPaymentForOffer { payment_id, .. }) => payment_id,
+					_ => return None,
+				};
+				let logger = WithContext::for_payment(
+					&self.logger, None, None, Some(invoice.payment_hash()), payment_id,
+				);
+
+				let res = self.send_payment_for_bolt11_invoice_from_offer(&invoice, payment_id);
+				handle_pay_bolt11_invoice_res!(res, logger);
 			},
 			OffersMessage::StaticInvoice(invoice) => {
 				let payment_id = match context {

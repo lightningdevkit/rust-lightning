@@ -1899,6 +1899,8 @@ mod tests {
 
 		let mut buffer = Vec::new();
 		unsigned_invoice.write(&mut buffer).unwrap();
+		let mut expected_offer_features = OfferFeatures::empty();
+		expected_offer_features.set_bolt11_request_optional();
 
 		assert_eq!(unsigned_invoice.bytes, buffer.as_slice());
 		assert_eq!(unsigned_invoice.payer_metadata(), payer_metadata.as_slice());
@@ -1909,7 +1911,7 @@ mod tests {
 		assert_eq!(unsigned_invoice.metadata(), None);
 		assert_eq!(unsigned_invoice.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(unsigned_invoice.description(), Some(PrintableString("")));
-		assert_eq!(unsigned_invoice.offer_features(), Some(&OfferFeatures::empty()));
+		assert_eq!(unsigned_invoice.offer_features(), Some(&expected_offer_features));
 		assert_eq!(unsigned_invoice.absolute_expiry(), None);
 		assert_eq!(unsigned_invoice.message_paths(), &[]);
 		assert_eq!(unsigned_invoice.issuer(), None);
@@ -1953,7 +1955,7 @@ mod tests {
 		assert_eq!(invoice.metadata(), None);
 		assert_eq!(invoice.amount(), Some(Amount::Bitcoin { amount_msats: 1000 }));
 		assert_eq!(invoice.description(), Some(PrintableString("")));
-		assert_eq!(invoice.offer_features(), Some(&OfferFeatures::empty()));
+		assert_eq!(invoice.offer_features(), Some(&expected_offer_features));
 		assert_eq!(invoice.absolute_expiry(), None);
 		assert_eq!(invoice.message_paths(), &[]);
 		assert_eq!(invoice.issuer(), None);
@@ -1993,7 +1995,7 @@ mod tests {
 					currency: None,
 					amount: Some(1000),
 					description: Some(&String::from("")),
-					features: None,
+					features: Some(&expected_offer_features),
 					absolute_expiry: None,
 					paths: None,
 					issuer: None,
@@ -2005,6 +2007,7 @@ mod tests {
 					amount: None,
 					features: None,
 					quantity: None,
+					bolt11_invoice: None,
 					payer_id: Some(&invoice.payer_signing_pubkey()),
 					payer_note: None,
 					paths: None,
@@ -2108,6 +2111,7 @@ mod tests {
 					amount: Some(1000),
 					features: None,
 					quantity: None,
+					bolt11_invoice: None,
 					payer_id: Some(&payer_pubkey()),
 					payer_note: None,
 					paths: None,
