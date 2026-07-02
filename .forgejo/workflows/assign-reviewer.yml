@@ -8,25 +8,34 @@ on:
   pull_request_target:
     types: [opened]
 
+enable-openid-connect: true
+
 jobs:
   assign:
     runs-on: debian-trixie
+    permissions:
+      id-token: write
     steps:
-      - name: Request review from a random developer
-        # This never checks out or runs any PR code -- it only makes an API
-        # call -- so running in the base-repo context (pull_request_target,
-        # which is what grants the token write access even for fork PRs) is safe.
-        env:
-          API: ${{ github.server_url }}/api/v1
-          REPO: ${{ github.repository }}
-          PR: ${{ github.event.pull_request.number }}
-          AUTHOR: ${{ github.event.pull_request.user.login }}
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-          # Space-separated pool of candidate reviewers.
-          REVIEWERS: "matt val wpaulino joost_spiral jkczyz benthecarman tankyleo tnull"
+      - name: Fetch Authorized Integration token
+        id: jwt
         run: |
           set -eu
-          AUTH="Authorization: token ${FORGEJO_TOKEN}"
+          jwt="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')"
+          echo "::add-mask::$jwt"
+          echo "jwt=$jwt" >> "$FORGEJO_OUTPUT"
+      - name: Request review from a random developer
+        # This never checks out or runs any PR code -- it only makes an API
+        # call with a local Authorized Integration token.
+        env:
+          API: ${{ forgejo.server_url }}/api/v1
+          REPO: ${{ forgejo.event.repository.full_name }}
+          PR: ${{ forgejo.event.pull_request.number }}
+          AUTHOR: ${{ forgejo.event.pull_request.user.login }}
+          # Space-separated pool of candidate reviewers.
+          REVIEWERS: "matt val wpaulino joostjager jkczyz benthecarman tankyleo tnull"
+        run: |
+          set -eu
+          AUTH="Authorization: bearer ${{ steps.jwt.outputs.jwt }}"
 
           # Build the candidate pool, excluding the PR author.
           POOL=""
