@@ -32,7 +32,7 @@ jobs:
           PR: ${{ forgejo.event.pull_request.number }}
           AUTHOR: ${{ forgejo.event.pull_request.user.login }}
           # Space-separated pool of candidate reviewers.
-          REVIEWERS: "matt val wpaulino joost_spiral jkczyz benthecarman tankyleo tnull"
+          REVIEWERS: "matt val wpaulino joostjager jkczyz benthecarman tankyleo tnull"
         run: |
           set -eu
           AUTH="Authorization: bearer ${{ steps.jwt.outputs.jwt }}"
