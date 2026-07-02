@@ -258,12 +258,7 @@ impl LSPSDateTime {
 
 	/// Returns the elapsed duration from `other` to `self`, or zero if `other` is later.
 	pub fn duration_since(&self, other: &Self) -> Duration {
-		let diff_secs = self.0.timestamp().saturating_sub(other.0.timestamp());
-		if diff_secs <= 0 {
-			Duration::ZERO
-		} else {
-			Duration::from_secs(diff_secs as u64)
-		}
+		self.0.signed_duration_since(other.0).to_std().unwrap_or(Duration::ZERO)
 	}
 
 	/// Returns the time in seconds since the unix epoch.
@@ -1007,8 +1002,11 @@ mod tests {
 	fn datetime_duration_since_is_directional() {
 		let earlier = LSPSDateTime::new_from_duration_since_epoch(Duration::from_secs(30));
 		let later = LSPSDateTime::new_from_duration_since_epoch(Duration::from_secs(90));
+		let later_with_millis =
+			LSPSDateTime::new_from_duration_since_epoch(Duration::from_millis(90_100));
 
 		assert_eq!(later.duration_since(&earlier), Duration::from_secs(60));
+		assert_eq!(later_with_millis.duration_since(&later), Duration::from_millis(100));
 		assert_eq!(earlier.duration_since(&later), Duration::ZERO);
 	}
 
