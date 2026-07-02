@@ -1910,6 +1910,34 @@ pub(super) enum OpenChannelMessageRef<'a> {
 	V2(&'a msgs::OpenChannelV2),
 }
 
+impl<'a> OpenChannelMessageRef<'a> {
+	fn channel_parameters(&self) -> Result<msgs::ChannelParameters, MsgHandleErrInternal> {
+		match self {
+			OpenChannelMessageRef::V1(msg) => {
+				Ok(msg.common_fields.channel_parameters(msg.channel_reserve_satoshis))
+			},
+			OpenChannelMessageRef::V2(msg) => {
+				let channel_value_satoshis = msg.common_fields.funding_satoshis;
+				let channel_reserve_satoshis = channel::get_v2_channel_reserve_satoshis(
+					channel_value_satoshis,
+					channel::MIN_CHAN_DUST_LIMIT_SATOSHIS,
+					msg.disable_channel_reserve.is_some(),
+				)
+				.map_err(|()| {
+					MsgHandleErrInternal::send_err_msg_no_close(
+						format!(
+							"The channel value {channel_value_satoshis} is smaller than our dust limit {}",
+							channel::MIN_CHAN_DUST_LIMIT_SATOSHIS
+						),
+						msg.common_fields.temporary_channel_id,
+					)
+				})?;
+				Ok(msg.common_fields.channel_parameters(channel_reserve_satoshis))
+			},
+		}
+	}
+}
+
 /// A not-yet-accepted inbound (from counterparty) channel. Once
 /// accepted, the parameters will be used to construct a channel.
 pub(super) struct InboundChannelRequest {
@@ -11663,6 +11691,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		let mut pending_events = self.pending_events.lock().unwrap();
 		let is_announced = (common_fields.channel_flags & 1) == 1;
+		let params = msg.channel_parameters()?;
 		pending_events.push_back((
 			events::Event::OpenChannelRequest {
 				temporary_channel_id: common_fields.temporary_channel_id,
@@ -11674,7 +11703,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 				channel_type,
 				is_announced,
-				params: common_fields.channel_parameters(),
+				params,
 			},
 			None,
 		));
