@@ -47,7 +47,7 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ANTI_REORG_DELAY};
 use lightning::chain::{
 	chainmonitor, channelmonitor, BlockLocator, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
-use lightning::events;
+use lightning::events::{self, EventsProvider};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
@@ -85,6 +85,8 @@ use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChann
 use lightning::util::test_utils::TestWalletSource;
 use lightning::util::wallet_utils::{WalletSourceSync, WalletSync};
 
+use lightning::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
+
 use lightning_invoice::RawBolt11Invoice;
 
 use crate::utils::test_logger::{self, Output};
@@ -96,7 +98,7 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use lightning::util::dyn_signer::DynSigner;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::collections::HashSet;
 use std::mem;
@@ -105,6 +107,7 @@ use std::sync::{Arc, Mutex};
 
 const MAX_FEE: u32 = 10_000;
 const MAX_SETTLE_ITERATIONS: usize = 256;
+const FORCE_CLOSE_CLEANUP_ROUNDS: usize = 512;
 // Each wallet is seeded with enough confirmed UTXOs that repeated splice
 // transactions don't run out of inputs mid-run.
 const NUM_WALLET_UTXOS: u32 = 50;
@@ -748,6 +751,12 @@ type TestChainMonitor = chainmonitor::ChainMonitor<
 	Arc<HarnessPersister>,
 	Arc<KeyProvider>,
 >;
+type TestBumpTransactionEventHandler = BumpTransactionEventHandlerSync<
+	Arc<TestBroadcaster>,
+	Arc<WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+	Arc<KeyProvider>,
+	Arc<dyn Logger + MaybeSend + MaybeSync>,
+>;
 
 struct KeyProvider {
 	node_secret: SecretKey,
@@ -1068,7 +1077,8 @@ struct HarnessNode<'a> {
 	broadcaster: Arc<TestBroadcaster>,
 	fee_estimator: Arc<FuzzEstimator>,
 	wallet: Arc<TestWalletSource>,
-	wallet_sync: WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>,
+	wallet_sync: Arc<WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+	bump_tx_handler: TestBumpTransactionEventHandler,
 	persistence_style: ChannelMonitorUpdateStatus,
 	deferred: bool,
 	serialized_manager: Vec<u8>,
@@ -1140,7 +1150,16 @@ impl<'a> HarnessNode<'a> {
 			&persister,
 			deferred,
 		);
-		let wallet_sync = WalletSync::new(Arc::clone(&wallet), Arc::clone(&logger));
+		let wallet_sync = Arc::new(WalletSync::new(Arc::clone(&wallet), Arc::clone(&logger)));
+		// Wallet-backed handler that completes and broadcasts the transactions
+		// requested by monitor BumpTransaction events. It shares the node's
+		// wallet sync so anchor spends and splice funding share UTXO lock state.
+		let bump_tx_handler = BumpTransactionEventHandlerSync::new(
+			Arc::clone(&broadcaster),
+			Arc::clone(&wallet_sync),
+			Arc::clone(&keys_manager),
+			Arc::clone(&logger),
+		);
 		let network = Network::Bitcoin;
 		let best_block_timestamp = genesis_block(network).header.time;
 		let params = ChainParameters { network, best_block: BlockLocator::from_network(network) };
@@ -1169,6 +1188,7 @@ impl<'a> HarnessNode<'a> {
 			fee_estimator,
 			wallet,
 			wallet_sync,
+			bump_tx_handler,
 			persistence_style,
 			deferred,
 			serialized_manager: Vec::new(),
@@ -1389,6 +1409,23 @@ impl<'a> HarnessNode<'a> {
 		self.last_htlc_clear_fee = self.fee_estimator.ret_val.load(atomic::Ordering::Acquire);
 	}
 
+	// Drains raw ChannelMonitor events. Monitor-generated BumpTransaction events
+	// do not flow through the manager event queue but still produce transactions
+	// the harness must mine.
+	fn process_monitor_pending_events(&self) -> bool {
+		// process_pending_events takes an Fn handler, so use interior mutability
+		// to report whether the callback saw anything.
+		let had_events = Cell::new(false);
+		self.monitor.process_pending_events(&|event: events::Event| {
+			had_events.set(true);
+			if let events::Event::BumpTransaction(ref bump) = event {
+				self.bump_tx_handler.handle_event(bump);
+			}
+			Ok(())
+		});
+		had_events.get()
+	}
+
 	fn splice_in(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) {
 		match self.node.splice_channel(channel_id, counterparty_node_id) {
 			Ok(funding_template) => {
@@ -1398,7 +1435,7 @@ impl<'a> HarnessNode<'a> {
 					Amount::from_sat(10_000),
 					feerate,
 					FeeRate::MAX,
-					&self.wallet_sync,
+					self.wallet_sync.as_ref(),
 				) {
 					let _ = self.node.funding_contributed(
 						channel_id,
@@ -3332,13 +3369,15 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				events::Event::SpendableOutputs { .. } => {
 					// The harness does not model an external sweeper wallet.
 				},
-				events::Event::BumpTransaction(_) => {
-					// Fee bumping is not modeled; broadcasts are relayed through
-					// the harness mempool directly.
+				events::Event::BumpTransaction(bump) => {
+					nodes[node_idx].bump_tx_handler.handle_event(&bump);
 				},
 				_ => panic!("Unhandled event: {:?}", event),
 			}
 		}
+		// Chain monitor events are processed together with manager events,
+		// mirroring how a node's background processor polls both queues.
+		had_events |= nodes[node_idx].process_monitor_pending_events();
 		while nodes[node_idx].needs_pending_htlc_processing() {
 			nodes[node_idx].process_pending_htlc_forwards();
 			had_events = true;
@@ -3576,10 +3615,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.process_all_events();
 
 		if self.close_tracker.has_closed_channels() {
-			// Explicit closes broadcast commitment transactions. Mine the
-			// modeled mempool so later invariants see the post-close state.
-			self.mine_relayed_txs_until_quiet();
-			self.process_all_events();
+			self.settle_force_close_onchain();
 		}
 
 		// Verify no payments are stuck - all should have resolved
@@ -3762,6 +3798,33 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				&& self.chain_state.pending_txs.is_empty(),
 			"tx mining loop failed to quiesce",
 		);
+	}
+
+	fn settle_force_close_onchain(&mut self) {
+		// Alternate event processing, relay, and mining until all tracked
+		// closed-channel on-chain balances have resolved.
+		let deadline_blocked = "force-close cleanup was blocked by an HTLC fail-back deadline";
+		for _ in 0..FORCE_CLOSE_CLEANUP_ROUNDS {
+			self.process_all_events();
+			self.relay_all_broadcasts();
+			if !self.chain_state.pending_txs.is_empty() {
+				assert!(self.mine_blocks(ANTI_REORG_DELAY) > 0, "{}", deadline_blocked);
+				continue;
+			}
+			let has_claimable_balance = self.nodes.iter().any(|node| {
+				// get_claimable_balances ignores the channels passed in. Pass
+				// each node's own live channels so closed-channel balances stay
+				// visible.
+				let open_channels = node.node.list_channels();
+				let open_refs: Vec<_> = open_channels.iter().collect();
+				!node.monitor.get_claimable_balances(&open_refs).is_empty()
+			});
+			if !has_claimable_balance {
+				return;
+			}
+			assert!(self.mine_blocks(1) > 0, "{}", deadline_blocked);
+		}
+		panic!("force-close cleanup loop failed to quiesce");
 	}
 }
 
