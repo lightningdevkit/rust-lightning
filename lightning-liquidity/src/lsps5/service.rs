@@ -90,7 +90,7 @@ pub const NOTIFICATION_COOLDOWN_TIME: Duration = Duration::from_secs(60); // 1 m
 /// This is distinct from [`NOTIFICATION_COOLDOWN_TIME`]: that cooldown protects the client from
 /// repeated spammy wake-ups, while this reset throttle protects registered notification URLs from
 /// amplification via rapid peer connect/disconnect churn.
-const NOTIFICATION_COOLDOWN_RESET_INTERVAL: Duration = Duration::from_secs(10);
+const NOTIFICATION_COOLDOWN_RESET_INTERVAL: Duration = Duration::from_millis(100);
 
 // Default configuration for LSPS5 service.
 impl Default for LSPS5ServiceConfig {
@@ -878,6 +878,10 @@ mod tests {
 		LSPSDateTime::new_from_duration_since_epoch(Duration::from_secs(seconds))
 	}
 
+	fn lsps_datetime_millis(milliseconds: u64) -> LSPSDateTime {
+		LSPSDateTime::new_from_duration_since_epoch(Duration::from_millis(milliseconds))
+	}
+
 	fn test_webhook(last_notification_sent: Option<LSPSDateTime>) -> (LSPS5AppName, Webhook) {
 		let app_name = LSPS5AppName::new("test_app".to_string()).unwrap();
 		let url = LSPS5WebhookUrl::new("https://example.com/webhook".to_string()).unwrap();
@@ -913,8 +917,8 @@ mod tests {
 		assert!(peer_state.needs_persist);
 
 		peer_state.needs_persist = false;
-		let skipped_reset = lsps_datetime(2_009);
-		let recent_notification = lsps_datetime(2_009);
+		let skipped_reset = lsps_datetime_millis(2_000_099);
+		let recent_notification = skipped_reset;
 		peer_state.webhooks_mut()[0].1.last_notification_sent = Some(recent_notification);
 		peer_state.needs_persist = false;
 
@@ -923,7 +927,7 @@ mod tests {
 		assert_eq!(peer_state.last_notification_cooldown_reset, Some(first_reset));
 		assert!(!peer_state.needs_persist);
 
-		let allowed_reset = lsps_datetime(2_010);
+		let allowed_reset = lsps_datetime_millis(2_000_100);
 		peer_state.reset_notification_cooldown(allowed_reset);
 		assert_eq!(peer_state.webhooks()[0].1.last_notification_sent, None);
 		assert_eq!(peer_state.last_notification_cooldown_reset, Some(allowed_reset));
