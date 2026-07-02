@@ -7017,7 +7017,7 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 	let shutdown_script = crate::ln::script::ShutdownScript::new_p2wpkh_from_pubkey(dummy_key);
 	let best_block = BlockLocator::from_network(Network::Testnet);
 	let signer = wrap_signer(keys);
-	ChannelMonitor::new(
+	let monitor = ChannelMonitor::new(
 		secp_ctx,
 		signer,
 		Some(shutdown_script.into_inner()),
@@ -7031,7 +7031,13 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 		dummy_key,
 		channel_id,
 		false,
-	)
+	);
+	// The production constructor sets current_counterparty_commitment_number to 1 << 48 as a
+	// sentinel meaning "counterparty commitment not yet received". This value (2^48) exceeds the
+	// 48-bit field in be48_to_array and causes a panic on serialization. Since dummy monitors
+	// may be serialized in tests, reset it to a valid value.
+	monitor.inner.lock().unwrap().current_counterparty_commitment_number = 0;
+	monitor
 }
 
 #[cfg(test)]
