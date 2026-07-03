@@ -1213,26 +1213,19 @@ impl<'a> HarnessNode<'a> {
 		self.node.current_best_block().height
 	}
 
-	// Connects a block range to ChainMonitor and ChannelManager. The start
-	// heights are independent because reload may pair monitors and a manager
-	// persisted at different chain tips.
+	// Connects a block range to the ChannelManager, and to the ChainMonitor when
+	// sync_monitors is set. Reload syncs monitors separately because they can be
+	// at different heights than the manager, so it leaves them out here.
 	fn connect_chain_range(
-		&mut self, chain_state: &ChainState, monitor_start_height: u32, manager_start_height: u32,
-		target_height: u32,
+		&mut self, chain_state: &ChainState, start_height: u32, target_height: u32,
+		sync_monitors: bool,
 	) {
 		assert!(
-			target_height >= monitor_start_height,
-			"connect_chain_range cannot move monitor height backward ({} -> {})",
-			monitor_start_height,
+			target_height >= start_height,
+			"connect_chain_range cannot move height backward ({} -> {})",
+			start_height,
 			target_height
 		);
-		assert!(
-			target_height >= manager_start_height,
-			"connect_chain_range cannot move manager height backward ({} -> {})",
-			manager_start_height,
-			target_height
-		);
-		let start_height = cmp::min(monitor_start_height, manager_start_height);
 		let mut height = start_height;
 		while height < target_height {
 			let mut next_height = height + 1;
@@ -1245,29 +1238,23 @@ impl<'a> HarnessNode<'a> {
 				// allows best_block_updated to skip intermediary blocks.
 				height = target_height;
 				let (header, _) = chain_state.block_at(height);
-				if height > monitor_start_height {
+				if sync_monitors {
 					self.monitor.best_block_updated(header, height);
 				}
-				if height > manager_start_height {
-					self.node.best_block_updated(header, height);
-				}
+				self.node.best_block_updated(header, height);
 				break;
 			}
 			height = next_height;
 			let (header, txn) = chain_state.block_at(height);
 			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			if height > monitor_start_height {
+			if sync_monitors {
 				self.monitor.transactions_confirmed(header, &txdata, height);
 			}
-			if height > manager_start_height {
-				self.node.transactions_confirmed(header, &txdata, height);
-			}
-			if height > monitor_start_height {
+			self.node.transactions_confirmed(header, &txdata, height);
+			if sync_monitors {
 				self.monitor.best_block_updated(header, height);
 			}
-			if height > manager_start_height {
-				self.node.best_block_updated(header, height);
-			}
+			self.node.best_block_updated(header, height);
 		}
 	}
 
@@ -1279,7 +1266,61 @@ impl<'a> HarnessNode<'a> {
 		};
 
 		let start_height = self.manager_height();
-		self.connect_chain_range(chain_state, start_height, start_height, target_height);
+		self.connect_chain_range(chain_state, start_height, target_height, true);
+	}
+
+	// Brings every channel monitor up to the chain tip from its own best block.
+	// On reload monitors can sit at different heights, so syncing them one by
+	// one avoids replaying a block into a monitor that already saw it, which the
+	// monitor would treat as a reorg. Each block is connected the same way as
+	// live operation: confirm its transactions, then advance the best block,
+	// ending with a best-block update to the tip for the trailing empty blocks.
+	fn sync_monitors_to_tip(&self, chain_state: &ChainState) {
+		let target_height = chain_state.tip_height();
+		for chan_id in self.monitor.list_monitors() {
+			let monitor = match self.monitor.get_monitor(chan_id) {
+				Ok(monitor) => monitor,
+				Err(_) => continue,
+			};
+			let start_height = monitor.current_best_block().height;
+			if start_height >= target_height {
+				continue;
+			}
+			for height in (start_height + 1)..=target_height {
+				let (header, txn) = chain_state.block_at(height);
+				if txn.is_empty() {
+					continue;
+				}
+				let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+				monitor.transactions_confirmed(
+					header,
+					&txdata,
+					height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+				monitor.best_block_updated(
+					header,
+					height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+			}
+			let (header, txn) = chain_state.block_at(target_height);
+			if txn.is_empty() {
+				// The tip block carried no transactions, so it was skipped above.
+				// Advance the best block over the trailing empty blocks to the tip.
+				monitor.best_block_updated(
+					header,
+					target_height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+			}
+		}
 	}
 
 	fn checkpoint_manager_persistence(&mut self) -> bool {
@@ -3435,20 +3476,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.nodes[node_idx].splice_out(&cp_node_id, &channel_id);
 	}
 
-	// Finds the earliest loaded monitor height for a node. Startup sync uses it
-	// as ChainMonitor's start height so raw monitors loaded below the manager's
-	// best block still see every block and transaction they missed.
-	fn oldest_monitor_height_for_node(&self, node_idx: usize) -> u32 {
-		let node = &self.nodes[node_idx];
-		let mut min_monitor_height = node.manager_height();
-		for chan_id in node.monitor.list_monitors() {
-			if let Ok(mon) = node.monitor.get_monitor(chan_id) {
-				min_monitor_height = cmp::min(min_monitor_height, mon.current_best_block().height);
-			}
-		}
-		min_monitor_height
-	}
-
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
 		if !self.nodes[node_idx].deferred {
 			self.nodes[node_idx].checkpoint_manager_persistence();
@@ -3488,14 +3515,18 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		let loaded_manager_generation =
 			self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
-		let monitor_start_height = self.oldest_monitor_height_for_node(node_idx);
+		// Startup sync is part of LDK's deserialization contract. Monitors and
+		// the manager can be loaded at different heights, so sync each monitor
+		// from its own best block rather than driving them all from the oldest
+		// one, which would look like a reorg to the monitors already ahead.
 		let manager_start_height = self.nodes[node_idx].manager_height();
-		// Startup sync is part of LDK's deserialization contract.
+		let tip_height = self.chain_state.tip_height();
+		self.nodes[node_idx].sync_monitors_to_tip(&self.chain_state);
 		self.nodes[node_idx].connect_chain_range(
 			&self.chain_state,
-			monitor_start_height,
 			manager_start_height,
-			self.chain_state.tip_height(),
+			tip_height,
+			false,
 		);
 		assert_eq!(
 			self.nodes[node_idx].manager_height(),
