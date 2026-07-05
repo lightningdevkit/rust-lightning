@@ -283,7 +283,10 @@ jobs:
         run: |
           rustup default ${{ env.TOOLCHAIN }}
       - name: Clone fuzzing corpus
-        run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
+        # Clone from this Forgejo instance (rather than the GitHub copy) so
+        # that new entries are detected against the repository the corpus
+        # sweep will open its pull requests on.
+        run: git clone --depth=1 ${{ github.server_url }}/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
       - name: Symlink corpus into hfuzz_workspace
         run: |
           set -eu
@@ -298,55 +301,59 @@ jobs:
         run: cd fuzz && ./ci-fuzz.sh && cd ..
         env:
           FUZZ_MINIMIZE: ${{ contains(github.event.pull_request.labels.*.name, 'fuzz-minimize') }}
-      - name: Open PR with new corpus entries
-        # Forgejo supports neither the `workflow_run` trigger nor reading
-        # artifacts from another workflow run, so the corpus push that used to
-        # live in its own workflow is folded in here. New fuzzer inputs are
-        # written straight into the corpus checkout (the input dirs are
-        # symlinked into it above), so they show up as untracked files.
+      - name: Stage new corpus entries for upload
+        # New fuzzer inputs are written straight into the corpus checkout (the
+        # input dirs are symlinked into it above), so they show up as
+        # untracked files there.
         #
-        # The push still targets the GitHub corpus repo. On Forgejo, secrets
-        # are empty for `pull_request` events from forks, so CORPUS_PUSH_TOKEN
-        # is unset there and this step safely skips the push.
-        #
-        # A push hiccup must not fail the fuzz job (and cascade to the jobs that
-        # depend on it), so this step is best-effort.
+        # This run can't contribute them to the corpus repo itself: it mostly
+        # runs for pull requests from forks, and Forgejo withholds all
+        # credentials (secrets and identity tokens alike) from fork-PR runs.
+        # Instead the new entries are uploaded as a short-lived artifact
+        # below, which the corpus repo's nightly job sweeps into a pull
+        # request.
         if: success() || failure()
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ secrets.CORPUS_PUSH_TOKEN }}
-          SOURCE_SHA: ${{ github.sha }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           set -eu
+          WORKSPACE="$(pwd)"
+          rm -rf "$WORKSPACE/new-corpus"
+          mkdir -p "$WORKSPACE/new-corpus"
+
           cd fuzz/ldk-fuzzing-corpus
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "No new corpus entries to contribute."
-            exit 0
-          fi
-          if [ -z "${GH_TOKEN:-}" ]; then
-            echo "Found new corpus entries but CORPUS_PUSH_TOKEN is unset; skipping PR."
-            git status --short
-            exit 0
-          fi
-          BRANCH="ci/new-corpus-${RUN_ID}"
-          git config user.email "ldk-ci@users.noreply.github.com"
-          git config user.name  "LDK CI"
-          git checkout -b "$BRANCH"
-          git add rust-lightning
-          git commit \
-            -m "Add corpus entries from rust-lightning CI" \
-            -m "Source commit: ${SOURCE_SHA}" \
-            -m "Run: ${RUN_URL}"
-          REMOTE=$(git config --get remote.origin.url)
-          PUSH_URL="https://x-access-token:${GH_TOKEN}@${REMOTE#https://}"
-          git push "$PUSH_URL" "HEAD:$BRANCH"
-          gh pr create \
-            --title "New corpus entries from rust-lightning CI run ${RUN_ID}" \
-            --body "Discovered while running fuzz CI against \`${SOURCE_SHA}\`. Source: ${RUN_URL}" \
-            --head "$BRANCH" \
-            --base master
+          while IFS= read -r F; do
+            mkdir -p "$WORKSPACE/new-corpus/$(dirname "$F")"
+            cp -a "$F" "$WORKSPACE/new-corpus/$F"
+          done < <(git ls-files --others --exclude-standard rust-lightning/)
+          cd "$WORKSPACE"
+
+          for D in fuzz/hfuzz_workspace/*_target/; do
+            [ -d "$D" ] || continue
+            BASE=$(basename "$D")
+            NAME="${BASE%_target}"
+            for F in "$D"/SIG*; do
+              [ -f "$F" ] || continue
+              FILE="$(basename "$F")"
+              [ -f "$WORKSPACE/new-corpus/rust-lightning/$NAME/$FILE" ] && continue
+              mkdir -p "$WORKSPACE/new-corpus/rust-lightning/$NAME"
+              cp "$F" "$WORKSPACE/new-corpus/rust-lightning/$NAME/$FILE"
+            done
+          done
+
+          NEW=$(find new-corpus -type f 2>/dev/null | wc -l)
+          echo "Staged $NEW new corpus entries (including any SIG* crashes)"
+      - name: Upload new corpus entries
+        if: success() || failure()
+        # The forgejo/ fork, not the actions/ mirror: upstream's @actions/artifact
+        # client refuses to talk to any server that isn't github.com.
+        uses: https://data.forgejo.org/forgejo/upload-artifact@cb8afe72b42edc798abfb8fcb556cf660d894245 # v5
+        with:
+          name: hfuzz-corpus
+          path: new-corpus
+          compression-level: 0
+          if-no-files-found: ignore
+          # The nightly sweep deletes artifacts it has processed; the
+          # retention only has to bridge a missed nightly run.
+          retention-days: 2
 
   linting:
     runs-on: debian-trixie
