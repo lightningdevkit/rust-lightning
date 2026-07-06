@@ -916,6 +916,11 @@ pub enum InboundChannelFunds {
 	DualFunded,
 }
 
+impl_writeable_tlv_based_enum_upgradable!(InboundChannelFunds,
+	(1, DualFunded) => {},
+	{0, PushMsat} => (),
+);
+
 /// Identifies the channel and specific HTLC for the inbound edge of a forwarded payment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboundHTLCLocator {
@@ -1837,7 +1842,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`) and won't be persisted across restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as it references an inbound
+	/// channel request which no longer exists after a restart if it was not accepted before
+	/// shutdown.
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`ChannelClosed`]: Event::ChannelClosed
@@ -2510,10 +2517,27 @@ impl Writeable for Event {
 					(5, reason, option),
 				})
 			},
-			&Event::OpenChannelRequest { .. } => {
-				17u8.write(writer)?;
-				// We never write the OpenChannelRequest events as, upon disconnection, peers
-				// drop any channels which have not yet exchanged funding_signed.
+			&Event::OpenChannelRequest {
+				ref temporary_channel_id,
+				ref counterparty_node_id,
+				ref funding_satoshis,
+				ref channel_negotiation_type,
+				ref channel_type,
+				ref is_announced,
+				ref params,
+			} => {
+				// Type 17 was used for these events in LDK versions prior to 0.4, writing no data
+				// as they were never persisted.
+				55u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, temporary_channel_id, required),
+					(3, counterparty_node_id, required),
+					(5, funding_satoshis, required),
+					(7, channel_negotiation_type, required),
+					(9, channel_type, required),
+					(11, is_announced, required),
+					(13, params, required),
+				});
 			},
 			&Event::PaymentClaimed {
 				ref payment_hash,
@@ -3113,7 +3137,8 @@ impl MaybeReadable for Event {
 				f()
 			},
 			17u8 => {
-				// Value 17 is used for `Event::OpenChannelRequest`.
+				// LDK versions prior to 0.4 wrote OpenChannelRequest events as type 17 without any
+				// data, so there is nothing to read here.
 				Ok(None)
 			},
 			19u8 => {
@@ -3467,6 +3492,29 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			55u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, temporary_channel_id, required),
+						(3, counterparty_node_id, required),
+						(5, funding_satoshis, required),
+						(7, channel_negotiation_type, upgradable_required),
+						(9, channel_type, required),
+						(11, is_announced, required),
+						(13, params, required),
+					});
+					Ok(Some(Event::OpenChannelRequest {
+						temporary_channel_id: temporary_channel_id.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						funding_satoshis: funding_satoshis.0.unwrap(),
+						channel_negotiation_type: channel_negotiation_type.0.unwrap(),
+						channel_type: channel_type.0.unwrap(),
+						is_announced: is_announced.0.unwrap(),
+						params: params.0.unwrap(),
+					}))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -3490,7 +3538,8 @@ impl MaybeReadable for Event {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::ln::msgs::SocketAddress;
+	use crate::ln::msgs::{ChannelParameters, SocketAddress};
+	use crate::types::features::ChannelTypeFeatures;
 	use bitcoin::script::ScriptBuf;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 
@@ -3524,6 +3573,36 @@ mod tests {
 				SocketAddress::TcpIpV4 { addr: [1, 2, 3, 4], port: 9735 },
 				SocketAddress::TcpIpV6 { addr: [0; 16], port: 9736 },
 			],
+		});
+	}
+
+	#[test]
+	fn test_open_channel_request_round_trip() {
+		let params = ChannelParameters {
+			dust_limit_satoshis: 546,
+			max_htlc_value_in_flight_msat: 1_000_000,
+			htlc_minimum_msat: 1,
+			commitment_feerate_sat_per_1000_weight: 253,
+			to_self_delay: 144,
+			max_accepted_htlcs: 50,
+		};
+		assert_event_round_trips(Event::OpenChannelRequest {
+			temporary_channel_id: ChannelId([7; 32]),
+			counterparty_node_id: dummy_node_id(),
+			funding_satoshis: 100_000,
+			channel_negotiation_type: InboundChannelFunds::PushMsat(1_234),
+			channel_type: ChannelTypeFeatures::only_static_remote_key(),
+			is_announced: true,
+			params: params.clone(),
+		});
+		assert_event_round_trips(Event::OpenChannelRequest {
+			temporary_channel_id: ChannelId([8; 32]),
+			counterparty_node_id: dummy_node_id(),
+			funding_satoshis: 200_000,
+			channel_negotiation_type: InboundChannelFunds::DualFunded,
+			channel_type: ChannelTypeFeatures::only_static_remote_key(),
+			is_announced: false,
+			params,
 		});
 	}
 
