@@ -54,8 +54,8 @@ use crate::ln::channel_state::{
 use crate::ln::channelmanager::{
 	self, BlindedFailure, ChannelReadyOrder, FundingConfirmedMessage, HTLCFailureMsg,
 	HTLCPreviousHopData, HTLCSource, OpenChannelMessage, PaymentClaimDetails, PendingHTLCInfo,
-	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, TrustedChannelFeatures, BREAKDOWN_TIMEOUT,
-	MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
+	PendingHTLCStatus, RAACommitmentOrder, SentHTLCId, TrustedChannelFeatures, TxSignaturesOrder,
+	BREAKDOWN_TIMEOUT, MAX_LOCAL_BREAKDOWN_TIMEOUT, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::{FeeRateAdjustmentError, FundingContribution, FundingTemplate};
 use crate::ln::interactivetxs::{
@@ -1267,7 +1267,7 @@ pub(super) struct ReestablishResponses {
 	pub commitment_order: RAACommitmentOrder,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub shutdown_msg: Option<msgs::Shutdown>,
-	pub tx_signatures: Option<msgs::TxSignatures>,
+	pub tx_signatures: Option<(TxSignaturesOrder, msgs::TxSignatures)>,
 	pub tx_abort: Option<msgs::TxAbort>,
 	pub splice_locked: Option<msgs::SpliceLocked>,
 	pub inferred_splice_locked: Option<msgs::SpliceLocked>,
@@ -10920,7 +10920,20 @@ where
 					// - if it has already received `tx_signatures` for that funding transaction:
 					//   - MUST send its `tx_signatures` for that funding transaction.
 					if let Some(holder_tx_signatures) = session.holder_tx_signatures() {
-						if self.is_awaiting_monitor_update() {
+						// A completed exchange may precede an unrelated monitor update, so
+						// retransmitting the same signatures does not depend on that update.
+						let splice_signatures_exchange_complete = self
+							.pending_splice
+							.as_ref()
+							.map(|pending_splice| {
+								pending_splice.negotiated_candidates.iter().any(|candidate| {
+									candidate.funding.get_funding_txid() == Some(next_funding.txid)
+								})
+							})
+							.unwrap_or(false);
+						if self.is_awaiting_monitor_update()
+							&& !splice_signatures_exchange_complete
+						{
 							log_debug!(logger, "Waiting for monitor update before providing funding transaction signatures");
 						} else if self.context.signer_pending_funding {
 							log_debug!(logger, "Waiting for signer to provide counterparty commitment_signed before releasing funding transaction signatures");
@@ -10995,7 +11008,8 @@ where
 					raa: None, commitment_update,
 					commitment_order: self.context.resend_order.clone(),
 					shutdown_msg, announcement_sigs,
-					tx_signatures,
+					tx_signatures: tx_signatures
+						.map(|msg| (TxSignaturesOrder::CommitmentFirst, msg)),
 					tx_abort: None,
 					splice_locked: None,
 					inferred_splice_locked: None,
@@ -11009,7 +11023,8 @@ where
 				raa: None, commitment_update,
 				commitment_order: self.context.resend_order.clone(),
 				shutdown_msg, announcement_sigs,
-				tx_signatures,
+				tx_signatures: tx_signatures
+					.map(|msg| (TxSignaturesOrder::CommitmentFirst, msg)),
 				tx_abort,
 				splice_locked: None,
 				inferred_splice_locked: None,
@@ -11116,6 +11131,15 @@ where
 				log_debug!(logger, "Reconnected with no loss");
 			}
 
+			// A commitment update generated above retransmits the initial splice
+			// `commitment_signed` and must precede its funding signatures. Otherwise a completed
+			// exchange's retransmitted signatures must precede any `splice_locked` below.
+			let tx_signatures_order = if commitment_update.is_some() {
+				TxSignaturesOrder::CommitmentFirst
+			} else {
+				TxSignaturesOrder::SignaturesFirst
+			};
+
 			Ok(ReestablishResponses {
 				channel_ready,
 				channel_ready_order: ChannelReadyOrder::SignaturesFirst,
@@ -11124,17 +11148,17 @@ where
 				raa: required_revoke,
 				commitment_update,
 				commitment_order: self.context.resend_order.clone(),
-				tx_signatures,
+				tx_signatures: tx_signatures.map(|msg| (tx_signatures_order, msg)),
 				tx_abort,
 				splice_locked,
 				inferred_splice_locked,
 			})
 		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
-			debug_assert!(commitment_update.is_none());
-
-			// TODO(splicing): Assert in a test that we don't retransmit tx_signatures instead
-			#[cfg(test)]
-			assert!(tx_signatures.is_none());
+			if retransmit_funding_commit_sig.is_some() {
+				return Err(ChannelError::close(
+					"Peer requested retransmission of an initial commitment_signed while claiming to have lost a later commitment_signed".to_owned(),
+				));
+			}
 
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel with lost outbound RAA and lost remote commitment tx");
@@ -11150,7 +11174,8 @@ where
 					shutdown_msg, announcement_sigs,
 					commitment_update: None, raa: None,
 					commitment_order: self.context.resend_order.clone(),
-					tx_signatures: None,
+					tx_signatures: tx_signatures
+						.map(|msg| (TxSignaturesOrder::SignaturesFirst, msg)),
 					tx_abort,
 					splice_locked,
 					inferred_splice_locked,
@@ -11178,7 +11203,8 @@ where
 					shutdown_msg, announcement_sigs,
 					raa, commitment_update,
 					commitment_order: self.context.resend_order.clone(),
-					tx_signatures: None,
+					tx_signatures: tx_signatures
+						.map(|msg| (TxSignaturesOrder::SignaturesFirst, msg)),
 					tx_abort,
 					splice_locked,
 					inferred_splice_locked,

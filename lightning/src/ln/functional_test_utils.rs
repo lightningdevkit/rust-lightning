@@ -27,7 +27,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channelmanager::{
 	AChannelManager, ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId,
-	RAACommitmentOrder, TrustedChannelFeatures, MIN_CLTV_EXPIRY_DELTA,
+	RAACommitmentOrder, TrustedChannelFeatures, TxSignaturesOrder, MIN_CLTV_EXPIRY_DELTA,
 };
 use crate::ln::funding::FundingContribution;
 use crate::ln::msgs::{self, OpenChannel};
@@ -5214,6 +5214,18 @@ macro_rules! handle_chan_reestablish_msgs {
 			stfu = Some(msg.clone());
 		}
 
+		let mut tx_signatures = None;
+		let mut tx_signatures_order =
+			$crate::ln::channelmanager::TxSignaturesOrder::CommitmentFirst;
+		if let Some(&MessageSendEvent::SendTxSignatures { ref node_id, ref msg }) =
+			msg_events.get(idx)
+		{
+			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+			tx_signatures = Some(msg.clone());
+			tx_signatures_order = $crate::ln::channelmanager::TxSignaturesOrder::SignaturesFirst;
+			idx += 1;
+		}
+
 		let mut revoke_and_ack = None;
 		let mut commitment_update = None;
 		let order = if let Some(ev) = msg_events.get(idx) {
@@ -5262,13 +5274,14 @@ macro_rules! handle_chan_reestablish_msgs {
 			}
 		}
 
-		let mut tx_signatures = None;
-		if let Some(&MessageSendEvent::SendTxSignatures { ref node_id, ref msg }) =
-			msg_events.get(idx)
-		{
-			assert_eq!(*node_id, $dst_node.node.get_our_node_id());
-			tx_signatures = Some(msg.clone());
-			idx += 1;
+		if tx_signatures.is_none() {
+			if let Some(&MessageSendEvent::SendTxSignatures { ref node_id, ref msg }) =
+				msg_events.get(idx)
+			{
+				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				tx_signatures = Some(msg.clone());
+				idx += 1;
+			}
 		}
 
 		if let Some(&MessageSendEvent::SendAnnouncementSignatures { ref node_id, ref msg }) =
@@ -5298,6 +5311,7 @@ macro_rules! handle_chan_reestablish_msgs {
 			tx_signatures,
 			stfu,
 			tx_abort,
+			tx_signatures_order,
 		)
 	}};
 }
@@ -5453,8 +5467,25 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 				&& pending_cell_htlc_claims.1 == 0
 				&& pending_cell_htlc_fails.1 == 0)
 	);
+	let pending_commitment_update = (
+		pending_htlc_adds.0 != 0
+			|| pending_htlc_claims.0 != 0
+			|| pending_htlc_fails.0 != 0
+			|| pending_cell_htlc_claims.0 != 0
+			|| pending_cell_htlc_fails.0 != 0
+			|| pending_responding_commitment_signed.0,
+		pending_htlc_adds.1 != 0
+			|| pending_htlc_claims.1 != 0
+			|| pending_htlc_fails.1 != 0
+			|| pending_cell_htlc_claims.1 != 0
+			|| pending_cell_htlc_fails.1 != 0
+			|| pending_responding_commitment_signed.1,
+	);
 
 	for mut chan_msgs in resp_1.drain(..) {
+		if send_interactive_tx_sigs.0 && pending_commitment_update.0 {
+			assert_eq!(chan_msgs.8, TxSignaturesOrder::SignaturesFirst);
+		}
 		if send_channel_ready.0 {
 			node_a.node.handle_channel_ready(node_b_id, &chan_msgs.0.unwrap());
 			let announcement_event = node_a.node.get_and_clear_pending_msg_events();
@@ -5516,13 +5547,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		} else {
 			assert!(chan_msgs.1.is_none());
 		}
-		if pending_htlc_adds.0 != 0
-			|| pending_htlc_claims.0 != 0
-			|| pending_htlc_fails.0 != 0
-			|| pending_cell_htlc_claims.0 != 0
-			|| pending_cell_htlc_fails.0 != 0
-			|| pending_responding_commitment_signed.0
-		{
+		if pending_commitment_update.0 {
 			let commitment_update = chan_msgs.2.unwrap();
 			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.0);
 			assert_eq!(
@@ -5571,6 +5596,9 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 	}
 
 	for mut chan_msgs in resp_2.drain(..) {
+		if send_interactive_tx_sigs.1 && pending_commitment_update.1 {
+			assert_eq!(chan_msgs.8, TxSignaturesOrder::SignaturesFirst);
+		}
 		if send_channel_ready.1 {
 			node_b.node.handle_channel_ready(node_a_id, &chan_msgs.0.unwrap());
 			let announcement_event = node_b.node.get_and_clear_pending_msg_events();
@@ -5632,13 +5660,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		} else {
 			assert!(chan_msgs.1.is_none());
 		}
-		if pending_htlc_adds.1 != 0
-			|| pending_htlc_claims.1 != 0
-			|| pending_htlc_fails.1 != 0
-			|| pending_cell_htlc_claims.1 != 0
-			|| pending_cell_htlc_fails.1 != 0
-			|| pending_responding_commitment_signed.1
-		{
+		if pending_commitment_update.1 {
 			let commitment_update = chan_msgs.2.unwrap();
 			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.1);
 			assert_eq!(
