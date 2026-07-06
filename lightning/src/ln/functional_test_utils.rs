@@ -5780,12 +5780,16 @@ pub fn get_scid_from_channel_id<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, channel_id:
 ///
 /// The resulting tail contains blinded hops built from `intermediate_nodes` plus a dummy receive
 /// TLV, with the `TrampolineHop` fee and CLTV derived from the blinded path's aggregated payinfo.
+/// The constructed [`BlindedPaymentPath`] is also returned so callers can register it in
+/// [`PaymentParameters`].
+///
+/// [`PaymentParameters`]: crate::routing::router::PaymentParameters
 pub fn create_trampoline_forward_blinded_tail<ES: EntropySource>(
 	secp_ctx: &bitcoin::secp256k1::Secp256k1<bitcoin::secp256k1::All>, entropy_source: ES,
 	intermediate_nodes: &[ForwardNode<TrampolineForwardTlvs>], payee_node_id: PublicKey,
 	payee_receive_key: ReceiveAuthKey, payee_tlvs: ReceiveTlvs, min_final_cltv_expiry_delta: u32,
 	excess_final_cltv_delta: u32, final_value_msat: u64,
-) -> BlindedTail {
+) -> (BlindedTail, BlindedPaymentPath) {
 	let blinded_path = BlindedPaymentPath::new_for_trampoline(
 		intermediate_nodes,
 		payee_node_id,
@@ -5798,7 +5802,7 @@ pub fn create_trampoline_forward_blinded_tail<ES: EntropySource>(
 	)
 	.unwrap();
 
-	BlindedTail {
+	let tail = BlindedTail {
 		trampoline_hops: vec![TrampolineHop {
 			pubkey: intermediate_nodes.first().map(|n| n.node_id).unwrap_or(payee_node_id),
 			node_features: types::features::Features::empty(),
@@ -5817,5 +5821,6 @@ pub fn create_trampoline_forward_blinded_tail<ES: EntropySource>(
 		blinding_point: blinded_path.blinding_point(),
 		excess_final_cltv_expiry_delta: excess_final_cltv_delta,
 		final_value_msat,
-	}
+	};
+	(tail, blinded_path)
 }
