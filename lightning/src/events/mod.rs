@@ -982,8 +982,8 @@ impl_ser_tlv_based!(OutboundHTLCLocator, {
 /// An Event which you should probably take some action in response to.
 ///
 /// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
-/// them directly as they don't round-trip exactly (for example FundingGenerationReady is never
-/// written as it makes no sense to respond to it after reconnecting to peers).
+/// them directly as they don't round-trip exactly (for example BumpTransaction is never written
+/// as its contents are regenerated when necessary).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
 	/// Used to indicate that the client should generate a funding transaction with the given
@@ -994,7 +994,8 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as it references a channel
+	/// which no longer exists after a restart if we never provided a funding transaction for it.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
@@ -1210,8 +1211,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event won't be replayed after failures-to-handle
-	/// (i.e., the event handler returning `Err(ReplayEvent ())`), and also won't be persisted
-	/// across restarts.
+	/// (i.e., the event handler returning `Err(ReplayEvent ())`). It isn't useful on restart, as
+	/// the need for a connection is transient and will be regenerated if the messages requiring it
+	/// still need sending after a restart.
 	///
 	/// [`OnionMessage`]: msgs::OnionMessage
 	/// [`MessageRouter`]: crate::onion_message::messenger::MessageRouter
@@ -2179,10 +2181,23 @@ impl Event {
 impl Writeable for Event {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {
-			&Event::FundingGenerationReady { .. } => {
-				0u8.write(writer)?;
-				// We never write out FundingGenerationReady events as, upon disconnection, peers
-				// drop any channels which have not yet exchanged funding_signed.
+			&Event::FundingGenerationReady {
+				ref temporary_channel_id,
+				ref counterparty_node_id,
+				ref channel_value_satoshis,
+				ref output_script,
+				ref user_channel_id,
+			} => {
+				// Type 0 was used for these events in LDK versions prior to 0.4, writing no data
+				// as they were never persisted.
+				51u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, temporary_channel_id, required),
+					(3, counterparty_node_id, required),
+					(5, channel_value_satoshis, required),
+					(7, output_script, required),
+					(9, user_channel_id, required),
+				});
 			},
 			&Event::PaymentClaimable {
 				ref payment_hash,
@@ -2613,9 +2628,12 @@ impl Writeable for Event {
 					(9, funding_redeem_script, option),
 				});
 			},
-			&Event::ConnectionNeeded { .. } => {
-				35u8.write(writer)?;
-				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
+			&Event::ConnectionNeeded { ref node_id, ref addresses } => {
+				65u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, node_id, required),
+					(3, *addresses, required_vec),
+				});
 			},
 			&Event::OnionMessageIntercepted { ref prev_hop, ref next_hop, ref message } => {
 				37u8.write(writer)?;
@@ -2738,7 +2756,8 @@ impl Writeable for Event {
 impl MaybeReadable for Event {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, msgs::DecodeError> {
 		match Readable::read(reader)? {
-			// Note that we do not write a length-prefixed TLV for FundingGenerationReady events.
+			// LDK versions prior to 0.4 wrote FundingGenerationReady events as type 0 without any
+			// data, so there is nothing to read here.
 			0u8 => Ok(None),
 			1u8 => {
 				let mut f = || {
@@ -3273,7 +3292,8 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			// Note that we do not write a length-prefixed TLV for ConnectionNeeded events.
+			// LDK versions prior to 0.4 wrote ConnectionNeeded events as type 35 without any
+			// data, so there is nothing to read here.
 			35u8 => Ok(None),
 			37u8 => {
 				let mut f = || {
@@ -3372,6 +3392,25 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			51u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, temporary_channel_id, required),
+						(3, counterparty_node_id, required),
+						(5, channel_value_satoshis, required),
+						(7, output_script, required),
+						(9, user_channel_id, required),
+					});
+					Ok(Some(Event::FundingGenerationReady {
+						temporary_channel_id: temporary_channel_id.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						channel_value_satoshis: channel_value_satoshis.0.unwrap(),
+						output_script: output_script.0.unwrap(),
+						user_channel_id: user_channel_id.0.unwrap(),
+					}))
+				};
+				f()
+			},
 			52u8 => {
 				let mut f = || {
 					// Types 11 and 13 were written by 0.2 with the same encoding. When type 17 is
@@ -3418,6 +3457,16 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			65u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, node_id, required),
+						(3, addresses, required_vec),
+					});
+					Ok(Some(Event::ConnectionNeeded { node_id: node_id.0.unwrap(), addresses }))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -3441,6 +3490,42 @@ impl MaybeReadable for Event {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::ln::msgs::SocketAddress;
+	use bitcoin::script::ScriptBuf;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+	fn assert_event_round_trips(event: Event) {
+		let encoded = event.encode();
+		let event_read = <Event as MaybeReadable>::read(&mut &encoded[..]).unwrap();
+		assert_eq!(event_read, Some(event));
+	}
+
+	fn dummy_node_id() -> PublicKey {
+		let secp_ctx = Secp256k1::new();
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
+	}
+
+	#[test]
+	fn test_funding_generation_ready_round_trip() {
+		assert_event_round_trips(Event::FundingGenerationReady {
+			temporary_channel_id: ChannelId([7; 32]),
+			counterparty_node_id: dummy_node_id(),
+			channel_value_satoshis: 1_000_000,
+			output_script: ScriptBuf::from_bytes(vec![0, 1, 2, 3]),
+			user_channel_id: 42,
+		});
+	}
+
+	#[test]
+	fn test_connection_needed_round_trip() {
+		assert_event_round_trips(Event::ConnectionNeeded {
+			node_id: dummy_node_id(),
+			addresses: vec![
+				SocketAddress::TcpIpV4 { addr: [1, 2, 3, 4], port: 9735 },
+				SocketAddress::TcpIpV6 { addr: [0; 16], port: 9736 },
+			],
+		});
+	}
 
 	#[test]
 	fn legacy_payment_forwarded_preserves_unknown_inbound_htlc_amount() {
