@@ -1,0 +1,24 @@
+API Updates
+===========
+
+ * `Event::useful_after_restart` was added, indicating whether an event still means anything once
+   the node has restarted. `ChannelManager` uses it to decide which of its pending events to
+   persist, and users who maintain their own event queues can use it to avoid replaying events
+   which would only cause confusion on startup (#4791).
+ * `Writeable` and `Readable` are now implemented for `bump_transaction::AnchorDescriptor` and
+   `msgs::ChannelParameters`, and `Writeable` and `MaybeReadable` for
+   `bump_transaction::BumpTransactionEvent` and `events::InboundChannelFunds`, as needed to
+   serialize the `Event` variants below (#4791).
+
+Backwards Compatibility
+=======================
+
+ * `Event`'s serialization now writes complete, round-trippable bodies for several variants
+   that were previously written without one (`FundingGenerationReady`, `ConnectionNeeded`,
+   `OpenChannelRequest`, `FundingTransactionReadyForSigning`, `BumpTransaction`,
+   `PersistStaticInvoice`, and `StaticInvoiceRequested`). These variants are almost certainly not
+   useful on restart and remain excluded from `ChannelManager` persistence, so the on-disk
+   `ChannelManager` format is unchanged (#4791).
+ * Users who serialize `Event`s themselves should note that the above variants, when written by
+   this version, are silently dropped (rather than failing to deserialize) when read back by a
+   prior version of LDK, as they are now written with new, skippable TLV types (#4791).

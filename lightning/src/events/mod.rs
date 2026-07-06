@@ -2118,6 +2118,64 @@ pub enum Event {
 	},
 }
 
+impl Event {
+	/// Returns whether this event is expected to still be useful once the node has restarted.
+	///
+	/// Some events describe state which does not survive a restart at all - a channel which will
+	/// have been forgotten, a negotiation which will have been abandoned, or information which is
+	/// simply rebuilt on startup. Handling such an event after a restart is at best pointless and
+	/// at worst confusing, so code which persists events for later replay should skip the events
+	/// for which this returns `false`.
+	///
+	/// Each variant's "Failure Behavior and Persistence" documentation describes why it is, or
+	/// isn't, useful after a restart.
+	pub fn useful_after_restart(&self) -> bool {
+		match self {
+			// Upon disconnection peers drop channels which have not yet exchanged `funding_signed`,
+			// and all peers are disconnected on restart, so the channels these events are for won't
+			// exist anymore.
+			Event::FundingGenerationReady { .. } => false,
+			Event::OpenChannelRequest { .. } => false,
+			// Regenerated after restart when necessary.
+			Event::BumpTransaction(_) => false,
+			// The interactive funding negotiation this event belongs to does not survive a restart, so
+			// there is nothing left to sign. The event is only regenerated if a later negotiation
+			// reaches this point again.
+			Event::FundingTransactionReadyForSigning { .. } => false,
+			// Buffered onion messages are not persisted, so after a restart there is nothing to
+			// connect to the peer for.
+			Event::ConnectionNeeded { .. } => false,
+			// The async receive offer/static invoice negotiation restarts on startup.
+			Event::PersistStaticInvoice { .. } => false,
+			Event::StaticInvoiceRequested { .. } => false,
+			// The buffered onion messages these events concern are not persisted, so there is
+			// nothing left to act on after a restart.
+			Event::OnionMessageIntercepted { .. } => false,
+			Event::OnionMessagePeerConnected { .. } => false,
+			Event::FundingTxBroadcastSafe { .. }
+			| Event::PaymentClaimable { .. }
+			| Event::PaymentClaimed { .. }
+			| Event::InvoiceReceived { .. }
+			| Event::PaymentSent { .. }
+			| Event::PaymentFailed { .. }
+			| Event::PaymentPathSuccessful { .. }
+			| Event::PaymentPathFailed { .. }
+			| Event::ProbeSuccessful { .. }
+			| Event::ProbeFailed { .. }
+			| Event::HTLCIntercepted { .. }
+			| Event::SpendableOutputs { .. }
+			| Event::PaymentForwarded { .. }
+			| Event::ChannelPending { .. }
+			| Event::ChannelReady { .. }
+			| Event::ChannelClosed { .. }
+			| Event::SpliceNegotiated { .. }
+			| Event::SpliceNegotiationFailed { .. }
+			| Event::DiscardFunding { .. }
+			| Event::HTLCHandlingFailed { .. } => true,
+		}
+	}
+}
+
 impl Writeable for Event {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		match self {

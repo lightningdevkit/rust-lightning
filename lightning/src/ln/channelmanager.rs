@@ -19046,8 +19046,10 @@ impl<
 			// well save the space and not write any events here.
 			0u64.write(writer)?;
 		} else {
-			((events.len() + splice_failed_events.len()) as u64).write(writer)?;
-			for (event, _) in events.iter().chain(splice_failed_events.iter()) {
+			let persisted_events =
+				events_to_persist(events.iter().chain(splice_failed_events.iter()));
+			(persisted_events.len() as u64).write(writer)?;
+			for (event, _) in persisted_events {
 				event.write(writer)?;
 			}
 		}
@@ -19140,28 +19142,52 @@ struct PendingEventsWriter<'a> {
 impl Writeable for PendingEventsWriter<'_> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
 		let Self { pending_events, splice_failed_events } = self;
-		((pending_events.len() + splice_failed_events.len()) as u64).write(w)?;
-		for (event, action) in pending_events.iter().chain(splice_failed_events.iter()) {
+		let persisted_events =
+			events_to_persist(pending_events.iter().chain(splice_failed_events.iter()));
+		(persisted_events.len() as u64).write(w)?;
+		for (event, action) in persisted_events {
 			event.write(w)?;
 			action.write(w)?;
-			#[cfg(debug_assertions)]
-			{
-				// Events are MaybeReadable, in some cases indicating that they shouldn't actually
-				// be persisted and are regenerated on restart. However, if such an event has a
-				// post-event-handling action we'll write nothing for the event and would have to
-				// either forget the action or fail on deserialization (which we do below). Thus,
-				// check that the event is sane here.
-				let event_encoded = event.encode();
-				let event_read: Option<Event> =
-					MaybeReadable::read(&mut &event_encoded[..]).unwrap();
-				if action.is_some() {
-					assert!(event_read.is_some());
-				}
-			}
 		}
 		Ok(())
 	}
 }
+
+/// Filters the given events down to the ones which should be persisted, in order.
+///
+/// Events which aren't useful once we've restarted are skipped, as replaying them after a restart
+/// would at best do nothing and at worst confuse the handler.
+///
+/// Returning the events to write (rather than testing each event as we go) ensures the number of
+/// events we write can't diverge from the events themselves, and that the debug-only checks below
+/// apply to every path which persists events.
+fn events_to_persist<'a>(
+	events: impl Iterator<Item = &'a (Event, Option<EventCompletionAction>)>,
+) -> Vec<&'a (Event, Option<EventCompletionAction>)> {
+	events
+		.filter(|(event, action)| {
+			if !event.useful_after_restart() {
+				// Transient events must not have post-event-handling actions, as we'd otherwise
+				// lose the action when skipping the event here.
+				debug_assert!(action.is_none());
+				return false;
+			}
+			#[cfg(debug_assertions)]
+			{
+				// Events are MaybeReadable, in some cases indicating that they shouldn't actually
+				// be persisted and are regenerated on restart. Any event we persist must be read
+				// back as `Some`, as otherwise we'd lose it (and any post-event-handling action, on
+				// which deserialization fails). Thus, check that the event round-trips here.
+				let event_encoded = event.encode();
+				let event_read: Option<Event> =
+					MaybeReadable::read(&mut &event_encoded[..]).unwrap();
+				assert!(event_read.is_some());
+			}
+			true
+		})
+		.collect()
+}
+
 impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
 	fn read<R: Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		let len: u64 = Readable::read(reader)?;
@@ -21529,10 +21555,10 @@ fn reconcile_pending_htlcs_with_monitor(
 
 #[cfg(test)]
 mod tests {
-	use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
+	use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentFailureReason};
 	use crate::ln::channelmanager::{
-		create_recv_pending_htlc_info, inbound_payment, InterceptId, PaymentId,
-		RecipientOnionFields,
+		create_recv_pending_htlc_info, inbound_payment, EventCompletionAction, InterceptId,
+		PaymentId, PendingEventsWriter, RecipientOnionFields,
 	};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -21545,10 +21571,46 @@ mod tests {
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
 	use crate::util::errors::APIError;
+	use crate::util::ser::{Readable, Writeable};
 	use crate::util::test_utils;
+	use bitcoin::script::ScriptBuf;
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+
+	#[test]
+	fn test_event_queue_transient_event_filtering() {
+		// Transient events, such as `FundingGenerationReady`, should not be persisted as part of
+		// the pending event queue, while others, such as `PaymentFailed`, should be.
+		let secp_ctx = Secp256k1::new();
+		let counterparty_node_id =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+
+		let mut events: VecDeque<(Event, Option<EventCompletionAction>)> = VecDeque::new();
+		events.push_back((
+			Event::FundingGenerationReady {
+				temporary_channel_id: ChannelId([2; 32]),
+				counterparty_node_id,
+				channel_value_satoshis: 100_000,
+				output_script: ScriptBuf::new(),
+				user_channel_id: 42,
+			},
+			None,
+		));
+		let payment_failed = Event::PaymentFailed {
+			payment_id: PaymentId([42; 32]),
+			payment_hash: None,
+			reason: Some(PaymentFailureReason::RecipientRejected),
+		};
+		events.push_back((payment_failed.clone(), None));
+
+		let writer = PendingEventsWriter { pending_events: &events, splice_failed_events: &[] };
+		let read: VecDeque<(Event, Option<EventCompletionAction>)> =
+			Readable::read(&mut &writer.encode()[..]).unwrap();
+		assert_eq!(read.len(), 1);
+		assert_eq!(read[0].0, payment_failed);
+		assert!(read[0].1.is_none());
+	}
 
 	#[test]
 	#[rustfmt::skip]
