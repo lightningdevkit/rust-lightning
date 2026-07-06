@@ -1241,6 +1241,25 @@ pub(super) enum ChannelReadyOrder {
 	SignaturesFirst,
 }
 
+/// Determines whether splice `tx_signatures` should be sent before or after other messages when
+/// resuming a channel.
+///
+/// The ordering matters because exchanging `tx_signatures` ends splice quiescence. A normal
+/// commitment update generated after quiescence cannot be processed by the peer until it has
+/// received our `tx_signatures`. Similarly, if the peer's signature exchange is incomplete, it
+/// cannot process `splice_locked` until the exchange adds the splice transaction to its negotiated
+/// candidates. However, an initial `commitment_signed` for the splice funding must itself be
+/// exchanged before the corresponding funding signatures.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub(super) enum TxSignaturesOrder {
+	/// Send `tx_signatures` before a normal commitment update or `splice_locked` so the peer
+	/// completes the signature exchange first.
+	SignaturesFirst,
+	/// Send `tx_signatures` after an initial splice `commitment_signed` establishes the new funding
+	/// state.
+	CommitmentFirst,
+}
+
 /// Information about a payment which is currently being claimed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ClaimingPayment {
@@ -11187,6 +11206,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				updates.funding_tx_signed,
 				None,
 				updates.channel_ready_order,
+				TxSignaturesOrder::SignaturesFirst,
 			);
 			needs_persist |= !htlc_forwards.is_empty();
 
@@ -11348,7 +11368,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		funding_broadcastable: Option<Transaction>,
 		channel_ready: Option<msgs::ChannelReady>, announcement_sigs: Option<msgs::AnnouncementSignatures>,
 		mut funding_tx_signed: Option<FundingTxSigned>, tx_abort: Option<msgs::TxAbort>,
-		channel_ready_order: ChannelReadyOrder,
+		channel_ready_order: ChannelReadyOrder, tx_signatures_order: TxSignaturesOrder,
 	) -> (Vec<PendingAddHTLCInfo>, Option<(u64, Vec<msgs::UpdateAddHTLC>)>) {
 		let logger = WithChannelContext::from(&self.logger, &channel.context, None);
 		log_trace!(logger, "Handling channel resumption with {} RAA, {} commitment update, {} pending forwards, {} pending update_add_htlcs, {}broadcasting funding, {} channel ready, {} announcement, {} tx_signatures, {} tx_abort, {} splice_locked",
@@ -11405,6 +11425,14 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				debug_assert!(funding_tx_signed.commitment_signed.is_none());
 				debug_assert!(funding_tx_signed.counterparty_initial_commitment_signed_result.is_none());
 			}
+			if let TxSignaturesOrder::SignaturesFirst = tx_signatures_order {
+				if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.tx_signatures.take()) {
+					pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+						node_id: counterparty_node_id,
+						msg,
+					});
+				}
+			}
 			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.splice_locked.take()) {
 				pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
 					node_id: counterparty_node_id,
@@ -11440,11 +11468,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 			}
 
-			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.tx_signatures.take()) {
-				pending_msg_events.push(MessageSendEvent::SendTxSignatures {
-					node_id: counterparty_node_id,
-					msg,
-				});
+			if let TxSignaturesOrder::CommitmentFirst = tx_signatures_order {
+				if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.tx_signatures.take()) {
+					pending_msg_events.push(MessageSendEvent::SendTxSignatures {
+						node_id: counterparty_node_id,
+						msg,
+					});
+				}
 			}
 			if let Some(msg) = tx_abort {
 				pending_msg_events.push(MessageSendEvent::SendTxAbort {
@@ -13669,9 +13699,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 						let need_lnd_workaround = chan.context.workaround_lnd_bug_4006.take();
 						let inferred_splice_locked = responses.inferred_splice_locked;
-						let funding_tx_signed = if responses.tx_signatures.is_some() || responses.splice_locked.is_some() {
+						let (tx_signatures_order, tx_signatures) = responses
+							.tx_signatures
+							.map(|(order, msg)| (order, Some(msg)))
+							.unwrap_or((TxSignaturesOrder::CommitmentFirst, None));
+						let funding_tx_signed = if tx_signatures.is_some() || responses.splice_locked.is_some() {
 							Some(FundingTxSigned {
-								tx_signatures: responses.tx_signatures,
+								tx_signatures,
 								splice_locked: responses.splice_locked,
 								..Default::default()
 							})
@@ -13681,7 +13715,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						let (htlc_forwards, decode_update_add_htlcs) = self.handle_channel_resumption(
 							&mut peer_state.pending_msg_events, chan, responses.raa, responses.commitment_update, responses.commitment_order,
 							Vec::new(), Vec::new(), None, responses.channel_ready, responses.announcement_sigs,
-							funding_tx_signed, responses.tx_abort, responses.channel_ready_order,
+							funding_tx_signed, responses.tx_abort, responses.channel_ready_order, tx_signatures_order,
 						);
 						debug_assert!(htlc_forwards.is_empty());
 						debug_assert!(decode_update_add_htlcs.is_none());

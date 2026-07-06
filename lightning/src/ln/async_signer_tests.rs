@@ -607,7 +607,7 @@ fn test_signer_unblocked_clears_monitor_pending_raa_after_reestablish() {
 	// completes.
 	nodes[1].enable_channel_signer_op(&node_c_id, &chan_bc.2, SignerOp::ReleaseCommitmentSecret);
 	nodes[1].node.signer_unblocked(Some((node_c_id, chan_bc.2)));
-	let (_, signer_revoke_and_ack, signer_commitment_update, _, _, _, _, _) =
+	let (_, signer_revoke_and_ack, signer_commitment_update, _, _, _, _, _, _) =
 		handle_chan_reestablish_msgs!(nodes[1], nodes[2]);
 	assert!(signer_revoke_and_ack.is_some());
 
@@ -617,12 +617,12 @@ fn test_signer_unblocked_clears_monitor_pending_raa_after_reestablish() {
 	let (latest_update, _) = nodes[1].chain_monitor.get_latest_mon_update_id(chan_bc.2);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_bc.2, latest_update);
 	check_added_monitors(&nodes[1], 0);
-	let (_, duplicate_revoke_and_ack, monitor_commitment_update, _, _, _, _, _) =
+	let (_, duplicate_revoke_and_ack, monitor_commitment_update, _, _, _, _, _, _) =
 		handle_chan_reestablish_msgs!(nodes[1], nodes[2]);
 	assert!(duplicate_revoke_and_ack.is_none());
 
 	nodes[2].node.handle_channel_reestablish(node_b_id, &bs_reestablish[0]);
-	let (_, c_revoke_and_ack, c_commitment_update, _, _, _, _, _) =
+	let (_, c_revoke_and_ack, c_commitment_update, _, _, _, _, _, _) =
 		handle_chan_reestablish_msgs!(nodes[2], nodes[1]);
 	assert!(c_revoke_and_ack.is_none());
 	assert!(c_commitment_update.is_none());
@@ -801,7 +801,7 @@ fn do_test_async_raa_peer_disconnect(
 	}
 
 	// Expect the RAA
-	let (_, revoke_and_ack, commitment_signed, resend_order, _, _, _, _) =
+	let (_, revoke_and_ack, commitment_signed, resend_order, _, _, _, _, _) =
 		handle_chan_reestablish_msgs!(dst, src);
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
 		assert!(revoke_and_ack.is_none());
@@ -817,14 +817,14 @@ fn do_test_async_raa_peer_disconnect(
 	dst.node.signer_unblocked(Some((src_node_id, chan_id)));
 
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
-		let (_, revoke_and_ack, commitment_signed, resend_order, _, _, _, _) =
+		let (_, revoke_and_ack, commitment_signed, resend_order, _, _, _, _, _) =
 			handle_chan_reestablish_msgs!(dst, src);
 		assert!(revoke_and_ack.is_some());
 		assert!(commitment_signed.is_some());
 		assert!(resend_order == RAACommitmentOrder::RevokeAndACKFirst);
 	} else {
 		// Make sure we don't double send the RAA.
-		let (_, revoke_and_ack, commitment_signed, _, _, _, _, _) =
+		let (_, revoke_and_ack, commitment_signed, _, _, _, _, _, _) =
 			handle_chan_reestablish_msgs!(dst, src);
 		assert!(revoke_and_ack.is_none());
 		assert!(commitment_signed.is_none());
@@ -951,7 +951,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	}
 
 	// Expect the RAA
-	let (_, revoke_and_ack, commitment_signed, _, _, _, _, _) =
+	let (_, revoke_and_ack, commitment_signed, _, _, _, _, _, _) =
 		handle_chan_reestablish_msgs!(dst, src);
 	assert!(revoke_and_ack.is_some());
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
@@ -965,11 +965,11 @@ fn do_test_async_commitment_signature_peer_disconnect(
 	dst.node.signer_unblocked(Some((src_node_id, chan_id)));
 
 	if test_case == UnblockSignerAcrossDisconnectCase::AtEnd {
-		let (_, _, commitment_signed, _, _, _, _, _) = handle_chan_reestablish_msgs!(dst, src);
+		let (_, _, commitment_signed, _, _, _, _, _, _) = handle_chan_reestablish_msgs!(dst, src);
 		assert!(commitment_signed.is_some());
 	} else {
 		// Make sure we don't double send the CS.
-		let (_, _, commitment_signed, _, _, _, _, _) = handle_chan_reestablish_msgs!(dst, src);
+		let (_, _, commitment_signed, _, _, _, _, _, _) = handle_chan_reestablish_msgs!(dst, src);
 		assert!(commitment_signed.is_none());
 	}
 }
