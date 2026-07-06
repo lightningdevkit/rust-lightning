@@ -2097,7 +2097,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but will only be regenerated as needed after restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as the interactive funding
+	/// negotiation it belongs to does not survive a restart and the event will only be regenerated
+	/// as needed once the negotiation reaches this point again.
 	///
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	/// [`ChannelManager::cancel_funding_contributed`]: crate::ln::channelmanager::ChannelManager::cancel_funding_contributed
@@ -2714,10 +2716,21 @@ impl Writeable for Event {
 				47u8.write(writer)?;
 				// Never write StaticInvoiceRequested events as buffered onion messages aren't serialized.
 			},
-			&Event::FundingTransactionReadyForSigning { .. } => {
-				49u8.write(writer)?;
-				// We never write out FundingTransactionReadyForSigning events as they will be regenerated when
-				// necessary.
+			&Event::FundingTransactionReadyForSigning {
+				ref channel_id,
+				ref counterparty_node_id,
+				ref user_channel_id,
+				ref unsigned_transaction,
+			} => {
+				// Type 49 was used for these events in LDK versions prior to 0.4, writing no data
+				// as they were never persisted.
+				57u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, channel_id, required),
+					(3, counterparty_node_id, required),
+					(5, user_channel_id, required),
+					(7, unsigned_transaction, required),
+				});
 			},
 			&Event::SpliceNegotiated {
 				ref channel_id,
@@ -3393,7 +3406,8 @@ impl MaybeReadable for Event {
 			45u8 => Ok(None),
 			// Note that we do not write a length-prefixed TLV for StaticInvoiceRequested events.
 			47u8 => Ok(None),
-			// Note that we do not write a length-prefixed TLV for FundingTransactionReadyForSigning events.
+			// LDK versions prior to 0.4 wrote FundingTransactionReadyForSigning events as type 49
+			// without any data, so there is nothing to read here.
 			49u8 => Ok(None),
 			50u8 => {
 				let mut f = || {
@@ -3515,6 +3529,23 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			57u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, channel_id, required),
+						(3, counterparty_node_id, required),
+						(5, user_channel_id, required),
+						(7, unsigned_transaction, required),
+					});
+					Ok(Some(Event::FundingTransactionReadyForSigning {
+						channel_id: channel_id.0.unwrap(),
+						counterparty_node_id: counterparty_node_id.0.unwrap(),
+						user_channel_id: user_channel_id.0.unwrap(),
+						unsigned_transaction: unsigned_transaction.0.unwrap(),
+					}))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -3540,8 +3571,10 @@ mod tests {
 	use super::*;
 	use crate::ln::msgs::{ChannelParameters, SocketAddress};
 	use crate::types::features::ChannelTypeFeatures;
+	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::script::ScriptBuf;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::transaction::Version;
 
 	fn assert_event_round_trips(event: Event) {
 		let encoded = event.encode();
@@ -3603,6 +3636,22 @@ mod tests {
 			channel_type: ChannelTypeFeatures::only_static_remote_key(),
 			is_announced: false,
 			params,
+		});
+	}
+
+	#[test]
+	fn test_funding_transaction_ready_for_signing_round_trip() {
+		let unsigned_transaction = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![],
+			output: vec![],
+		};
+		assert_event_round_trips(Event::FundingTransactionReadyForSigning {
+			channel_id: ChannelId([9; 32]),
+			counterparty_node_id: dummy_node_id(),
+			user_channel_id: 7,
+			unsigned_transaction,
 		});
 	}
 
