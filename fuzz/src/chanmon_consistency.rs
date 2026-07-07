@@ -2855,6 +2855,20 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.link_between(source_idx, dest_idx).first_channel_id()
 	}
 
+	// API calls are filtered before we make them if the harness knows they would
+	// target stale state. The open-channel filters below still handle tracked-
+	// closed channel ids after both peers have dropped them from list_channels.
+	fn has_stale_closed_channel_between(&self, source_idx: usize, dest_idx: usize) -> bool {
+		let channel_ids = self.channel_ids_between(source_idx, dest_idx);
+		let source_channels = self.nodes[source_idx].list_channels();
+		let dest_channels = self.nodes[dest_idx].list_channels();
+		channel_ids.iter().any(|channel_id| {
+			self.close_tracker.is_closed_or_closing(channel_id)
+				&& (source_channels.iter().any(|chan| chan.channel_id == *channel_id)
+					|| dest_channels.iter().any(|chan| chan.channel_id == *channel_id))
+		})
+	}
+
 	fn send_on_channel(
 		&mut self, source_idx: usize, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
 	) -> bool {
@@ -2874,6 +2888,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn send_hop(&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, amt: u64) {
+		// Even if we route over an open SCID, the middle node's non-strict
+		// forwarding can pick a parallel channel that the harness has already
+		// tracked closed but the node still lists. In that window, the downstream
+		// HTLC may never get committed, so close cleanup has nothing to fail back
+		// and the source payment can remain pending.
+		if self.has_stale_closed_channel_between(source_idx, middle_idx)
+			|| self.has_stale_closed_channel_between(middle_idx, dest_idx)
+		{
+			return;
+		}
 		let middle_chan_id = self.first_channel_id_between(source_idx, middle_idx);
 		let dest_chan_id = self.first_channel_id_between(middle_idx, dest_idx);
 		if !self.close_tracker.is_open(&middle_chan_id)
@@ -2929,6 +2953,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, channels: MppHopChannels,
 		amt: u64,
 	) {
+		// Even if we route over an open SCID, the middle node's non-strict
+		// forwarding can pick a parallel channel that the harness has already
+		// tracked closed but the node still lists. In that window, the downstream
+		// HTLC may never get committed, so close cleanup has nothing to fail back
+		// and the source payment can remain pending.
+		if self.has_stale_closed_channel_between(source_idx, middle_idx)
+			|| self.has_stale_closed_channel_between(middle_idx, dest_idx)
+		{
+			return;
+		}
 		let middle_chan_ids = self.channel_ids_between(source_idx, middle_idx);
 		let dest_chan_ids = self.channel_ids_between(middle_idx, dest_idx);
 		let middle_first_chan_id = middle_chan_ids[0];
