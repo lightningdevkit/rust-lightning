@@ -1425,15 +1425,21 @@ impl<'a> HarnessNode<'a> {
 
 	// Drains raw ChannelMonitor events. Monitor-generated BumpTransaction events
 	// do not flow through the manager event queue but still produce transactions
-	// the harness must mine.
+	// the harness must mine. SpendableOutputs and DiscardFunding may also surface
+	// here, but the harness does not model an external sweeper wallet.
 	fn process_monitor_pending_events(&self) -> bool {
 		// process_pending_events takes an Fn handler, so use interior mutability
 		// to report whether the callback saw anything.
 		let had_events = Cell::new(false);
 		self.monitor.process_pending_events(&|event: events::Event| {
 			had_events.set(true);
-			if let events::Event::BumpTransaction(ref bump) = event {
-				self.bump_tx_handler.handle_event(bump);
+			match event {
+				events::Event::BumpTransaction(bump) => {
+					self.bump_tx_handler.handle_event(&bump);
+				},
+				events::Event::SpendableOutputs { .. } => {},
+				events::Event::DiscardFunding { .. } => {},
+				event => panic!("Unhandled monitor event: {:?}", event),
 			}
 			Ok(())
 		});
