@@ -47,7 +47,7 @@ use lightning::chain::channelmonitor::{ChannelMonitor, ANTI_REORG_DELAY};
 use lightning::chain::{
 	chainmonitor, channelmonitor, BlockLocator, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
-use lightning::events;
+use lightning::events::{self, EventsProvider};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
@@ -85,6 +85,8 @@ use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChann
 use lightning::util::test_utils::TestWalletSource;
 use lightning::util::wallet_utils::{WalletSourceSync, WalletSync};
 
+use lightning::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
+
 use lightning_invoice::RawBolt11Invoice;
 
 use crate::utils::test_logger::{self, Output};
@@ -96,7 +98,7 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use lightning::util::dyn_signer::DynSigner;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::collections::HashSet;
 use std::mem;
@@ -105,6 +107,7 @@ use std::sync::{Arc, Mutex};
 
 const MAX_FEE: u32 = 10_000;
 const MAX_SETTLE_ITERATIONS: usize = 256;
+const FORCE_CLOSE_CLEANUP_ROUNDS: usize = 512;
 // Each wallet is seeded with enough confirmed UTXOs that repeated splice
 // transactions don't run out of inputs mid-run.
 const NUM_WALLET_UTXOS: u32 = 50;
@@ -748,6 +751,12 @@ type TestChainMonitor = chainmonitor::ChainMonitor<
 	Arc<HarnessPersister>,
 	Arc<KeyProvider>,
 >;
+type TestBumpTransactionEventHandler = BumpTransactionEventHandlerSync<
+	Arc<TestBroadcaster>,
+	Arc<WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+	Arc<KeyProvider>,
+	Arc<dyn Logger + MaybeSend + MaybeSync>,
+>;
 
 struct KeyProvider {
 	node_secret: SecretKey,
@@ -1069,7 +1078,8 @@ struct HarnessNode<'a> {
 	broadcaster: Arc<TestBroadcaster>,
 	fee_estimator: Arc<FuzzEstimator>,
 	wallet: Arc<TestWalletSource>,
-	wallet_sync: WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>,
+	wallet_sync: Arc<WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+	bump_tx_handler: TestBumpTransactionEventHandler,
 	persistence_style: ChannelMonitorUpdateStatus,
 	deferred: bool,
 	serialized_manager: Vec<u8>,
@@ -1141,7 +1151,16 @@ impl<'a> HarnessNode<'a> {
 			&persister,
 			deferred,
 		);
-		let wallet_sync = WalletSync::new(Arc::clone(&wallet), Arc::clone(&logger));
+		let wallet_sync = Arc::new(WalletSync::new(Arc::clone(&wallet), Arc::clone(&logger)));
+		// Wallet-backed handler that completes and broadcasts the transactions
+		// requested by monitor BumpTransaction events. It shares the node's
+		// wallet sync so anchor spends and splice funding share UTXO lock state.
+		let bump_tx_handler = BumpTransactionEventHandlerSync::new(
+			Arc::clone(&broadcaster),
+			Arc::clone(&wallet_sync),
+			Arc::clone(&keys_manager),
+			Arc::clone(&logger),
+		);
 		let network = Network::Bitcoin;
 		let best_block_timestamp = genesis_block(network).header.time;
 		let params = ChainParameters { network, best_block: BlockLocator::from_network(network) };
@@ -1170,6 +1189,7 @@ impl<'a> HarnessNode<'a> {
 			fee_estimator,
 			wallet,
 			wallet_sync,
+			bump_tx_handler,
 			persistence_style,
 			deferred,
 			serialized_manager: Vec::new(),
@@ -1214,26 +1234,19 @@ impl<'a> HarnessNode<'a> {
 		self.node.current_best_block().height
 	}
 
-	// Connects a block range to ChainMonitor and ChannelManager. The start
-	// heights are independent because reload may pair monitors and a manager
-	// persisted at different chain tips.
+	// Connects a block range to the ChannelManager, and to the ChainMonitor when
+	// sync_monitors is set. Reload syncs monitors separately because they can be
+	// at different heights than the manager, so it leaves them out here.
 	fn connect_chain_range(
-		&mut self, chain_state: &ChainState, monitor_start_height: u32, manager_start_height: u32,
-		target_height: u32,
+		&mut self, chain_state: &ChainState, start_height: u32, target_height: u32,
+		sync_monitors: bool,
 	) {
 		assert!(
-			target_height >= monitor_start_height,
-			"connect_chain_range cannot move monitor height backward ({} -> {})",
-			monitor_start_height,
+			target_height >= start_height,
+			"connect_chain_range cannot move height backward ({} -> {})",
+			start_height,
 			target_height
 		);
-		assert!(
-			target_height >= manager_start_height,
-			"connect_chain_range cannot move manager height backward ({} -> {})",
-			manager_start_height,
-			target_height
-		);
-		let start_height = cmp::min(monitor_start_height, manager_start_height);
 		let mut height = start_height;
 		while height < target_height {
 			let mut next_height = height + 1;
@@ -1246,29 +1259,23 @@ impl<'a> HarnessNode<'a> {
 				// allows best_block_updated to skip intermediary blocks.
 				height = target_height;
 				let (header, _) = chain_state.block_at(height);
-				if height > monitor_start_height {
+				if sync_monitors {
 					self.monitor.best_block_updated(header, height);
 				}
-				if height > manager_start_height {
-					self.node.best_block_updated(header, height);
-				}
+				self.node.best_block_updated(header, height);
 				break;
 			}
 			height = next_height;
 			let (header, txn) = chain_state.block_at(height);
 			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			if height > monitor_start_height {
+			if sync_monitors {
 				self.monitor.transactions_confirmed(header, &txdata, height);
 			}
-			if height > manager_start_height {
-				self.node.transactions_confirmed(header, &txdata, height);
-			}
-			if height > monitor_start_height {
+			self.node.transactions_confirmed(header, &txdata, height);
+			if sync_monitors {
 				self.monitor.best_block_updated(header, height);
 			}
-			if height > manager_start_height {
-				self.node.best_block_updated(header, height);
-			}
+			self.node.best_block_updated(header, height);
 		}
 	}
 
@@ -1280,7 +1287,61 @@ impl<'a> HarnessNode<'a> {
 		};
 
 		let start_height = self.manager_height();
-		self.connect_chain_range(chain_state, start_height, start_height, target_height);
+		self.connect_chain_range(chain_state, start_height, target_height, true);
+	}
+
+	// Brings every channel monitor up to the chain tip from its own best block.
+	// On reload monitors can sit at different heights, so syncing them one by
+	// one avoids replaying a block into a monitor that already saw it, which the
+	// monitor would treat as a reorg. Each block is connected the same way as
+	// live operation: confirm its transactions, then advance the best block,
+	// ending with a best-block update to the tip for the trailing empty blocks.
+	fn sync_monitors_to_tip(&self, chain_state: &ChainState) {
+		let target_height = chain_state.tip_height();
+		for chan_id in self.monitor.list_monitors() {
+			let monitor = match self.monitor.get_monitor(chan_id) {
+				Ok(monitor) => monitor,
+				Err(_) => continue,
+			};
+			let start_height = monitor.current_best_block().height;
+			if start_height >= target_height {
+				continue;
+			}
+			for height in (start_height + 1)..=target_height {
+				let (header, txn) = chain_state.block_at(height);
+				if txn.is_empty() {
+					continue;
+				}
+				let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+				monitor.transactions_confirmed(
+					header,
+					&txdata,
+					height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+				monitor.best_block_updated(
+					header,
+					height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+			}
+			let (header, txn) = chain_state.block_at(target_height);
+			if txn.is_empty() {
+				// The tip block carried no transactions, so it was skipped above.
+				// Advance the best block over the trailing empty blocks to the tip.
+				monitor.best_block_updated(
+					header,
+					target_height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+			}
+		}
 	}
 
 	fn checkpoint_manager_persistence(&mut self) -> bool {
@@ -1349,6 +1410,23 @@ impl<'a> HarnessNode<'a> {
 		self.last_htlc_clear_fee = self.fee_estimator.ret_val.load(atomic::Ordering::Acquire);
 	}
 
+	// Drains raw ChannelMonitor events. Monitor-generated BumpTransaction events
+	// do not flow through the manager event queue but still produce transactions
+	// the harness must mine.
+	fn process_monitor_pending_events(&self) -> bool {
+		// process_pending_events takes an Fn handler, so use interior mutability
+		// to report whether the callback saw anything.
+		let had_events = Cell::new(false);
+		self.monitor.process_pending_events(&|event: events::Event| {
+			had_events.set(true);
+			if let events::Event::BumpTransaction(ref bump) = event {
+				self.bump_tx_handler.handle_event(bump);
+			}
+			Ok(())
+		});
+		had_events.get()
+	}
+
 	fn splice_in(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) {
 		match self.node.splice_channel(channel_id, counterparty_node_id) {
 			Ok(funding_template) => {
@@ -1358,7 +1436,7 @@ impl<'a> HarnessNode<'a> {
 					Amount::from_sat(10_000),
 					feerate,
 					FeeRate::MAX,
-					&self.wallet_sync,
+					self.wallet_sync.as_ref(),
 				) {
 					let _ = self.node.funding_contributed(
 						channel_id,
@@ -3292,13 +3370,15 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				events::Event::SpendableOutputs { .. } => {
 					// The harness does not model an external sweeper wallet.
 				},
-				events::Event::BumpTransaction(_) => {
-					// Fee bumping is not modeled; broadcasts are relayed through
-					// the harness mempool directly.
+				events::Event::BumpTransaction(bump) => {
+					nodes[node_idx].bump_tx_handler.handle_event(&bump);
 				},
 				_ => panic!("Unhandled event: {:?}", event),
 			}
 		}
+		// Chain monitor events are processed together with manager events,
+		// mirroring how a node's background processor polls both queues.
+		had_events |= nodes[node_idx].process_monitor_pending_events();
 		while nodes[node_idx].needs_pending_htlc_processing() {
 			nodes[node_idx].process_pending_htlc_forwards();
 			had_events = true;
@@ -3436,20 +3516,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.nodes[node_idx].splice_out(&cp_node_id, &channel_id);
 	}
 
-	// Finds the earliest loaded monitor height for a node. Startup sync uses it
-	// as ChainMonitor's start height so raw monitors loaded below the manager's
-	// best block still see every block and transaction they missed.
-	fn oldest_monitor_height_for_node(&self, node_idx: usize) -> u32 {
-		let node = &self.nodes[node_idx];
-		let mut min_monitor_height = node.manager_height();
-		for chan_id in node.monitor.list_monitors() {
-			if let Ok(mon) = node.monitor.get_monitor(chan_id) {
-				min_monitor_height = cmp::min(min_monitor_height, mon.current_best_block().height);
-			}
-		}
-		min_monitor_height
-	}
-
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
 		if !self.nodes[node_idx].deferred {
 			self.nodes[node_idx].checkpoint_manager_persistence();
@@ -3489,14 +3555,18 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		let loaded_manager_generation =
 			self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
-		let monitor_start_height = self.oldest_monitor_height_for_node(node_idx);
+		// Startup sync is part of LDK's deserialization contract. Monitors and
+		// the manager can be loaded at different heights, so sync each monitor
+		// from its own best block rather than driving them all from the oldest
+		// one, which would look like a reorg to the monitors already ahead.
 		let manager_start_height = self.nodes[node_idx].manager_height();
-		// Startup sync is part of LDK's deserialization contract.
+		let tip_height = self.chain_state.tip_height();
+		self.nodes[node_idx].sync_monitors_to_tip(&self.chain_state);
 		self.nodes[node_idx].connect_chain_range(
 			&self.chain_state,
-			monitor_start_height,
 			manager_start_height,
-			self.chain_state.tip_height(),
+			tip_height,
+			false,
 		);
 		assert_eq!(
 			self.nodes[node_idx].manager_height(),
@@ -3546,10 +3616,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.process_all_events();
 
 		if self.close_tracker.has_closed_channels() {
-			// Explicit closes broadcast commitment transactions. Mine the
-			// modeled mempool so later invariants see the post-close state.
-			self.mine_relayed_txs_until_quiet();
-			self.process_all_events();
+			self.settle_force_close_onchain();
 		}
 
 		// Verify no payments are stuck - all should have resolved
@@ -3619,6 +3686,14 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			.borrow_mut()
 			.drain(..)
 			.collect::<Vec<_>>();
+		self.chain_state.relay_transactions(txs);
+	}
+
+	fn relay_all_broadcasts(&mut self) {
+		let mut txs = Vec::new();
+		for node in &self.nodes {
+			txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
+		}
 		self.chain_state.relay_transactions(txs);
 	}
 
@@ -3708,11 +3783,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 
 	fn mine_relayed_txs_until_quiet(&mut self) {
 		for _ in 0..MAX_FINISH_RELAY_MINE_ROUNDS {
-			let mut txs = Vec::new();
-			for node in &self.nodes {
-				txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
-			}
-			self.chain_state.relay_transactions(txs);
+			self.relay_all_broadcasts();
 			if self.chain_state.pending_txs.is_empty() {
 				return;
 			}
@@ -3728,6 +3799,33 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				&& self.chain_state.pending_txs.is_empty(),
 			"tx mining loop failed to quiesce",
 		);
+	}
+
+	fn settle_force_close_onchain(&mut self) {
+		// Alternate event processing, relay, and mining until all tracked
+		// closed-channel on-chain balances have resolved.
+		let deadline_blocked = "force-close cleanup was blocked by an HTLC fail-back deadline";
+		for _ in 0..FORCE_CLOSE_CLEANUP_ROUNDS {
+			self.process_all_events();
+			self.relay_all_broadcasts();
+			if !self.chain_state.pending_txs.is_empty() {
+				assert!(self.mine_blocks(ANTI_REORG_DELAY) > 0, "{}", deadline_blocked);
+				continue;
+			}
+			let has_claimable_balance = self.nodes.iter().any(|node| {
+				// get_claimable_balances ignores the channels passed in. Pass
+				// each node's own live channels so closed-channel balances stay
+				// visible.
+				let open_channels = node.node.list_channels();
+				let open_refs: Vec<_> = open_channels.iter().collect();
+				!node.monitor.get_claimable_balances(&open_refs).is_empty()
+			});
+			if !has_claimable_balance {
+				return;
+			}
+			assert!(self.mine_blocks(1) > 0, "{}", deadline_blocked);
+		}
+		panic!("force-close cleanup loop failed to quiesce");
 	}
 }
 
