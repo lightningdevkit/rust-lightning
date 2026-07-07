@@ -254,11 +254,11 @@ pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
-	pub(crate) htlc_value_satoshis: Option<u64>,
+	pub(crate) htlc_value_satoshis: u64,
 }
 impl_writeable_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
-	(1, htlc_value_satoshis, option),
+	(1, htlc_value_satoshis, required),
 	(2, source, required),
 	(4, payment_preimage, option),
 });
@@ -529,7 +529,7 @@ enum OnchainEvent {
 	HTLCUpdate {
 		source: HTLCSource,
 		payment_hash: PaymentHash,
-		htlc_value_satoshis: Option<u64>,
+		htlc_value_satoshis: u64,
 		/// None in the second case, above, ie when there is no relevant output in the commitment
 		/// transaction which appeared on chain.
 		commitment_tx_output_idx: Option<u32>,
@@ -614,7 +614,7 @@ impl MaybeReadable for OnchainEventEntry {
 impl_writeable_tlv_based_enum_upgradable!(OnchainEvent,
 	(0, HTLCUpdate) => {
 		(0, source, required),
-		(1, htlc_value_satoshis, option),
+		(1, htlc_value_satoshis, required),
 		(2, payment_hash, required),
 		(3, commitment_tx_output_idx, option),
 	},
@@ -2688,7 +2688,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					debug_assert!(htlc_spend_tx_opt.is_none());
 					htlc_spend_tx_opt = event.transaction.as_ref();
 					debug_assert!(holder_timeout_spend_pending.is_none());
-					debug_assert_eq!(htlc_value_satoshis.unwrap(), htlc.amount_msat / 1000);
+					debug_assert_eq!(htlc_value_satoshis, htlc.amount_msat / 1000);
 					holder_timeout_spend_pending = Some(event.confirmation_threshold());
 				},
 				OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, preimage, .. }
@@ -3343,7 +3343,7 @@ macro_rules! fail_unbroadcast_htlcs {
 								event: OnchainEvent::HTLCUpdate {
 									source: (**source).clone(),
 									payment_hash: htlc.payment_hash.clone(),
-									htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+									htlc_value_satoshis: htlc.amount_msat / 1000,
 									commitment_tx_output_idx: None,
 								},
 							};
@@ -4506,7 +4506,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if self.counterparty_fulfilled_htlcs.get(&SentHTLCId::from_source(source)).is_some() {
 				continue;
 			}
-			let htlc_value_satoshis = Some(amount_msat / 1000);
+			let htlc_value_satoshis = amount_msat / 1000;
 			let logger = WithContext::from(logger, None, None, Some(payment_hash));
 			// Defensively mark the HTLC as failed back so the expiry-based failure
 			// path in `block_connected` doesn't generate a duplicate `HTLCUpdate`
@@ -5936,7 +5936,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						source: source.clone(),
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
-						htlc_value_satoshis: Some(htlc.amount_msat / 1000),
+						htlc_value_satoshis: htlc.amount_msat / 1000,
 					}));
 				}
 			}
@@ -6353,7 +6353,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
-							htlc_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_satoshis: amount_msat / 1000,
 						}));
 					}
 				} else if offered_preimage_claim {
@@ -6377,7 +6377,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							source,
 							payment_preimage: Some(payment_preimage),
 							payment_hash,
-							htlc_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_satoshis: amount_msat / 1000,
 						}));
 					}
 				} else {
@@ -6398,7 +6398,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						event: OnchainEvent::HTLCUpdate {
 							source,
 							payment_hash,
-							htlc_value_satoshis: Some(amount_msat / 1000),
+							htlc_value_satoshis: amount_msat / 1000,
 							commitment_tx_output_idx: Some(input.previous_output.vout),
 						},
 					};

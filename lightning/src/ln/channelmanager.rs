@@ -10142,7 +10142,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn claim_funds_internal(
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
-		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
+		forwarded_htlc_value_msat: u64, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
 		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
@@ -10210,12 +10210,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					payment_preimage,
 					|htlc_claim_value_msat: Option<u64>| -> Option<events::Event> {
 						let total_fee_earned_msat =
-							if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-									Some(claimed_htlc_value - forwarded_htlc_value)
-								} else {
-									None
-								}
+							if let Some(claimed_htlc_value) = htlc_claim_value_msat {
+								Some(claimed_htlc_value - forwarded_htlc_value_msat)
 							} else {
 								None
 							};
@@ -12797,7 +12793,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.claim_funds_internal(
 			htlc_source,
 			msg.payment_preimage.clone(),
-			Some(forwarded_htlc_value),
+			forwarded_htlc_value,
 			skimmed_fee_msat,
 			false,
 			*counterparty_node_id,
@@ -13816,7 +13812,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							self.claim_funds_internal(
 								htlc_update.source,
 								preimage,
-								htlc_update.htlc_value_satoshis.map(|v| v * 1000),
+								htlc_update.htlc_value_satoshis * 1000,
 								None,
 								true,
 								counterparty_node_id,
@@ -20850,7 +20846,7 @@ impl<
 			channel_manager.claim_funds_internal(
 				source,
 				preimage,
-				Some(downstream_value),
+				downstream_value,
 				None,
 				downstream_closed,
 				downstream_node_id,

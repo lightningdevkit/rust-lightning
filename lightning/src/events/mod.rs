@@ -1528,7 +1528,7 @@ pub enum Event {
 		/// The final amount forwarded, in milli-satoshis, after the fee is deducted.
 		///
 		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
-		outbound_amount_forwarded_msat: Option<u64>,
+		outbound_amount_forwarded_msat: u64,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is being opened and pending
 	/// confirmation on-chain.
@@ -2224,7 +2224,7 @@ impl Writeable for Event {
 					(1, Some(legacy_prev.channel_id), option),
 					(2, claim_from_onchain_tx, required),
 					(3, Some(legacy_next.channel_id), option),
-					(5, outbound_amount_forwarded_msat, option),
+					(5, outbound_amount_forwarded_msat, required),
 					(7, skimmed_fee_msat, option),
 					(9, legacy_prev.user_channel_id, option),
 					(11, legacy_next.user_channel_id, option),
@@ -2762,7 +2762,7 @@ impl MaybeReadable for Event {
 					let mut total_fee_earned_msat = None;
 					let mut skimmed_fee_msat = None;
 					let mut claim_from_onchain_tx = false;
-					let mut outbound_amount_forwarded_msat = None;
+					let mut outbound_amount_forwarded_msat = 0;
 					let mut prev_htlcs = vec![];
 					let mut next_htlcs = vec![];
 					read_tlv_fields!(reader, {
@@ -2770,7 +2770,7 @@ impl MaybeReadable for Event {
 						(1, prev_channel_id_legacy, option),
 						(2, claim_from_onchain_tx, required),
 						(3, next_channel_id_legacy, option),
-						(5, outbound_amount_forwarded_msat, option),
+						(5, outbound_amount_forwarded_msat, required),
 						(7, skimmed_fee_msat, option),
 						(9, prev_user_channel_id_legacy, option),
 						(11, next_user_channel_id_legacy, option),
