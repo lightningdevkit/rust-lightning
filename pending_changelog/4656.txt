@@ -1,0 +1,2 @@
+## API Updates
+* The `LSPS2ServiceHandler` now expects LDK's `ChannelClosed` events to be forwarded to the new `channel_closed` method. (#4656)

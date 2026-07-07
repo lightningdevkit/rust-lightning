@@ -358,7 +358,12 @@ macro_rules! composite_custom_message_handler {
 				match message_type {
 					$(
 						$pattern => match <$type>::read(&self.$field, message_type, buffer)? {
-							None => unreachable!(),
+							// A sub-handler returns `None` for a `message_type` it doesn't
+							// recognize. The composite's pattern can be broader than the types
+							// the sub-handler decodes (e.g. a range), and `message_type` is
+							// peer-provided, so report the message as unknown rather than
+							// treating this as unreachable and panicking.
+							None => Ok(None),
 							Some(message) => Ok(Some($message::$variant(message))),
 						},
 					)*
@@ -500,6 +505,71 @@ mod tests {
 			Bar(32769),
 		}
 	);
+
+	struct ReservedBlockHandler;
+	impl CustomMessageReader for ReservedBlockHandler {
+		type CustomMessage = Foo;
+		fn read<R: LengthLimitedRead>(
+			&self, message_type: u16, _b: &mut R,
+		) -> Result<Option<Foo>, DecodeError> {
+			// This build defines only the message at 32768; the rest of the block its
+			// protocol reserved (32768..=32777) is for types future versions may add.
+			// A not-yet-defined type is unknown to this build, so per the
+			// `CustomMessageReader` contract it returns `Ok(None)` -- a newer peer can
+			// send one and this older node will treat it as an unknown message.
+			match message_type {
+				32768 => Ok(Some(Foo)),
+				_ => Ok(None),
+			}
+		}
+	}
+	impl CustomMessageHandler for ReservedBlockHandler {
+		fn handle_custom_message(&self, _msg: Foo, _: PublicKey) -> Result<(), LightningError> {
+			Ok(())
+		}
+		fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Foo)> {
+			vec![]
+		}
+		fn peer_disconnected(&self, _: PublicKey) {}
+		fn peer_connected(&self, _: PublicKey, _: &Init, _: bool) -> Result<(), ()> {
+			Ok(())
+		}
+		fn provided_node_features(&self) -> NodeFeatures {
+			NodeFeatures::empty()
+		}
+		fn provided_init_features(&self, _: PublicKey) -> InitFeatures {
+			InitFeatures::empty()
+		}
+	}
+
+	composite_custom_message_handler!(
+		struct ReservedBlockComposite {
+			proto: ReservedBlockHandler,
+		}
+
+		enum ReservedBlockMessage {
+			Proto(32768..=32777),
+		}
+	);
+
+	#[test]
+	fn read_treats_a_reserved_in_range_type_as_unknown() {
+		// A sub-handler may own a block of type ids (declared here as a range) yet only
+		// decode the subset its build defines, returning `Ok(None)` for reserved or
+		// not-yet-defined types in the block -- exactly what a node does on receiving a
+		// newer peer's message. `read` must surface that as an unknown message, not
+		// panic.
+		let composite = ReservedBlockComposite { proto: ReservedBlockHandler };
+		let mut buffer: &[u8] = &[];
+		// The message this build defines decodes to its variant.
+		assert!(matches!(
+			composite.read(32768, &mut buffer),
+			Ok(Some(ReservedBlockMessage::Proto(_)))
+		));
+		// A reserved type from the same block is reported unknown, not panicked
+		// (pre-fix the matched arm hit `unreachable!()`).
+		assert!(matches!(composite.read(32770, &mut buffer), Ok(None)));
+	}
 
 	#[test]
 	fn peer_connected_failure_does_not_leak_subhandler_state() {

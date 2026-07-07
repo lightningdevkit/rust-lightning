@@ -335,6 +335,7 @@ where
 				did_persist = true;
 			} else {
 				self.persist_peer_state(client_id).await?;
+				did_persist = true;
 			}
 		}
 

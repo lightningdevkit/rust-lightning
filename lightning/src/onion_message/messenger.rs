@@ -273,6 +273,7 @@ pub struct OnionMessenger<
 	dns_resolver_handler: DRH,
 	custom_handler: CMH,
 	intercept_messages_for_offline_peers: bool,
+	intercept_for_unknown_scids: bool,
 	pending_intercepted_msgs_events: Mutex<Vec<Event>>,
 	pending_peer_connected_events: Mutex<Vec<Event>>,
 	pending_events_processor: AtomicBool,
@@ -563,10 +564,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource>
 		// Limit the number of blinded paths that are computed.
 		const MAX_PATHS: usize = 3;
 
-		// Ensure peers have at least three channels so that it is more difficult to infer the
-		// recipient's node_id.
-		const MIN_PEER_CHANNELS: usize = 3;
-
 		let network_graph = network_graph.deref().read_only();
 		let is_recipient_announced =
 			network_graph.nodes().contains_key(&NodeId::from_pubkey(&recipient));
@@ -596,32 +593,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource>
 
 		let compact_paths = !never_compact_path && size_constrained;
 
-		let has_one_peer = peers.len() == 1;
-		let mut peer_info = peers
-			.map(|peer| MessageForwardNode {
-				short_channel_id: if compact_paths { peer.short_channel_id } else { None },
-				..peer
-			})
-			// Limit to peers with announced channels unless the recipient is unannounced.
-			.filter_map(|peer| {
-				network_graph
-					.node(&NodeId::from_pubkey(&peer.node_id))
-					.filter(|info| {
-						!is_recipient_announced || info.channels.len() >= MIN_PEER_CHANNELS
-					})
-					.map(|info| (peer, info.is_tor_only(), info.channels.len()))
-					// Allow messages directly with the only peer when unannounced.
-					.or_else(|| (!is_recipient_announced && has_one_peer).then(|| (peer, false, 0)))
-			})
-			// Exclude Tor-only nodes when the recipient is announced.
-			.filter(|(_, is_tor_only, _)| !(*is_tor_only && is_recipient_announced))
-			.collect::<Vec<_>>();
-
-		// Prefer using non-Tor nodes with the most channels as the introduction node.
-		peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
-			a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
-		});
-
 		let build_path = |intermediate_hops: &[MessageForwardNode]| {
 			// Calculate the dummy hops given the total hop count target (including the recipient).
 			let dummy_hops_count = path_len_incl_dummys.saturating_sub(intermediate_hops.len() + 1);
@@ -638,12 +609,39 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource>
 			)
 		};
 
-		// Try to create paths from peer info, fall back to direct path if needed
-		let mut paths = peer_info
-			.into_iter()
-			.map(|(peer, _, _)| build_path(&[peer]))
-			.take(MAX_PATHS)
-			.collect::<Vec<_>>();
+		let has_one_peer = peers.len() == 1;
+		let mut paths = if !is_recipient_announced {
+			let mut peer_info = peers
+				.map(|peer| MessageForwardNode {
+					short_channel_id: if compact_paths { peer.short_channel_id } else { None },
+					..peer
+				})
+				.filter_map(|peer| {
+					network_graph
+						.node(&NodeId::from_pubkey(&peer.node_id))
+						.map(|info| (peer, info.is_tor_only(), info.channels.len()))
+						// Allow messages directly with the only peer
+						.or_else(|| has_one_peer.then(|| (peer, false, 0)))
+				})
+				.collect::<Vec<_>>();
+
+			// Prefer using non-Tor nodes with the most channels as the introduction node.
+			peer_info.sort_unstable_by(
+				|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
+					a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
+				},
+			);
+
+			// Try to create paths from peer info, fall back to direct path if needed
+			peer_info
+				.into_iter()
+				.map(|(peer, _, _)| build_path(&[peer]))
+				.take(MAX_PATHS)
+				.collect::<Vec<_>>()
+		} else {
+			vec![]
+		};
+
 		if paths.is_empty() {
 			if is_recipient_announced {
 				paths = vec![build_path(&[])];
@@ -1396,6 +1394,7 @@ impl<
 			dns_resolver,
 			custom_handler,
 			false,
+			false,
 		)
 	}
 
@@ -1403,11 +1402,18 @@ impl<
 	/// intended to be forwarded to offline peers, we will intercept them for
 	/// later forwarding.
 	///
+	/// If `intercept_for_unknown_scids` is set, we will additionally intercept onion messages whose
+	/// next hop is a [`NextMessageHop::ShortChannelId`] that cannot be resolved to a connected
+	/// peer, generating an [`Event::OnionMessageIntercepted`] with a
+	/// [`NextMessageHop::ShortChannelId`] next hop. This variant of the event was introduced in
+	/// LDK 0.3, so users who persist [`Event::OnionMessageIntercepted`] events and may need to
+	/// downgrade to LDK 0.2 must leave this disabled.
+	///
 	/// Interception flow:
-	/// 1. If an onion message for an offline peer is received, `OnionMessenger` will
-	///    generate an [`Event::OnionMessageIntercepted`]. Event handlers can
-	///    then choose to persist this onion message for later forwarding, or drop
-	///    it.
+	/// 1. If an onion message for an offline peer or (if `intercept_for_unknown_scids` is set) an
+	///    unknown SCID is received, `OnionMessenger` will generate an
+	///    [`Event::OnionMessageIntercepted`]. Event handlers can then choose to persist this
+	///    onion message for later forwarding, or drop it.
 	/// 2. When the offline peer later comes back online, `OnionMessenger` will
 	///    generate an [`Event::OnionMessagePeerConnected`]. Event handlers will
 	///    then fetch all previously intercepted onion messages for this peer.
@@ -1423,6 +1429,7 @@ impl<
 	pub fn new_with_offline_peer_interception(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL, message_router: MR,
 		offers_handler: OMH, async_payments_handler: APH, dns_resolver: DRH, custom_handler: CMH,
+		intercept_for_unknown_scids: bool,
 	) -> Self {
 		Self::new_inner(
 			entropy_source,
@@ -1435,13 +1442,14 @@ impl<
 			dns_resolver,
 			custom_handler,
 			true,
+			intercept_for_unknown_scids,
 		)
 	}
 
 	fn new_inner(
 		entropy_source: ES, node_signer: NS, logger: L, node_id_lookup: NL, message_router: MR,
 		offers_handler: OMH, async_payments_handler: APH, dns_resolver: DRH, custom_handler: CMH,
-		intercept_messages_for_offline_peers: bool,
+		intercept_messages_for_offline_peers: bool, intercept_for_unknown_scids: bool,
 	) -> Self {
 		let mut secp_ctx = Secp256k1::new();
 		secp_ctx.seeded_randomize(&entropy_source.get_secure_random_bytes());
@@ -1458,6 +1466,7 @@ impl<
 			dns_resolver_handler: dns_resolver,
 			custom_handler,
 			intercept_messages_for_offline_peers,
+			intercept_for_unknown_scids,
 			pending_intercepted_msgs_events: Mutex::new(Vec::new()),
 			pending_peer_connected_events: Mutex::new(Vec::new()),
 			pending_events_processor: AtomicBool::new(false),
@@ -1547,6 +1556,7 @@ impl<
 
 		let result = if is_forward {
 			self.enqueue_forwarded_onion_message(
+				None,
 				NextMessageHop::NodeId(first_node_id),
 				onion_message,
 				log_suffix,
@@ -1662,14 +1672,29 @@ impl<
 	}
 
 	fn enqueue_forwarded_onion_message(
-		&self, next_hop: NextMessageHop, onion_message: OnionMessage, log_suffix: fmt::Arguments,
+		&self, prev_hop: Option<PublicKey>, next_hop: NextMessageHop, onion_message: OnionMessage,
+		log_suffix: fmt::Arguments,
 	) -> Result<(), SendError> {
 		let next_node_id = match next_hop {
 			NextMessageHop::NodeId(pubkey) => pubkey,
 			NextMessageHop::ShortChannelId(scid) => match self.node_id_lookup.next_node_id(scid) {
 				Some(pubkey) => pubkey,
 				None => {
-					log_trace!(self.logger, "Dropping forwarded onion messager: unable to resolve next hop using SCID {} {}", scid, log_suffix);
+					if self.intercept_for_unknown_scids {
+						log_trace!(
+							self.logger,
+							"Generating OnionMessageIntercepted event for SCID {} {}",
+							scid,
+							log_suffix
+						);
+						self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
+							prev_hop,
+							next_hop,
+							message: onion_message,
+						});
+						return Ok(());
+					}
+					log_trace!(self.logger, "Dropping forwarded onion message: unable to resolve next hop using SCID {} {}", scid, log_suffix);
 					return Err(SendError::GetNodeIdFailed);
 				},
 			},
@@ -1712,7 +1737,11 @@ impl<
 					log_suffix
 				);
 				self.enqueue_intercepted_event(Event::OnionMessageIntercepted {
-					peer_node_id: next_node_id,
+					prev_hop,
+					// Report the resolved node id rather than `next_hop`, which may be a
+					// `ShortChannelId` that we resolved to a known-but-offline peer. The
+					// `ShortChannelId` variant is reserved for the unknown-SCID interception path.
+					next_hop: NextMessageHop::NodeId(next_node_id),
 					message: onion_message,
 				});
 				Ok(())
@@ -2293,6 +2322,7 @@ impl<
 			},
 			Ok(PeeledOnion::Forward(next_hop, onion_message)) => {
 				let _ = self.enqueue_forwarded_onion_message(
+					Some(peer_node_id),
 					next_hop,
 					onion_message,
 					format_args!("when forwarding peeled onion message from {}", peer_node_id),

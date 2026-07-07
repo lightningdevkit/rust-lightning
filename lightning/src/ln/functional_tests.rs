@@ -8579,7 +8579,7 @@ pub fn test_inconsistent_mpp_params() {
 	pass_along_path(&nodes[0], path_b, real_amt, hash, Some(payment_secret), event, true, None);
 
 	do_claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], &[path_a, path_b], preimage));
-	expect_payment_sent(&nodes[0], preimage, Some(None), true, true);
+	expect_payment_sent(&nodes[0], preimage, Some(Some(2000)), true, true);
 }
 
 #[xtest(feature = "_externalize_tests")]

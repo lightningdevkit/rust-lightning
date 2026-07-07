@@ -1281,7 +1281,7 @@ mod test {
 		assert!(!invoice.features().unwrap().supports_basic_mpp());
 
 		let payment_params = PaymentParameters::from_node_id(
-			invoice.recover_payee_pub_key(),
+			invoice.get_payee_pub_key(),
 			invoice.min_final_cltv_expiry_delta() as u32,
 		)
 		.with_bolt11_features(invoice.features().unwrap().clone())
@@ -1347,7 +1347,7 @@ mod test {
 			payment_secret,
 			payment_amt,
 			payment_preimage_opt,
-			invoice.recover_payee_pub_key(),
+			invoice.get_payee_pub_key(),
 		);
 		do_claim_payment_along_route(ClaimAlongRouteArgs::new(
 			&nodes[0],

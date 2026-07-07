@@ -1023,7 +1023,7 @@ pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 macro_rules! get_event_msg {
 	($node: expr, $event_type: path, $node_id: expr) => {{
 		let events = $node.node.get_and_clear_pending_msg_events();
-		assert_eq!(events.len(), 1);
+		assert_eq!(events.len(), 1, "{events:?}");
 		match events[0] {
 			$event_type { ref node_id, ref msg } => {
 				assert_eq!(*node_id, $node_id);
@@ -4799,6 +4799,7 @@ pub fn create_network<'a, 'b: 'a, 'c: 'b>(
 			&chan_mgrs[i],
 			IgnoringMessageHandler {},
 			IgnoringMessageHandler {},
+			true,
 		);
 		let gossip_sync = P2PGossipSync::new(cfgs[i].network_graph.as_ref(), None, cfgs[i].logger);
 		let wallet_source = Arc::new(test_utils::TestWalletSource::new(

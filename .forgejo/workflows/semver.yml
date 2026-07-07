@@ -1,0 +1,27 @@
+name: SemVer checks
+on:
+  push:
+    branches-ignore:
+      - master
+  pull_request:
+    branches-ignore:
+      - master
+
+jobs:
+  semver-checks:
+    runs-on: debian-trixie
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Install Rust stable toolchain
+        run: |
+          rustup default stable
+          rustup override set stable
+      - name: Install SemVer Checker
+        run: cargo install cargo-semver-checks --locked
+      - name: Check SemVer with all features
+        run: cargo semver-checks
+      - name: Check SemVer without any non-default features
+        run: cargo semver-checks --only-explicit-features

@@ -2070,9 +2070,12 @@ where
 
 		let tx_abort = should_ack.then(|| {
 			let logger = WithChannelContext::from(logger, &self.context(), None);
-			let reason =
-				types::string::UntrustedString(String::from_utf8_lossy(&msg.data).to_string());
-			log_info!(logger, "Counterparty failed interactive transaction negotiation: {reason}");
+			let reason = String::from_utf8_lossy(&msg.data);
+			log_info!(
+				logger,
+				"Counterparty failed interactive transaction negotiation: {}",
+				log_msg!(reason)
+			);
 			msgs::TxAbort {
 				channel_id: msg.channel_id,
 				data: "Acknowledged tx_abort".to_string().into_bytes(),
@@ -2994,15 +2997,6 @@ struct PendingFunding {
 	contributions: Vec<FundingContribution>,
 }
 
-impl_writeable_tlv_based!(PendingFunding, {
-	(1, funding_negotiation, upgradable_option),
-	(3, negotiated_candidates, required_vec),
-	(5, sent_funding_txid, option),
-	(7, received_funding_txid, option),
-	(8, last_funding_feerate_sat_per_1000_weight, option),
-	(10, contributions, optional_vec),
-});
-
 #[derive(Debug)]
 enum FundingNegotiation {
 	AwaitingAck {
@@ -3041,6 +3035,57 @@ impl_writeable_tlv_based_enum_upgradable!(FundingNegotiation,
 	},
 	unread_variants: AwaitingAck, ConstructingTransaction
 );
+
+struct PendingFundingWriteable<'a> {
+	pending_funding: &'a PendingFunding,
+	reset_funding_negotiation: bool,
+}
+
+impl Writeable for PendingFundingWriteable<'_> {
+	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
+		let funding_negotiation = if self.reset_funding_negotiation {
+			None
+		} else {
+			self.pending_funding.funding_negotiation.as_ref()
+		};
+		debug_assert!(
+			funding_negotiation.is_none()
+				|| matches!(
+					funding_negotiation,
+					Some(FundingNegotiation::AwaitingSignatures { .. })
+				)
+		);
+		let contributions_len = if self.reset_funding_negotiation
+			&& self.pending_funding.funding_negotiation.is_some()
+		{
+			self.pending_funding.contributions.len().saturating_sub(1)
+		} else {
+			self.pending_funding.contributions.len()
+		};
+		write_tlv_fields!(writer, {
+			(1, funding_negotiation, upgradable_option),
+			(3, self.pending_funding.negotiated_candidates, required_vec),
+			(5, self.pending_funding.sent_funding_txid, option),
+			(7, self.pending_funding.received_funding_txid, option),
+			(8, self.pending_funding.last_funding_feerate_sat_per_1000_weight, option),
+			(10, self.pending_funding.contributions[..contributions_len], optional_vec),
+		});
+		Ok(())
+	}
+}
+
+impl Readable for PendingFunding {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		Ok(_decode_and_build!(reader, Self, {
+			(1, funding_negotiation, upgradable_option),
+			(3, negotiated_candidates, required_vec),
+			(5, sent_funding_txid, option),
+			(7, received_funding_txid, option),
+			(8, last_funding_feerate_sat_per_1000_weight, option),
+			(10, contributions, optional_vec),
+		}))
+	}
+}
 
 impl FundingNegotiation {
 	fn as_funding(&self) -> Option<&FundingScope> {
@@ -8574,6 +8619,15 @@ where
 				"Got a single commitment_signed message when expecting a batch".to_owned(),
 			));
 		}
+		if let Some(funding_txid) = msg.funding_txid {
+			let locked_funding_txid =
+				self.funding.get_funding_txid().expect("funded channel must have known txid");
+			if funding_txid != locked_funding_txid {
+				return Err(ChannelError::Ignore(format!(
+					"Ignoring commitment_signed for stale funding txid {funding_txid}"
+				)));
+			}
+		}
 
 		let transaction_number = self.holder_commitment_point.next_transaction_number();
 		let commitment_point = self.holder_commitment_point.next_point();
@@ -9490,8 +9544,10 @@ where
 		&mut self, funding_tx_signed: &mut FundingTxSigned, funding_tx: Transaction,
 		best_block_height: u32, logger: &WithChannelContext<'a, L>,
 	) {
-		debug_assert!(!self.context.channel_state.is_monitor_update_in_progress());
-		debug_assert!(!self.context.channel_state.is_awaiting_remote_revoke());
+		debug_assert!(
+			!self.is_awaiting_monitor_update() || !self.context.monitor_pending_tx_signatures
+		);
+		debug_assert!(!self.context.is_waiting_on_peer_pending_channel_update());
 
 		if let Some(pending_splice) = self.pending_splice.as_mut() {
 			if let Some(FundingNegotiation::AwaitingSignatures {
@@ -9644,11 +9700,11 @@ where
 			splice_negotiated: None,
 			splice_locked: None,
 		};
-		if self.is_awaiting_monitor_update() {
+		if self.is_awaiting_monitor_update() && self.context.monitor_pending_tx_signatures {
 			// Although the user may have already provided our `tx_signatures`, we must not send
 			// them if we're waiting for the monitor to durably persist the counterparty's signature
 			// for our initial commitment post-splice.
-			debug_assert!(self.context.monitor_pending_tx_signatures);
+			debug_assert!(holder_tx_signatures.is_some());
 			log_debug!(
 				logger,
 				"Waiting for async monitor update to complete prior to releasing our tx_signatures"
@@ -10222,6 +10278,13 @@ where
 			self.context.signer_pending_commitment_update = true;
 			commitment_update = None;
 		}
+		if revoke_and_ack.is_some() {
+			// If signer-pending state regenerated an RAA, the monitor update for that RAA was
+			// already persisted before we set `signer_pending_revoke_and_ack`. Thus, if reconnect
+			// also marked the same RAA monitor-pending while another monitor update was in flight,
+			// the RAA we're returning here satisfies that monitor-pending resend.
+			self.context.monitor_pending_revoke_and_ack = false;
+		}
 
 		let (closing_signed, signed_closing_tx, shutdown_result) = if self.context.signer_pending_closing {
 			debug_assert!(self.context.last_sent_closing_fee.is_some());
@@ -10598,10 +10661,6 @@ where
 					)));
 				}
 
-				if !session.has_received_commitment_signed() {
-					self.context.expecting_peer_commitment_signed = true;
-				}
-
 				if !session.has_holder_witnesses() {
 					log_debug!(logger, "Waiting for funding transaction signatures to be provided");
 				} else {
@@ -10719,6 +10778,9 @@ where
 		let required_revoke = if msg.next_remote_commitment_number == our_commitment_transaction {
 			// Remote isn't waiting on any RevokeAndACK from us!
 			// Note that if we need to repeat our ChannelReady we'll do that in the next if block.
+			// If a stale ChannelManager replayed a completed update, the monitor-pending state may
+			// still think we owe one; the reestablish proof is authoritative here.
+			self.context.monitor_pending_revoke_and_ack = false;
 			None
 		} else if msg.next_remote_commitment_number + 1 == our_commitment_transaction {
 			if self.context.channel_state.is_monitor_update_in_progress() {
@@ -10789,9 +10851,25 @@ where
 					channel_id: self.context.channel_id,
 					splice_txid,
 				})
+		}).or_else(|| {
+			// If a splice confirms after we've sent `channel_reestablish` but before we've received
+			// theirs, we may promote the splice and clear `pending_splice`. We still need to send
+			// `splice_locked` after reestablishing as it was not included in our
+			// `channel_reestablish`.
+			let current_funding_txid = self.funding.get_funding_txid()?;
+			(self.pending_splice.is_none()
+				&& self.funding.channel_transaction_parameters.splice_parent_funding_txid.is_some()
+				&& Some(current_funding_txid) != funding_locked_txid_sent_in_reestablish)
+				.then(|| msgs::SpliceLocked {
+					channel_id: self.context.channel_id,
+					splice_txid: current_funding_txid,
+				})
 		});
 
 		if msg.next_local_commitment_number == next_counterparty_commitment_number {
+			// If a stale ChannelManager replayed a completed update, the monitor-pending state may
+			// still think we owe one.
+			self.context.monitor_pending_commitment_signed = false;
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected with only lost outbound RAA");
 			} else {
@@ -13774,6 +13852,8 @@ where
 			remote_stats.available_balances.next_splice_out_maximum_sat;
 
 		#[cfg(debug_assertions)]
+		if !self.context.is_waiting_on_peer_pending_channel_update()
+			&& !self.context.is_monitor_or_signer_pending_channel_update()
 		{
 			// After this max splice out, validation passes, accounting for the updated reserves
 			self.validate_splice_contributions(
@@ -16308,10 +16388,18 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 		let holder_commitment_point_next = self.holder_commitment_point.next_point();
 		let holder_commitment_point_pending_next = self.holder_commitment_point.pending_next_point;
 
-		// We don't have to worry about resetting the pending `FundingNegotiation` because we
-		// can only read `FundingNegotiation::AwaitingSignatures` variants anyway.
-		let pending_splice =
-			self.pending_splice.as_ref().filter(|_| !self.should_reset_pending_splice_state(true));
+		// Avoid writing any negotiations that are not at the signing stage yet, as they cannot be
+		// resumed on reestablishment, but keep any already-negotiated candidates.
+		let reset_funding_negotiation = self.should_reset_pending_splice_state(true);
+		let should_persist_pending_splice =
+			!reset_funding_negotiation || !self.pending_funding().is_empty();
+		let pending_splice = should_persist_pending_splice
+			.then(|| ())
+			.and_then(|_| self.pending_splice.as_ref())
+			.map(|pending_funding| PendingFundingWriteable {
+				pending_funding,
+				reset_funding_negotiation,
+			});
 
 		let monitor_pending_tx_signatures =
 			self.context.monitor_pending_tx_signatures.then_some(());

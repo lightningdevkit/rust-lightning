@@ -56,7 +56,7 @@ use crate::ln::channelmanager::{PaymentId, RecentPaymentDetails, self};
 use crate::ln::outbound_payment::{Bolt12PaymentError, RecipientOnionFields, Retry};
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::ln::functional_test_utils::*;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, NodeAnnouncement, OnionMessage, OnionMessageHandler, RoutingMessageHandler, SocketAddress, UnsignedGossipMessage, UnsignedNodeAnnouncement};
+use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, OnionMessage, OnionMessageHandler};
 use crate::ln::outbound_payment::IDEMPOTENCY_TIMEOUT_TICKS;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_error::InvoiceError;
@@ -66,9 +66,8 @@ use crate::offers::offer::OfferBuilder;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
-use crate::routing::gossip::{NodeAlias, NodeId};
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
-use crate::sign::{NodeSigner, Recipient};
+use crate::sign::NodeSigner;
 use crate::util::ser::Writeable;
 
 /// This used to determine whether we built a compact path or not, but now its just a random
@@ -122,38 +121,6 @@ fn disconnect_peers<'a, 'b, 'c>(node_a: &Node<'a, 'b, 'c>, peers: &[&Node<'a, 'b
 		node_b.node.peer_disconnected(node_a.node.get_our_node_id());
 		node_a.onion_messenger.peer_disconnected(node_b.node.get_our_node_id());
 		node_b.onion_messenger.peer_disconnected(node_a.node.get_our_node_id());
-	}
-}
-
-fn announce_node_address<'a, 'b, 'c>(
-	node: &Node<'a, 'b, 'c>, peers: &[&Node<'a, 'b, 'c>], address: SocketAddress,
-) {
-	let features = node.onion_messenger.provided_node_features()
-		| node.gossip_sync.provided_node_features();
-	let rgb = [0u8; 3];
-	let announcement = UnsignedNodeAnnouncement {
-		features,
-		timestamp: 1000,
-		node_id: NodeId::from_pubkey(&node.keys_manager.get_node_id(Recipient::Node).unwrap()),
-		rgb,
-		alias: NodeAlias([0u8; 32]),
-		addresses: vec![address],
-		excess_address_data: Vec::new(),
-		excess_data: Vec::new(),
-	};
-	let signature = node.keys_manager.sign_gossip_message(
-		UnsignedGossipMessage::NodeAnnouncement(&announcement)
-	).unwrap();
-
-	let msg = NodeAnnouncement {
-		signature,
-		contents: announcement
-	};
-
-	let node_pubkey = node.node.get_our_node_id();
-	node.gossip_sync.handle_node_announcement(None, &msg).unwrap();
-	for peer in peers {
-		peer.gossip_sync.handle_node_announcement(Some(node_pubkey), &msg).unwrap();
 	}
 }
 
@@ -360,126 +327,6 @@ fn create_refund_with_no_blinded_path() {
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert_eq!(refund.payer_signing_pubkey(), alice_id);
 	assert!(refund.paths().is_empty());
-}
-
-/// Checks that blinded paths without Tor-only nodes are preferred when constructing an offer.
-#[test]
-fn prefers_non_tor_nodes_in_blinded_paths() {
-	let mut accept_forward_cfg = test_default_channel_config();
-	accept_forward_cfg.accept_forwards_to_priv_channels = true;
-
-	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
-	features.set_onion_messages_optional();
-	features.set_route_blinding_optional();
-
-	let chanmon_cfgs = create_chanmon_cfgs(6);
-	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
-
-	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
-
-	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
-	);
-	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
-
-	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
-	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
-
-	// Add an extra channel so that more than one of Bob's peers have MIN_PEER_CHANNELS.
-	create_announced_chan_between_nodes_with_value(&nodes, 4, 5, 10_000_000, 1_000_000_000);
-
-	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
-	let bob_id = bob.node.get_our_node_id();
-	let charlie_id = charlie.node.get_our_node_id();
-
-	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
-	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
-
-	let tor = SocketAddress::OnionV2([255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 38, 7]);
-	announce_node_address(charlie, &[alice, bob, david, &nodes[4], &nodes[5]], tor.clone());
-
-	let offer = bob.node
-		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
-	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
-	assert!(!offer.paths().is_empty());
-	for path in offer.paths() {
-		let introduction_node_id = resolve_introduction_node(david, &path);
-		assert_ne!(introduction_node_id, bob_id);
-		assert_ne!(introduction_node_id, charlie_id);
-	}
-
-	// Use a one-hop blinded path when Bob is announced and all his peers are Tor-only.
-	announce_node_address(&nodes[4], &[alice, bob, charlie, david, &nodes[5]], tor.clone());
-	announce_node_address(&nodes[5], &[alice, bob, charlie, david, &nodes[4]], tor.clone());
-
-	let offer = bob.node
-		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
-	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
-	assert!(!offer.paths().is_empty());
-	for path in offer.paths() {
-		let introduction_node_id = resolve_introduction_node(david, &path);
-		assert_eq!(introduction_node_id, bob_id);
-	}
-}
-
-/// Checks that blinded paths prefer an introduction node that is the most connected.
-#[test]
-fn prefers_more_connected_nodes_in_blinded_paths() {
-	let mut accept_forward_cfg = test_default_channel_config();
-	accept_forward_cfg.accept_forwards_to_priv_channels = true;
-
-	let mut features = channelmanager::provided_init_features(&accept_forward_cfg);
-	features.set_onion_messages_optional();
-	features.set_route_blinding_optional();
-
-	let chanmon_cfgs = create_chanmon_cfgs(6);
-	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
-
-	*node_cfgs[1].override_init_features.borrow_mut() = Some(features);
-
-	let node_chanmgrs = create_node_chanmgrs(
-		6, &node_cfgs, &[None, Some(accept_forward_cfg), None, None, None, None]
-	);
-	let nodes = create_network(6, &node_cfgs, &node_chanmgrs);
-
-	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
-	create_unannounced_chan_between_nodes_with_value(&nodes, 2, 3, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 4, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 1, 5, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 2, 4, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 2, 5, 10_000_000, 1_000_000_000);
-
-	// Add extra channels so that more than one of Bob's peers have MIN_PEER_CHANNELS and one has
-	// more than the others.
-	create_announced_chan_between_nodes_with_value(&nodes, 0, 4, 10_000_000, 1_000_000_000);
-	create_announced_chan_between_nodes_with_value(&nodes, 3, 4, 10_000_000, 1_000_000_000);
-
-	let (alice, bob, charlie, david) = (&nodes[0], &nodes[1], &nodes[2], &nodes[3]);
-	let bob_id = bob.node.get_our_node_id();
-
-	disconnect_peers(alice, &[charlie, david, &nodes[4], &nodes[5]]);
-	disconnect_peers(david, &[bob, &nodes[4], &nodes[5]]);
-
-	let offer = bob.node
-		.create_offer_builder().unwrap()
-		.amount_msats(10_000_000)
-		.build().unwrap();
-	assert_ne!(offer.issuer_signing_pubkey(), Some(bob_id));
-	assert!(!offer.paths().is_empty());
-	for path in offer.paths() {
-		let introduction_node_id = resolve_introduction_node(david, &path);
-		assert_eq!(introduction_node_id, nodes[4].node.get_our_node_id());
-	}
 }
 
 /// Tests the dummy hop behavior of Offers based on the message router used:

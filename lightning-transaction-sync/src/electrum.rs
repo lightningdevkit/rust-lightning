@@ -5,7 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
-use crate::common::{ConfirmedTx, FilterQueue, SyncState};
+use crate::common::{is_potentially_unsafe_merkle_leaf, ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 
 use electrum_client::utils::validate_merkle_proof;
@@ -277,14 +277,14 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		for txid in &sync_state.watched_transactions {
 			match self.client.transaction_get(&txid) {
 				Ok(tx) => {
-					// Bitcoin Core's Merkle tree implementation has no way to discern between
-					// internal and leaf node entries. As a consequence it is susceptible to an
-					// attacker injecting additional transactions by crafting 64-byte
-					// transactions matching an inner Merkle node's hash (see
-					// https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
-					// To protect against this (highly unlikely) attack vector, we check that the
-					// transaction is at least 65 bytes in length.
-					if tx.total_size() == 64 {
+					if tx.compute_txid() != *txid {
+						log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
+						return Err(InternalError::Failed);
+					}
+
+					// Skip before using an arbitrary returned output to look up the
+					// transaction's script history.
+					if is_potentially_unsafe_merkle_leaf(&tx) {
 						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
 						continue;
 					}
@@ -340,8 +340,9 @@ impl<L: Logger> ElectrumSyncClient<L> {
 							continue;
 						}
 						let prob_conf_height = history.height as u32;
-						let confirmed_tx = self.get_confirmed_tx(tx, prob_conf_height)?;
-						confirmed_txs.push(confirmed_tx);
+						if let Some(confirmed_tx) = self.get_confirmed_tx(tx, prob_conf_height)? {
+							confirmed_txs.push(confirmed_tx);
+						}
 					}
 					if filtered_history.next().is_some() {
 						log_error!(
@@ -369,6 +370,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 
 						match self.client.transaction_get(&txid) {
 							Ok(tx) => {
+								if tx.compute_txid() != txid {
+									log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
+									return Err(InternalError::Failed);
+								}
+
 								let mut is_spend = false;
 								for txin in &tx.input {
 									let watched_outpoint =
@@ -384,8 +390,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 								}
 
 								let prob_conf_height = possible_output_spend.height as u32;
-								let confirmed_tx = self.get_confirmed_tx(&tx, prob_conf_height)?;
-								confirmed_txs.push(confirmed_tx);
+								if let Some(confirmed_tx) =
+									self.get_confirmed_tx(&tx, prob_conf_height)?
+								{
+									confirmed_txs.push(confirmed_tx);
+								}
 							},
 							Err(e) => {
 								log_trace!(
@@ -450,8 +459,21 @@ impl<L: Logger> ElectrumSyncClient<L> {
 
 	fn get_confirmed_tx(
 		&self, tx: &Transaction, prob_conf_height: u32,
-	) -> Result<ConfirmedTx, InternalError> {
+	) -> Result<Option<ConfirmedTx>, InternalError> {
 		let txid = tx.compute_txid();
+		// Bitcoin Core's Merkle tree implementation has no way to discern between internal and
+		// leaf node entries. As a consequence it is susceptible to an attacker injecting
+		// additional transactions by crafting 64-byte transactions matching an inner Merkle
+		// node's hash (see https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
+		if is_potentially_unsafe_merkle_leaf(tx) {
+			log_error!(
+				self.logger,
+				"Skipping transaction {} due to retrieving potentially invalid tx data.",
+				txid
+			);
+			return Ok(None);
+		}
+
 		match self.client.transaction_get_merkle(&txid, prob_conf_height as usize) {
 			Ok(merkle_res) => {
 				debug_assert_eq!(prob_conf_height, merkle_res.block_height as u32);
@@ -473,7 +495,7 @@ impl<L: Logger> ElectrumSyncClient<L> {
 							block_height: prob_conf_height,
 							pos,
 						};
-						Ok(confirmed_tx)
+						Ok(Some(confirmed_tx))
 					},
 					Err(e) => {
 						log_error!(
@@ -515,5 +537,25 @@ impl<L: Logger> Filter for ElectrumSyncClient<L> {
 	fn register_output(&self, output: WatchedOutput) {
 		let mut locked_queue = self.queue.lock().unwrap();
 		locked_queue.outputs.insert(output.outpoint.into_bitcoin_outpoint(), output);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	#[test]
+	fn transaction_get_responses_are_verified_at_call_sites() {
+		let src = include_str!("electrum.rs");
+		let watched_transaction_check = concat!("if tx.compute_", "txid() != *txid");
+		let watched_output_spend_check = concat!("if tx.compute_", "txid() != txid");
+
+		assert!(
+			src.contains(watched_transaction_check),
+			"watched transaction_get responses must be verified against the requested txid"
+		);
+		assert!(
+			src.contains(watched_output_spend_check),
+			"watched-output spend transaction_get responses must be verified against the \
+			 requested txid"
+		);
 	}
 }

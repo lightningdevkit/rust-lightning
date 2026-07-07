@@ -3291,9 +3291,13 @@ pub enum RecentPaymentDetails {
 		/// Hash of the payment that is currently being sent but has yet to be fulfilled or
 		/// abandoned.
 		payment_hash: PaymentHash,
-		/// Total amount (in msat, excluding fees) across all paths for this payment,
+		/// Total amount (excluding fees) across all paths for this payment,
 		/// not just the amount currently inflight.
 		total_msat: u64,
+		/// Total routing fees of the HTLCs currently in-flight for this payment.
+		///
+		/// `None` for payments serialized by LDK versions prior to 0.0.103.
+		pending_fee_msat: Option<u64>,
 		/// Whether this payment is a liquidity probe.
 		is_probe: bool,
 	},
@@ -3310,6 +3314,13 @@ pub enum RecentPaymentDetails {
 		/// Hash of the payment that was claimed. `None` for serializations of [`ChannelManager`]
 		/// made before LDK version 0.0.104.
 		payment_hash: Option<PaymentHash>,
+		/// Total routing fees paid for this payment, as also reported via the `fee_paid_msat`
+		/// field of [`Event::PaymentSent`].
+		///
+		/// `None` for payments serialized by LDK versions prior to 0.3.0.
+		///
+		/// [`Event::PaymentSent`]: events::Event::PaymentSent
+		fee_paid_msat: Option<u64>,
 	},
 	/// After a payment's retries are exhausted per the provided [`Retry`], or it is explicitly
 	/// abandoned via [`ChannelManager::abandon_payment`], it is marked as abandoned until all
@@ -4118,12 +4129,13 @@ impl<
 				PendingOutboundPayment::StaticInvoiceReceived { .. } => {
 					Some(RecentPaymentDetails::AwaitingInvoice { payment_id: *payment_id })
 				},
-				PendingOutboundPayment::Retryable { payment_hash, total_msat, .. } => {
+				PendingOutboundPayment::Retryable { payment_hash, total_msat, pending_fee_msat, .. } => {
 					let is_probe = outbound_payment::payment_is_probe(payment_hash, payment_id, self.probing_cookie_secret);
 					Some(RecentPaymentDetails::Pending {
 						payment_id: *payment_id,
 						payment_hash: *payment_hash,
 						total_msat: *total_msat,
+						pending_fee_msat: *pending_fee_msat,
 						is_probe,
 					})
 				},
@@ -4135,8 +4147,12 @@ impl<
 						is_probe,
 					})
 				},
-				PendingOutboundPayment::Fulfilled { payment_hash, .. } => {
-					Some(RecentPaymentDetails::Fulfilled { payment_id: *payment_id, payment_hash: *payment_hash })
+				PendingOutboundPayment::Fulfilled { payment_hash, fee_paid_msat, .. } => {
+					Some(RecentPaymentDetails::Fulfilled {
+						payment_id: *payment_id,
+						payment_hash: *payment_hash,
+						fee_paid_msat: *fee_paid_msat,
+					})
 				},
 				PendingOutboundPayment::Legacy { .. } => None
 			})
@@ -5610,7 +5626,7 @@ impl<
 			// Create a dummy route params since they're a required parameter but unused in this case
 			let (payee_node_id, cltv_delta) = route.paths.first()
 				.and_then(|path| path.hops.last().map(|hop| (hop.pubkey, hop.cltv_expiry_delta as u32)))
-				.unwrap_or_else(|| (PublicKey::from_slice(&[2; 32]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32));
+				.unwrap_or_else(|| (PublicKey::from_slice(&[2; 33]).unwrap(), MIN_FINAL_CLTV_EXPIRY_DELTA as u32));
 			let dummy_payment_params = PaymentParameters::from_node_id(payee_node_id, cltv_delta);
 			RouteParameters::from_payment_params_and_value(dummy_payment_params, route.get_total_amount())
 		});
@@ -11052,6 +11068,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			}
 
+			if let Some(funding_tx_signed) = funding_tx_signed.as_ref() {
+				// These [`FundingTxSigned`] fields are only expected as a result of calling
+				// [`ChannelManager::funding_transaction_signed`].
+				debug_assert!(funding_tx_signed.commitment_signed.is_none());
+				debug_assert!(funding_tx_signed.counterparty_initial_commitment_signed_result.is_none());
+			}
+			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.splice_locked.take()) {
+				pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+					node_id: counterparty_node_id,
+					msg,
+				});
+			}
+
 			macro_rules! handle_cs { () => {
 				if let Some(update) = commitment_update {
 					pending_msg_events.push(MessageSendEvent::UpdateHTLCs {
@@ -11080,12 +11109,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				},
 			}
 
-			if let Some(funding_tx_signed) = funding_tx_signed.as_ref() {
-				// These [`FundingTxSigned`] fields are only expected as a result of calling
-				// [`ChannelManager::funding_transaction_signed`].
-				debug_assert!(funding_tx_signed.commitment_signed.is_none());
-				debug_assert!(funding_tx_signed.counterparty_initial_commitment_signed_result.is_none());
-			}
 			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.tx_signatures.take()) {
 				pending_msg_events.push(MessageSendEvent::SendTxSignatures {
 					node_id: counterparty_node_id,
@@ -11110,13 +11133,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						msg,
 					});
 				}
-			}
-
-			if let Some(msg) = funding_tx_signed.as_mut().and_then(|v| v.splice_locked.take()) {
-				pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
-					node_id: counterparty_node_id,
-					msg,
-				});
 			}
 		} else if let Some(msg) = channel_ready {
 			self.send_channel_ready(pending_msg_events, channel, msg);
@@ -15075,13 +15091,13 @@ impl<
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
 		self.flow.enqueue_invoice_request(
-			invoice_request.clone(), payment_id, nonce,
+			invoice_request.clone(), payment_id,
 			self.get_peers_for_blinded_path()
 		)?;
 
 		let retryable_invoice_request = RetryableInvoiceRequest {
 			invoice_request: invoice_request.clone(),
-			nonce,
+			nonce: Some(nonce),
 			needs_retry: true,
 		};
 
@@ -17231,11 +17247,11 @@ impl<
 		for (payment_id, retryable_invoice_request) in
 			self.pending_outbound_payments.release_invoice_requests_awaiting_invoice()
 		{
-			let RetryableInvoiceRequest { invoice_request, nonce, .. } = retryable_invoice_request;
+			let RetryableInvoiceRequest { invoice_request, .. } = retryable_invoice_request;
 
 			let peers = self.get_peers_for_blinded_path();
 			let enqueue_invreq_res =
-				self.flow.enqueue_invoice_request(invoice_request, payment_id, nonce, peers);
+				self.flow.enqueue_invoice_request(invoice_request, payment_id, peers);
 			if enqueue_invreq_res.is_err() {
 				log_warn!(
 					self.logger,

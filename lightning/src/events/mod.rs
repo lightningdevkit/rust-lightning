@@ -18,7 +18,7 @@ pub mod bump_transaction;
 
 pub use bump_transaction::BumpTransactionEvent;
 
-use crate::blinded_path::message::{BlindedMessagePath, OffersContext};
+use crate::blinded_path::message::{BlindedMessagePath, NextMessageHop, OffersContext};
 use crate::blinded_path::payment::{
 	Bolt12OfferContext, Bolt12RefundContext, PaymentContext, PaymentContextRef,
 };
@@ -1201,7 +1201,8 @@ pub enum Event {
 		/// If the recipient or an intermediate node misbehaves and gives us free money, this may
 		/// overstate the amount paid, though this is unlikely.
 		///
-		/// This is only `None` for payments initiated on LDK versions prior to 0.0.103.
+		/// This is only `None` for payments abandoned but ultimately claimed when using LDK versions
+		/// prior to 0.3, 0.2.3, or 0.1.10.
 		///
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
@@ -1835,9 +1836,13 @@ pub enum Event {
 	/// [`ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments
 	BumpTransaction(BumpTransactionEvent),
 	/// We received an onion message that is intended to be forwarded to a peer
-	/// that is currently offline. This event will only be generated if the
-	/// `OnionMessenger` was initialized with
-	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs.
+	/// that is currently offline *or* that is intended to be forwarded along a channel with an
+	/// SCID unknown to us.
+	///
+	/// This event will only be generated if the `OnionMessenger` was initialized with
+	/// [`OnionMessenger::new_with_offline_peer_interception`], see its docs. The
+	/// [`NextMessageHop::ShortChannelId`] variant is only generated if `intercept_for_unknown_scids`
+	/// was set when constructing the `OnionMessenger`.
 	///
 	/// The offline peer should be awoken if possible on receipt of this event, such as via the LSPS5
 	/// protocol.
@@ -1851,9 +1856,21 @@ pub enum Event {
 	///
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessageIntercepted {
-		/// The node id of the offline peer.
-		peer_node_id: PublicKey,
-		/// The onion message intended to be forwarded to `peer_node_id`.
+		/// The node id of the peer that sent the message, if known.
+		///
+		/// This is `None` when the message is sent with
+		/// [`MessageSendInstructions::ForwardedMessage`] (e.g., when calling
+		/// [`OffersMessageFlow::enqueue_invoice_request_to_forward`]) rather than forwarded
+		/// internally by the `OnionMessenger`, as well as for events serialized prior to LDK 0.3.
+		/// Otherwise it is the node we received the message from.
+		///
+		/// [`MessageSendInstructions::ForwardedMessage`]: crate::onion_message::messenger::MessageSendInstructions::ForwardedMessage
+		/// [`OffersMessageFlow::enqueue_invoice_request_to_forward`]: crate::offers::flow::OffersMessageFlow::enqueue_invoice_request_to_forward
+		prev_hop: Option<PublicKey>,
+		/// The next hop (offline peer or unknown SCID).
+		next_hop: NextMessageHop,
+		/// The onion message intended to be forwarded to the offline peer or via the unknown
+		/// channel once established.
 		message: msgs::OnionMessage,
 	},
 	/// Indicates that an onion message supporting peer has come online and any messages previously
@@ -2435,11 +2452,19 @@ impl Writeable for Event {
 				35u8.write(writer)?;
 				// Never write ConnectionNeeded events as buffered onion messages aren't serialized.
 			},
-			&Event::OnionMessageIntercepted { ref peer_node_id, ref message } => {
+			&Event::OnionMessageIntercepted { ref prev_hop, ref next_hop, ref message } => {
 				37u8.write(writer)?;
+				// 0 used to be peer_node_id in LDK v0.2 and prior; we keep writing it when the next
+				// hop is a node id for backwards compatibility.
+				let legacy_peer_node_id = match next_hop {
+					NextMessageHop::NodeId(node_id) => Some(node_id),
+					NextMessageHop::ShortChannelId(_) => None,
+				};
 				write_tlv_fields!(writer, {
-					(0, peer_node_id, required),
+					(0, legacy_peer_node_id, option),
+					(1, next_hop, required),
 					(2, message, required),
+					(3, prev_hop, option),
 				});
 			},
 			&Event::OnionMessagePeerConnected { ref peer_node_id } => {
@@ -3068,11 +3093,18 @@ impl MaybeReadable for Event {
 			37u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(0, peer_node_id, required),
+						(0, peer_node_id, option),
+						(1, next_hop, option),
 						(2, message, required),
+						(3, prev_hop, option),
 					});
+
+					let next_hop = next_hop
+						.or(peer_node_id.map(NextMessageHop::NodeId))
+						.ok_or(msgs::DecodeError::InvalidValue)?;
 					Ok(Some(Event::OnionMessageIntercepted {
-						peer_node_id: peer_node_id.0.unwrap(),
+						prev_hop,
+						next_hop,
 						message: message.0.unwrap(),
 					}))
 				};

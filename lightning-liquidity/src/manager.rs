@@ -256,6 +256,7 @@ where
 /// - [`Event::ChannelReady`] to [`LSPS2ServiceHandler::channel_ready`]
 /// - [`Event::HTLCHandlingFailed`] to [`LSPS2ServiceHandler::htlc_handling_failed`]
 /// - [`Event::PaymentForwarded`] to [`LSPS2ServiceHandler::payment_forwarded`]
+/// - [`Event::ChannelClosed`] to [`LSPS2ServiceHandler::channel_closed`]
 ///
 /// [`PeerManager`]: lightning::ln::peer_handler::PeerManager
 /// [`MessageHandler`]: lightning::ln::peer_handler::MessageHandler
@@ -263,6 +264,7 @@ where
 /// [`Event::ChannelReady`]: lightning::events::Event::ChannelReady
 /// [`Event::HTLCHandlingFailed`]: lightning::events::Event::HTLCHandlingFailed
 /// [`Event::PaymentForwarded`]: lightning::events::Event::PaymentForwarded
+/// [`Event::ChannelClosed`]: lightning::events::Event::ChannelClosed
 pub struct LiquidityManager<
 	ES: EntropySource + Clone,
 	NS: NodeSigner + Clone,
@@ -618,7 +620,7 @@ where
 	/// Persists the state of the service handlers towards the given [`KVStore`] implementation if
 	/// needed.
 	///
-	/// Returns `true` if it persisted sevice handler data.
+	/// Returns `true` if it persisted service handler data.
 	///
 	/// This will be regularly called by LDK's background processor if necessary and only needs to
 	/// be called manually if it's not utilized.
@@ -1111,7 +1113,7 @@ where
 
 	/// Persists the state of the service handlers towards the given [`KVStoreSync`] implementation.
 	///
-	/// Returns `true` if it persisted sevice handler data.
+	/// Returns `true` if it persisted service handler data.
 	///
 	/// Wraps [`LiquidityManager::persist`].
 	pub fn persist(&self) -> Result<bool, lightning::io::Error> {

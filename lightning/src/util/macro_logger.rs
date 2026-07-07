@@ -169,6 +169,33 @@ macro_rules! log_spendable {
 	};
 }
 
+/// The maximum number of characters to display in a network message log entry.
+pub(crate) const LOG_MSG_MAX_LEN: usize = 512;
+
+/// Wraps a string slice for Display, truncating to [`LOG_MSG_MAX_LEN`] characters and
+/// delegating sanitization to [`crate::types::string::PrintableString`].
+/// Useful for logging counterparty-provided messages.
+pub(crate) struct DebugMsg<'a>(pub &'a str);
+impl<'a> core::fmt::Display for DebugMsg<'a> {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
+		let (msg, was_truncated) = match self.0.char_indices().nth(LOG_MSG_MAX_LEN) {
+			Some((idx, _)) => (&self.0[..idx], true),
+			None => (self.0, false),
+		};
+		core::fmt::Display::fmt(&crate::types::string::PrintableString(msg), f)?;
+		if was_truncated {
+			f.write_str("...")?;
+		}
+		Ok(())
+	}
+}
+
+macro_rules! log_msg {
+	($obj: expr) => {
+		$crate::util::macro_logger::DebugMsg(&$obj)
+	};
+}
+
 /// Create a new Record and log it. You probably don't want to use this macro directly,
 /// but it needs to be exported so `log_trace` etc can use it in external crates.
 #[doc(hidden)]
@@ -225,4 +252,62 @@ macro_rules! log_gossip {
 	($logger: expr, $($arg:tt)*) => (
 		$crate::log_given_level!($logger, $crate::util::logger::Level::Gossip, $($arg)*);
 	)
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use alloc::string::ToString;
+
+	#[test]
+	fn debug_msg_short_string() {
+		let s = "hello world";
+		assert_eq!(DebugMsg(s).to_string(), "hello world");
+	}
+
+	#[test]
+	fn debug_msg_truncates_at_limit() {
+		let s = "a".repeat(LOG_MSG_MAX_LEN + 100);
+		let result = DebugMsg(&s).to_string();
+		// Should be exactly LOG_MSG_MAX_LEN 'a's followed by "..."
+		assert_eq!(result.len(), LOG_MSG_MAX_LEN + 3);
+		assert!(result.ends_with("..."));
+	}
+
+	#[test]
+	fn debug_msg_no_truncation_at_exact_limit() {
+		let s = "a".repeat(LOG_MSG_MAX_LEN);
+		let result = DebugMsg(&s).to_string();
+		assert_eq!(result.len(), LOG_MSG_MAX_LEN);
+		assert!(!result.ends_with("..."));
+	}
+
+	#[test]
+	fn debug_msg_replaces_control_characters() {
+		let s = "hello\x00world\nfoo";
+		let result = DebugMsg(s).to_string();
+		assert_eq!(result, "hello\u{FFFD}world\u{FFFD}foo");
+	}
+
+	#[test]
+	fn debug_msg_uses_printable_string_sanitization() {
+		let s = "safe\u{202E}cipsxe.exe";
+		assert_eq!(DebugMsg(s).to_string(), crate::types::string::PrintableString(s).to_string());
+	}
+
+	#[test]
+	fn debug_msg_multibyte_unicode() {
+		// Each emoji is multiple bytes but one character
+		let s = "\u{1F600}".repeat(LOG_MSG_MAX_LEN + 10);
+		let result = DebugMsg(&s).to_string();
+		let char_count: usize = result.chars().count();
+		// LOG_MSG_MAX_LEN emoji chars + 3 chars for "..."
+		assert_eq!(char_count, LOG_MSG_MAX_LEN + 3);
+		assert!(result.ends_with("..."));
+	}
+
+	#[test]
+	fn debug_msg_empty_string() {
+		assert_eq!(DebugMsg("").to_string(), "");
+	}
 }

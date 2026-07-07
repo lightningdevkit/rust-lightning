@@ -1,0 +1,503 @@
+name: Continuous Integration Checks
+
+on:
+  push:
+    branches-ignore:
+      - master
+  pull_request:
+    branches-ignore:
+      - master
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ext-test:
+    runs-on: debian-trixie
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust stable toolchain
+        run: |
+          rustup default stable
+      - name: Run externalized tests
+        run: |
+          cd ext-functional-test-demo
+          cargo test --verbose --color always
+          cargo test --verbose --color always --features test-broken
+
+  build-workspace:
+    uses: ./.forgejo/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-workspace.sh
+
+  build-features:
+    uses: ./.forgejo/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-features.sh
+
+  build-bindings:
+    uses: ./.forgejo/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-bindings.sh
+
+  build-nostd:
+    uses: ./.forgejo/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-nostd.sh
+
+  build-cfg-flags:
+    uses: ./.forgejo/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-cfg-flags.sh
+
+  build-sync:
+    uses: ./.forgejo/workflows/ci-build.yml
+    with:
+      script: ci/ci-tests-sync.sh
+
+  coverage:
+    needs: fuzz
+    strategy:
+      fail-fast: false
+    runs-on: debian-trixie
+    # Codecov auto-detects only a fixed set of CI providers (not Forgejo), so the
+    # commit/branch/PR context is passed to the CLI explicitly in the steps below.
+    # CODECOV_PR is empty on non-pull_request events and is then omitted.
+    env:
+      CODECOV_SLUG: ${{ github.repository }}
+      CODECOV_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CODECOV_BRANCH: ${{ github.head_ref || github.ref_name }}
+      CODECOV_PR: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Install Rust stable toolchain
+        run: |
+          rustup default stable
+      - name: Run tests with coverage generation
+        run: |
+          cargo install cargo-llvm-cov
+          export RUSTFLAGS="-Coverflow-checks=off"
+          cargo llvm-cov --features rest-client,rpc-client,tokio,serde --codecov --hide-instantiations --output-path=target/codecov.json
+          curl --verbose -O https://cli.codecov.io/latest/linux/codecov
+          chmod +x codecov
+          # Pass the commit context manually since codecov can't detect Forgejo.
+          CC="--git-service github --slug $CODECOV_SLUG --sha $CODECOV_SHA --branch $CODECOV_BRANCH"
+          if [ -n "${CODECOV_PR:-}" ]; then CC="$CC --pr $CODECOV_PR"; fi
+          # Could you use this to fake the coverage report for your PR? Sure.
+          # Will anyone be impressed by your amazing coverage? No
+          # Maybe if codecov wasn't broken we wouldn't need to do this...
+          ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f target/codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'tests'
+          cargo clean
+      - name: Clone fuzzing corpus
+        run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
+      - name: Symlink corpus into hfuzz_workspace
+        run: |
+          set -eu
+          cd fuzz
+          for D in ldk-fuzzing-corpus/rust-lightning/*/; do
+            NAME=$(basename "$D")
+            mkdir -p "hfuzz_workspace/${NAME}_target"
+            cp -r "ldk-fuzzing-corpus/rust-lightning/${NAME}" "hfuzz_workspace/${NAME}_target/input"
+          done
+      - name: Run fuzz coverage generation
+        run: |
+          ./contrib/generate_fuzz_coverage.sh --output-dir `pwd` --output-codecov-json
+          # Pass the commit context manually since codecov can't detect Forgejo.
+          CC="--git-service github --slug $CODECOV_SLUG --sha $CODECOV_SHA --branch $CODECOV_BRANCH"
+          if [ -n "${CODECOV_PR:-}" ]; then CC="$CC --pr $CODECOV_PR"; fi
+          # Could you use this to fake the coverage report for your PR? Sure.
+          # Will anyone be impressed by your amazing coverage? No
+          # Maybe if codecov wasn't broken we wouldn't need to do this...
+          ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f fuzz-fake-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-fake-hashes'
+          ./codecov --verbose upload-process --disable-search --fail-on-error $CC -f fuzz-real-hashes-codecov.json -t "f421b687-4dc2-4387-ac3d-dc3b2528af57" -F 'fuzzing-real-hashes'
+      - name: Comment the codecov report link on the PR
+        # Codecov's own PR comment relies on CI environment detection (broken
+        # under Forgejo), so post a link to the commit's report ourselves. A
+        # hidden marker makes the comment sticky: update it instead of piling up
+        # a new comment on every push. Only runs for pull requests.
+        if: github.event.pull_request.number
+        env:
+          API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+        run: |
+          set -eu
+          AUTH="Authorization: token ${FORGEJO_TOKEN}"
+          URL="https://app.codecov.io/github/${REPO}/commit/${CODECOV_SHA}"
+          MARKER="<!-- codecov-report-link -->"
+          BODY="${MARKER}"$'\n'"[Coverage report for this commit on Codecov](${URL})"
+
+          # Update an existing sticky comment if present, otherwise create one.
+          CID="$(curl -fsS -H "$AUTH" "$API/repos/$REPO/issues/$CODECOV_PR/comments?limit=50" \
+            | jq -r --arg m "$MARKER" 'map(select((.body // "") | contains($m))) | .[0].id // empty')"
+          if [ -n "$CID" ]; then
+            curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+              -X PATCH "$API/repos/$REPO/issues/comments/$CID" \
+              -d "$(jq -n --arg b "$BODY" '{body: $b}')" >/dev/null
+          else
+            curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+              -X POST "$API/repos/$REPO/issues/$CODECOV_PR/comments" \
+              -d "$(jq -n --arg b "$BODY" '{body: $b}')" >/dev/null
+          fi
+
+  benchmark:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Cache routing graph snapshot
+        id: cache-graph
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: lightning/net_graph-2023-12-10.bin
+          key: ldk-net_graph-v0.0.118-2023-12-10.bin
+      - name: Fetch routing graph snapshot
+        if: steps.cache-graph.outputs.cache-hit != 'true'
+        run: |
+          curl --verbose -L -o lightning/net_graph-2023-12-10.bin https://bitcoin.ninja/ldk-net_graph-v0.0.118-2023-12-10.bin
+          echo "Sha sum: $(sha256sum lightning/net_graph-2023-12-10.bin | awk '{ print $1 }')"
+          if [ "$(sha256sum lightning/net_graph-2023-12-10.bin | awk '{ print $1 }')" != "${EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM}" ]; then
+            echo "Bad hash"
+            exit 1
+          fi
+        env:
+          EXPECTED_ROUTING_GRAPH_SNAPSHOT_SHASUM: e94b38ef4b3ce683893bf6a3ee28d60cb37c73b059403ff77b7e7458157968c2
+      - name: Cache scorer snapshot
+        id: cache-scorer
+        uses: https://data.forgejo.org/actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: lightning/scorer-2023-12-10.bin
+          key: ldk-scorer-v0.0.118-2023-12-10.bin
+      - name: Fetch scorer snapshot
+        if: steps.cache-scorer.outputs.cache-hit != 'true'
+        run: |
+          curl --verbose -L -o lightning/scorer-2023-12-10.bin https://bitcoin.ninja/ldk-scorer-v0.0.118-2023-12-10.bin
+          echo "Sha sum: $(sha256sum lightning/scorer-2023-12-10.bin | awk '{ print $1 }')"
+          if [ "$(sha256sum lightning/scorer-2023-12-10.bin | awk '{ print $1 }')" != "${EXPECTED_SCORER_SNAPSHOT_SHASUM}" ]; then
+            echo "Bad hash"
+            exit 1
+          fi
+        env:
+          EXPECTED_SCORER_SNAPSHOT_SHASUM: 570a26bb28870fe1da7e392cdec9fb794718826b04c43ca053d71a8a9bb9be69
+      - name: Fetch rapid graph sync reference input
+        run: |
+          curl --verbose -L -o lightning-rapid-gossip-sync/res/full_graph.lngossip https://bitcoin.ninja/ldk-compressed_graph-285cb27df79-2022-07-21.bin
+          echo "Sha sum: $(sha256sum lightning-rapid-gossip-sync/res/full_graph.lngossip | awk '{ print $1 }')"
+          if [ "$(sha256sum lightning-rapid-gossip-sync/res/full_graph.lngossip | awk '{ print $1 }')" != "${EXPECTED_RAPID_GOSSIP_SHASUM}" ]; then
+            echo "Bad hash"
+            exit 1
+          fi
+        env:
+          EXPECTED_RAPID_GOSSIP_SHASUM: e0f5d11641c11896d7af3a2246d3d6c3f1720b7d2d17aab321ecce82e6b7deb8
+      - name: Test with Network Graph on Rust ${{ matrix.toolchain }}
+        run: |
+          cd lightning
+          RUSTFLAGS="--cfg=require_route_graph_test" cargo test
+          cd ..
+      - name: Run benchmarks on Rust ${{ matrix.toolchain }}
+        run: |
+          cd bench
+          RUSTFLAGS="--cfg=ldk_bench --cfg=require_route_graph_test" cargo bench
+
+  check_release:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Run cargo check for release build.
+        run: |
+          cargo check --release
+          cargo check --no-default-features --features=std --release
+          cargo doc --release
+      - name: Run cargo check for Taproot build.
+        run: |
+          cargo check --release
+          cargo check --no-default-features --release
+          cargo check --no-default-features --features=std --release
+          cargo doc --release
+          cargo doc --no-default-features --release
+        env:
+          RUSTFLAGS: '--cfg=taproot'
+          RUSTDOCFLAGS: '--cfg=taproot'
+
+  check_docs:
+    runs-on: debian-trixie
+    env:
+      # While docs.rs builds using a nightly compiler (and we use some nightly features),
+      # nightly ends up randomly breaking builds occasionally, so we instead use beta
+      # and set RUSTC_BOOTSTRAP in check-docsrs.sh
+      TOOLCHAIN: beta
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Simulate docs.rs build
+        run: ci/check-docsrs.sh
+
+  fuzz_sanity:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: 1.75
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
+        run: |
+          cd fuzz
+          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --quiet --color always --lib -j8
+          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=hashes_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --manifest-path fuzz-fake-hashes/Cargo.toml --quiet --color always --bins -j8
+          RUSTFLAGS="--cfg=fuzzing --cfg=secp256k1_fuzz --cfg=chacha20_poly1305_fuzz" cargo test --manifest-path fuzz-real-hashes/Cargo.toml --quiet --color always --bins -j8
+
+  fuzz:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: 1.75
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Clone fuzzing corpus
+        run: git clone --depth=1 https://github.com/lightningdevkit/ldk-fuzzing-corpus.git fuzz/ldk-fuzzing-corpus
+      - name: Symlink corpus into hfuzz_workspace
+        run: |
+          set -eu
+          cd fuzz
+          for D in ldk-fuzzing-corpus/rust-lightning/*/; do
+            NAME=$(basename "$D")
+            mkdir -p "hfuzz_workspace/${NAME}_target"
+            ln -sfn "../../ldk-fuzzing-corpus/rust-lightning/${NAME}" \
+              "hfuzz_workspace/${NAME}_target/input"
+          done
+      - name: Run fuzzers
+        run: cd fuzz && ./ci-fuzz.sh && cd ..
+        env:
+          FUZZ_MINIMIZE: ${{ contains(github.event.pull_request.labels.*.name, 'fuzz-minimize') }}
+      - name: Open PR with new corpus entries
+        # Forgejo supports neither the `workflow_run` trigger nor reading
+        # artifacts from another workflow run, so the corpus push that used to
+        # live in its own workflow is folded in here. New fuzzer inputs are
+        # written straight into the corpus checkout (the input dirs are
+        # symlinked into it above), so they show up as untracked files.
+        #
+        # The push still targets the GitHub corpus repo. On Forgejo, secrets
+        # are empty for `pull_request` events from forks, so CORPUS_PUSH_TOKEN
+        # is unset there and this step safely skips the push.
+        #
+        # A push hiccup must not fail the fuzz job (and cascade to the jobs that
+        # depend on it), so this step is best-effort.
+        if: success() || failure()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.CORPUS_PUSH_TOKEN }}
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -eu
+          cd fuzz/ldk-fuzzing-corpus
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No new corpus entries to contribute."
+            exit 0
+          fi
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "Found new corpus entries but CORPUS_PUSH_TOKEN is unset; skipping PR."
+            git status --short
+            exit 0
+          fi
+          BRANCH="ci/new-corpus-${RUN_ID}"
+          git config user.email "ldk-ci@users.noreply.github.com"
+          git config user.name  "LDK CI"
+          git checkout -b "$BRANCH"
+          git add rust-lightning
+          git commit \
+            -m "Add corpus entries from rust-lightning CI" \
+            -m "Source commit: ${SOURCE_SHA}" \
+            -m "Run: ${RUN_URL}"
+          REMOTE=$(git config --get remote.origin.url)
+          PUSH_URL="https://x-access-token:${GH_TOKEN}@${REMOTE#https://}"
+          git push "$PUSH_URL" "HEAD:$BRANCH"
+          gh pr create \
+            --title "New corpus entries from rust-lightning CI run ${RUN_ID}" \
+            --body "Discovered while running fuzz CI against \`${SOURCE_SHA}\`. Source: ${RUN_URL}" \
+            --head "$BRANCH" \
+            --base master
+
+  linting:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: stable
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Install clippy
+        run: |
+          rustup component add clippy
+      - name: shellcheck the CI and `contrib` scripts
+        run: |
+          shellcheck ci/*.sh -aP ci
+          shellcheck contrib/*.sh -aP contrib
+      - name: Run default clippy linting
+        run: |
+          ./ci/check-lint.sh
+
+  rustfmt:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: 1.75.0
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Install rustfmt
+        run: |
+          rustup component add rustfmt
+      - name: Run rustfmt checks
+        run: cargo fmt --check
+      - name: Run rustfmt checks on lightning-tests
+        run: cd lightning-tests && cargo fmt --check
+      - name: Run rustfmt checks on fuzz
+        run: cd fuzz && cargo fmt --check
+  tor-connect:
+    runs-on: debian-trixie
+    env:
+      TOOLCHAIN: 1.75.0
+    steps:
+      - name: Checkout source code
+        uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Install Rust ${{ env.TOOLCHAIN }} toolchain
+        run: |
+          rustup default ${{ env.TOOLCHAIN }}
+      - name: Test tor connections using lightning-net-tokio
+        run: |
+          set -eu
+          # tor is preinstalled in the runner image, but we have no sudo to
+          # start the system service, so run it in the background for this step.
+          # The test routes real traffic (including to a .onion address) through
+          # the proxy, so we must wait until tor is fully bootstrapped.
+          TOR_DATA="$(mktemp -d)"
+          tor --SocksPort 9050 --DataDirectory "$TOR_DATA" \
+            --Log "notice file $TOR_DATA/tor.log" &
+          TOR_PID=$!
+          trap 'kill "$TOR_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 90); do
+            if grep -q "Bootstrapped 100%" "$TOR_DATA/tor.log" 2>/dev/null; then
+              break
+            fi
+            if ! kill -0 "$TOR_PID" 2>/dev/null; then
+              echo "tor exited before bootstrapping:"; cat "$TOR_DATA/tor.log"; exit 1
+            fi
+            sleep 2
+          done
+          if ! grep -q "Bootstrapped 100%" "$TOR_DATA/tor.log"; then
+            echo "tor failed to bootstrap within timeout:"; cat "$TOR_DATA/tor.log"; exit 1
+          fi
+          TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
+
+  notify-failure:
+    needs: [build-workspace, build-features, build-bindings, build-nostd, build-cfg-flags, build-sync, fuzz_sanity, fuzz, linting, rustfmt, check_release, check_docs, benchmark, ext-test, tor-connect, coverage]
+    if: failure() && github.ref == 'refs/heads/main'
+    runs-on: debian-trixie
+    steps:
+      - name: Configure fj credentials
+        # `fj` reads its token from keys.json; it has no token environment
+        # variable, so write the automatic Actions token there.
+        env:
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          FORGEJO_USER: ${{ github.actor }}
+        run: |
+          install -d -m 700 "$HOME/.local/share/forgejo-cli"
+          printf '{"hosts":{"git.rust-bitcoin.org":{"type":"Application","name":"%s","token":"%s"}}}' "$FORGEJO_USER" "$FORGEJO_TOKEN" > "$HOME/.local/share/forgejo-cli/keys.json"
+          chmod 600 "$HOME/.local/share/forgejo-cli/keys.json"
+      - name: Create or update failure issue
+        # Deduplicate by label (like the GitHub job): comment on the top open
+        # issue carrying the "build failed" label, otherwise open a new one.
+        # fj handles search/create/comment; the raw API is used only to attach
+        # the label after creating, since fj cannot set or create labels. The
+        # automatic token has write access to this repo for non-fork events.
+        env:
+          HOST: git.rust-bitcoin.org
+          API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
+          LABEL: build failed
+        run: |
+          set -eu
+          AUTH="Authorization: token ${FORGEJO_TOKEN}"
+
+          TITLE="Failed build: ${{ github.workflow }}"
+          RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"
+          REPO_URL="${{ github.server_url }}/${{ github.repository }}"
+          COMMITTER="${{ github.event.head_commit.author.username }}"
+          BODY="Forgejo Actions workflow [${{ github.workflow }} #${{ github.run_number }}](${RUN_URL}) failed."
+          BODY="${BODY}"$'\n\n'"Event: ${{ github.event_name }}"
+          BRANCH="${{ github.ref_name }}"
+          BODY="${BODY}"$'\n'"Branch: [${BRANCH}](${REPO_URL}/src/branch/${BRANCH})"
+          BODY="${BODY}"$'\n'"Commit: [${{ github.sha }}](${REPO_URL}/commit/${{ github.sha }})"
+          if [ -n "$COMMITTER" ]; then
+            BODY="${BODY}"$'\n'"Committer: @${COMMITTER}"
+          fi
+
+          # Find the top open issue carrying the label. With `--style minimal`,
+          # `fj issue search` prints a totals line, then one
+          # "#<number>: <title> (by <author>)" line per match; take the first.
+          NUM="$(fj -H "$HOST" --style minimal issue search --repo "$REPO" --labels "$LABEL" --state open \
+            | head -n2 | tail -n1 | awk '/^#[0-9]/ { print $1 }' | tr -d '#:')"
+
+          if [ -n "$NUM" ]; then
+            fj -H "$HOST" issue comment "${REPO}#${NUM}" "$BODY"
+          else
+            # Create with fj, then parse the new number from "created issue #N:".
+            if ! CREATED="$(fj -H "$HOST" --style minimal issue create "$TITLE" --body "$BODY" --repo "$REPO" 2>&1)"; then
+              echo "fj issue create failed:"; echo "$CREATED"; exit 1
+            fi
+            echo "$CREATED"
+            NUM="$(printf '%s\n' "$CREATED" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')"
+
+            # Attach the label via the raw API (fj cannot set or create labels):
+            # resolve the label id, creating the label if it does not exist yet.
+            if [ -n "$NUM" ]; then
+              LABEL_ID="$(curl -fsS -H "$AUTH" "$API/repos/$REPO/labels" \
+                | jq -r --arg n "$LABEL" 'map(select(.name == $n)) | .[0].id // empty')"
+              if [ -z "$LABEL_ID" ]; then
+                LABEL_ID="$(curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+                  -X POST "$API/repos/$REPO/labels" \
+                  -d "$(jq -n --arg n "$LABEL" '{name: $n, color: "#e11d21"}')" | jq -r '.id')"
+              fi
+              curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
+                -X POST "$API/repos/$REPO/issues/$NUM/labels" \
+                -d "$(jq -n --argjson l "[$LABEL_ID]" '{labels: $l}')" >/dev/null
+            else
+              echo "Could not parse the new issue number; label not attached." >&2
+            fi
+          fi
