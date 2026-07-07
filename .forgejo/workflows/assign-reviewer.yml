@@ -3,10 +3,24 @@ name: Assign a random reviewer
 # Forgejo has no built-in random/round-robin reviewer assignment (only
 # path-based CODEOWNERS), so pick a random developer for each newly opened
 # pull request and request their review via the API.
+#
+# Runs automatically when a PR is opened, and can also be run manually
+# (workflow_dispatch) against any PR number to pick an additional reviewer.
+#  * Someone already requested as a reviewer, or who has already submitted a
+#    review, is never picked.
+#  * On automatic runs (including re-runs), nothing is done at all if anyone
+#    from the REVIEWERS pool has already reviewed or been requested (reviews
+#    from people outside the pool don't count). Manual runs skip this check
+#    and always add a reviewer if an eligible candidate remains.
 
 on:
   pull_request_target:
     types: [opened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "Pull request number to assign a reviewer to"
+        required: true
 
 enable-openid-connect: true
 
@@ -20,32 +34,82 @@ jobs:
         id: jwt
         run: |
           set -eu
-          jwt="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL" | jq -r '.value')"
+          jwt="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=u:1:bec84b56-6f08-4622-9cd6-1aee5b18c5b9" | jq -r '.value')"
           echo "::add-mask::$jwt"
           echo "jwt=$jwt" >> "$FORGEJO_OUTPUT"
       - name: Request review from a random developer
-        # This never checks out or runs any PR code -- it only makes an API
-        # call with a local Authorized Integration token.
+        # This never checks out or runs any PR code -- it only makes API
+        # calls -- so running in the base-repo context (pull_request_target,
+        # which is what grants the token write access even for fork PRs) is safe.
         env:
-          API: ${{ forgejo.server_url }}/api/v1
-          REPO: ${{ forgejo.event.repository.full_name }}
-          PR: ${{ forgejo.event.pull_request.number }}
-          AUTHOR: ${{ forgejo.event.pull_request.user.login }}
+          API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR: ${{ github.event.pull_request.number }}
+          INPUT_PR: ${{ github.event.inputs.pr }}
           # Space-separated pool of candidate reviewers.
           REVIEWERS: "matt val wpaulino joostjager jkczyz benthecarman tankyleo tnull"
         run: |
           set -eu
           AUTH="Authorization: bearer ${{ steps.jwt.outputs.jwt }}"
 
-          # Build the candidate pool, excluding the PR author.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            PR="$INPUT_PR"
+          else
+            PR="$EVENT_PR"
+          fi
+          case "$PR" in
+            ''|*[!0-9]*) echo "Invalid PR number: '$PR'"; exit 1 ;;
+          esac
+
+          PR_JSON="$(curl -fsS -H "$AUTH" "$API/repos/$REPO/pulls/$PR")"
+          AUTHOR="$(printf '%s' "$PR_JSON" | jq -r '.user.login')"
+
+          # Everyone already on the PR: currently-requested reviewers plus
+          # anyone who has submitted a review. PENDING (unsubmitted draft) and
+          # REQUEST_REVIEW (the open-request marker rows in the reviews list)
+          # are not submitted reviews, so they are not counted as "reviewed".
+          REQUESTED="$(printf '%s' "$PR_JSON" |
+            jq -r '(.requested_reviewers // [])[] | .login? // empty')"
+          REVIEWED="$(
+            page=1
+            while :; do
+              CHUNK="$(curl -fsS -H "$AUTH" "$API/repos/$REPO/pulls/$PR/reviews?limit=50&page=$page")"
+              printf '%s' "$CHUNK" | jq -r '.[]
+                | select(.state == "APPROVED" or .state == "REQUEST_CHANGES" or .state == "COMMENT")
+                | .user.login? // empty'
+              if [ "$(printf '%s' "$CHUNK" | jq 'length')" -lt 50 ]; then break; fi
+              page=$((page + 1))
+            done
+          )"
+          # The author self-reviewing (commenting on their own PR) doesn't
+          # count as someone being on the PR.
+          INVOLVED="$(printf '%s\n%s\n' "$REQUESTED" "$REVIEWED" |
+            awk -v author="$AUTHOR" '$0 != "" && $0 != author' | sort -u)"
+
+          # On automatic runs, if a pool member is already on the PR there is
+          # nothing to do. Manual runs go ahead and add another reviewer.
+          if [ "$EVENT_NAME" != "workflow_dispatch" ]; then
+            for d in $REVIEWERS; do
+              if printf '%s\n' "$INVOLVED" | grep -qxF "$d"; then
+                echo "$d has already reviewed or been requested on PR #$PR; nothing to do."
+                exit 0
+              fi
+            done
+          fi
+
+          # Build the candidate pool, excluding the PR author and anyone
+          # already requested or reviewing.
           POOL=""
           for d in $REVIEWERS; do
-            [ "$d" = "$AUTHOR" ] || POOL="$POOL $d"
+            if [ "$d" = "$AUTHOR" ]; then continue; fi
+            if printf '%s\n' "$INVOLVED" | grep -qxF "$d"; then continue; fi
+            POOL="$POOL $d"
           done
 
           REVIEWER="$(printf '%s\n' $POOL | shuf -n1)"
           if [ -z "$REVIEWER" ]; then
-            echo "No eligible reviewer (author is the only candidate); skipping."
+            echo "No eligible reviewer left in the pool; skipping."
             exit 0
           fi
 
