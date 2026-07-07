@@ -969,6 +969,14 @@ fn assert_disconnect_action<'a>(
 			);
 			ExpectedControlAction::Error(msg)
 		},
+		msgs::ErrorAction::SendWarningMessage { ref msg, .. } => {
+			assert!(
+				close_tracker.is_expected_closed_channel_warning_msg(msg),
+				"Expected closed-channel warning, got: {:?}",
+				msg,
+			);
+			ExpectedControlAction::Warning(msg, false)
+		},
 		_ => panic!("Expected harness control error, got: {:?}", action),
 	}
 }
@@ -1043,6 +1051,11 @@ impl ChannelCloseTracker {
 			|| msg.data
 				== "Peer sent an invalid channel_reestablish to force close in a non-standard way"
 			|| msg.data.contains("when we needed a channel_reestablish")
+	}
+
+	fn is_expected_closed_channel_warning_msg(&self, msg: &msgs::WarningMessage) -> bool {
+		self.closed_channels.contains_key(&msg.channel_id)
+			&& msg.data == "Peer sent `stfu` when we were not in a live state"
 	}
 }
 
@@ -3080,6 +3093,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
 			close_tracker: &ChannelCloseTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
+			// Always deliver message events, even when the harness knows they are stale,
+			// so message handlers exercise their normal error paths.
 			match event {
 				MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
 					handle_update_htlcs_event(
