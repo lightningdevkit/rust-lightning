@@ -195,7 +195,7 @@ Thanks to Project Loupe for reporting most of the issues fixed in this release.
 Thanks to Project Loupe for reporting most of the issues fixed in this release.
 
 
-# 0.2.2 - Feb 6, 2025 - "An Async Splicing Production"
+# 0.2.2 - Feb 6, 2026 - "An Async Splicing Production"
 
 ## API Updates
  * The `SplicePrototype` feature flag has been updated to refer to feature bit
@@ -212,7 +212,7 @@ Thanks to Project Loupe for reporting most of the issues fixed in this release.
    message from a peer was fixed (#4383).
 
 
-# 0.2.1 - Jan 29, 2025 - "Electrum Confirmations Logged"
+# 0.2.1 - Jan 29, 2026 - "Electrum Confirmations Logged"
 
 ## API Updates
  * The `AttributionData` struct is now public, correcting an issue where it was
