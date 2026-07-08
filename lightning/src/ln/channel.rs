@@ -3312,6 +3312,34 @@ impl PendingFunding {
 		}
 	}
 
+	/// Returns the minimum feerate for RBF attempts given a previous feerate.
+	///
+	/// The spec (tx_init_rbf) requires the new feerate to be >= the maximum of 25/24 of the
+	/// previous feerate and the previous feerate + 25 sat/kwu. The flat +25 sat/kwu increment
+	/// ensures BIP125's relay requirement of an absolute fee increase is satisfied at low feerates
+	/// where the multiplicative 25/24 rule alone would be insufficient.
+	fn min_rbf_feerate_above(prev_feerate: u32) -> FeeRate {
+		let flat_increment = (prev_feerate as u64).saturating_add(25);
+		let spec_increment = (prev_feerate as u64) * 25 / 24;
+		FeeRate::from_sat_per_kwu(cmp::max(flat_increment, spec_increment))
+	}
+
+	/// The minimum feerate a new contribution must pay to replace the pending splice via RBF,
+	/// derived from the most recent round's feerate:
+	/// - `last_funding_feerate_sat_per_1000_weight`: from a completed but unlocked negotiation
+	/// - the `funding_negotiation` feerate: from an in-progress negotiation
+	///
+	/// Returns `None` when neither feerate is known. The feerate is only persisted by LDK 0.3+,
+	/// so its absence means the splice was last written by an older version (negotiated there, or
+	/// round-tripped 0.3 -> 0.2 -> 0.3), in which case the pending splice cannot be RBF'd.
+	fn min_rbf_feerate(&self) -> Option<FeeRate> {
+		self.last_funding_feerate_sat_per_1000_weight
+			.or_else(|| {
+				self.funding_negotiation.as_ref().map(|n| n.funding_feerate_sat_per_1000_weight())
+			})
+			.map(Self::min_rbf_feerate_above)
+	}
+
 	/// After several RBF attempts, checks that the feerate is high enough to confirm. Returns
 	/// `true` if the feerate is sufficient or the threshold hasn't been reached.
 	///
@@ -7156,18 +7184,6 @@ pub(crate) fn get_v2_channel_reserve_satoshis(
 	// Fixed at 1% of channel value by spec.
 	let (q, _) = channel_value_satoshis.overflowing_div(100);
 	Ok(cmp::max(q, dust_limit_satoshis))
-}
-
-/// Returns the minimum feerate for RBF attempts given a previous feerate.
-///
-/// The spec (tx_init_rbf) requires the new feerate to be >= the maximum of 25/24 of the previous
-/// feerate and the previous feerate + 25 sat/kwu. The flat +25 sat/kwu increment ensures BIP125's
-/// relay requirement of an absolute fee increase is satisfied at low feerates where the
-/// multiplicative 25/24 rule alone would be insufficient.
-fn min_rbf_feerate(prev_feerate: u32) -> FeeRate {
-	let flat_increment = (prev_feerate as u64).saturating_add(25);
-	let spec_increment = (prev_feerate as u64) * 25 / 24;
-	FeeRate::from_sat_per_kwu(cmp::max(flat_increment, spec_increment))
 }
 
 /// Context for negotiating channels (dual-funded V2 open, splicing)
@@ -12939,27 +12955,17 @@ where
 		} else if let Some(pending_splice) = self.pending_splice.as_ref() {
 			// A splice is pending — either a completed negotiation that hasn't locked yet
 			// or an in-progress negotiation. In either case, the user's splice will need
-			// to satisfy the minimum RBF feerate, derived from the most recent feerate:
-			// - last_funding_feerate: from a completed but unlocked negotiation
-			// - funding_negotiation feerate: from an in-progress negotiation
+			// to satisfy the minimum RBF feerate. When that feerate is unknown (the splice
+			// was last written by an LDK version prior to 0.3, which persisted neither it nor
+			// our contribution), the minimum RBF feerate is left unset so the new splice is
+			// queued and begins as a fresh splice once the pending candidate locks, rather than
+			// attempting to replace it.
 			//
-			// If the in-progress negotiation later fails (e.g., tx_abort), the derived
+			// If an in-progress negotiation later fails (e.g., tx_abort), the derived
 			// min_rbf_feerate becomes stale, causing a slightly higher feerate than
 			// necessary. Call splice_channel again after receiving SpliceNegotiationFailed to get a
 			// fresh template without the stale RBF constraint.
-			let prev_feerate =
-				pending_splice.last_funding_feerate_sat_per_1000_weight.or_else(|| {
-					pending_splice
-						.funding_negotiation
-						.as_ref()
-						.map(|n| n.funding_feerate_sat_per_1000_weight())
-				});
-			// The feerate and our contribution are only persisted by LDK 0.3+, so their absence
-			// means this splice was last written by an older version (negotiated there, or
-			// round-tripped 0.3 -> 0.2 -> 0.3) and cannot be RBF'd. Leave the RBF feerate floor
-			// unset so the new splice is queued and begins as a fresh splice once the pending
-			// candidate locks, rather than attempting to replace it.
-			let min_rbf_feerate = prev_feerate.map(min_rbf_feerate);
+			let min_rbf_feerate = pending_splice.min_rbf_feerate();
 			let prior = if pending_splice.last_funding_feerate_sat_per_1000_weight.is_some() {
 				pending_splice.latest_contribution().cloned()
 			} else {
@@ -13028,7 +13034,7 @@ where
 				None => return false,
 			},
 		};
-		contribution.feerate() >= min_rbf_feerate(prev_feerate)
+		contribution.feerate() >= PendingFunding::min_rbf_feerate_above(prev_feerate)
 	}
 
 	fn can_initiate_rbf(&self) -> Result<FeeRate, String> {
@@ -13073,7 +13079,7 @@ where
 		}
 
 		match pending_splice.last_funding_feerate_sat_per_1000_weight {
-			Some(prev_feerate) => Ok(min_rbf_feerate(prev_feerate)),
+			Some(prev_feerate) => Ok(PendingFunding::min_rbf_feerate_above(prev_feerate)),
 			None => Err(format!(
 				"Channel {} has no prior feerate to compute RBF minimum",
 				self.context.channel_id(),
@@ -13747,7 +13753,7 @@ where
 				fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::UrgentOnChainSweep)
 			});
 		let new_feerate = FeeRate::from_sat_per_kwu(msg.feerate_sat_per_1000_weight as u64);
-		if new_feerate < min_rbf_feerate(prev_feerate) {
+		if new_feerate < PendingFunding::min_rbf_feerate_above(prev_feerate) {
 			return Err(ChannelError::Abort(AbortReason::InsufficientRbfFeerate));
 		}
 
