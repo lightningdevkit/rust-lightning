@@ -969,6 +969,14 @@ fn assert_disconnect_action<'a>(
 			);
 			ExpectedControlAction::Error(msg)
 		},
+		msgs::ErrorAction::SendWarningMessage { ref msg, .. } => {
+			assert!(
+				close_tracker.is_expected_closed_channel_warning_msg(msg),
+				"Expected closed-channel warning, got: {:?}",
+				msg,
+			);
+			ExpectedControlAction::Warning(msg, false)
+		},
 		_ => panic!("Expected harness control error, got: {:?}", action),
 	}
 }
@@ -1043,6 +1051,11 @@ impl ChannelCloseTracker {
 			|| msg.data
 				== "Peer sent an invalid channel_reestablish to force close in a non-standard way"
 			|| msg.data.contains("when we needed a channel_reestablish")
+	}
+
+	fn is_expected_closed_channel_warning_msg(&self, msg: &msgs::WarningMessage) -> bool {
+		self.closed_channels.contains_key(&msg.channel_id)
+			&& msg.data == "Peer sent `stfu` when we were not in a live state"
 	}
 }
 
@@ -1412,15 +1425,21 @@ impl<'a> HarnessNode<'a> {
 
 	// Drains raw ChannelMonitor events. Monitor-generated BumpTransaction events
 	// do not flow through the manager event queue but still produce transactions
-	// the harness must mine.
+	// the harness must mine. SpendableOutputs and DiscardFunding may also surface
+	// here, but the harness does not model an external sweeper wallet.
 	fn process_monitor_pending_events(&self) -> bool {
 		// process_pending_events takes an Fn handler, so use interior mutability
 		// to report whether the callback saw anything.
 		let had_events = Cell::new(false);
 		self.monitor.process_pending_events(&|event: events::Event| {
 			had_events.set(true);
-			if let events::Event::BumpTransaction(ref bump) = event {
-				self.bump_tx_handler.handle_event(bump);
+			match event {
+				events::Event::BumpTransaction(bump) => {
+					self.bump_tx_handler.handle_event(&bump);
+				},
+				events::Event::SpendableOutputs { .. } => {},
+				events::Event::DiscardFunding { .. } => {},
+				event => panic!("Unhandled monitor event: {:?}", event),
 			}
 			Ok(())
 		});
@@ -2842,6 +2861,20 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.link_between(source_idx, dest_idx).first_channel_id()
 	}
 
+	// API calls are filtered before we make them if the harness knows they would
+	// target stale state. The open-channel filters below still handle tracked-
+	// closed channel ids after both peers have dropped them from list_channels.
+	fn has_stale_closed_channel_between(&self, source_idx: usize, dest_idx: usize) -> bool {
+		let channel_ids = self.channel_ids_between(source_idx, dest_idx);
+		let source_channels = self.nodes[source_idx].list_channels();
+		let dest_channels = self.nodes[dest_idx].list_channels();
+		channel_ids.iter().any(|channel_id| {
+			self.close_tracker.is_closed_or_closing(channel_id)
+				&& (source_channels.iter().any(|chan| chan.channel_id == *channel_id)
+					|| dest_channels.iter().any(|chan| chan.channel_id == *channel_id))
+		})
+	}
+
 	fn send_on_channel(
 		&mut self, source_idx: usize, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
 	) -> bool {
@@ -2861,6 +2894,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn send_hop(&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, amt: u64) {
+		// Even if we route over an open SCID, the middle node's non-strict
+		// forwarding can pick a parallel channel that the harness has already
+		// tracked closed but the node still lists. In that window, the downstream
+		// HTLC may never get committed, so close cleanup has nothing to fail back
+		// and the source payment can remain pending.
+		if self.has_stale_closed_channel_between(source_idx, middle_idx)
+			|| self.has_stale_closed_channel_between(middle_idx, dest_idx)
+		{
+			return;
+		}
 		let middle_chan_id = self.first_channel_id_between(source_idx, middle_idx);
 		let dest_chan_id = self.first_channel_id_between(middle_idx, dest_idx);
 		if !self.close_tracker.is_open(&middle_chan_id)
@@ -2916,6 +2959,16 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, channels: MppHopChannels,
 		amt: u64,
 	) {
+		// Even if we route over an open SCID, the middle node's non-strict
+		// forwarding can pick a parallel channel that the harness has already
+		// tracked closed but the node still lists. In that window, the downstream
+		// HTLC may never get committed, so close cleanup has nothing to fail back
+		// and the source payment can remain pending.
+		if self.has_stale_closed_channel_between(source_idx, middle_idx)
+			|| self.has_stale_closed_channel_between(middle_idx, dest_idx)
+		{
+			return;
+		}
 		let middle_chan_ids = self.channel_ids_between(source_idx, middle_idx);
 		let dest_chan_ids = self.channel_ids_between(middle_idx, dest_idx);
 		let middle_first_chan_id = middle_chan_ids[0];
@@ -3080,6 +3133,8 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
 			close_tracker: &ChannelCloseTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
+			// Always deliver message events, even when the harness knows they are stale,
+			// so message handlers exercise their normal error paths.
 			match event {
 				MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
 					handle_update_htlcs_event(
