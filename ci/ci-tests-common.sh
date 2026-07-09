@@ -20,4 +20,7 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # Starting with version 1.9.0, the `zeroize` crate uses Rust 2024.
 [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p zeroize --precise "1.8.2" --quiet
 
+# Starting with version 0.1.35, the `jobserver` crate relies on rustc 1.85.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p jobserver --precise "0.1.34" --quiet
+
 export RUST_BACKTRACE=1
