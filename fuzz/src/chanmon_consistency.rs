@@ -2028,6 +2028,18 @@ impl NodePayments {
 		}
 	}
 
+	fn allow_failure_for_closed_channel(&mut self, channel_id: ChannelId) {
+		for pending in &mut self.pending {
+			let uses_channel = pending
+				.paths
+				.iter()
+				.any(|path| path.iter().any(|hop| hop.channel_id == channel_id));
+			if uses_channel {
+				pending.expectation = PaymentExpectation::MayFail;
+			}
+		}
+	}
+
 	fn allow_failure_for_receive_cltv_buffer(&mut self, current_height: u32) {
 		let unsafe_receive_height =
 			current_height.saturating_add(channelmonitor::HTLC_FAIL_BACK_BUFFER + 1);
@@ -2192,6 +2204,12 @@ impl PaymentTracker {
 	fn allow_failure_for_hash(&mut self, payment_hash: PaymentHash) {
 		for node in &mut self.nodes {
 			node.allow_failure_for_hash(payment_hash);
+		}
+	}
+
+	fn allow_failure_for_closed_channel(&mut self, channel_id: ChannelId) {
+		for node in &mut self.nodes {
+			node.allow_failure_for_closed_channel(channel_id);
 		}
 	}
 
@@ -3783,19 +3801,23 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.bc_link.reconnect(&self.nodes);
 	}
 
-	fn has_pending_htlcs(&self) -> bool {
+	fn channel_has_pending_htlcs(&self, channel_id: ChannelId) -> bool {
 		self.nodes.iter().any(|node| {
 			node.list_channels().iter().any(|chan| {
-				!chan.pending_inbound_htlcs.is_empty() || !chan.pending_outbound_htlcs.is_empty()
+				chan.channel_id == channel_id
+					&& (!chan.pending_inbound_htlcs.is_empty()
+						|| !chan.pending_outbound_htlcs.is_empty())
 			})
 		})
 	}
 
 	fn force_close(&mut self, closer_idx: usize, channel_id: ChannelId, counterparty_idx: usize) {
-		if self.close_tracker.is_closed_or_closing(&channel_id) || self.has_pending_htlcs() {
-			// This opcode only models HTLC-free local closes. Leave it as a no-op
-			// while any channel has pending HTLCs, rather than mixing local
-			// force-close coverage with HTLC settlement.
+		if self.close_tracker.is_closed_or_closing(&channel_id)
+			|| self.channel_has_pending_htlcs(channel_id)
+		{
+			// This opcode only models closes whose target channel has no
+			// pending HTLCs. Other channels may still carry HTLCs that later
+			// fail back through normal peer messages during settlement.
 			return;
 		}
 		assert!(
@@ -3810,7 +3832,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			&self.nodes[counterparty_idx].get_our_node_id(),
 			reason.clone(),
 		) {
-			Ok(()) => self.close_tracker.expect_channel_close(channel_id, reason),
+			Ok(()) => {
+				self.payments.allow_failure_for_closed_channel(channel_id);
+				self.close_tracker.expect_channel_close(channel_id, reason);
+			},
 			Err(e) => panic!("{e:?}"),
 		}
 	}
