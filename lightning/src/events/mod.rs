@@ -865,6 +865,9 @@ pub struct HTLCLocator {
 	/// The channel that the HTLC was sent or received on.
 	pub channel_id: ChannelId,
 
+	/// The amount, in milli-satoshis, of the HTLC that was sent or received, if known.
+	pub amount_msat: Option<u64>,
+
 	/// The `user_channel_id` for `channel_id`.
 	///
 	/// This will be `None` if the payment was settled via an on-chain transaction. It will also
@@ -882,6 +885,7 @@ impl_writeable_tlv_based!(HTLCLocator, {
 	(1, channel_id, required),
 	(3, user_channel_id, option),
 	(5, node_id, option),
+	(7, amount_msat, option),
 });
 
 /// An Event which you should probably take some action in response to.
@@ -1528,7 +1532,7 @@ pub enum Event {
 		/// The final amount forwarded, in milli-satoshis, after the fee is deducted.
 		///
 		/// The caveat described above the `total_fee_earned_msat` field applies here as well.
-		outbound_amount_forwarded_msat: Option<u64>,
+		outbound_amount_forwarded_msat: u64,
 	},
 	/// Used to indicate that a channel with the given `channel_id` is being opened and pending
 	/// confirmation on-chain.
@@ -2214,6 +2218,7 @@ impl Writeable for Event {
 				);
 				let empty_locator = HTLCLocator {
 					channel_id: ChannelId::new_zero(),
+					amount_msat: None,
 					user_channel_id: None,
 					node_id: None,
 				};
@@ -2224,7 +2229,7 @@ impl Writeable for Event {
 					(1, Some(legacy_prev.channel_id), option),
 					(2, claim_from_onchain_tx, required),
 					(3, Some(legacy_next.channel_id), option),
-					(5, outbound_amount_forwarded_msat, option),
+					(5, outbound_amount_forwarded_msat, required),
 					(7, skimmed_fee_msat, option),
 					(9, legacy_prev.user_channel_id, option),
 					(11, legacy_next.user_channel_id, option),
@@ -2762,7 +2767,7 @@ impl MaybeReadable for Event {
 					let mut total_fee_earned_msat = None;
 					let mut skimmed_fee_msat = None;
 					let mut claim_from_onchain_tx = false;
-					let mut outbound_amount_forwarded_msat = None;
+					let mut outbound_amount_forwarded_msat = 0;
 					let mut prev_htlcs = vec![];
 					let mut next_htlcs = vec![];
 					read_tlv_fields!(reader, {
@@ -2770,7 +2775,7 @@ impl MaybeReadable for Event {
 						(1, prev_channel_id_legacy, option),
 						(2, claim_from_onchain_tx, required),
 						(3, next_channel_id_legacy, option),
-						(5, outbound_amount_forwarded_msat, option),
+						(5, outbound_amount_forwarded_msat, required),
 						(7, skimmed_fee_msat, option),
 						(9, prev_user_channel_id_legacy, option),
 						(11, next_user_channel_id_legacy, option),
@@ -2781,11 +2786,14 @@ impl MaybeReadable for Event {
 						// with pending forwards to 0.1 for any version 0.0.123 or earlier.
 						(17, prev_htlcs, (default_value, vec![HTLCLocator{
 							channel_id: prev_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
+							amount_msat: total_fee_earned_msat
+								.map(|fee| outbound_amount_forwarded_msat + fee),
 							user_channel_id: prev_user_channel_id_legacy,
 							node_id: prev_node_id_legacy,
 						}])),
 						(19, next_htlcs, (default_value, vec![HTLCLocator{
 							channel_id: next_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
+							amount_msat: Some(outbound_amount_forwarded_msat),
 							user_channel_id: next_user_channel_id_legacy,
 							node_id: next_node_id_legacy,
 						}])),
@@ -3223,6 +3231,48 @@ impl MaybeReadable for Event {
 				Ok(None)
 			},
 			_ => Err(msgs::DecodeError::InvalidValue),
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn legacy_payment_forwarded_preserves_unknown_inbound_htlc_amount() {
+		let prev_channel_id = ChannelId::from_bytes([1; 32]);
+		let next_channel_id = ChannelId::from_bytes([2; 32]);
+		let mut encoded_legacy_event = vec![
+			7,  // Event::PaymentForwarded
+			81, // TLV stream length
+			1, 32, // prev_channel_id
+		];
+		encoded_legacy_event.extend_from_slice(&[1; 32]);
+		encoded_legacy_event.extend_from_slice(&[2, 1, 0]); // claim_from_onchain_tx
+		encoded_legacy_event.extend_from_slice(&[3, 32]); // next_channel_id
+		encoded_legacy_event.extend_from_slice(&[2; 32]);
+		// outbound_amount_forwarded_msat
+		encoded_legacy_event.extend_from_slice(&[5, 8, 0, 0, 0, 0, 0, 45, 198, 192]);
+
+		match Event::read(&mut &encoded_legacy_event[..]).unwrap().unwrap() {
+			Event::PaymentForwarded {
+				prev_htlcs,
+				next_htlcs,
+				total_fee_earned_msat,
+				outbound_amount_forwarded_msat,
+				..
+			} => {
+				assert_eq!(total_fee_earned_msat, None);
+				assert_eq!(outbound_amount_forwarded_msat, 3_000_000);
+				assert_eq!(prev_htlcs.len(), 1);
+				assert_eq!(prev_htlcs[0].channel_id, prev_channel_id);
+				assert_eq!(prev_htlcs[0].amount_msat, None);
+				assert_eq!(next_htlcs.len(), 1);
+				assert_eq!(next_htlcs[0].channel_id, next_channel_id);
+				assert_eq!(next_htlcs[0].amount_msat, Some(3_000_000));
+			},
+			_ => panic!("expected PaymentForwarded event"),
 		}
 	}
 }

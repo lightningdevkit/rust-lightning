@@ -474,6 +474,7 @@ impl PendingAddHTLCInfo {
 		HTLCPreviousHopData {
 			prev_outbound_scid_alias: self.prev_outbound_scid_alias,
 			user_channel_id: Some(self.prev_user_channel_id),
+			amount_msat: self.forward_info.incoming_amt_msat,
 			outpoint: self.prev_funding_outpoint,
 			channel_id: self.prev_channel_id,
 			counterparty_node_id: Some(self.prev_counterparty_node_id),
@@ -909,6 +910,7 @@ mod fuzzy_channelmanager {
 	pub struct HTLCPreviousHopData {
 		pub prev_outbound_scid_alias: u64,
 		pub user_channel_id: Option<u128>,
+		pub amount_msat: Option<u64>,
 		pub htlc_id: u64,
 		pub incoming_packet_shared_secret: [u8; 32],
 		pub phantom_shared_secret: Option<[u8; 32]>,
@@ -925,12 +927,13 @@ mod fuzzy_channelmanager {
 		pub cltv_expiry: Option<u32>,
 	}
 
-	impl From<&HTLCPreviousHopData> for events::HTLCLocator {
-		fn from(value: &HTLCPreviousHopData) -> Self {
+	impl HTLCPreviousHopData {
+		pub(super) fn htlc_locator(&self, amount_msat: Option<u64>) -> events::HTLCLocator {
 			events::HTLCLocator {
-				channel_id: value.channel_id,
-				user_channel_id: value.user_channel_id,
-				node_id: value.counterparty_node_id,
+				channel_id: self.channel_id,
+				amount_msat,
+				user_channel_id: self.user_channel_id,
+				node_id: self.counterparty_node_id,
 			}
 		}
 	}
@@ -8562,6 +8565,7 @@ impl<
 					let htlc_source = HTLCSource::PreviousHopData(HTLCPreviousHopData {
 						prev_outbound_scid_alias: prev_hop.prev_outbound_scid_alias,
 						user_channel_id: prev_hop.user_channel_id,
+						amount_msat: Some(value),
 						counterparty_node_id: prev_hop.counterparty_node_id,
 						channel_id: prev_channel_id,
 						outpoint: prev_funding_outpoint,
@@ -10142,7 +10146,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 	fn claim_funds_internal(
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
-		forwarded_htlc_value_msat: Option<u64>, skimmed_fee_msat: Option<u64>, from_onchain: bool,
+		forwarded_htlc_value_msat: u64, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
 		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
@@ -10205,17 +10209,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 			},
 			HTLCSource::PreviousHopData(hop_data) => {
-				let prev_htlcs = vec![events::HTLCLocator::from(&hop_data)];
+				let event_prev_hop_data = hop_data.clone();
 				self.claim_funds_from_htlc_forward_hop(
 					payment_preimage,
 					|htlc_claim_value_msat: Option<u64>| -> Option<events::Event> {
 						let total_fee_earned_msat =
-							if let Some(forwarded_htlc_value) = forwarded_htlc_value_msat {
-								if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-									Some(claimed_htlc_value - forwarded_htlc_value)
-								} else {
-									None
-								}
+							if let Some(claimed_htlc_value) = htlc_claim_value_msat {
+								Some(claimed_htlc_value - forwarded_htlc_value_msat)
 							} else {
 								None
 							};
@@ -10223,11 +10223,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							skimmed_fee_msat <= total_fee_earned_msat,
 							"skimmed_fee_msat must always be included in total_fee_earned_msat"
 						);
+						let prev_htlc_amount_msat =
+							event_prev_hop_data.amount_msat.or(htlc_claim_value_msat);
 
 						Some(events::Event::PaymentForwarded {
-							prev_htlcs,
+							prev_htlcs: vec![
+								event_prev_hop_data.htlc_locator(prev_htlc_amount_msat)
+							],
 							next_htlcs: vec![events::HTLCLocator {
 								channel_id: next_channel_id,
+								amount_msat: Some(forwarded_htlc_value_msat),
 								user_channel_id: next_user_channel_id,
 								node_id: Some(next_channel_counterparty_node_id),
 							}],
@@ -10248,20 +10253,29 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			},
 			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
 				// Only emit a single event for trampoline claims.
-				let prev_htlcs: Vec<events::HTLCLocator> =
-					previous_hop_data.iter().map(Into::into).collect();
+				let mut event_prev_htlcs = Some(
+					previous_hop_data.iter().map(|hop| hop.htlc_locator(hop.amount_msat)).collect(),
+				);
 				for (i, current_previous_hop_data) in previous_hop_data.into_iter().enumerate() {
 					self.claim_funds_from_htlc_forward_hop(
 						payment_preimage,
 						|_: Option<u64>| -> Option<events::Event> {
 							if i == 0 {
+								let Some(prev_htlcs) = event_prev_htlcs.take() else {
+									debug_assert!(
+										false,
+										"trampoline forward event already emitted"
+									);
+									return None;
+								};
 								Some(events::Event::PaymentForwarded {
-									prev_htlcs: prev_htlcs.clone(),
+									prev_htlcs,
 									// TODO: When trampoline payments are tracked in our
 									// pending_outbound_payments, we'll be able to provide all the
 									// outgoing htlcs for this forward.
 									next_htlcs: vec![events::HTLCLocator {
 										channel_id: next_channel_id,
+										amount_msat: Some(forwarded_htlc_value_msat),
 										user_channel_id: next_user_channel_id,
 										node_id: Some(next_channel_counterparty_node_id),
 									}],
@@ -12797,7 +12811,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.claim_funds_internal(
 			htlc_source,
 			msg.payment_preimage.clone(),
-			Some(forwarded_htlc_value),
+			forwarded_htlc_value,
 			skimmed_fee_msat,
 			false,
 			*counterparty_node_id,
@@ -13816,7 +13830,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							self.claim_funds_internal(
 								htlc_update.source,
 								preimage,
-								htlc_update.htlc_value_satoshis.map(|v| v * 1000),
+								htlc_update.htlc_value_satoshis * 1000,
 								None,
 								true,
 								counterparty_node_id,
@@ -18010,6 +18024,7 @@ impl_writeable_tlv_based!(HTLCPreviousHopData, {
 	(9, channel_id, (default_value, ChannelId::v1_from_funding_outpoint(outpoint.0.unwrap()))),
 	(11, counterparty_node_id, option),
 	(13, trampoline_shared_secret, option),
+	(15, amount_msat, option),
 });
 
 fn write_claimable_htlc<W: Writer>(
@@ -20850,7 +20865,7 @@ impl<
 			channel_manager.claim_funds_internal(
 				source,
 				preimage,
-				Some(downstream_value),
+				downstream_value,
 				None,
 				downstream_closed,
 				downstream_node_id,

@@ -3095,6 +3095,7 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 			total_fee_earned_msat,
 			skimmed_fee_msat,
 			claim_from_onchain_tx,
+			outbound_amount_forwarded_msat,
 			..
 		} => {
 			assert_eq!(prev_htlcs.len(), 1);
@@ -3113,6 +3114,19 @@ pub fn expect_payment_forwarded<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 			// Check that the (knowingly) withheld amount is always less or equal to the expected
 			// overpaid amount.
 			assert!(skimmed_fee_msat == expected_extra_fees_msat);
+			match expected_fee {
+				Some(_) => {
+					let actual_fee = total_fee_earned_msat.unwrap();
+					assert_eq!(next_htlcs[0].amount_msat, Some(outbound_amount_forwarded_msat));
+					assert_eq!(
+						prev_htlcs[0].amount_msat,
+						Some(next_htlcs[0].amount_msat.unwrap() + actual_fee)
+					);
+				},
+				None => {
+					assert_eq!(total_fee_earned_msat, None);
+				},
+			}
 			if !upstream_force_closed {
 				let prev_node_id = prev_htlcs[0].node_id.unwrap();
 				let prev_channel_id = prev_htlcs[0].channel_id;
