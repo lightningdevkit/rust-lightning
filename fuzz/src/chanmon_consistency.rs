@@ -1943,6 +1943,14 @@ impl PeerLink {
 	}
 }
 
+#[derive(Clone, Copy)]
+struct PaymentHop {
+	amount_msat: u64,
+	short_channel_id: u64,
+}
+
+type PaymentPath = Vec<PaymentHop>;
+
 struct PendingPayment {
 	payment_id: PaymentId,
 	payment_hash: PaymentHash,
@@ -2069,6 +2077,42 @@ impl PaymentTracker {
 		(secret, hash, id)
 	}
 
+	fn route_from_payment_paths(
+		payment_paths: &[PaymentPath], path_nodes: &[&HarnessNode<'_>],
+		route_params: RouteParameters,
+	) -> Route {
+		let paths = payment_paths
+			.iter()
+			.map(|payment_path| {
+				assert_eq!(payment_path.len(), path_nodes.len());
+				let hops = payment_path
+					.iter()
+					.enumerate()
+					.map(|(idx, hop)| {
+						let node = path_nodes[idx];
+						let fee_msat =
+							payment_path.get(idx + 1).map_or(hop.amount_msat, |next_hop| {
+								hop.amount_msat.checked_sub(next_hop.amount_msat).expect(
+									"payment path amounts must not increase toward the recipient",
+								)
+							});
+						RouteHop {
+							pubkey: node.get_our_node_id(),
+							node_features: node.node_features(),
+							short_channel_id: hop.short_channel_id,
+							channel_features: node.channel_features(),
+							fee_msat,
+							cltv_expiry_delta: (idx as u32 + 1) * 100,
+							maybe_announced_channel: true,
+						}
+					})
+					.collect();
+				Path { hops, blinded_tail: None }
+			})
+			.collect();
+		Route { paths, route_params }
+	}
+
 	fn send(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
 		dest_chan_id: ChannelId, amt: u64,
@@ -2088,25 +2132,13 @@ impl PaymentTracker {
 				)
 			})
 			.unwrap_or((0, 0, 0));
+		let payment_paths =
+			vec![vec![PaymentHop { amount_msat: amt, short_channel_id: dest_scid }]];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
 			amt,
 		);
-		let route = Route {
-			paths: vec![Path {
-				hops: vec![RouteHop {
-					pubkey: dest.get_our_node_id(),
-					node_features: dest.node_features(),
-					short_channel_id: dest_scid,
-					channel_features: dest.channel_features(),
-					fee_msat: amt,
-					cltv_expiry_delta: 200,
-					maybe_announced_channel: true,
-				}],
-				blinded_tail: None,
-			}],
-			route_params,
-		};
+		let route = Self::route_from_payment_paths(&payment_paths, &[dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2157,36 +2189,15 @@ impl PaymentTracker {
 			.and_then(|chan| chan.short_channel_id)
 			.unwrap_or(0);
 		let first_hop_fee = 50_000;
+		let payment_paths = vec![vec![
+			PaymentHop { amount_msat: amt + first_hop_fee, short_channel_id: middle_scid },
+			PaymentHop { amount_msat: amt, short_channel_id: dest_scid },
+		]];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
 			amt,
 		);
-		let route = Route {
-			paths: vec![Path {
-				hops: vec![
-					RouteHop {
-						pubkey: middle.get_our_node_id(),
-						node_features: middle.node_features(),
-						short_channel_id: middle_scid,
-						channel_features: middle.channel_features(),
-						fee_msat: first_hop_fee,
-						cltv_expiry_delta: 100,
-						maybe_announced_channel: true,
-					},
-					RouteHop {
-						pubkey: dest.get_our_node_id(),
-						node_features: dest.node_features(),
-						short_channel_id: dest_scid,
-						channel_features: dest.channel_features(),
-						fee_msat: amt,
-						cltv_expiry_delta: 200,
-						maybe_announced_channel: true,
-					},
-				],
-				blinded_tail: None,
-			}],
-			route_params,
-		};
+		let route = Self::route_from_payment_paths(&payment_paths, &[middle, dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2231,43 +2242,37 @@ impl PaymentTracker {
 		}
 
 		let amt_per_path = amt / num_paths as u64;
-		let mut paths = Vec::with_capacity(num_paths);
 
 		let dest_chans = dest.list_channels();
-		let dest_scids = dest_chan_ids.iter().map(|chan_id| {
-			dest_chans
-				.iter()
-				.find(|chan| chan.channel_id == *chan_id)
-				.and_then(|chan| chan.short_channel_id)
-				.unwrap()
-		});
+		let dest_scids: Vec<_> = dest_chan_ids
+			.iter()
+			.map(|chan_id| {
+				dest_chans
+					.iter()
+					.find(|chan| chan.channel_id == *chan_id)
+					.and_then(|chan| chan.short_channel_id)
+					.unwrap()
+			})
+			.collect();
 
-		for (i, dest_scid) in dest_scids.enumerate() {
-			let path_amt = if i == num_paths - 1 {
-				amt - amt_per_path * (num_paths as u64 - 1)
-			} else {
-				amt_per_path
-			};
-
-			paths.push(Path {
-				hops: vec![RouteHop {
-					pubkey: dest.get_our_node_id(),
-					node_features: dest.node_features(),
-					short_channel_id: dest_scid,
-					channel_features: dest.channel_features(),
-					fee_msat: path_amt,
-					cltv_expiry_delta: 200,
-					maybe_announced_channel: true,
-				}],
-				blinded_tail: None,
-			});
-		}
+		let payment_paths: Vec<PaymentPath> = dest_scids
+			.iter()
+			.enumerate()
+			.map(|(i, dest_scid)| {
+				let path_amt = if i == num_paths - 1 {
+					amt - amt_per_path * (num_paths as u64 - 1)
+				} else {
+					amt_per_path
+				};
+				vec![PaymentHop { amount_msat: path_amt, short_channel_id: *dest_scid }]
+			})
+			.collect();
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
 			amt,
 		);
-		let route = Route { paths, route_params };
+		let route = Self::route_from_payment_paths(&payment_paths, &[dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
@@ -2301,7 +2306,6 @@ impl PaymentTracker {
 		let first_hop_fee = 50_000;
 		let amt_per_path = amt / num_paths as u64;
 		let fee_per_path = first_hop_fee / num_paths as u64;
-		let mut paths = Vec::with_capacity(num_paths);
 
 		let middle_chans = middle.list_channels();
 		let middle_scids: Vec<_> = middle_chan_ids
@@ -2327,51 +2331,32 @@ impl PaymentTracker {
 			})
 			.collect();
 
-		for i in 0..num_paths {
-			let middle_scid = middle_scids[i % middle_scids.len()];
-			let dest_scid = dest_scids[i % dest_scids.len()];
-
-			let path_amt = if i == num_paths - 1 {
-				amt - amt_per_path * (num_paths as u64 - 1)
-			} else {
-				amt_per_path
-			};
-			let path_fee = if i == num_paths - 1 {
-				first_hop_fee - fee_per_path * (num_paths as u64 - 1)
-			} else {
-				fee_per_path
-			};
-
-			paths.push(Path {
-				hops: vec![
-					RouteHop {
-						pubkey: middle.get_our_node_id(),
-						node_features: middle.node_features(),
-						short_channel_id: middle_scid,
-						channel_features: middle.channel_features(),
-						fee_msat: path_fee,
-						cltv_expiry_delta: 100,
-						maybe_announced_channel: true,
-					},
-					RouteHop {
-						pubkey: dest.get_our_node_id(),
-						node_features: dest.node_features(),
-						short_channel_id: dest_scid,
-						channel_features: dest.channel_features(),
-						fee_msat: path_amt,
-						cltv_expiry_delta: 200,
-						maybe_announced_channel: true,
-					},
-				],
-				blinded_tail: None,
-			});
-		}
+		let payment_paths: Vec<PaymentPath> = (0..num_paths)
+			.map(|i| {
+				let middle_scid = middle_scids[i % middle_scids.len()];
+				let dest_scid = dest_scids[i % dest_scids.len()];
+				let path_amt = if i == num_paths - 1 {
+					amt - amt_per_path * (num_paths as u64 - 1)
+				} else {
+					amt_per_path
+				};
+				let path_fee = if i == num_paths - 1 {
+					first_hop_fee - fee_per_path * (num_paths as u64 - 1)
+				} else {
+					fee_per_path
+				};
+				vec![
+					PaymentHop { amount_msat: path_amt + path_fee, short_channel_id: middle_scid },
+					PaymentHop { amount_msat: path_amt, short_channel_id: dest_scid },
+				]
+			})
+			.collect();
 
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_node_id(dest.get_our_node_id(), TEST_FINAL_CLTV),
 			amt,
 		);
-		let route = Route { paths, route_params };
+		let route = Self::route_from_payment_paths(&payment_paths, &[middle, dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let succeeded = match res {
