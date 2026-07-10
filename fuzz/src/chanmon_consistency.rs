@@ -1971,6 +1971,8 @@ impl NodePayments {
 		&mut self, payment_id: PaymentId, payment_hash: PaymentHash,
 		first_persisted_manager_generation: u64,
 	) {
+		assert!(!self.pending.iter().any(|pending| pending.payment_id == payment_id));
+		assert!(!self.resolved.contains_key(&payment_id));
 		self.pending.push(PendingPayment {
 			payment_id,
 			payment_hash,
@@ -1978,51 +1980,64 @@ impl NodePayments {
 		});
 	}
 
+	fn resolve_pending(
+		&mut self, payment_id: PaymentId, payment_hash: Option<PaymentHash>,
+	) -> PendingPayment {
+		assert!(!self.resolved.contains_key(&payment_id));
+		let idx = self
+			.pending
+			.iter()
+			.position(|pending| pending.payment_id == payment_id)
+			.expect("resolved payment must be pending");
+		let pending = self.pending.remove(idx);
+		if let Some(payment_hash) = payment_hash {
+			assert_eq!(pending.payment_hash, payment_hash);
+		}
+		assert!(self.resolved.insert(payment_id, payment_hash).is_none());
+		pending
+	}
+
 	fn mark_sent(&mut self, sent_id: PaymentId, payment_hash: PaymentHash) {
-		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == sent_id);
-		if let Some(idx) = idx_opt {
-			self.pending.remove(idx);
-			self.resolved.insert(sent_id, Some(payment_hash));
+		if self.pending.iter().any(|pending| pending.payment_id == sent_id) {
+			self.resolve_pending(sent_id, Some(payment_hash));
+		} else if let Some(resolved_hash) = self.resolved.get_mut(&sent_id) {
+			if let Some(existing_hash) = *resolved_hash {
+				assert_eq!(existing_hash, payment_hash);
+			} else {
+				*resolved_hash = Some(payment_hash);
+			}
 		} else {
-			assert!(self.resolved.contains_key(&sent_id));
+			panic!("Payment {:?} sent without being tracked", sent_id);
 		}
 	}
 
 	fn mark_resolved_without_hash(&mut self, payment_id: PaymentId) {
-		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
-		if let Some(idx) = idx_opt {
-			self.pending.remove(idx);
-			self.resolved.insert(payment_id, None);
-		} else if !self.resolved.contains_key(&payment_id) {
-			// Some resolutions can arrive immediately, before the send helper records
-			// the payment as pending. Track them so later duplicate events are accepted.
-			self.resolved.insert(payment_id, None);
-		}
-	}
-
-	fn mark_successful_probe(&mut self, payment_id: PaymentId) {
-		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
-		if let Some(idx) = idx_opt {
-			self.pending.remove(idx);
-			self.resolved.insert(payment_id, None);
+		if self.pending.iter().any(|pending| pending.payment_id == payment_id) {
+			self.resolve_pending(payment_id, None);
 		} else {
 			assert!(self.resolved.contains_key(&payment_id));
 		}
 	}
 
+	fn mark_successful_probe(&mut self, payment_id: PaymentId) {
+		self.mark_resolved_without_hash(payment_id);
+	}
+
 	fn sync_pending_with_manager_generation(
 		&mut self, loaded_manager_generation: u64,
 	) -> Vec<PaymentHash> {
-		let mut rolled_back_payment_hashes = Vec::new();
-		let pending = mem::take(&mut self.pending);
-		for pending_payment in pending {
-			if pending_payment.first_persisted_manager_generation > loaded_manager_generation {
-				rolled_back_payment_hashes.push(pending_payment.payment_hash);
-			} else {
-				self.pending.push(pending_payment);
-			}
+		let rolled_back_payments = self
+			.pending
+			.iter()
+			.filter(|pending| {
+				pending.first_persisted_manager_generation > loaded_manager_generation
+			})
+			.map(|pending| (pending.payment_id, pending.payment_hash))
+			.collect::<Vec<_>>();
+		for (payment_id, _) in &rolled_back_payments {
+			self.resolve_pending(*payment_id, None);
 		}
-		rolled_back_payment_hashes
+		rolled_back_payments.into_iter().map(|(_, payment_hash)| payment_hash).collect()
 	}
 }
 
@@ -2051,10 +2066,10 @@ impl PaymentTracker {
 				{
 					return true;
 				},
-				RecentPaymentDetails::Abandoned { payment_id, .. }
+				RecentPaymentDetails::Abandoned { payment_id, payment_hash, .. }
 					if payment_id == sent_payment_id =>
 				{
-					return false;
+					return Self::has_outbound_htlc(source, payment_hash);
 				},
 				_ => {},
 			}
@@ -2112,16 +2127,24 @@ impl PaymentTracker {
 		Route { paths, route_params }
 	}
 
+	fn has_outbound_htlc(source: &ChanMan, payment_hash: PaymentHash) -> bool {
+		source.list_channels().iter().any(|chan| {
+			chan.pending_outbound_htlcs.iter().any(|htlc| htlc.payment_hash == payment_hash)
+		})
+	}
+
 	fn record_send_result(
 		&mut self, source_idx: usize, source: &HarnessNode<'_>, payment_id: PaymentId,
 		payment_hash: PaymentHash, has_pending_work: bool,
 	) {
-		if has_pending_work {
-			self.nodes[source_idx].add_pending(
-				payment_id,
-				payment_hash,
-				source.next_manager_persistence_generation(),
-			);
+		let node_payments = &mut self.nodes[source_idx];
+		node_payments.add_pending(
+			payment_id,
+			payment_hash,
+			source.next_manager_persistence_generation(),
+		);
+		if !has_pending_work {
+			node_payments.resolve_pending(payment_id, None);
 		}
 	}
 
