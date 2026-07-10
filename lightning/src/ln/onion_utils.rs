@@ -2330,6 +2330,20 @@ impl Hop {
 			Hop::TrampolineBlindedReceive { outer_shared_secret, .. } => outer_shared_secret,
 		}
 	}
+
+	/// Returns the shared secret used to "double wrap" trampoline errors. This should be used
+	/// when an error is intended for the original sender of the payment.
+	pub(crate) fn trampoline_shared_secret(&self) -> Option<&SharedSecret> {
+		match self {
+			Hop::TrampolineForward { trampoline_shared_secret, .. }
+			| Hop::TrampolineBlindedForward { trampoline_shared_secret, .. }
+			| Hop::TrampolineReceive { trampoline_shared_secret, .. }
+			| Hop::TrampolineBlindedReceive { trampoline_shared_secret, .. } => {
+				Some(trampoline_shared_secret)
+			},
+			_ => None,
+		}
+	}
 }
 
 /// Error returned when we fail to decode the onion packet.
