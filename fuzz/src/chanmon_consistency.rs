@@ -2043,8 +2043,7 @@ impl PaymentTracker {
 		}
 	}
 
-	// Returns a bool indicating whether the payment failed.
-	fn check_payment_send_events(source: &ChanMan, sent_payment_id: PaymentId) -> bool {
+	fn payment_has_pending_work(source: &ChanMan, sent_payment_id: PaymentId) -> bool {
 		for payment in source.list_recent_payments() {
 			match payment {
 				RecentPaymentDetails::Pending { payment_id, .. }
@@ -2113,6 +2112,19 @@ impl PaymentTracker {
 		Route { paths, route_params }
 	}
 
+	fn record_send_result(
+		&mut self, source_idx: usize, source: &HarnessNode<'_>, payment_id: PaymentId,
+		payment_hash: PaymentHash, has_pending_work: bool,
+	) {
+		if has_pending_work {
+			self.nodes[source_idx].add_pending(
+				payment_id,
+				payment_hash,
+				source.next_manager_persistence_generation(),
+			);
+		}
+	}
+
 	fn send(
 		&mut self, nodes: &[HarnessNode<'_>; 3], source_idx: usize, dest_idx: usize,
 		dest_chan_id: ChannelId, amt: u64,
@@ -2141,25 +2153,19 @@ impl PaymentTracker {
 		let route = Self::route_from_payment_paths(&payment_paths, &[dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
-		let succeeded = match res {
+		let has_pending_work = match res {
 			Err(err) => {
 				panic!("Errored with {:?} on initial payment send", err);
 			},
 			Ok(()) => {
 				let expect_failure = amt < min_value_sendable || amt > max_value_sendable;
-				let succeeded = Self::check_payment_send_events(source, id);
-				assert_eq!(succeeded, !expect_failure);
-				succeeded
+				let has_pending_work = Self::payment_has_pending_work(source, id);
+				assert_eq!(has_pending_work, !expect_failure);
+				has_pending_work
 			},
 		};
-		if succeeded {
-			self.nodes[source_idx].add_pending(
-				id,
-				hash,
-				source.next_manager_persistence_generation(),
-			);
-		}
-		succeeded
+		self.record_send_result(source_idx, source, id, hash, has_pending_work);
+		has_pending_work
 	}
 
 	fn send_hop(
@@ -2200,25 +2206,19 @@ impl PaymentTracker {
 		let route = Self::route_from_payment_paths(&payment_paths, &[middle, dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
-		let succeeded = match res {
+		let has_pending_work = match res {
 			Err(err) => {
 				panic!("Errored with {:?} on initial payment send", err);
 			},
 			Ok(()) => {
 				let sent_amt = amt + first_hop_fee;
 				let expect_failure = sent_amt < min_value_sendable || sent_amt > max_value_sendable;
-				let succeeded = Self::check_payment_send_events(source, id);
-				assert_eq!(succeeded, !expect_failure);
-				succeeded
+				let has_pending_work = Self::payment_has_pending_work(source, id);
+				assert_eq!(has_pending_work, !expect_failure);
+				has_pending_work
 			},
 		};
-		if succeeded {
-			self.nodes[source_idx].add_pending(
-				id,
-				hash,
-				source.next_manager_persistence_generation(),
-			);
-		}
+		self.record_send_result(source_idx, source, id, hash, has_pending_work);
 	}
 
 	fn send_noret(
@@ -2275,17 +2275,11 @@ impl PaymentTracker {
 		let route = Self::route_from_payment_paths(&payment_paths, &[dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
-		let succeeded = match res {
+		let has_pending_work = match res {
 			Err(_) => false,
-			Ok(()) => Self::check_payment_send_events(source, id),
+			Ok(()) => Self::payment_has_pending_work(source, id),
 		};
-		if succeeded {
-			self.nodes[source_idx].add_pending(
-				id,
-				hash,
-				source.next_manager_persistence_generation(),
-			);
-		}
+		self.record_send_result(source_idx, source, id, hash, has_pending_work);
 	}
 
 	// MPP payment via hop - splits payment across multiple channels on either or both hops
@@ -2359,17 +2353,11 @@ impl PaymentTracker {
 		let route = Self::route_from_payment_paths(&payment_paths, &[middle, dest], route_params);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
-		let succeeded = match res {
+		let has_pending_work = match res {
 			Err(_) => false,
-			Ok(()) => Self::check_payment_send_events(source, id),
+			Ok(()) => Self::payment_has_pending_work(source, id),
 		};
-		if succeeded {
-			self.nodes[source_idx].add_pending(
-				id,
-				hash,
-				source.next_manager_persistence_generation(),
-			);
-		}
+		self.record_send_result(source_idx, source, id, hash, has_pending_work);
 	}
 
 	fn claim_payment(&mut self, node: &HarnessNode<'_>, payment_hash: PaymentHash, fail: bool) {
