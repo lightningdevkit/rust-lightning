@@ -51,7 +51,7 @@ use lightning::events::{self, EventsProvider};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
-use lightning::ln::channel_state::ChannelDetails;
+use lightning::ln::channel_state::{ChannelDetails, InboundHTLCStateDetails, OutboundHTLCSource};
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
 	TrustedChannelFeatures,
@@ -1943,6 +1943,12 @@ impl PeerLink {
 	}
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum PaymentExpectation {
+	MustSucceed,
+	MayFail,
+}
+
 #[derive(Clone, Copy)]
 struct PaymentHop {
 	channel_id: ChannelId,
@@ -1958,6 +1964,7 @@ struct PendingPayment {
 	first_persisted_manager_generation: u64,
 	paths: Vec<PaymentPath>,
 	min_final_cltv_expiry: u32,
+	expectation: PaymentExpectation,
 }
 
 struct NodePayments {
@@ -1984,6 +1991,7 @@ impl NodePayments {
 			first_persisted_manager_generation,
 			paths,
 			min_final_cltv_expiry,
+			expectation: PaymentExpectation::MustSucceed,
 		});
 	}
 
@@ -2004,6 +2012,32 @@ impl NodePayments {
 		pending
 	}
 
+	fn allow_failure_for_id(&mut self, payment_id: PaymentId) {
+		for pending in &mut self.pending {
+			if pending.payment_id == payment_id {
+				pending.expectation = PaymentExpectation::MayFail;
+			}
+		}
+	}
+
+	fn allow_failure_for_hash(&mut self, payment_hash: PaymentHash) {
+		for pending in &mut self.pending {
+			if pending.payment_hash == payment_hash {
+				pending.expectation = PaymentExpectation::MayFail;
+			}
+		}
+	}
+
+	fn allow_failure_for_receive_cltv_buffer(&mut self, current_height: u32) {
+		let unsafe_receive_height =
+			current_height.saturating_add(channelmonitor::HTLC_FAIL_BACK_BUFFER + 1);
+		for pending in &mut self.pending {
+			if pending.min_final_cltv_expiry <= unsafe_receive_height {
+				pending.expectation = PaymentExpectation::MayFail;
+			}
+		}
+	}
+
 	fn mark_sent(&mut self, sent_id: PaymentId, payment_hash: PaymentHash) {
 		if self.pending.iter().any(|pending| pending.payment_id == sent_id) {
 			self.resolve_pending(sent_id, Some(payment_hash));
@@ -2015,6 +2049,24 @@ impl NodePayments {
 			}
 		} else {
 			panic!("Payment {:?} sent without being tracked", sent_id);
+		}
+	}
+	fn mark_failed(&mut self, source_idx: usize, payment_id: PaymentId) {
+		if self.pending.iter().any(|pending| pending.payment_id == payment_id) {
+			let pending = self.resolve_pending(payment_id, None);
+			assert!(
+				pending.expectation == PaymentExpectation::MayFail,
+				"Payment {:?} from node {} failed without an expected failure source",
+				pending.payment_hash,
+				source_idx
+			);
+		} else {
+			assert!(
+				self.resolved.contains_key(&payment_id),
+				"Payment {:?} from node {} failed without being tracked",
+				payment_id,
+				source_idx
+			);
 		}
 	}
 
@@ -2052,6 +2104,8 @@ struct PaymentTracker {
 	nodes: [NodePayments; 3],
 	claimed_payment_hashes: HashSet<PaymentHash>,
 	payment_preimages: HashMap<PaymentHash, PaymentPreimage>,
+	// Inbound HTLCs whose failures were received from downstream.
+	downstream_failed_inbound_htlcs: [HashSet<(ChannelId, u64, PaymentHash)>; 3],
 	payment_ctr: u64,
 }
 
@@ -2061,6 +2115,7 @@ impl PaymentTracker {
 			nodes: [NodePayments::new(), NodePayments::new(), NodePayments::new()],
 			claimed_payment_hashes: HashSet::new(),
 			payment_preimages: new_hash_map(),
+			downstream_failed_inbound_htlcs: [HashSet::new(), HashSet::new(), HashSet::new()],
 			payment_ctr: 0,
 		}
 	}
@@ -2134,10 +2189,80 @@ impl PaymentTracker {
 		Route { paths, route_params }
 	}
 
-	fn has_outbound_htlc(source: &ChanMan, payment_hash: PaymentHash) -> bool {
-		source.list_channels().iter().any(|chan| {
-			chan.pending_outbound_htlcs.iter().any(|htlc| htlc.payment_hash == payment_hash)
-		})
+	fn allow_failure_for_hash(&mut self, payment_hash: PaymentHash) {
+		for node in &mut self.nodes {
+			node.allow_failure_for_hash(payment_hash);
+		}
+	}
+
+	fn allow_failure_for_receive_cltv_buffer(&mut self, current_height: u32) {
+		for node in &mut self.nodes {
+			node.allow_failure_for_receive_cltv_buffer(current_height);
+		}
+	}
+
+	fn record_downstream_failure(
+		&mut self, node_idx: usize, node: &HarnessNode<'_>, counterparty_node_id: &PublicKey,
+		channel_id: ChannelId, htlc_id: u64,
+	) {
+		let Some(htlc) = node
+			.list_channels()
+			.into_iter()
+			.find(|chan| {
+				chan.counterparty.node_id == *counterparty_node_id && chan.channel_id == channel_id
+			})
+			.and_then(|chan| {
+				chan.pending_outbound_htlcs.into_iter().find(|htlc| htlc.htlc_id == Some(htlc_id))
+			})
+		else {
+			return;
+		};
+		let payment_hash = htlc.payment_hash;
+		match htlc.source {
+			Some(OutboundHTLCSource::Forwarded { inbound_htlc }) => {
+				self.downstream_failed_inbound_htlcs[node_idx].insert((
+					inbound_htlc.channel_id,
+					inbound_htlc.htlc_id,
+					payment_hash,
+				));
+			},
+			Some(OutboundHTLCSource::TrampolineForwarded { inbound_htlcs }) => {
+				self.downstream_failed_inbound_htlcs[node_idx].extend(
+					inbound_htlcs
+						.into_iter()
+						.map(|htlc| (htlc.channel_id, htlc.htlc_id, payment_hash)),
+				);
+			},
+			Some(OutboundHTLCSource::Local { .. }) | None => {},
+		}
+	}
+
+	fn allow_failure_for_local_inbound_htlcs(&mut self, node_idx: usize, node: &HarnessNode<'_>) {
+		// Classify failures immediately after forwarding so implicit LDK-local
+		// policy or state failures are observed before their failure messages can
+		// reach the payer. Downstream-originated failures are already tracked by
+		// the failure message that caused them.
+		let failed_htlcs: Vec<_> = node
+			.list_channels()
+			.iter()
+			.flat_map(|chan| {
+				chan.pending_inbound_htlcs.iter().filter_map(|htlc| {
+					matches!(
+						htlc.state.as_ref(),
+						Some(InboundHTLCStateDetails::AwaitingRemoteRevokeToRemoveFail)
+					)
+					.then_some((chan.channel_id, htlc.htlc_id, htlc.payment_hash))
+				})
+			})
+			.collect();
+		for (channel_id, htlc_id, payment_hash) in failed_htlcs {
+			// Failed inbound HTLCs may appear in multiple state snapshots, so keep downstream
+			// markers after matching them.
+			let htlc = (channel_id, htlc_id, payment_hash);
+			if !self.downstream_failed_inbound_htlcs[node_idx].contains(&htlc) {
+				self.allow_failure_for_hash(payment_hash);
+			}
+		}
 	}
 
 	fn route_min_final_cltv_expiry(route: &Route, source_best_block_height: u32) -> u32 {
@@ -2157,11 +2282,31 @@ impl PaymentTracker {
 			.expect("payment route should contain at least one path")
 	}
 
+	fn has_outbound_htlc(source: &ChanMan, payment_hash: PaymentHash) -> bool {
+		source.list_channels().iter().any(|chan| {
+			chan.pending_outbound_htlcs.iter().any(|htlc| htlc.payment_hash == payment_hash)
+		})
+	}
+	fn payment_has_uncommitted_paths(
+		source: &HarnessNode<'_>, payment_hash: PaymentHash, path_count: usize,
+	) -> bool {
+		let committed_htlc_count = source
+			.list_channels()
+			.iter()
+			.flat_map(|chan| chan.pending_outbound_htlcs.iter())
+			.filter(|htlc| htlc.payment_hash == payment_hash && htlc.htlc_id.is_some())
+			.count();
+		committed_htlc_count < path_count
+	}
+
 	fn record_send_result(
 		&mut self, source_idx: usize, source: &HarnessNode<'_>, payment_id: PaymentId,
 		payment_hash: PaymentHash, payment_paths: Vec<PaymentPath>, min_final_cltv_expiry: u32,
 		has_pending_work: bool,
 	) {
+		let path_count = payment_paths.len();
+		let has_uncommitted_paths = has_pending_work
+			&& Self::payment_has_uncommitted_paths(source, payment_hash, path_count);
 		let node_payments = &mut self.nodes[source_idx];
 		node_payments.add_pending(
 			payment_id,
@@ -2170,7 +2315,13 @@ impl PaymentTracker {
 			payment_paths,
 			min_final_cltv_expiry,
 		);
-		if !has_pending_work {
+		if has_pending_work {
+			// Holding-cell HTLCs have no id, while paths that failed locally are absent.
+			// Either can make an otherwise tracked payment fail without a downstream cause.
+			if has_uncommitted_paths {
+				node_payments.allow_failure_for_id(payment_id);
+			}
+		} else {
 			node_payments.resolve_pending(payment_id, None);
 		}
 	}
@@ -2474,6 +2625,7 @@ impl PaymentTracker {
 
 	fn claim_payment(&mut self, node: &HarnessNode<'_>, payment_hash: PaymentHash, fail: bool) {
 		if fail {
+			self.allow_failure_for_hash(payment_hash);
 			node.fail_htlc_backwards(&payment_hash);
 		} else {
 			let payment_preimage = *self
@@ -3156,7 +3308,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn handle_update_htlcs_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, node_id: PublicKey, channel_id: ChannelId,
 			updates: CommitmentUpdate, corrupt_forward: bool, limit_events: ProcessMessages,
-			nodes: &[HarnessNode<'_>; 3], _payments: &mut PaymentTracker, out: &Out,
+			nodes: &[HarnessNode<'_>; 3], payments: &mut PaymentTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
 			let dest_idx = find_destination_node(nodes, &node_id);
 			let dest = &nodes[dest_idx];
@@ -3171,6 +3323,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 
 			for update_add in update_add_htlcs.iter() {
 				log_msg_delivery(node_idx, dest_idx, "update_add_htlc", out);
+				if corrupt_forward {
+					payments.allow_failure_for_hash(update_add.payment_hash);
+				}
 				handle_update_add_htlc(source_node_id, dest, update_add, corrupt_forward);
 			}
 			let processed_change = !update_add_htlcs.is_empty()
@@ -3183,10 +3338,24 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			}
 			for update_fail in update_fail_htlcs.iter() {
 				log_msg_delivery(node_idx, dest_idx, "update_fail_htlc", out);
+				payments.record_downstream_failure(
+					dest_idx,
+					dest,
+					&source_node_id,
+					update_fail.channel_id,
+					update_fail.htlc_id,
+				);
 				dest.handle_update_fail_htlc(source_node_id, update_fail);
 			}
 			for update_fail_malformed in update_fail_malformed_htlcs.iter() {
 				log_msg_delivery(node_idx, dest_idx, "update_fail_malformed_htlc", out);
+				payments.record_downstream_failure(
+					dest_idx,
+					dest,
+					&source_node_id,
+					update_fail_malformed.channel_id,
+					update_fail_malformed.htlc_id,
+				);
 				dest.handle_update_fail_malformed_htlc(source_node_id, update_fail_malformed);
 			}
 			if let Some(msg) = update_fee {
@@ -3434,7 +3603,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					payments.nodes[node_idx].mark_successful_probe(payment_id);
 				},
 				events::Event::PaymentFailed { payment_id, .. } => {
-					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
+					payments.nodes[node_idx].mark_failed(node_idx, payment_id);
 				},
 				events::Event::ProbeFailed { payment_id, .. } => {
 					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
@@ -3526,6 +3695,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		had_events |= nodes[node_idx].process_monitor_pending_events();
 		while nodes[node_idx].needs_pending_htlc_processing() {
 			nodes[node_idx].process_pending_htlc_forwards();
+			payments.allow_failure_for_local_inbound_htlcs(node_idx, &nodes[node_idx]);
 			had_events = true;
 		}
 		had_events
@@ -3895,6 +4065,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			return 0;
 		}
 		let confirmed_txs = self.chain_state.mine_blocks(count);
+		self.payments.allow_failure_for_receive_cltv_buffer(self.chain_state.tip_height());
 		let wallets = [
 			self.nodes[0].wallet.as_ref(),
 			self.nodes[1].wallet.as_ref(),
