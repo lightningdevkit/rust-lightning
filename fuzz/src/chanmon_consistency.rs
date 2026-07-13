@@ -1955,6 +1955,7 @@ struct PendingPayment {
 	payment_id: PaymentId,
 	payment_hash: PaymentHash,
 	first_persisted_manager_generation: u64,
+	min_final_cltv_expiry: u32,
 }
 
 struct NodePayments {
@@ -1969,7 +1970,7 @@ impl NodePayments {
 
 	fn add_pending(
 		&mut self, payment_id: PaymentId, payment_hash: PaymentHash,
-		first_persisted_manager_generation: u64,
+		first_persisted_manager_generation: u64, min_final_cltv_expiry: u32,
 	) {
 		assert!(!self.pending.iter().any(|pending| pending.payment_id == payment_id));
 		assert!(!self.resolved.contains_key(&payment_id));
@@ -1977,6 +1978,7 @@ impl NodePayments {
 			payment_id,
 			payment_hash,
 			first_persisted_manager_generation,
+			min_final_cltv_expiry,
 		});
 	}
 
@@ -2133,15 +2135,33 @@ impl PaymentTracker {
 		})
 	}
 
+	fn route_min_final_cltv_expiry(route: &Route, source_best_block_height: u32) -> u32 {
+		let cur_height = source_best_block_height.saturating_add(1);
+		route
+			.paths
+			.iter()
+			.map(|path| {
+				cur_height.saturating_add(
+					path.hops
+						.last()
+						.expect("payment path should contain at least one hop")
+						.cltv_expiry_delta,
+				)
+			})
+			.min()
+			.expect("payment route should contain at least one path")
+	}
+
 	fn record_send_result(
 		&mut self, source_idx: usize, source: &HarnessNode<'_>, payment_id: PaymentId,
-		payment_hash: PaymentHash, has_pending_work: bool,
+		payment_hash: PaymentHash, min_final_cltv_expiry: u32, has_pending_work: bool,
 	) {
 		let node_payments = &mut self.nodes[source_idx];
 		node_payments.add_pending(
 			payment_id,
 			payment_hash,
 			source.next_manager_persistence_generation(),
+			min_final_cltv_expiry,
 		);
 		if !has_pending_work {
 			node_payments.resolve_pending(payment_id, None);
@@ -2174,6 +2194,8 @@ impl PaymentTracker {
 			amt,
 		);
 		let route = Self::route_from_payment_paths(&payment_paths, &[dest], route_params);
+		let min_final_cltv_expiry =
+			Self::route_min_final_cltv_expiry(&route, source.current_best_block().height);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let has_pending_work = match res {
@@ -2187,7 +2209,14 @@ impl PaymentTracker {
 				has_pending_work
 			},
 		};
-		self.record_send_result(source_idx, source, id, hash, has_pending_work);
+		self.record_send_result(
+			source_idx,
+			source,
+			id,
+			hash,
+			min_final_cltv_expiry,
+			has_pending_work,
+		);
 		has_pending_work
 	}
 
@@ -2227,6 +2256,8 @@ impl PaymentTracker {
 			amt,
 		);
 		let route = Self::route_from_payment_paths(&payment_paths, &[middle, dest], route_params);
+		let min_final_cltv_expiry =
+			Self::route_min_final_cltv_expiry(&route, source.current_best_block().height);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let has_pending_work = match res {
@@ -2241,7 +2272,14 @@ impl PaymentTracker {
 				has_pending_work
 			},
 		};
-		self.record_send_result(source_idx, source, id, hash, has_pending_work);
+		self.record_send_result(
+			source_idx,
+			source,
+			id,
+			hash,
+			min_final_cltv_expiry,
+			has_pending_work,
+		);
 	}
 
 	fn send_noret(
@@ -2296,13 +2334,22 @@ impl PaymentTracker {
 			amt,
 		);
 		let route = Self::route_from_payment_paths(&payment_paths, &[dest], route_params);
+		let min_final_cltv_expiry =
+			Self::route_min_final_cltv_expiry(&route, source.current_best_block().height);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let has_pending_work = match res {
 			Err(_) => false,
 			Ok(()) => Self::payment_has_pending_work(source, id),
 		};
-		self.record_send_result(source_idx, source, id, hash, has_pending_work);
+		self.record_send_result(
+			source_idx,
+			source,
+			id,
+			hash,
+			min_final_cltv_expiry,
+			has_pending_work,
+		);
 	}
 
 	// MPP payment via hop - splits payment across multiple channels on either or both hops
@@ -2374,13 +2421,22 @@ impl PaymentTracker {
 			amt,
 		);
 		let route = Self::route_from_payment_paths(&payment_paths, &[middle, dest], route_params);
+		let min_final_cltv_expiry =
+			Self::route_min_final_cltv_expiry(&route, source.current_best_block().height);
 		let onion = RecipientOnionFields::secret_only(secret, amt);
 		let res = source.send_payment_with_route(route, hash, onion, id);
 		let has_pending_work = match res {
 			Err(_) => false,
 			Ok(()) => Self::payment_has_pending_work(source, id),
 		};
-		self.record_send_result(source_idx, source, id, hash, has_pending_work);
+		self.record_send_result(
+			source_idx,
+			source,
+			id,
+			hash,
+			min_final_cltv_expiry,
+			has_pending_work,
+		);
 	}
 
 	fn claim_payment(&mut self, node: &HarnessNode<'_>, payment_hash: PaymentHash, fail: bool) {
@@ -3067,7 +3123,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn handle_update_htlcs_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, node_id: PublicKey, channel_id: ChannelId,
 			updates: CommitmentUpdate, corrupt_forward: bool, limit_events: ProcessMessages,
-			nodes: &[HarnessNode<'_>; 3], out: &Out,
+			nodes: &[HarnessNode<'_>; 3], _payments: &mut PaymentTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
 			let dest_idx = find_destination_node(nodes, &node_id);
 			let dest = &nodes[dest_idx];
@@ -3127,7 +3183,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn process_msg_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, event: MessageSendEvent,
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
-			close_tracker: &ChannelCloseTracker, out: &Out,
+			payments: &mut PaymentTracker, close_tracker: &ChannelCloseTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
 			// Always deliver message events, even when the harness knows they are stale,
 			// so message handlers exercise their normal error paths.
@@ -3142,6 +3198,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 						corrupt_forward,
 						limit_events,
 						nodes,
+						payments,
 						out,
 					)
 				},
@@ -3270,6 +3327,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 
 		let nodes = &self.nodes;
+		let payments = &mut self.payments;
 		let close_tracker = &self.close_tracker;
 		let out = &self.out;
 		let queues = &mut self.queues;
@@ -3291,6 +3349,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				corrupt_forward,
 				limit_events,
 				nodes,
+				payments,
 				close_tracker,
 				out,
 			);
@@ -3341,8 +3400,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				events::Event::ProbeSuccessful { payment_id, .. } => {
 					payments.nodes[node_idx].mark_successful_probe(payment_id);
 				},
-				events::Event::PaymentFailed { payment_id, .. }
-				| events::Event::ProbeFailed { payment_id, .. } => {
+				events::Event::PaymentFailed { payment_id, .. } => {
+					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
+				},
+				events::Event::ProbeFailed { payment_id, .. } => {
 					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
 				},
 				events::Event::PaymentClaimed { .. } => {},
