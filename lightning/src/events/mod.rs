@@ -32,6 +32,7 @@ use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::types::ChannelId;
 use crate::offers::invoice::Bolt12Invoice;
 use crate::offers::invoice_request::InvoiceRequest;
+pub use crate::offers::payer_proof::PaidBolt12Invoice;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::onion_message::messenger::Responder;
 use crate::routing::gossip::NetworkUpdate;
@@ -1210,17 +1211,13 @@ pub enum Event {
 		///
 		/// [`Route::get_total_fees`]: crate::routing::router::Route::get_total_fees
 		fee_paid_msat: Option<u64>,
-		/// The BOLT 12 invoice that was paid. `None` if the payment was a non BOLT 12 payment.
+		/// The paid BOLT 12 invoice bundled with the data needed to construct a
+		/// [`PayerProof`], which selectively discloses invoice fields to prove payment to a
+		/// third party.
 		///
-		/// The BOLT 12 invoice is useful for proof of payment because it contains the
-		/// payment hash. A third party can verify that the payment was made by
-		/// showing the invoice and confirming that the payment hash matches
-		/// the hash of the payment preimage.
+		/// `None` for non-BOLT 12 payments.
 		///
-		/// However, the [`PaidBolt12Invoice`] can also be of type [`StaticInvoice`], which
-		/// is a special [`Bolt12Invoice`] where proof of payment is not possible.
-		///
-		/// [`StaticInvoice`]: crate::offers::static_invoice::StaticInvoice
+		/// [`PayerProof`]: crate::offers::payer_proof::PayerProof
 		bolt12_invoice: Option<PaidBolt12Invoice>,
 	},
 	/// Indicates an outbound payment failed. Individual [`Event::PaymentPathFailed`] events
@@ -1651,8 +1648,12 @@ pub enum Event {
 		/// [`ChainMonitor::get_claimable_balances`]: crate::chain::chainmonitor::ChainMonitor::get_claimable_balances
 		last_local_balance_msat: Option<u64>,
 	},
-	/// Used to indicate that a splice for the given `channel_id` has been negotiated and its
-	/// funding transaction has been broadcast.
+	/// Used to indicate that a splice for the given `channel_id` has been negotiated, its
+	/// funding transaction has been broadcast, and local inputs or outputs were contributed to
+	/// it.
+	///
+	/// This event is not emitted if the counterparty negotiated a splice without using a local
+	/// contribution.
 	///
 	/// The splice is then considered pending until both parties have seen enough confirmations to
 	/// consider the funding locked. Once this occurs, an [`Event::ChannelReady`] will be emitted.
@@ -1683,9 +1684,9 @@ pub enum Event {
 	},
 	/// Used to indicate that a splice negotiation round for the given `channel_id` has failed.
 	///
-	/// Each splice attempt (initial or RBF) resolves to either [`Event::SpliceNegotiated`] on
-	/// success or this event on failure. Prior successfully negotiated splice transactions are
-	/// unaffected.
+	/// Each splice attempt (initial or RBF) resolves to this event on failure. On success,
+	/// [`Event::SpliceNegotiated`] is emitted if the negotiated transaction includes local
+	/// inputs or outputs. Prior successfully negotiated splice transactions are unaffected.
 	///
 	/// Any UTXOs contributed to the failed round that are not committed to a prior negotiated
 	/// splice transaction will be returned via a preceding [`Event::DiscardFunding`].
@@ -3360,19 +3361,3 @@ impl<T: EventHandler> EventHandler for Arc<T> {
 		self.deref().handle_event(event)
 	}
 }
-
-/// The BOLT 12 invoice that was paid, surfaced in [`Event::PaymentSent::bolt12_invoice`].
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum PaidBolt12Invoice {
-	/// The BOLT 12 invoice specified by the BOLT 12 specification,
-	/// allowing the user to perform proof of payment.
-	Bolt12Invoice(Bolt12Invoice),
-	/// The Static invoice, used in the async payment specification update proposal,
-	/// where the user cannot perform proof of payment.
-	StaticInvoice(StaticInvoice),
-}
-
-impl_writeable_tlv_based_enum!(PaidBolt12Invoice,
-	{0, Bolt12Invoice} => (),
-	{2, StaticInvoice} => (),
-);

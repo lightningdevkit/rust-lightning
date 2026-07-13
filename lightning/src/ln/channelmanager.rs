@@ -1134,7 +1134,7 @@ impl MsgHandleErrInternal {
 
 	fn from_chan_no_close(err: ChannelError, channel_id: ChannelId) -> Self {
 		let tx_abort = match &err {
-			&ChannelError::Abort(reason) => Some(reason.into_tx_abort_msg(channel_id)),
+			ChannelError::Abort(reason) => Some(reason.clone().into_tx_abort_msg(channel_id)),
 			_ => None,
 		};
 		let err = match err {
@@ -4220,7 +4220,7 @@ impl<
 									channel_id: *chan_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
-									contribution,
+									contribution: Some(contribution),
 									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
@@ -4526,7 +4526,7 @@ impl<
 						channel_id: shutdown_res.channel_id,
 						counterparty_node_id: shutdown_res.counterparty_node_id,
 						user_channel_id: shutdown_res.user_channel_id,
-						contribution,
+						contribution: Some(contribution),
 						reason: events::NegotiationFailureReason::ChannelClosing,
 					},
 					None,
@@ -6714,7 +6714,7 @@ impl<
 						counterparty_node_id,
 						user_channel_id,
 						reason,
-						contribution,
+						contribution: Some(contribution),
 					},
 					None,
 				));
@@ -6768,8 +6768,9 @@ impl<
 	///
 	/// Calling this method will commence the process of creating a new funding transaction for the
 	/// channel. Once the funding transaction has been constructed, an [`Event::SpliceNegotiated`]
-	/// will be emitted. At this point, any inputs contributed to the splice can only be re-spent
-	/// if an [`Event::DiscardFunding`] is seen.
+	/// will be emitted if the negotiated transaction includes local inputs or outputs. At this
+	/// point, any inputs contributed to the splice can only be re-spent if an
+	/// [`Event::DiscardFunding`] is seen.
 	///
 	/// If any failures occur while negotiating the funding transaction, an
 	/// [`Event::SpliceNegotiationFailed`] will be emitted. Any contributed inputs no longer used
@@ -6992,18 +6993,20 @@ impl<
 								);
 							}
 							if let Some(splice_negotiated) = splice_negotiated {
-								self.pending_events.lock().unwrap().push_back((
-									events::Event::SpliceNegotiated {
-										channel_id: *channel_id,
-										counterparty_node_id: *counterparty_node_id,
-										user_channel_id: chan.context().get_user_id(),
-										new_funding_txo: splice_negotiated.funding_txo,
-										channel_type: splice_negotiated.channel_type,
-										new_funding_redeem_script: splice_negotiated
-											.funding_redeem_script,
-									},
-									None,
-								));
+								if splice_negotiated.has_local_contribution {
+									self.pending_events.lock().unwrap().push_back((
+										events::Event::SpliceNegotiated {
+											channel_id: *channel_id,
+											counterparty_node_id: *counterparty_node_id,
+											user_channel_id: chan.context().get_user_id(),
+											new_funding_txo: splice_negotiated.funding_txo,
+											channel_type: splice_negotiated.channel_type,
+											new_funding_redeem_script: splice_negotiated
+												.funding_redeem_script,
+										},
+										None,
+									));
+								}
 							}
 
 							if chan.context().is_connected() {
@@ -11196,17 +11199,19 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				.as_mut()
 				.and_then(|v| v.splice_negotiated.take())
 			{
-				pending_events.push_back((
-					events::Event::SpliceNegotiated {
-						channel_id: channel.context.channel_id(),
-						counterparty_node_id,
-						user_channel_id: channel.context.get_user_id(),
-						new_funding_txo: splice_negotiated.funding_txo,
-						channel_type: splice_negotiated.channel_type,
-						new_funding_redeem_script: splice_negotiated.funding_redeem_script,
-					},
-					None,
-				));
+				if splice_negotiated.has_local_contribution {
+					pending_events.push_back((
+						events::Event::SpliceNegotiated {
+							channel_id: channel.context.channel_id(),
+							counterparty_node_id,
+							user_channel_id: channel.context.get_user_id(),
+							new_funding_txo: splice_negotiated.funding_txo,
+							channel_type: splice_negotiated.channel_type,
+							new_funding_redeem_script: splice_negotiated.funding_redeem_script,
+						},
+						None,
+					));
+				}
 			}
 		}
 
@@ -12051,7 +12056,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					channel_id,
 					counterparty_node_id: *counterparty_node_id,
 					user_channel_id,
-					contribution,
+					contribution: Some(contribution),
 					reason,
 				},
 				None,
@@ -12296,18 +12301,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							// which also terminates quiescence.
 							let needs_holding_cell_release = splice_negotiated.is_some();
 							if let Some(splice_negotiated) = splice_negotiated {
-								self.pending_events.lock().unwrap().push_back((
-									events::Event::SpliceNegotiated {
-										channel_id: msg.channel_id,
-										counterparty_node_id: *counterparty_node_id,
-										user_channel_id: chan.context.get_user_id(),
-										new_funding_txo: splice_negotiated.funding_txo,
-										channel_type: splice_negotiated.channel_type,
-										new_funding_redeem_script: splice_negotiated
-											.funding_redeem_script,
-									},
-									None,
-								));
+								if splice_negotiated.has_local_contribution {
+									self.pending_events.lock().unwrap().push_back((
+										events::Event::SpliceNegotiated {
+											channel_id: msg.channel_id,
+											counterparty_node_id: *counterparty_node_id,
+											user_channel_id: chan.context.get_user_id(),
+											new_funding_txo: splice_negotiated.funding_txo,
+											channel_type: splice_negotiated.channel_type,
+											new_funding_redeem_script: splice_negotiated
+												.funding_redeem_script,
+										},
+										None,
+									));
+								}
 							}
 							let holding_cell_res = if needs_holding_cell_release {
 								self.check_free_peer_holding_cells(peer_state)
@@ -12387,7 +12394,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_id: msg.channel_id,
 								counterparty_node_id: *counterparty_node_id,
 								user_channel_id: chan_entry.get().context().get_user_id(),
-								contribution,
+								contribution: Some(contribution),
 								reason: events::NegotiationFailureReason::CounterpartyAborted {
 									msg: UntrustedString(
 										String::from_utf8_lossy(&msg.data).to_string(),
@@ -12552,7 +12559,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									channel_id: msg.channel_id,
 									counterparty_node_id: *counterparty_node_id,
 									user_channel_id: chan.context().get_user_id(),
-									contribution,
+									contribution: Some(contribution),
 									reason: events::NegotiationFailureReason::ChannelClosing,
 								},
 								None,
@@ -14158,17 +14165,20 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						.and_then(|funding_tx_signed| funding_tx_signed.splice_negotiated.take())
 					{
 						*needs_holding_cell_release = true;
-						self.pending_events.lock().unwrap().push_back((
-							events::Event::SpliceNegotiated {
-								channel_id,
-								counterparty_node_id: node_id,
-								user_channel_id: funded_chan.context.get_user_id(),
-								new_funding_txo: splice_negotiated.funding_txo,
-								channel_type: splice_negotiated.channel_type,
-								new_funding_redeem_script: splice_negotiated.funding_redeem_script,
-							},
-							None,
-						));
+						if splice_negotiated.has_local_contribution {
+							self.pending_events.lock().unwrap().push_back((
+								events::Event::SpliceNegotiated {
+									channel_id,
+									counterparty_node_id: node_id,
+									user_channel_id: funded_chan.context.get_user_id(),
+									new_funding_txo: splice_negotiated.funding_txo,
+									channel_type: splice_negotiated.channel_type,
+									new_funding_redeem_script: splice_negotiated
+										.funding_redeem_script,
+								},
+								None,
+							));
+						}
 					}
 					if let Some(broadcast_tx) = msgs.signed_closing_tx {
 						log_info!(logger, "Broadcasting closing tx {}", log_tx!(broadcast_tx));
@@ -15794,7 +15804,7 @@ impl<
 								channel_id: chan.context().channel_id(),
 								counterparty_node_id,
 								user_channel_id: chan.context().get_user_id(),
-								contribution,
+								contribution: Some(contribution),
 								reason: events::NegotiationFailureReason::PeerDisconnected,
 							});
 						}
@@ -18436,7 +18446,7 @@ impl<
 							counterparty_node_id: chan.context.get_counterparty_node_id(),
 							user_channel_id: chan.context.get_user_id(),
 							reason: events::NegotiationFailureReason::PeerDisconnected,
-							contribution,
+							contribution: Some(contribution),
 						},
 						None,
 					));

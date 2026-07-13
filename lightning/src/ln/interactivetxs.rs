@@ -91,7 +91,7 @@ impl SerialIdExt for SerialId {
 	}
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum AbortReason {
 	InvalidStateTransition,
 	UnexpectedCounterpartyMessage,
@@ -142,6 +142,10 @@ pub(crate) enum AbortReason {
 	///
 	/// [`ChannelManager::cancel_funding_contributed`]: crate::ln::channelmanager::ChannelManager::cancel_funding_contributed
 	ManualIntervention,
+	/// The contribution is not valid given the current balances of the channel.
+	InvalidContribution(String),
+	/// A RBF is not available at this time.
+	RbfUnavailable(String),
 	/// Internal error
 	InternalError(&'static str),
 }
@@ -209,6 +213,12 @@ impl Display for AbortReason {
 				f.write_str("The initiator's feerate exceeds our maximum")
 			},
 			AbortReason::ManualIntervention => f.write_str("Manually aborted funding negotiation"),
+			AbortReason::InvalidContribution(text) => {
+				f.write_fmt(format_args!("Invalid contribution: {}", text))
+			},
+			AbortReason::RbfUnavailable(text) => {
+				f.write_fmt(format_args!("Rejecting RBF attempt: {}", text))
+			},
 			AbortReason::InternalError(text) => {
 				f.write_fmt(format_args!("Internal error: {}", text))
 			},

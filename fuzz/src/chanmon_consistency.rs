@@ -775,7 +775,8 @@ fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessag
 	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
 	// disconnect their counterparty if they're expecting a timely response.
 	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
-		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF");
+		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF")
+			|| msg.data.contains("contribution no longer valid at quiescence");
 		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
 		{
 			panic!("Unexpected disconnect case: {}", msg.data);
@@ -3395,6 +3396,13 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 		}
 
 		harness.checkpoint_manager_persistences();
+
+		// Compute `ChannelDetails` for every channel after each step (ignoring the result) so the
+		// fuzzer exercises the splice-details derivation in `to_details` across as many states as
+		// possible.
+		for node in harness.nodes.iter() {
+			let _ = node.list_channels();
+		}
 	}
 	harness.finish();
 }
