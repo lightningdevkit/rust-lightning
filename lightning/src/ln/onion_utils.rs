@@ -1003,6 +1003,17 @@ mod fuzzy_onion_utils {
 		pub(crate) onion_error_code: Option<LocalHTLCFailureReason>,
 		#[cfg(any(test, feature = "_test_utils"))]
 		pub(crate) onion_error_data: Option<Vec<u8>>,
+		/// The failure packet with the encryption layers of all of the path's hops peeled off,
+		/// set when the failure's hmac did not match any hop in the path. This will be Some in
+		/// two cases:
+		/// - Trampoline forwards: the failure originated at or beyond the next trampoline node,
+		///   and is encrypted for the original sender. We should re-wrap it and relay backwards.
+		/// - Regular payments: set to None because failure to peel the error means that it was
+		///   corrupted. There isn't anything interesting to do with it, so we can discard.
+		///
+		/// Attribution data must be stripped from this packet before it is relayed, because
+		/// upstream nodes cannot verify it; fresh attribution data is originated instead.
+		pub(crate) peeled_error_packet: Option<super::msgs::OnionErrorPacket>,
 		#[cfg(test)]
 		pub(crate) attribution_failed_channel: Option<u64>,
 	}
@@ -1011,12 +1022,57 @@ mod fuzzy_onion_utils {
 		secp_ctx: &Secp256k1<T>, logger: &L, htlc_source: &HTLCSource,
 		encrypted_packet: OnionErrorPacket,
 	) -> DecodedOnionFailure {
-		let (path, session_priv) = match htlc_source {
-			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => (path, session_priv),
+		match htlc_source {
+			HTLCSource::OutboundRoute { ref path, ref session_priv, .. } => {
+				let mut decoded = process_onion_failure_inner(
+					secp_ctx,
+					logger,
+					path,
+					session_priv,
+					None,
+					encrypted_packet,
+				);
+				if decoded.peeled_error_packet.take().is_some() {
+					log_warn!(
+						logger,
+						"Non-attributable failure encountered on route {}",
+						path.hops
+							.iter()
+							.map(|h| h.pubkey.to_string())
+							.collect::<Vec<_>>()
+							.join("->"),
+					);
+				}
+				decoded
+			},
+			HTLCSource::TrampolineForward { outbound_payment, .. } => {
+				let Some(dispatch) = outbound_payment.as_ref() else {
+					debug_assert!(
+						false,
+						"Trampoline onion failure on forward with no outbound payment details"
+					);
+					return permanent_failure();
+				};
+				let mut decoded = process_onion_failure_inner(
+					secp_ctx,
+					logger,
+					&dispatch.path,
+					&dispatch.session_priv,
+					None,
+					encrypted_packet,
+				);
+				if let Some(pkt) = decoded.peeled_error_packet.as_mut() {
+					// We don't need to pass attribution data beyond the trampoline barrier.
+					pkt.attribution_data = None;
+					log_trace!(
+						logger,
+						"Trampoline forward failure originated at or beyond the next trampoline node, passing peeled packet back towards the origin",
+					);
+				}
+				decoded
+			},
 			_ => unreachable!(),
-		};
-
-		process_onion_failure_inner(secp_ctx, logger, path, &session_priv, None, encrypted_packet)
+		}
 	}
 
 	/// Decodes the attribution data that we got back from upstream on a payment we sent.
@@ -1073,6 +1129,25 @@ pub use self::fuzzy_onion_utils::*;
 #[cfg(not(fuzzing))]
 pub(crate) use self::fuzzy_onion_utils::*;
 
+/// A failure that we can't attribute to any hop in the path, so there is nothing to learn and
+/// nothing left to do but fail the payment permanently.
+fn permanent_failure() -> DecodedOnionFailure {
+	DecodedOnionFailure {
+		network_update: None,
+		short_channel_id: None,
+		payment_failed_permanently: true,
+		failed_within_blinded_path: false,
+		hold_times: Vec::new(),
+		#[cfg(any(test, feature = "_test_utils"))]
+		onion_error_code: None,
+		#[cfg(any(test, feature = "_test_utils"))]
+		onion_error_data: None,
+		peeled_error_packet: None,
+		#[cfg(test)]
+		attribution_failed_channel: None,
+	}
+}
+
 /// Process failure we got back from upstream on a payment we sent (implying htlc_source is an
 /// OutboundRoute).
 fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
@@ -1090,19 +1165,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 
 		// Signal that we failed permanently. Without a valid hmac, we can't identify the failing node and we can't
 		// apply a penalty. Therefore there is nothing more we can do other than failing the payment.
-		return DecodedOnionFailure {
-			network_update: None,
-			short_channel_id: None,
-			payment_failed_permanently: true,
-			failed_within_blinded_path: false,
-			hold_times: Vec::new(),
-			#[cfg(any(test, feature = "_test_utils"))]
-			onion_error_code: None,
-			#[cfg(any(test, feature = "_test_utils"))]
-			onion_error_data: None,
-			#[cfg(test)]
-			attribution_failed_channel: None,
-		};
+		return permanent_failure();
 	}
 
 	// Learnings from the HTLC failure to inform future payment retries and scoring.
@@ -1490,19 +1553,11 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			onion_error_code: _error_code_ret,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: _error_packet_ret,
+			peeled_error_packet: None,
 			#[cfg(test)]
 			attribution_failed_channel,
 		}
 	} else {
-		// only not set either packet unparseable or hmac does not match with any
-		// payment not retryable only when garbage is from the final node
-		log_warn!(
-			logger,
-			"Non-attributable failure encountered on route {}. Attributation data failed for channel {}",
-			path.hops.iter().map(|h| h.pubkey.to_string()).collect::<Vec<_>>().join("->"),
-			attribution_failed_channel.unwrap_or_default(),
-		);
-
 		DecodedOnionFailure {
 			network_update: None,
 			short_channel_id: None,
@@ -1513,6 +1568,7 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			onion_error_code: None,
 			#[cfg(any(test, feature = "_test_utils"))]
 			onion_error_data: None,
+			peeled_error_packet: Some(encrypted_packet),
 			#[cfg(test)]
 			attribution_failed_channel,
 		}
@@ -2159,6 +2215,7 @@ impl HTLCFailReason {
 				onion_error_code: Some(_failure_reason),
 				#[cfg(any(test, feature = "_test_utils"))]
 				onion_error_data: Some(_data.to_vec()),
+				peeled_error_packet: None,
 				#[cfg(test)]
 				attribution_failed_channel: None,
 			}
@@ -3099,7 +3156,7 @@ mod tests {
 	use std::sync::Arc;
 
 	use crate::io;
-	use crate::ln::channelmanager::PaymentId;
+	use crate::ln::channelmanager::{PaymentId, TrampolineDispatch};
 	use crate::ln::msgs::{self, UpdateFailHTLC};
 	use crate::ln::types::ChannelId;
 	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop, RouteParameters};
@@ -3936,6 +3993,235 @@ mod tests {
 				);
 				assert_eq!(decrypted_failure.onion_error_code, Some(error_code));
 			}
+		}
+	}
+
+	#[test]
+	fn test_trampoline_failure_at_each_hop() {
+		use LocalHTLCFailureReason::*;
+
+		// Tests the trampoline failure "double wrap" and unwrap end to end, originating a
+		// failure at every node along the payment.
+		//
+		// We'll send along the following path:
+		//   A -> B -> C (trampoline) -> D -> E (trampoline receiver)
+		let secp_ctx = Secp256k1::new();
+		let logger = TestLogger::new();
+
+		let node_pk = |i: u8| {
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[i; 32]).unwrap())
+		};
+		let (b_pubkey, c_pubkey, d_pubkey, e_pubkey) =
+			(node_pk(1), node_pk(2), node_pk(3), node_pk(4));
+
+		let route_hop = |pubkey, short_channel_id| RouteHop {
+			pubkey,
+			node_features: NodeFeatures::empty(),
+			short_channel_id,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: 0,
+			maybe_announced_channel: false,
+		};
+		let trampoline_hop = |pubkey| TrampolineHop {
+			pubkey,
+			node_features: Features::empty(),
+			fee_msat: 0,
+			cltv_expiry_delta: 0,
+		};
+
+		// Create the path as the sender A sees it - with the trampoline nodes, but no intermediate
+		// node D (who will be selected by C's pathfinding to E). We only need the pubkey and scid
+		// here, so other values are zeroed.
+		let path = Path {
+			hops: vec![route_hop(b_pubkey, 1), route_hop(c_pubkey, 2)],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![trampoline_hop(c_pubkey), trampoline_hop(e_pubkey)],
+				hops: vec![BlindedHop { blinded_node_id: node_pk(5), encrypted_payload: vec![] }],
+				blinding_point: node_pk(6),
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: 0,
+			}),
+		};
+
+		// The original sender A will create keys for the following:
+		// - Outer onion: for the A -> B -> C portion of the route
+		// - Inner onion: for the C ~> E trampoline portion
+		let session_priv = SecretKey::from_slice(&[10; 32]).unwrap();
+		let outer_keys = construct_onion_keys(&secp_ctx, &path, &session_priv);
+		let trampoline_keys = construct_trampoline_onion_keys(
+			&secp_ctx,
+			path.blinded_tail.as_ref().unwrap(),
+			&compute_trampoline_session_priv(&session_priv),
+		);
+		let b_ss = outer_keys[0].shared_secret.secret_bytes();
+		let c_outer_ss = outer_keys[1].shared_secret.secret_bytes();
+		let c_trampoline_ss = trampoline_keys[0].shared_secret.secret_bytes();
+		let e_trampoline_ss = trampoline_keys[1].shared_secret.secret_bytes();
+
+		// When C receives the payment, she'll find a route to E and create:
+		// - Outer onion: for the C -> D -> E portion, using a fresh session key
+		// - Inner onion: put E's trampoline payload inside of the final outer onion
+		let c_session = SecretKey::from_slice(&[11; 32]).unwrap();
+		let c_path = Path {
+			hops: vec![route_hop(d_pubkey, 100), route_hop(e_pubkey, 101)],
+			blinded_tail: None,
+		};
+		let c_keys = construct_onion_keys(&secp_ctx, &c_path, &c_session);
+		let d_ss = c_keys[0].shared_secret.secret_bytes();
+		let e_outer_ss = c_keys[1].shared_secret.secret_bytes();
+
+		// A node relaying a failure back records its hold time and wraps the packet in the
+		// layers it holds secrets for.
+		let relay_failure = |err, hold_time, outer_ss: &[u8; 32], trampoline_ss| {
+			HTLCFailReason(HTLCFailReasonRepr::LightningError { err, hold_time: Some(hold_time) })
+				.get_encrypted_failure_packet(outer_ss, &trampoline_ss)
+		};
+
+		// The source a trampoline node processes failures on its dispatched payment against.
+		let trampoline_source =
+			|seg_path: &Path, seg_session: &SecretKey| HTLCSource::TrampolineForward {
+				previous_hop_data: vec![],
+				outbound_payment: Some(TrampolineDispatch {
+					payment_id: PaymentId([2; 32]),
+					path: seg_path.clone(),
+					session_priv: *seg_session,
+				}),
+			};
+
+		let htlc_source = HTLCSource::OutboundRoute {
+			path: path.clone(),
+			session_priv,
+			first_hop_htlc_msat: 0,
+			payment_id: PaymentId([1; 32]),
+			bolt12_invoice: None,
+		};
+
+		struct TestCase {
+			error_origin_index: usize,
+			reason: HTLCFailReason,
+			code: LocalHTLCFailureReason,
+			network_update: Option<NetworkUpdate>,
+			short_channel_id: Option<u64>,
+			permanent: bool,
+			hold_times: Vec<u32>,
+		}
+
+		// We'll test failures at each point in our route.
+		let cases = vec![
+			// When we fail at B, we expect to get back the error they failed with.
+			TestCase {
+				error_origin_index: 0,
+				reason: HTLCFailReason::reason(TemporaryNodeFailure, Vec::new()),
+				code: TemporaryNodeFailure,
+				network_update: Some(NetworkUpdate::NodeFailure {
+					node_id: b_pubkey,
+					is_permanent: false,
+				}),
+				short_channel_id: Some(1),
+				permanent: false,
+				hold_times: vec![0],
+			},
+			// When we fail at trampoline C, we expect to get back the error they intend for us.
+			TestCase {
+				error_origin_index: 1,
+				reason: HTLCFailReason::reason(UnknownNextTrampoline, Vec::new()),
+				code: UnknownNextTrampoline,
+				network_update: None,
+				short_channel_id: None,
+				permanent: false,
+				hold_times: vec![1, 0],
+			},
+			// When we fail at D, inside of C's chosen trampoline route, we expect the trampoline
+			// to convert the error on our behalf.
+			TestCase {
+				error_origin_index: 2,
+				reason: HTLCFailReason::reason(TemporaryNodeFailure, Vec::new()),
+				code: TemporaryTrampolineFailure,
+				network_update: Some(NetworkUpdate::NodeFailure {
+					node_id: c_pubkey,
+					is_permanent: false,
+				}),
+				short_channel_id: None,
+				permanent: false,
+				hold_times: vec![1, 0],
+			},
+			// When we fail at E, the final trampoline, we expect the error to be propagated
+			// all the way back to us (through the "trampoline barrier" of C).
+			TestCase {
+				error_origin_index: 3,
+				reason: HTLCFailReason::reason(IncorrectPaymentDetails, vec![0; 12]),
+				code: IncorrectPaymentDetails,
+				network_update: None,
+				short_channel_id: None,
+				permanent: true,
+				hold_times: vec![1, 2],
+			},
+		];
+
+		for (i, case) in cases.into_iter().enumerate() {
+			// Create the failure packet depending on who's the source of the error. Trampolines
+			// will double wrap, regular nodes single.
+			let mut packet = match case.error_origin_index {
+				0 => case.reason.get_encrypted_failure_packet(&b_ss, &None),
+				1 => case.reason.get_encrypted_failure_packet(&c_outer_ss, &Some(c_trampoline_ss)),
+				2 => case.reason.get_encrypted_failure_packet(&d_ss, &None),
+				3 => case.reason.get_encrypted_failure_packet(&e_outer_ss, &Some(e_trampoline_ss)),
+				_ => unreachable!(),
+			};
+
+			// Every node between the failing node and A processes the packet on its way back,
+			// deepest node first.
+			for node in (0..case.error_origin_index).rev() {
+				packet = match node {
+					// D relays within C's dispatch path.
+					2 => relay_failure(packet, 3, &d_ss, None),
+					// C processes the failure against the payment it dispatched to reach E.
+					1 => {
+						let source = trampoline_source(&c_path, &c_session);
+						let decoded = process_onion_failure(&secp_ctx, &logger, &source, packet);
+
+						// We only expect a error packet intended for the original sender if the
+						// failure happened at the trampoline recipient E.
+						assert_eq!(
+							decoded.peeled_error_packet.is_some(),
+							case.error_origin_index == 3,
+							"unexpected double wrapped error packet for case {}",
+							i
+						);
+						match decoded.peeled_error_packet {
+							// If the failure is from a downstream trampoline, we re-wrap and relay.
+							Some(peeled) => {
+								assert!(peeled.attribution_data.is_none(), "case {}", i);
+								assert_eq!(decoded.hold_times, vec![3, 0], "case {}", i);
+								relay_failure(peeled, 2, &c_outer_ss, Some(c_trampoline_ss))
+							},
+							// The failure originated within C's dispatch path and was decoded,
+							// so we'll replace with our own error packet.
+							None => {
+								assert_eq!(decoded.short_channel_id, Some(100), "case {}", i);
+								HTLCFailReason::reason(TemporaryTrampolineFailure, Vec::new())
+									.get_encrypted_failure_packet(
+										&c_outer_ss,
+										&Some(c_trampoline_ss),
+									)
+							},
+						}
+					},
+					// B relays on A's outer path.
+					0 => relay_failure(packet, 1, &b_ss, None),
+					_ => unreachable!(),
+				};
+			}
+
+			let decoded = process_onion_failure(&secp_ctx, &logger, &htlc_source, packet);
+			assert_eq!(decoded.onion_error_code, Some(case.code), "case {}", i);
+			assert_eq!(decoded.network_update, case.network_update, "case {}", i);
+			assert_eq!(decoded.short_channel_id, case.short_channel_id, "case {}", i);
+			assert_eq!(decoded.payment_failed_permanently, case.permanent, "case {}", i);
+			assert_eq!(decoded.hold_times, case.hold_times, "case {}", i);
+			assert_eq!(decoded.attribution_failed_channel, None, "case {}", i);
+			assert!(decoded.peeled_error_packet.is_none(), "case {}", i);
 		}
 	}
 
