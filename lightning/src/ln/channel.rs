@@ -6543,7 +6543,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	#[rustfmt::skip]
 	pub fn get_pending_outbound_htlc_details(&self, funding: &FundingScope) -> Vec<OutboundHTLCDetails> {
 		let mut outbound_details = Vec::new();
-
 		let dust_buffer_feerate = self.get_dust_buffer_feerate(None);
 		let (_, htlc_timeout_tx_fee_sat) = second_stage_tx_fees_sat(
 			funding.get_channel_type(), dust_buffer_feerate,
@@ -6558,6 +6557,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				skimmed_fee_msat: htlc.skimmed_fee_msat,
 				state: Some((&htlc.state).into()),
 				is_dust: htlc.amount_msat / 1000 < holder_dust_limit_timeout_sat,
+				source: Some(htlc.source.to_outbound()),
 			});
 		}
 		for holding_cell_update in self.holding_cell_htlc_updates.iter() {
@@ -6566,6 +6566,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				cltv_expiry,
 				payment_hash,
 				skimmed_fee_msat,
+				ref source,
 				..
 			} = *holding_cell_update {
 				outbound_details.push(OutboundHTLCDetails{
@@ -6576,6 +6577,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					skimmed_fee_msat: skimmed_fee_msat,
 					state: Some(OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
 					is_dust: amount_msat / 1000 < holder_dust_limit_timeout_sat,
+					source: Some(source.to_outbound()),
 				});
 			}
 		}
