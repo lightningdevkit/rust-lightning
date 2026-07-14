@@ -1945,6 +1945,7 @@ impl PeerLink {
 
 #[derive(Clone, Copy)]
 struct PaymentHop {
+	channel_id: ChannelId,
 	amount_msat: u64,
 	short_channel_id: u64,
 }
@@ -1955,6 +1956,7 @@ struct PendingPayment {
 	payment_id: PaymentId,
 	payment_hash: PaymentHash,
 	first_persisted_manager_generation: u64,
+	paths: Vec<PaymentPath>,
 	min_final_cltv_expiry: u32,
 }
 
@@ -1970,14 +1972,17 @@ impl NodePayments {
 
 	fn add_pending(
 		&mut self, payment_id: PaymentId, payment_hash: PaymentHash,
-		first_persisted_manager_generation: u64, min_final_cltv_expiry: u32,
+		first_persisted_manager_generation: u64, paths: Vec<PaymentPath>,
+		min_final_cltv_expiry: u32,
 	) {
 		assert!(!self.pending.iter().any(|pending| pending.payment_id == payment_id));
 		assert!(!self.resolved.contains_key(&payment_id));
+		assert!(!paths.is_empty(), "tracked payment must have at least one path");
 		self.pending.push(PendingPayment {
 			payment_id,
 			payment_hash,
 			first_persisted_manager_generation,
+			paths,
 			min_final_cltv_expiry,
 		});
 	}
@@ -2154,13 +2159,15 @@ impl PaymentTracker {
 
 	fn record_send_result(
 		&mut self, source_idx: usize, source: &HarnessNode<'_>, payment_id: PaymentId,
-		payment_hash: PaymentHash, min_final_cltv_expiry: u32, has_pending_work: bool,
+		payment_hash: PaymentHash, payment_paths: Vec<PaymentPath>, min_final_cltv_expiry: u32,
+		has_pending_work: bool,
 	) {
 		let node_payments = &mut self.nodes[source_idx];
 		node_payments.add_pending(
 			payment_id,
 			payment_hash,
 			source.next_manager_persistence_generation(),
+			payment_paths,
 			min_final_cltv_expiry,
 		);
 		if !has_pending_work {
@@ -2187,8 +2194,11 @@ impl PaymentTracker {
 				)
 			})
 			.unwrap_or((0, 0, 0));
-		let payment_paths =
-			vec![vec![PaymentHop { amount_msat: amt, short_channel_id: dest_scid }]];
+		let payment_paths = vec![vec![PaymentHop {
+			channel_id: dest_chan_id,
+			amount_msat: amt,
+			short_channel_id: dest_scid,
+		}]];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
 			amt,
@@ -2214,6 +2224,7 @@ impl PaymentTracker {
 			source,
 			id,
 			hash,
+			payment_paths,
 			min_final_cltv_expiry,
 			has_pending_work,
 		);
@@ -2248,8 +2259,12 @@ impl PaymentTracker {
 			.unwrap_or(0);
 		let first_hop_fee = 50_000;
 		let payment_paths = vec![vec![
-			PaymentHop { amount_msat: amt + first_hop_fee, short_channel_id: middle_scid },
-			PaymentHop { amount_msat: amt, short_channel_id: dest_scid },
+			PaymentHop {
+				channel_id: middle_chan_id,
+				amount_msat: amt + first_hop_fee,
+				short_channel_id: middle_scid,
+			},
+			PaymentHop { channel_id: dest_chan_id, amount_msat: amt, short_channel_id: dest_scid },
 		]];
 		let route_params = RouteParameters::from_payment_params_and_value(
 			PaymentParameters::from_node_id(source.get_our_node_id(), TEST_FINAL_CLTV),
@@ -2277,6 +2292,7 @@ impl PaymentTracker {
 			source,
 			id,
 			hash,
+			payment_paths,
 			min_final_cltv_expiry,
 			has_pending_work,
 		);
@@ -2308,24 +2324,29 @@ impl PaymentTracker {
 		let dest_scids: Vec<_> = dest_chan_ids
 			.iter()
 			.map(|chan_id| {
-				dest_chans
+				let scid = dest_chans
 					.iter()
 					.find(|chan| chan.channel_id == *chan_id)
 					.and_then(|chan| chan.short_channel_id)
-					.unwrap()
+					.unwrap();
+				(*chan_id, scid)
 			})
 			.collect();
 
 		let payment_paths: Vec<PaymentPath> = dest_scids
 			.iter()
 			.enumerate()
-			.map(|(i, dest_scid)| {
+			.map(|(i, (chan_id, dest_scid))| {
 				let path_amt = if i == num_paths - 1 {
 					amt - amt_per_path * (num_paths as u64 - 1)
 				} else {
 					amt_per_path
 				};
-				vec![PaymentHop { amount_msat: path_amt, short_channel_id: *dest_scid }]
+				vec![PaymentHop {
+					channel_id: *chan_id,
+					amount_msat: path_amt,
+					short_channel_id: *dest_scid,
+				}]
 			})
 			.collect();
 
@@ -2347,6 +2368,7 @@ impl PaymentTracker {
 			source,
 			id,
 			hash,
+			payment_paths,
 			min_final_cltv_expiry,
 			has_pending_work,
 		);
@@ -2375,11 +2397,12 @@ impl PaymentTracker {
 		let middle_scids: Vec<_> = middle_chan_ids
 			.iter()
 			.map(|chan_id| {
-				middle_chans
+				let scid = middle_chans
 					.iter()
 					.find(|chan| chan.channel_id == *chan_id)
 					.and_then(|chan| chan.short_channel_id)
-					.unwrap()
+					.unwrap();
+				(*chan_id, scid)
 			})
 			.collect();
 
@@ -2387,18 +2410,19 @@ impl PaymentTracker {
 		let dest_scids: Vec<_> = dest_chan_ids
 			.iter()
 			.map(|chan_id| {
-				dest_chans
+				let scid = dest_chans
 					.iter()
 					.find(|chan| chan.channel_id == *chan_id)
 					.and_then(|chan| chan.short_channel_id)
-					.unwrap()
+					.unwrap();
+				(*chan_id, scid)
 			})
 			.collect();
 
 		let payment_paths: Vec<PaymentPath> = (0..num_paths)
 			.map(|i| {
-				let middle_scid = middle_scids[i % middle_scids.len()];
-				let dest_scid = dest_scids[i % dest_scids.len()];
+				let (middle_chan_id, middle_scid) = middle_scids[i % middle_scids.len()];
+				let (dest_chan_id, dest_scid) = dest_scids[i % dest_scids.len()];
 				let path_amt = if i == num_paths - 1 {
 					amt - amt_per_path * (num_paths as u64 - 1)
 				} else {
@@ -2410,8 +2434,16 @@ impl PaymentTracker {
 					fee_per_path
 				};
 				vec![
-					PaymentHop { amount_msat: path_amt + path_fee, short_channel_id: middle_scid },
-					PaymentHop { amount_msat: path_amt, short_channel_id: dest_scid },
+					PaymentHop {
+						channel_id: middle_chan_id,
+						amount_msat: path_amt + path_fee,
+						short_channel_id: middle_scid,
+					},
+					PaymentHop {
+						channel_id: dest_chan_id,
+						amount_msat: path_amt,
+						short_channel_id: dest_scid,
+					},
 				]
 			})
 			.collect();
@@ -2434,6 +2466,7 @@ impl PaymentTracker {
 			source,
 			id,
 			hash,
+			payment_paths,
 			min_final_cltv_expiry,
 			has_pending_work,
 		);
