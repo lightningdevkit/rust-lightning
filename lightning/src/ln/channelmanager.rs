@@ -3317,7 +3317,7 @@ const MAX_PEER_STORAGE_SIZE: usize = 1024;
 
 /// The maximum number of peers which we do not have a (funded) channel with. Once we reach this
 /// many peers we reject new (inbound) connections.
-const MAX_NO_CHANNEL_PEERS: usize = 250;
+const MAX_NO_CHANNEL_PEERS: usize = 2500;
 
 /// Used by [`ChannelManager::list_recent_payments`] to express the status of recent payments.
 /// These include payments that have yet to find a successful path, or have unresolved HTLCs.
