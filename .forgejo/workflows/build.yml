@@ -220,18 +220,10 @@ jobs:
       - name: Run cargo check for release build.
         run: |
           cargo check --release
-          cargo check --no-default-features --features=std --release
-          cargo doc --release
-      - name: Run cargo check for Taproot build.
-        run: |
-          cargo check --release
           cargo check --no-default-features --release
           cargo check --no-default-features --features=std --release
           cargo doc --release
           cargo doc --no-default-features --release
-        env:
-          RUSTFLAGS: '--cfg=taproot'
-          RUSTDOCFLAGS: '--cfg=taproot'
 
   check_docs:
     runs-on: debian-trixie
