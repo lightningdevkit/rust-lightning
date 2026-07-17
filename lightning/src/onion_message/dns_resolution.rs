@@ -77,6 +77,19 @@ pub trait DNSResolverMessageHandler {
 	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext);
 
+	/// Handle a [`DNSSECError`] message (in response to a [`DNSSECQuery`] we presumably sent),
+	/// indicating that the resolver was unable to resolve the requested name.
+	///
+	/// The provided [`DNSResolverContext`] was authenticated by the [`OnionMessenger`] as coming from
+	/// a blinded path that we created.
+	///
+	/// Receiving this lets us avoid waiting for a [`DNSSECProof`] which will never come, failing the
+	/// pending operation early instead (at least if the name is
+	/// [definitely unresolvable](DNSSECError::definitely_unresolvable)).
+	///
+	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
+	fn handle_dnssec_error(&self, message: DNSSECError, context: DNSResolverContext);
+
 	/// Gets the node feature flags which this handler itself supports. Useful for setting the
 	/// `dns_resolver` flag if this handler supports returning [`DNSSECProof`] messages in response
 	/// to [`DNSSECQuery`] messages.
@@ -99,6 +112,9 @@ impl<T: DNSResolverMessageHandler + ?Sized, D: Deref<Target = T>> DNSResolverMes
 	fn handle_dnssec_proof(&self, message: DNSSECProof, context: DNSResolverContext) {
 		self.deref().handle_dnssec_proof(message, context)
 	}
+	fn handle_dnssec_error(&self, message: DNSSECError, context: DNSResolverContext) {
+		self.deref().handle_dnssec_error(message, context)
+	}
 	fn provided_node_features(&self) -> NodeFeatures {
 		self.deref().provided_node_features()
 	}
@@ -115,10 +131,14 @@ pub enum DNSResolverMessage {
 	DNSSECQuery(DNSSECQuery),
 	/// A response containing a DNSSEC proof
 	DNSSECProof(DNSSECProof),
+	/// An error in response to a [`DNSSECQuery`], indicating that the requested name could not be
+	/// resolved into a [`DNSSECProof`].
+	DNSSECError(DNSSECError),
 }
 
 const DNSSEC_QUERY_TYPE: u64 = 65536;
 const DNSSEC_PROOF_TYPE: u64 = 65538;
+const DNSSEC_ERROR_TYPE: u64 = 65550;
 
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 /// A message which is sent to a DNSSEC prover requesting a DNSSEC proof for the given name.
@@ -136,11 +156,30 @@ pub struct DNSSECProof {
 	pub proof: Vec<u8>,
 }
 
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+/// A message which is sent in response to a [`DNSSECQuery`] when the resolver was unable to build a
+/// [`DNSSECProof`] for the requested name.
+///
+/// This lets the recipient stop waiting for a [`DNSSECProof`] which will not be forthcoming.
+pub struct DNSSECError {
+	/// The name which the [`DNSSECQuery`] was for and which we were unable to resolve.
+	pub name: Name,
+	/// Whether the name is known to be permanently unresolvable, as opposed to having failed due to
+	/// some transient error.
+	///
+	/// This is set if the requested name does not exist (i.e. the resolver received an NXDOMAIN
+	/// response) or if the name is not in a DNSSEC-signed zone, in which case retrying or querying a
+	/// different resolver will not help. It is not set for transient failures (e.g. a timeout
+	/// communicating with an upstream DNS server), where a retry or a different resolver may yet
+	/// succeed.
+	pub definitely_unresolvable: bool,
+}
+
 impl DNSResolverMessage {
 	/// Returns whether `tlv_type` corresponds to a TLV record for DNS Resolvers.
 	pub fn is_known_type(tlv_type: u64) -> bool {
 		match tlv_type {
-			DNSSEC_QUERY_TYPE | DNSSEC_PROOF_TYPE => true,
+			DNSSEC_QUERY_TYPE | DNSSEC_PROOF_TYPE | DNSSEC_ERROR_TYPE => true,
 			_ => false,
 		}
 	}
@@ -157,6 +196,11 @@ impl Writeable for DNSResolverMessage {
 				(name.as_str().len() as u8).write(w)?;
 				w.write_all(&name.as_str().as_bytes())?;
 				proof.write(w)
+			},
+			Self::DNSSECError(DNSSECError { name, definitely_unresolvable }) => {
+				(name.as_str().len() as u8).write(w)?;
+				w.write_all(&name.as_str().as_bytes())?;
+				definitely_unresolvable.write(w)
 			},
 		}
 	}
@@ -176,6 +220,12 @@ impl ReadableArgs<u64> for DNSResolverMessage {
 				let proof = Readable::read(r)?;
 				Ok(DNSResolverMessage::DNSSECProof(DNSSECProof { name, proof }))
 			},
+			DNSSEC_ERROR_TYPE => {
+				let s = Hostname::read(r)?;
+				let name = s.try_into().map_err(|_| DecodeError::InvalidValue)?;
+				let definitely_unresolvable = Readable::read(r)?;
+				Ok(DNSResolverMessage::DNSSECError(DNSSECError { name, definitely_unresolvable }))
+			},
 			_ => Err(DecodeError::InvalidValue),
 		}
 	}
@@ -187,6 +237,7 @@ impl OnionMessageContents for DNSResolverMessage {
 		match self {
 			DNSResolverMessage::DNSSECQuery(_) => "DNS(SEC) Query".to_string(),
 			DNSResolverMessage::DNSSECProof(_) => "DNSSEC Proof".to_string(),
+			DNSResolverMessage::DNSSECError(_) => "DNSSEC Error".to_string(),
 		}
 	}
 	#[cfg(not(c_bindings))]
@@ -194,12 +245,14 @@ impl OnionMessageContents for DNSResolverMessage {
 		match self {
 			DNSResolverMessage::DNSSECQuery(_) => "DNS(SEC) Query",
 			DNSResolverMessage::DNSSECProof(_) => "DNSSEC Proof",
+			DNSResolverMessage::DNSSECError(_) => "DNSSEC Error",
 		}
 	}
 	fn tlv_type(&self) -> u64 {
 		match self {
 			DNSResolverMessage::DNSSECQuery(_) => DNSSEC_QUERY_TYPE,
 			DNSResolverMessage::DNSSECProof(_) => DNSSEC_PROOF_TYPE,
+			DNSResolverMessage::DNSSECError(_) => DNSSEC_ERROR_TYPE,
 		}
 	}
 }

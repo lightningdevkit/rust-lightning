@@ -14,7 +14,7 @@ use dnssec_prover::query::build_txt_proof_async;
 use lightning::blinded_path::message::DNSResolverContext;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
 use lightning::onion_message::dns_resolution::{
-	DNSResolverMessage, DNSResolverMessageHandler, DNSSECProof, DNSSECQuery,
+	DNSResolverMessage, DNSResolverMessageHandler, DNSSECError, DNSSECProof, DNSSECQuery,
 };
 use lightning::onion_message::messenger::{
 	MessageSendInstructions, Responder, ResponseInstruction,
@@ -100,6 +100,12 @@ impl<PH: DNSResolverMessageHandler> DNSResolverMessageHandler for OMDomainResolv
 	fn handle_dnssec_proof(&self, proof: DNSSECProof, context: DNSResolverContext) {
 		if let Some(proof_handler) = &self.proof_handler {
 			proof_handler.handle_dnssec_proof(proof, context);
+		}
+	}
+
+	fn handle_dnssec_error(&self, error: DNSSECError, context: DNSResolverContext) {
+		if let Some(proof_handler) = &self.proof_handler {
+			proof_handler.handle_dnssec_error(error, context);
 		}
 	}
 
@@ -228,6 +234,9 @@ mod test {
 			let mut result = Some((payment.0, payment.1, proof.1));
 			core::mem::swap(&mut *self.resolved_uri.lock().unwrap(), &mut result);
 			assert!(result.is_none());
+		}
+		fn handle_dnssec_error(&self, msg: DNSSECError, context: DNSResolverContext) {
+			// TODO
 		}
 		fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
 			core::mem::take(&mut *self.pending_messages.lock().unwrap())

@@ -2309,6 +2309,19 @@ impl<
 						};
 						self.dns_resolver_handler.handle_dnssec_proof(msg, context);
 					},
+					DNSResolverMessage::DNSSECError(msg) => {
+						let context = match context {
+							Some(ctx) => ctx,
+							None => {
+								log_trace!(
+									logger,
+									"Ignoring DNSSECError onion message due to missing context"
+								);
+								return;
+							},
+						};
+						self.dns_resolver_handler.handle_dnssec_error(msg, context);
+					},
 				}
 			},
 			Ok(PeeledOnion::Custom(message, context, reply_path)) => {

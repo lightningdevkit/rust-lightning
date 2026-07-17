@@ -35,7 +35,7 @@ use crate::onion_message::async_payments::{
 	ServeStaticInvoice, StaticInvoicePersisted,
 };
 use crate::onion_message::dns_resolution::{
-	DNSResolverMessage, DNSResolverMessageHandler, DNSSECProof, DNSSECQuery,
+	DNSResolverMessage, DNSResolverMessageHandler, DNSSECError, DNSSECProof, DNSSECQuery,
 };
 use crate::onion_message::messenger::{
 	CustomOnionMessageHandler, MessageSendInstructions, Responder, ResponseInstruction,
@@ -273,6 +273,7 @@ impl DNSResolverMessageHandler for IgnoringMessageHandler {
 		None
 	}
 	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
+	fn handle_dnssec_error(&self, _message: DNSSECError, _context: DNSResolverContext) {}
 }
 impl CustomOnionMessageHandler for IgnoringMessageHandler {
 	type CustomMessage = Infallible;
