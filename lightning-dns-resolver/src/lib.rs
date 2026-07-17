@@ -273,8 +273,6 @@ mod test {
 
 	#[tokio::test]
 	async fn resolution_test() {
-		let secp_ctx = Secp256k1::new();
-
 		let (resolver_messenger, resolver_id) = create_resolver();
 
 		let resolver_dest = Destination::Node(resolver_id);
@@ -307,25 +305,11 @@ mod test {
 		payer_messenger.peer_connected(resolver_id, &init_msg, true).unwrap();
 		resolver_messenger.get_om().peer_connected(payer_id, &init_msg, false).unwrap();
 
-		let (msg, context) =
-			payer.resolver.resolve_name(payment_id, name.clone(), &*payer_keys).unwrap();
-		let query_context = MessageContext::DNSResolver(context);
-		let receive_key = payer_keys.get_receive_auth_key();
-		let reply_path = BlindedMessagePath::one_hop(
-			payer_id,
-			receive_key,
-			query_context,
-			false,
-			&*payer_keys,
-			&secp_ctx,
-		);
-		payer.pending_messages.lock().unwrap().push((
-			DNSResolverMessage::DNSSECQuery(msg),
-			MessageSendInstructions::WithSpecifiedReplyPath {
-				destination: resolver_dest,
-				reply_path,
-			},
-		));
+		let messages = payer
+			.resolver
+			.resolve_name(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
+			.unwrap();
+		payer.pending_messages.lock().unwrap().extend(messages);
 
 		let query = payer_messenger.next_onion_message_for_peer(resolver_id).unwrap();
 		resolver_messenger.get_om().handle_onion_message(payer_id, &query);
@@ -350,8 +334,6 @@ mod test {
 	#[tokio::test]
 	async fn failed_query_does_not_leak_pending_counter() {
 		use std::sync::atomic::Ordering;
-
-		let secp_ctx = Secp256k1::new();
 
 		// Resolver points at a port that should refuse TCP, so build_txt_proof_async
 		// returns Err quickly.
@@ -405,25 +387,11 @@ mod test {
 		payer_messenger.peer_connected(resolver_id, &init_msg, true).unwrap();
 		resolver_messenger.peer_connected(payer_id, &init_msg, false).unwrap();
 
-		let (msg, context) =
-			payer.resolver.resolve_name(payment_id, name.clone(), &*payer_keys).unwrap();
-		let query_context = MessageContext::DNSResolver(context);
-		let receive_key = payer_keys.get_receive_auth_key();
-		let reply_path = BlindedMessagePath::one_hop(
-			payer_id,
-			receive_key,
-			query_context,
-			false,
-			&*payer_keys,
-			&secp_ctx,
-		);
-		payer.pending_messages.lock().unwrap().push((
-			DNSResolverMessage::DNSSECQuery(msg),
-			MessageSendInstructions::WithSpecifiedReplyPath {
-				destination: resolver_dest,
-				reply_path,
-			},
-		));
+		let messages = payer
+			.resolver
+			.resolve_name(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
+			.unwrap();
+		payer.pending_messages.lock().unwrap().extend(messages);
 
 		let query = payer_messenger.next_onion_message_for_peer(resolver_id).unwrap();
 		resolver_messenger.handle_onion_message(payer_id, &query);

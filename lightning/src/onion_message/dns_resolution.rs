@@ -40,12 +40,16 @@ use core::fmt;
 use core::ops::Deref;
 
 use crate::blinded_path::message::DNSResolverContext;
+#[cfg(feature = "dnssec")]
+use crate::blinded_path::message::MessageContext;
 use crate::io;
 #[cfg(feature = "dnssec")]
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::msgs::DecodeError;
 #[cfg(feature = "dnssec")]
 use crate::offers::offer::Offer;
+#[cfg(feature = "dnssec")]
+use crate::onion_message::messenger::Destination;
 use crate::onion_message::messenger::{MessageSendInstructions, Responder, ResponseInstruction};
 use crate::onion_message::packet::OnionMessageContents;
 use crate::prelude::*;
@@ -372,7 +376,7 @@ impl fmt::Display for HumanReadableName {
 #[cfg(feature = "dnssec")]
 struct PendingResolution {
 	start_height: u32,
-	context: DNSResolverContext,
+	pending_query_contexts: Vec<DNSResolverContext>,
 	name: HumanReadableName,
 	payment_id: PaymentId,
 }
@@ -462,26 +466,44 @@ impl OMNameResolver {
 
 	/// Begins the process of resolving a BIP 353 Human Readable Name.
 	///
-	/// Returns a [`DNSSECQuery`] onion message and a [`DNSResolverContext`] which should be sent
-	/// to a resolver (with the context used to generate the blinded response path) on success.
+	/// Returns a list of [`DNSSECQuery`] onion messages and the [`MessageSendInstructions`] over
+	/// which each should be sent - one entry per provided `destination`.
 	pub fn resolve_name<ES: EntropySource + ?Sized>(
-		&self, payment_id: PaymentId, name: HumanReadableName, entropy_source: &ES,
-	) -> Result<(DNSSECQuery, DNSResolverContext), ()> {
+		&self, payment_id: PaymentId, name: HumanReadableName, destinations: Vec<Destination>,
+		entropy_source: &ES,
+	) -> Result<Vec<(DNSResolverMessage, MessageSendInstructions)>, ()> {
+		if destinations.is_empty() {
+			return Err(());
+		}
+
 		let dns_name =
 			Name::try_from(format!("{}.user._bitcoin-payment.{}.", name.user(), name.domain()));
 		debug_assert!(
 			dns_name.is_ok(),
 			"The HumanReadableName constructor shouldn't allow names which are too long"
 		);
-		let mut context = DNSResolverContext { nonce: [0; 16] };
-		context.nonce.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
 		if let Ok(dns_name) = dns_name {
 			let start_height = self.latest_block_height.load(Ordering::Acquire) as u32;
+			let query = DNSResolverMessage::DNSSECQuery(DNSSECQuery(dns_name.clone()));
+			let mut pending_query_contexts = Vec::with_capacity(destinations.len());
+			let messages = destinations
+				.into_iter()
+				.map(|destination| {
+					let mut context = DNSResolverContext { nonce: [0; 16] };
+					context.nonce.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
+					pending_query_contexts.push(context.clone());
+					let instructions = MessageSendInstructions::WithReplyPath {
+						destination,
+						context: MessageContext::DNSResolver(context),
+					};
+					(query.clone(), instructions)
+				})
+				.collect();
 			let mut pending_resolves = self.pending_resolves.lock().unwrap();
-			let context_ret = context.clone();
-			let resolution = PendingResolution { start_height, context, name, payment_id };
-			pending_resolves.entry(dns_name.clone()).or_insert_with(Vec::new).push(resolution);
-			Ok((DNSSECQuery(dns_name), context_ret))
+			let resolution =
+				PendingResolution { start_height, pending_query_contexts, name, payment_id };
+			pending_resolves.entry(dns_name).or_insert_with(Vec::new).push(resolution);
+			Ok(messages)
 		} else {
 			Err(())
 		}
@@ -537,7 +559,7 @@ impl OMNameResolver {
 		let DNSSECProof { name: answer_name, proof } = msg;
 		let mut pending_resolves = self.pending_resolves.lock().unwrap();
 		if let hash_map::Entry::Occupied(entry) = pending_resolves.entry(answer_name) {
-			if !entry.get().iter().any(|query| query.context == context) {
+			if !entry.get().iter().any(|query| query.pending_query_contexts.contains(&context)) {
 				// If we don't have any pending queries with the context included in the blinded
 				// path (implying someone sent us this response not using the blinded path we gave
 				// when making the query), return immediately to avoid the extra time for the proof
@@ -607,11 +629,80 @@ impl OMNameResolver {
 		}
 		None
 	}
+
+	/// Handles a [`DNSSECError`] message, indicating that one of the resolvers we sent a
+	/// [`DNSSECQuery`] to was unable to provide a [`DNSSECProof`] for the requested name.
+	///
+	/// A resolution will be considered failed once we have received a [`DNSSECError`] for all the
+	/// queries we made for it, as a [`DNSSECProof`] may still arrive from one of the other
+	/// resolvers we queried. When a resolution does fail, its [`HumanReadableName`] and
+	/// [`PaymentId`] (as passed to [`Self::resolve_name`]) are included in the returned list.
+	///
+	/// As with [`Self::handle_dnssec_proof_for_uri`], the [`DNSResolverContext`] is checked against
+	/// the contexts of any pending resolutions for the name to ensure the error was received over a
+	/// blinded path we created when making the relevant [`DNSSECQuery`].
+	pub fn handle_dnssec_error(
+		&self, msg: DNSSECError, context: DNSResolverContext,
+	) -> Vec<(HumanReadableName, PaymentId)> {
+		let DNSSECError { name, .. } = msg;
+		let mut failed_resolutions = Vec::new();
+		let mut pending_resolves = self.pending_resolves.lock().unwrap();
+		if let hash_map::Entry::Occupied(mut entry) = pending_resolves.entry(name) {
+			entry.get_mut().retain_mut(|resolution| {
+				// Drop the context matching the blinded path this error was received over, if
+				// any. If no contexts match (including because a previous error already removed
+				// this context), the error does not pertain to this resolution and it is left
+				// untouched.
+				resolution.pending_query_contexts.retain(|c| *c != context);
+				if resolution.pending_query_contexts.is_empty() {
+					failed_resolutions.push((resolution.name, resolution.payment_id));
+					false
+				} else {
+					true
+				}
+			});
+			if entry.get().is_empty() {
+				entry.remove();
+			}
+		}
+		failed_resolutions
+	}
 }
 
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[cfg(feature = "dnssec")]
+	use crate::util::test_utils::pubkey;
+
+	#[cfg(feature = "dnssec")]
+	fn dest(b: u8) -> Destination {
+		Destination::Node(pubkey(b))
+	}
+
+	/// Extracts the DNS [`Name`] and the per-query [`DNSResolverContext`]s from the messages
+	/// returned by [`OMNameResolver::resolve_name`].
+	#[cfg(feature = "dnssec")]
+	fn dns_name_and_contexts(
+		messages: &[(DNSResolverMessage, MessageSendInstructions)],
+	) -> (Name, Vec<DNSResolverContext>) {
+		let name = match &messages[0] {
+			(DNSResolverMessage::DNSSECQuery(DNSSECQuery(name)), _) => name.clone(),
+			_ => panic!("Unexpected resolve_name output"),
+		};
+		let contexts = messages
+			.iter()
+			.map(|(_, instructions)| match instructions {
+				MessageSendInstructions::WithReplyPath {
+					context: MessageContext::DNSResolver(context),
+					..
+				} => context.clone(),
+				_ => panic!("Unexpected resolve_name output"),
+			})
+			.collect();
+		(name, contexts)
+	}
 
 	#[test]
 	fn test_hrn_display_format() {
@@ -652,6 +743,21 @@ mod tests {
 	}
 
 	#[test]
+	fn test_dnssec_error_roundtrip() {
+		let name = Name::try_from("test.user._bitcoin-payment.example.com.".to_owned()).unwrap();
+		for definitely_unresolvable in [false, true] {
+			let msg = DNSResolverMessage::DNSSECError(DNSSECError {
+				name: name.clone(),
+				definitely_unresolvable,
+			});
+			let mut buf = Vec::new();
+			msg.write(&mut buf).unwrap();
+			let read = DNSResolverMessage::read(&mut &buf[..], DNSSEC_ERROR_TYPE).unwrap();
+			assert_eq!(msg, read);
+		}
+	}
+
+	#[test]
 	#[cfg(feature = "dnssec")]
 	fn test_expiry() {
 		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true);
@@ -659,22 +765,22 @@ mod tests {
 		let name = HumanReadableName::new("user", "example.com").unwrap();
 
 		// Queue up a resolution
-		resolver.resolve_name(PaymentId([0; 32]), name.clone(), &keys).unwrap();
+		resolver.resolve_name(PaymentId([0; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		// and check that it expires after two blocks
 		resolver.new_best_block(44, 42);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
 
 		// Queue up another resolution
-		resolver.resolve_name(PaymentId([1; 32]), name.clone(), &keys).unwrap();
+		resolver.resolve_name(PaymentId([1; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		// it won't expire after one block
 		resolver.new_best_block(45, 42);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 1);
 		// and queue up a second and third resolution of the same name
-		resolver.resolve_name(PaymentId([2; 32]), name.clone(), &keys).unwrap();
-		resolver.resolve_name(PaymentId([3; 32]), name.clone(), &keys).unwrap();
+		resolver.resolve_name(PaymentId([2; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
+		resolver.resolve_name(PaymentId([3; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 3);
 		// after another block the first will expire, but the second and third won't
@@ -688,5 +794,78 @@ mod tests {
 		// after one more block all the requests will have expired
 		resolver.new_best_block(47, 42);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
+	}
+
+	#[test]
+	#[cfg(feature = "dnssec")]
+	fn test_dnssec_error() {
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true);
+		let resolver = OMNameResolver::new(42, 42);
+		let name = HumanReadableName::new("user", "example.com").unwrap();
+
+		// Resolve a name, sending the query to two resolvers. Each query gets its own unique
+		// context in its reply path.
+		let messages = resolver
+			.resolve_name(PaymentId([0; 32]), name.clone(), vec![dest(1), dest(2)], &keys)
+			.unwrap();
+		assert_eq!(messages.len(), 2);
+		let (dns_name, contexts) = dns_name_and_contexts(&messages);
+		assert_ne!(contexts[0], contexts[1]);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+
+		// An error whose context doesn't match any pending query is ignored entirely, even if it
+		// claims the name is unresolvable.
+		let mut wrong_context = contexts[0].clone();
+		wrong_context.nonce[0] ^= 0x01;
+		let wrong = DNSSECError { name: dns_name.clone(), definitely_unresolvable: true };
+		assert!(resolver.handle_dnssec_error(wrong, wrong_context).is_empty());
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+
+		// An error over the first query's reply path fails that query but not the resolution
+		// itself - even though `definitely_unresolvable` is set - as a proof may yet arrive from
+		// the other query.
+		let err = DNSSECError { name: dns_name.clone(), definitely_unresolvable: true };
+		assert!(resolver.handle_dnssec_error(err, contexts[0].clone()).is_empty());
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+
+		// A duplicate error over the same reply path is ignored - the first query's context was
+		// already dropped, so a single misbehaving resolver cannot fail the whole resolution.
+		let dup = DNSSECError { name: dns_name.clone(), definitely_unresolvable: true };
+		assert!(resolver.handle_dnssec_error(dup, contexts[0].clone()).is_empty());
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
+
+		// An error over the second query's reply path fails the last outstanding query, so the
+		// resolution now fails - even though this error only indicates a transient failure.
+		let err = DNSSECError { name: dns_name, definitely_unresolvable: false };
+		let failed = resolver.handle_dnssec_error(err, contexts[1].clone());
+		assert_eq!(failed, vec![(name, PaymentId([0; 32]))]);
+		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
+	}
+
+	#[test]
+	#[cfg(feature = "dnssec")]
+	fn test_dnssec_error_only_fails_matching_resolution() {
+		// An error only counts against the resolution whose blinded path (context) it was received
+		// over; other resolutions for the same name (queued with a different `PaymentId`, and thus a
+		// different context) are left untouched.
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true);
+		let resolver = OMNameResolver::new(42, 42);
+		let name = HumanReadableName::new("user", "example.com").unwrap();
+
+		let messages =
+			resolver.resolve_name(PaymentId([0; 32]), name.clone(), vec![dest(1)], &keys).unwrap();
+		let (dns_name, contexts_a) = dns_name_and_contexts(&messages);
+		resolver.resolve_name(PaymentId([1; 32]), name.clone(), vec![dest(2)], &keys).unwrap();
+		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 2);
+
+		// A single error over payment 0's reply path fails only its (single-query) resolution.
+		let err = DNSSECError { name: dns_name, definitely_unresolvable: false };
+		let failed = resolver.handle_dnssec_error(err, contexts_a[0].clone());
+		assert_eq!(failed, vec![(name, PaymentId([0; 32]))]);
+
+		// Payment 1's resolution is still pending.
+		let pending = resolver.pending_resolves.lock().unwrap();
+		assert_eq!(pending.iter().next().unwrap().1.len(), 1);
+		assert_eq!(pending.iter().next().unwrap().1[0].payment_id, PaymentId([1; 32]));
 	}
 }
