@@ -1855,6 +1855,7 @@ impl From<u64> for UpdateName {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::chain::channelmonitor::ChannelMonitorUpdateStep;
 	use crate::chain::ChannelMonitorUpdateStatus;
 	use crate::events::ClosureReason;
 	use crate::ln::functional_test_utils::*;
@@ -2259,6 +2260,96 @@ mod tests {
 			UpdateName::from(1).as_str()
 		)
 		.is_err());
+	}
+
+	// Confirm we still handle the `u64::MAX` `update_id` that pre-0.1 LDK used for post-close
+	// `ChannelMonitorUpdate`s, both when reading a leftover update from disk and when one is handed
+	// to the persister to write.
+	#[test]
+	fn legacy_closed_channel_update() {
+		let max_pending_updates = 7;
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			max_pending_updates,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+		send_payment(&nodes[1], &vec![&nodes[0]][..], 4_000_000);
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = monitor.persistence_key();
+		let monitor_key = monitor_name.to_string();
+		assert_ne!(monitor.get_latest_update_id(), u64::MAX);
+
+		let legacy_update = ChannelMonitorUpdate {
+			update_id: u64::MAX,
+			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
+			channel_id: Some(monitor.channel_id()),
+		};
+
+		// Store the update as a standalone file, as a pre-0.1 persister would have, and check that
+		// reading the monitor back replays it.
+		KVStoreSync::write(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+			UpdateName::from(u64::MAX).as_str(),
+			legacy_update.encode(),
+		)
+		.unwrap();
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, closed_monitor) = &persisted_chan_data[0];
+		assert_eq!(closed_monitor.get_latest_update_id(), u64::MAX);
+
+		let update_list = KVStoreSync::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		assert!(!update_list.is_empty());
+
+		// Writing a sentinel-id update should do a full monitor write rather than a standalone
+		// update file, and purge all stale update files.
+		let status =
+			persister.update_persisted_channel(monitor_name, Some(&legacy_update), closed_monitor);
+		assert_eq!(status, ChannelMonitorUpdateStatus::Completed);
+
+		let update_list = KVStoreSync::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		assert!(update_list.is_empty());
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		assert_eq!(persisted_chan_data[0].1.get_latest_update_id(), u64::MAX);
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool
