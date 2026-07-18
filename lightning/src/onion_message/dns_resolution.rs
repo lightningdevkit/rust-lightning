@@ -520,9 +520,14 @@ impl OMNameResolver {
 	///
 	/// If an [`Offer`] is found, it, as well as the [`PaymentId`] and original `name` passed to
 	/// [`Self::resolve_name`] are returned.
+	///
+	/// If the proof is invalid and there are no remaining queries for this name, or if the proof is
+	/// valid and does not contain a valid BIP 353 entry or BOLT 12 [`Offer`], `Err` will be
+	/// returned with the set of [`HumanReadableName`] and [`PaymentId`] requests which should be
+	/// considered failed.
 	pub fn handle_dnssec_proof_for_offer(
 		&self, msg: DNSSECProof, context: DNSResolverContext,
-	) -> Option<(Vec<(HumanReadableName, PaymentId)>, Offer)> {
+	) -> Result<(Vec<(HumanReadableName, PaymentId)>, Offer), Vec<(HumanReadableName, PaymentId)>> {
 		let (completed_requests, uri) = self.handle_dnssec_proof_for_uri(msg, context)?;
 		if let Some((_onchain, params)) = uri.split_once('?') {
 			for param in params.split('&') {
@@ -533,13 +538,13 @@ impl OMNameResolver {
 				};
 				if k.eq_ignore_ascii_case("lno") {
 					if let Ok(offer) = Offer::from_str(v) {
-						return Some((completed_requests, offer));
+						return Ok((completed_requests, offer));
 					}
-					return None;
+					return Err(completed_requests);
 				}
 			}
 		}
-		None
+		Err(completed_requests)
 	}
 
 	/// Handles a [`DNSSECProof`] message, attempting to verify it and match it against any pending
@@ -551,14 +556,19 @@ impl OMNameResolver {
 	/// Note that a single proof for a wildcard DNS entry may complete several requests for
 	/// different [`HumanReadableName`]s.
 	///
+	/// If the proof is invalid and there are no remaining queries for this name, or if the proof is
+	/// valid and does not contain a valid BIP 353 entry, `Err` will be returned with the set of
+	/// [`HumanReadableName`] and [`PaymentId`] requests which should be considered failed.
+	///
 	/// This method is useful for those who handle bitcoin: URIs already, handling more than just
 	/// BOLT12 [`Offer`]s.
 	pub fn handle_dnssec_proof_for_uri(
 		&self, msg: DNSSECProof, context: DNSResolverContext,
-	) -> Option<(Vec<(HumanReadableName, PaymentId)>, String)> {
+	) -> Result<(Vec<(HumanReadableName, PaymentId)>, String), Vec<(HumanReadableName, PaymentId)>>
+	{
 		let DNSSECProof { name: answer_name, proof } = msg;
 		let mut pending_resolves = self.pending_resolves.lock().unwrap();
-		if let hash_map::Entry::Occupied(entry) = pending_resolves.entry(answer_name) {
+		if let hash_map::Entry::Occupied(mut entry) = pending_resolves.entry(answer_name) {
 			if !entry.get().iter().any(|query| query.pending_query_contexts.contains(&context)) {
 				// If we don't have any pending queries with the context included in the blinded
 				// path (implying someone sent us this response not using the blinded path we gave
@@ -568,66 +578,101 @@ impl OMNameResolver {
 				// If there was at least one query with the same context, we go ahead and complete
 				// all queries for the same name, as there's no point in waiting for another proof
 				// for the same name.
-				return None;
+				return Err(Vec::new());
 			}
-			let parsed_rrs = parse_rr_stream(&proof);
-			let validated_rrs =
-				parsed_rrs.as_ref().and_then(|rrs| verify_rr_stream(rrs).map_err(|_| &()));
-			if let Ok(validated_rrs) = validated_rrs {
-				#[allow(unused_assignments, unused_mut)]
-				let mut time = self.latest_block_time.load(Ordering::Acquire) as u64;
-				#[cfg(all(feature = "std", not(fuzzing)))]
-				{
-					use std::time::{SystemTime, UNIX_EPOCH};
-					let now = SystemTime::now().duration_since(UNIX_EPOCH);
-					time = now.expect("Time must be > 1970").as_secs();
+			let mut valid_resolution = false;
+			let res = parse_rr_stream(&proof).and_then(|rrs| {
+				if let Some(verified_rrs) = self.verify_dnssec_proof_for_rrs(entry.key(), &rrs) {
+					valid_resolution = true;
+					self.map_rrs_to_uri(verified_rrs).ok_or(())
+				} else {
+					Err(())
 				}
-				if time != 0 {
-					// Block times may be up to two hours in the future and some time into the past
-					// (we assume no more than two hours, though the actual limits are rather
-					// complicated).
-					// Thus, we have to let the proof times be rather fuzzy.
-					let max_time_offset =
-						if cfg!(all(feature = "std", not(fuzzing))) { 0 } else { 60 * 2 };
-					if validated_rrs.valid_from > time + max_time_offset {
-						return None;
-					}
-					if validated_rrs.expires < time - max_time_offset {
-						return None;
-					}
+			});
+			if valid_resolution {
+				let requests =
+					entry.remove_entry().1.into_iter().map(|r| (r.name, r.payment_id)).collect();
+				match res {
+					Ok(txt) => Ok((requests, txt)),
+					Err(()) => Err(requests),
 				}
-				let resolved_rrs = validated_rrs.resolve_name(&entry.key());
-				if resolved_rrs.is_empty() {
+			} else {
+				let mut failed_resolutions = Vec::new();
+				entry.get_mut().retain_mut(|query| {
+					query.pending_query_contexts.retain(|c| *c != context);
+					if query.pending_query_contexts.is_empty() {
+						failed_resolutions.push((query.name, query.payment_id));
+						false
+					} else {
+						true
+					}
+				});
+
+				if entry.get().is_empty() {
+					entry.remove_entry();
+				}
+				Err(failed_resolutions)
+			}
+		} else {
+			Err(Vec::new())
+		}
+	}
+
+	fn verify_dnssec_proof_for_rrs<'a>(
+		&self, resolved_name: &Name, rrs: &'a [RR],
+	) -> Option<Vec<&'a RR>> {
+		let validated_rrs = verify_rr_stream(rrs);
+		if let Ok(validated_rrs) = validated_rrs {
+			#[allow(unused_assignments, unused_mut)]
+			let mut time = self.latest_block_time.load(Ordering::Acquire) as u64;
+			#[cfg(all(feature = "std", not(fuzzing)))]
+			{
+				use std::time::{SystemTime, UNIX_EPOCH};
+				let now = SystemTime::now().duration_since(UNIX_EPOCH);
+				time = now.expect("Time must be > 1970").as_secs();
+			}
+			if time != 0 {
+				// Block times may be up to two hours in the future and some time into the past
+				// (we assume no more than two hours, though the actual limits are rather
+				// complicated).
+				// Thus, we have to let the proof times be rather fuzzy.
+				let max_time_offset =
+					if cfg!(all(feature = "std", not(fuzzing))) { 0 } else { 60 * 2 };
+				if validated_rrs.valid_from > time + max_time_offset {
 					return None;
 				}
-
-				let (_, requests) = entry.remove_entry();
-
-				const URI_PREFIX: &str = "bitcoin:";
-				let mut candidate_records = resolved_rrs
-					.iter()
-					.filter_map(
-						|rr| if let RR::Txt(txt) = rr { Some(txt.data.as_vec()) } else { None },
-					)
-					.filter_map(|data| String::from_utf8(data).ok())
-					.filter(|data_string| data_string.len() > URI_PREFIX.len())
-					.filter(|data_string| {
-						let pfx = &data_string.as_bytes()[..URI_PREFIX.len()];
-						pfx.eq_ignore_ascii_case(URI_PREFIX.as_bytes())
-					});
-				// Check that there is exactly one TXT record that begins with
-				// bitcoin: as required by BIP 353 (and is valid UTF-8).
-				match (candidate_records.next(), candidate_records.next()) {
-					(Some(txt), None) => {
-						let completed_requests =
-							requests.into_iter().map(|r| (r.name, r.payment_id)).collect();
-						return Some((completed_requests, txt));
-					},
-					_ => {},
+				if validated_rrs.expires < time - max_time_offset {
+					return None;
 				}
 			}
+			let resolved_rrs = validated_rrs.resolve_name(resolved_name);
+			if resolved_rrs.is_empty() {
+				return None;
+			}
+
+			Some(resolved_rrs)
+		} else {
+			None
 		}
-		None
+	}
+
+	fn map_rrs_to_uri(&self, resolved_rrs: Vec<&RR>) -> Option<String> {
+		const URI_PREFIX: &str = "bitcoin:";
+		let mut candidate_records = resolved_rrs
+			.iter()
+			.filter_map(|rr| if let RR::Txt(txt) = rr { Some(txt.data.as_vec()) } else { None })
+			.filter_map(|data| String::from_utf8(data).ok())
+			.filter(|data_string| data_string.len() > URI_PREFIX.len())
+			.filter(|data_string| {
+				let pfx = &data_string.as_bytes()[..URI_PREFIX.len()];
+				pfx.eq_ignore_ascii_case(URI_PREFIX.as_bytes())
+			});
+		// Check that there is exactly one TXT record that begins with
+		// bitcoin: as required by BIP 353 (and is valid UTF-8).
+		match (candidate_records.next(), candidate_records.next()) {
+			(Some(txt), None) => Some(txt),
+			_ => None,
+		}
 	}
 
 	/// Handles a [`DNSSECError`] message, indicating that one of the resolvers we sent a
