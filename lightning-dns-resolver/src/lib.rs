@@ -9,7 +9,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use dnssec_prover::query::build_txt_proof_async;
+use dnssec_prover::query::{build_txt_proof_async, ProofBuildingError};
 
 use lightning::blinded_path::message::DNSResolverContext;
 use lightning::ln::peer_handler::IgnoringMessageHandler;
@@ -127,11 +127,25 @@ impl<PH: DNSResolverMessageHandler> DNSResolverMessageHandler for OMDomainResolv
 		}
 		let us = Arc::clone(&self.state);
 		runtime.spawn(async move {
-			if let Ok((proof, _ttl)) = build_txt_proof_async(us.resolver, &q.0).await {
-				let contents = DNSResolverMessage::DNSSECProof(DNSSECProof { name: q.0, proof });
-				let instructions = responder.respond().into_instructions();
-				us.pending_replies.lock().unwrap().push((contents, instructions));
-			}
+			let contents = match build_txt_proof_async(us.resolver, &q.0).await {
+				Ok((proof, _ttl)) => {
+					DNSResolverMessage::DNSSECProof(DNSSECProof { name: q.0, proof })
+				},
+				Err(e) => {
+					// We might get an Unauthenticated error if the DNS resolver does not support
+					// DNSSEC, so we only set `definitely_unresolvable` if we get an NXDOMAIN.
+					let definitely_unresolvable = matches!(
+						e.get_ref().and_then(|e| e.downcast_ref::<ProofBuildingError>()),
+						Some(ProofBuildingError::NoSuchName)
+					);
+					DNSResolverMessage::DNSSECError(DNSSECError {
+						name: q.0,
+						definitely_unresolvable,
+					})
+				},
+			};
+			let instructions = responder.respond().into_instructions();
+			us.pending_replies.lock().unwrap().push((contents, instructions));
 			us.pending_query_count.fetch_sub(1, Ordering::Relaxed);
 		});
 		None
@@ -217,6 +231,7 @@ mod test {
 
 	struct URIResolver {
 		resolved_uri: Mutex<Option<(HumanReadableName, PaymentId, String)>>,
+		resolved_error: Mutex<Option<(HumanReadableName, PaymentId, bool)>>,
 		resolver: OMNameResolver,
 		pending_messages: Mutex<Vec<(DNSResolverMessage, MessageSendInstructions)>>,
 	}
@@ -236,7 +251,13 @@ mod test {
 			assert!(result.is_none());
 		}
 		fn handle_dnssec_error(&self, msg: DNSSECError, context: DNSResolverContext) {
-			// TODO
+			let definitely_unresolvable = msg.definitely_unresolvable;
+			let mut failed = self.resolver.handle_dnssec_error(msg, context);
+			assert_eq!(failed.len(), 1);
+			let (name, payment_id) = failed.pop().unwrap();
+			let mut result = Some((name, payment_id, definitely_unresolvable));
+			core::mem::swap(&mut *self.resolved_error.lock().unwrap(), &mut result);
+			assert!(result.is_none());
 		}
 		fn release_pending_messages(&self) -> Vec<(DNSResolverMessage, MessageSendInstructions)> {
 			core::mem::take(&mut *self.pending_messages.lock().unwrap())
@@ -286,6 +307,7 @@ mod test {
 		let payer_id = payer_keys.get_node_id(Recipient::Node).unwrap();
 		let payer = Arc::new(URIResolver {
 			resolved_uri: Mutex::new(None),
+			resolved_error: Mutex::new(None),
 			resolver: OMNameResolver::new(now as u32, 1),
 			pending_messages: Mutex::new(Vec::new()),
 		});
@@ -332,6 +354,75 @@ mod test {
 	}
 
 	#[tokio::test]
+	async fn resolution_failure_test() {
+		// Test that querying for a name which does not exist results in a `DNSSECError` with
+		// `definitely_unresolvable` set being returned (rather than a `DNSSECProof`).
+
+		let (resolver_messenger, resolver_id) = create_resolver();
+
+		let resolver_dest = Destination::Node(resolver_id);
+		let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap().as_secs();
+
+		let payment_id = PaymentId([43; 32]);
+		// `mattcorallo.com` is DNSSEC-signed, so a name which does not exist under it will result in
+		// an authenticated NXDOMAIN, i.e. a definitely-unresolvable name.
+		let name =
+			HumanReadableName::from_encoded("nonexistent-user-ldk-test@mattcorallo.com").unwrap();
+
+		let payer_keys = Arc::new(KeysManager::new(&[3; 32], 42, 43, true));
+		let payer_logger = TestLogger { node: "payer" };
+		let payer_id = payer_keys.get_node_id(Recipient::Node).unwrap();
+		let payer = Arc::new(URIResolver {
+			resolved_uri: Mutex::new(None),
+			resolved_error: Mutex::new(None),
+			resolver: OMNameResolver::new(now as u32, 1),
+			pending_messages: Mutex::new(Vec::new()),
+		});
+		let payer_messenger = Arc::new(OnionMessenger::new(
+			Arc::clone(&payer_keys),
+			Arc::clone(&payer_keys),
+			payer_logger,
+			DummyNodeLookup {},
+			DirectlyConnectedRouter {},
+			IgnoringMessageHandler {},
+			IgnoringMessageHandler {},
+			Arc::clone(&payer),
+			IgnoringMessageHandler {},
+		));
+
+		let init_msg = get_om_init();
+		payer_messenger.peer_connected(resolver_id, &init_msg, true).unwrap();
+		resolver_messenger.get_om().peer_connected(payer_id, &init_msg, false).unwrap();
+
+		let messages = payer
+			.resolver
+			.resolve_name(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
+			.unwrap();
+		payer.pending_messages.lock().unwrap().extend(messages);
+
+		let query = payer_messenger.next_onion_message_for_peer(resolver_id).unwrap();
+		resolver_messenger.get_om().handle_onion_message(payer_id, &query);
+
+		assert!(resolver_messenger.get_om().next_onion_message_for_peer(payer_id).is_none());
+		let start = Instant::now();
+		let response = loop {
+			tokio::time::sleep(Duration::from_millis(10)).await;
+			if let Some(msg) = resolver_messenger.get_om().next_onion_message_for_peer(payer_id) {
+				break msg;
+			}
+			assert!(start.elapsed() < Duration::from_secs(10), "Resolution took too long");
+		};
+
+		payer_messenger.handle_onion_message(resolver_id, &response);
+		let (failed_name, failed_payment_id, definitely_unresolvable) =
+			payer.resolved_error.lock().unwrap().take().unwrap();
+		assert_eq!(failed_name, name);
+		assert_eq!(failed_payment_id, payment_id);
+		assert!(definitely_unresolvable);
+		assert!(payer.resolved_uri.lock().unwrap().is_none());
+	}
+
+	#[tokio::test]
 	async fn failed_query_does_not_leak_pending_counter() {
 		use std::sync::atomic::Ordering;
 
@@ -368,6 +459,7 @@ mod test {
 		let payer_id = payer_keys.get_node_id(Recipient::Node).unwrap();
 		let payer = Arc::new(URIResolver {
 			resolved_uri: Mutex::new(None),
+			resolved_error: Mutex::new(None),
 			resolver: OMNameResolver::new(now as u32, 1),
 			pending_messages: Mutex::new(Vec::new()),
 		});
