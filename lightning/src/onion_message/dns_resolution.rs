@@ -640,7 +640,7 @@ impl OMNameResolver {
 				// complicated).
 				// Thus, we have to let the proof times be rather fuzzy.
 				let max_time_offset =
-					if cfg!(all(feature = "std", not(fuzzing))) { 0 } else { 60 * 2 };
+					if cfg!(all(feature = "std", not(fuzzing))) { 0 } else { 60 * 60 * 2 };
 				if validated_rrs.valid_from > time + max_time_offset {
 					return None;
 				}
