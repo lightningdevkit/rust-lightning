@@ -34,7 +34,7 @@ jobs:
         id: jwt
         run: |
           set -eu
-          jwt="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=u:1:bec84b56-6f08-4622-9cd6-1aee5b18c5b9" | jq -r '.value')"
+          jwt="$(curl -fsS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=u:88:1a17a83c-eae2-4258-8b7f-34a9c9408cec" | jq -r '.value')"
           echo "::add-mask::$jwt"
           echo "jwt=$jwt" >> "$FORGEJO_OUTPUT"
       - name: Request review from a random developer
