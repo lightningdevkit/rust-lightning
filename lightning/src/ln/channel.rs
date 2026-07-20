@@ -11098,7 +11098,16 @@ where
 		let splice_locked = self.pending_splice.as_ref().and_then(|pending_splice| {
 			pending_splice
 				.sent_funding_txid
-				.filter(|splice_txid| Some(*splice_txid) != funding_locked_txid_sent_in_reestablish)
+				.filter(|splice_txid| {
+					// `my_current_funding_locked` normally makes an explicit retransmission
+					// redundant. However, if the peer is still missing our `tx_signatures` for
+					// this splice, it cannot recognize the locked funding until those signatures
+					// arrive, so repeat `splice_locked` immediately afterwards.
+					Some(*splice_txid) != funding_locked_txid_sent_in_reestablish
+						|| tx_signatures
+							.as_ref()
+							.is_some_and(|tx_signatures| tx_signatures.tx_hash == *splice_txid)
+				})
 				.map(|splice_txid| msgs::SpliceLocked {
 					channel_id: self.context.channel_id,
 					splice_txid,
