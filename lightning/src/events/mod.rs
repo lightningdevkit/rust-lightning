@@ -986,9 +986,15 @@ impl_ser_tlv_based!(OutboundHTLCLocator, {
 
 /// An Event which you should probably take some action in response to.
 ///
-/// Note that while Writeable and Readable are implemented for Event, you probably shouldn't use
-/// them directly as they don't round-trip exactly (for example BumpTransaction is never written
-/// as its contents are regenerated when necessary).
+/// `Writeable` and `MaybeReadable` are implemented for `Event`, but note that many events describe
+/// state which no longer means anything once the node has restarted, so persisting them and
+/// handling them on startup is likely to result in confusion. See [`Event::useful_after_restart`],
+/// which distinguishes the two, and the "Failure Behavior and Persistence" documentation on each
+/// variant for why a given event is or isn't useful after a restart. Event providers may drop the
+/// events which aren't useful on restart rather than handing them to downstream code, as
+/// [`ChannelManager`] does.
+///
+/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
 	/// Used to indicate that the client should generate a funding transaction with the given
@@ -1928,7 +1934,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but will only be regenerated as needed after restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as its contents are derived
+	/// from on-chain state and the event will only be regenerated as needed once that state is
+	/// re-evaluated after startup.
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	/// [`ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments
@@ -2609,14 +2617,12 @@ impl Writeable for Event {
 				})
 			},
 			&Event::BumpTransaction(ref event) => {
-				27u8.write(writer)?;
-				match event {
-					// We never write the ChannelClose|HTLCResolution events as they'll be replayed
-					// upon restarting anyway if they remain unresolved.
-					BumpTransactionEvent::ChannelClose { .. } => {},
-					BumpTransactionEvent::HTLCResolution { .. } => {},
-				}
-				write_tlv_fields!(writer, {}); // Write a length field for forwards compat
+				// Type 27 was used for these events in LDK versions prior to 0.4, writing no data as
+				// they were never persisted.
+				59u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, event, required),
+				});
 			},
 			&Event::ChannelReady {
 				ref channel_id,
@@ -3259,7 +3265,12 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			27u8 => Ok(None),
+			// LDK versions prior to 0.4 wrote BumpTransaction events as type 27 with no contents,
+			// but did write an (empty) TLV body, so we have to consume its length field here.
+			27u8 => {
+				read_tlv_fields!(reader, {});
+				Ok(None)
+			},
 			29u8 => {
 				let mut f = || {
 					let mut channel_id = ChannelId::new_zero();
@@ -3546,6 +3557,15 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			59u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, event, upgradable_required),
+					});
+					Ok(Some(Event::BumpTransaction(event.0.unwrap())))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -3569,12 +3589,17 @@ impl MaybeReadable for Event {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::chain::ClaimId;
+	use crate::events::bump_transaction::AnchorDescriptor;
+	use crate::ln::chan_utils::{ChannelTransactionParameters, HTLCOutputInCommitment};
 	use crate::ln::msgs::{ChannelParameters, SocketAddress};
+	use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
 	use crate::types::features::ChannelTypeFeatures;
 	use bitcoin::locktime::absolute::LockTime;
 	use bitcoin::script::ScriptBuf;
-	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
 	use bitcoin::transaction::Version;
+	use bitcoin::{Amount, OutPoint, Txid};
 
 	fn assert_event_round_trips(event: Event) {
 		let encoded = event.encode();
@@ -3653,6 +3678,78 @@ mod tests {
 			user_channel_id: 7,
 			unsigned_transaction,
 		});
+	}
+
+	#[test]
+	fn test_bump_transaction_round_trip() {
+		let commitment_tx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![],
+			output: vec![],
+		};
+		let mut transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
+		transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		let anchor_descriptor = AnchorDescriptor {
+			channel_derivation_parameters: ChannelDerivationParameters {
+				value_satoshis: 42_000_000,
+				keys_id: [42; 32],
+				transaction_parameters,
+			},
+			outpoint: OutPoint::null(),
+			value: Amount::from_sat(330),
+		};
+		assert_event_round_trips(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
+			channel_id: ChannelId([1; 32]),
+			counterparty_node_id: dummy_node_id(),
+			claim_id: ClaimId([2; 32]),
+			package_target_feerate_sat_per_1000_weight: 253,
+			commitment_tx,
+			commitment_tx_fee_satoshis: 1_000,
+			anchor_descriptor,
+			pending_htlcs: vec![HTLCOutputInCommitment {
+				offered: true,
+				amount_msat: 10_000,
+				cltv_expiry: 500_000,
+				payment_hash: PaymentHash([5; 32]),
+				transaction_output_index: Some(1),
+			}],
+		}));
+		let mut htlc_transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
+		htlc_transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		let secp_ctx = Secp256k1::new();
+		let dummy_sig = secp_ctx
+			.sign_ecdsa(&Message::from_digest([1; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
+		let htlc_descriptor = HTLCDescriptor {
+			channel_derivation_parameters: ChannelDerivationParameters {
+				value_satoshis: 42_000_000,
+				keys_id: [42; 32],
+				transaction_parameters: htlc_transaction_parameters,
+			},
+			commitment_txid: Txid::from_byte_array([6; 32]),
+			per_commitment_number: 7,
+			per_commitment_point: dummy_node_id(),
+			feerate_per_kw: 0,
+			htlc: HTLCOutputInCommitment {
+				offered: false,
+				amount_msat: 20_000,
+				cltv_expiry: 600_000,
+				payment_hash: PaymentHash([6; 32]),
+				transaction_output_index: Some(2),
+			},
+			preimage: Some(PaymentPreimage([7; 32])),
+			counterparty_sig: dummy_sig,
+		};
+		assert_event_round_trips(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
+			channel_id: ChannelId([3; 32]),
+			counterparty_node_id: dummy_node_id(),
+			claim_id: ClaimId([4; 32]),
+			target_feerate_sat_per_1000_weight: 253,
+			htlc_descriptors: vec![htlc_descriptor],
+			tx_lock_time: LockTime::ZERO,
+		}));
 	}
 
 	#[test]

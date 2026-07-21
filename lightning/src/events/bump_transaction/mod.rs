@@ -101,6 +101,12 @@ impl AnchorDescriptor {
 	}
 }
 
+impl_ser_tlv_based!(AnchorDescriptor, {
+	(1, channel_derivation_parameters, required),
+	(3, outpoint, required),
+	(5, value, required),
+});
+
 /// Represents the different types of transactions, originating from LDK, to be bumped.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BumpTransactionEvent {
@@ -244,6 +250,27 @@ pub enum BumpTransactionEvent {
 		tx_lock_time: LockTime,
 	},
 }
+
+impl_writeable_tlv_based_enum_upgradable!(BumpTransactionEvent,
+	(0, ChannelClose) => {
+		(1, channel_id, required),
+		(3, counterparty_node_id, required),
+		(5, claim_id, required),
+		(7, package_target_feerate_sat_per_1000_weight, required),
+		(9, commitment_tx, required),
+		(11, commitment_tx_fee_satoshis, required),
+		(13, anchor_descriptor, required),
+		(15, pending_htlcs, required_vec),
+	},
+	(1, HTLCResolution) => {
+		(1, channel_id, required),
+		(3, counterparty_node_id, required),
+		(5, claim_id, required),
+		(7, target_feerate_sat_per_1000_weight, required),
+		(9, htlc_descriptors, required_vec),
+		(11, tx_lock_time, required),
+	},
+);
 
 /// A handler for [`Event::BumpTransaction`] events that sources confirmed UTXOs from a
 /// [`CoinSelectionSource`] to fee bump transactions via Child-Pays-For-Parent (CPFP) or
