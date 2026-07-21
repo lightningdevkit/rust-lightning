@@ -2003,6 +2003,12 @@ pub enum Event {
 	/// [`ChannelManager::blinded_paths_for_async_recipient`] and the recipient was configured with
 	/// them via [`ChannelManager::set_paths_to_static_invoice_server`].
 	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as the static invoice
+	/// negotiation is simply restarted on startup and this event will be regenerated if the
+	/// recipient still needs an invoice persisted.
+	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
 	PersistStaticInvoice {
@@ -2059,6 +2065,12 @@ pub enum Event {
 	/// and forwarded to the payer via [`ChannelManager::respond_to_static_invoice_request`].
 	/// The invoice request path previously persisted from [`Event::PersistStaticInvoice`] should
 	/// also be provided in [`ChannelManager::respond_to_static_invoice_request`].
+	///
+	/// # Failure Behavior and Persistence
+	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as it stems from an incoming
+	/// onion message that isn't persisted; if the payer still needs the invoice they will
+	/// re-request it after we restart.
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
@@ -2713,14 +2725,39 @@ impl Writeable for Event {
 					(8, former_temporary_channel_id, required),
 				});
 			},
-			&Event::PersistStaticInvoice { .. } => {
-				45u8.write(writer)?;
-				// No need to write these events because we can just restart the static invoice negotiation
-				// on startup.
+			&Event::PersistStaticInvoice {
+				ref invoice,
+				ref invoice_request_path,
+				ref invoice_slot,
+				ref recipient_id,
+				ref invoice_persisted_path,
+			} => {
+				// Type 45 was used for these events in LDK versions prior to 0.4, writing no data as
+				// they were never persisted.
+				61u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, invoice, required),
+					(3, invoice_request_path, required),
+					(5, invoice_slot, required),
+					(7, recipient_id, required),
+					(9, invoice_persisted_path, required),
+				});
 			},
-			&Event::StaticInvoiceRequested { .. } => {
-				47u8.write(writer)?;
-				// Never write StaticInvoiceRequested events as buffered onion messages aren't serialized.
+			&Event::StaticInvoiceRequested {
+				ref recipient_id,
+				ref invoice_slot,
+				ref reply_path,
+				ref invoice_request,
+			} => {
+				// Type 47 was used for these events in LDK versions prior to 0.4, writing no data as
+				// they were never persisted.
+				63u8.write(writer)?;
+				write_tlv_fields!(writer, {
+					(1, recipient_id, required),
+					(3, invoice_slot, required),
+					(5, reply_path, required),
+					(7, invoice_request, required),
+				});
 			},
 			&Event::FundingTransactionReadyForSigning {
 				ref channel_id,
@@ -3413,9 +3450,11 @@ impl MaybeReadable for Event {
 					former_temporary_channel_id: former_temporary_channel_id.0.unwrap(),
 				}))
 			},
-			// Note that we do not write a length-prefixed TLV for PersistStaticInvoice events.
+			// LDK versions prior to 0.4 wrote PersistStaticInvoice events as type 45 without any
+			// data, so there is nothing to read here.
 			45u8 => Ok(None),
-			// Note that we do not write a length-prefixed TLV for StaticInvoiceRequested events.
+			// LDK versions prior to 0.4 wrote StaticInvoiceRequested events as type 47 without any
+			// data, so there is nothing to read here.
 			47u8 => Ok(None),
 			// LDK versions prior to 0.4 wrote FundingTransactionReadyForSigning events as type 49
 			// without any data, so there is nothing to read here.
@@ -3566,6 +3605,42 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			61u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, invoice, required),
+						(3, invoice_request_path, required),
+						(5, invoice_slot, required),
+						(7, recipient_id, required),
+						(9, invoice_persisted_path, required),
+					});
+					Ok(Some(Event::PersistStaticInvoice {
+						invoice: invoice.0.unwrap(),
+						invoice_request_path: invoice_request_path.0.unwrap(),
+						invoice_slot: invoice_slot.0.unwrap(),
+						recipient_id: recipient_id.0.unwrap(),
+						invoice_persisted_path: invoice_persisted_path.0.unwrap(),
+					}))
+				};
+				f()
+			},
+			63u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, recipient_id, required),
+						(3, invoice_slot, required),
+						(5, reply_path, required),
+						(7, invoice_request, required),
+					});
+					Ok(Some(Event::StaticInvoiceRequested {
+						recipient_id: recipient_id.0.unwrap(),
+						invoice_slot: invoice_slot.0.unwrap(),
+						reply_path: reply_path.0.unwrap(),
+						invoice_request: invoice_request.0.unwrap(),
+					}))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -3593,6 +3668,8 @@ mod tests {
 	use crate::events::bump_transaction::AnchorDescriptor;
 	use crate::ln::chan_utils::{ChannelTransactionParameters, HTLCOutputInCommitment};
 	use crate::ln::msgs::{ChannelParameters, SocketAddress};
+	use crate::offers::test_utils::{blinded_path, dummy_invoice_request, dummy_static_invoice};
+	use crate::onion_message::messenger::Responder;
 	use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
 	use crate::types::features::ChannelTypeFeatures;
 	use bitcoin::locktime::absolute::LockTime;
@@ -3605,6 +3682,23 @@ mod tests {
 		let encoded = event.encode();
 		let event_read = <Event as MaybeReadable>::read(&mut &encoded[..]).unwrap();
 		assert_eq!(event_read, Some(event));
+	}
+
+	#[test]
+	fn legacy_bodyless_events_read_as_none() {
+		// LDK versions prior to 0.4 wrote these events without any contents. All but
+		// `BumpTransaction` (type 27) were written as nothing but a type byte, while type 27 was
+		// followed by an empty TLV body, i.e. a zero length field.
+		//
+		// Reading one must skip it rather than fail, and must consume exactly what was written, as
+		// reading too little or too much would desync us from the events which follow.
+		let legacy_encodings: [&[u8]; 7] = [&[0], &[17], &[27, 0], &[35], &[45], &[47], &[49]];
+		for encoded in legacy_encodings {
+			let mut reader = encoded;
+			let event = <Event as MaybeReadable>::read(&mut reader).unwrap();
+			assert!(event.is_none(), "type {} should be skipped", encoded[0]);
+			assert_eq!(reader.len(), 0, "type {} consumed the wrong length", encoded[0]);
+		}
 	}
 
 	fn dummy_node_id() -> PublicKey {
@@ -3750,6 +3844,27 @@ mod tests {
 			htlc_descriptors: vec![htlc_descriptor],
 			tx_lock_time: LockTime::ZERO,
 		}));
+	}
+
+	#[test]
+	fn test_persist_static_invoice_round_trip() {
+		assert_event_round_trips(Event::PersistStaticInvoice {
+			invoice: dummy_static_invoice(),
+			invoice_request_path: blinded_path(),
+			invoice_slot: 3,
+			recipient_id: vec![7; 32],
+			invoice_persisted_path: Responder::new(blinded_path()),
+		});
+	}
+
+	#[test]
+	fn test_static_invoice_requested_round_trip() {
+		assert_event_round_trips(Event::StaticInvoiceRequested {
+			recipient_id: vec![9; 16],
+			invoice_slot: 5,
+			reply_path: Responder::new(blinded_path()),
+			invoice_request: dummy_invoice_request(),
+		});
 	}
 
 	#[test]

@@ -15,7 +15,9 @@ use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::blinded_path::BlindedHop;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::ExpandedKey;
+use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::TaggedHash;
 use crate::sign::EntropySource;
 use crate::types::features::BlindedHopFeatures;
@@ -164,4 +166,21 @@ pub fn dummy_static_invoice() -> StaticInvoice {
 	.unwrap()
 	.build_and_sign(&secp_ctx)
 	.unwrap()
+}
+
+pub(crate) fn dummy_invoice_request() -> InvoiceRequest {
+	let expanded_key = ExpandedKey::new([42; 32]);
+	let entropy = FixedEntropy {};
+	let nonce = Nonce::from_entropy_source(&entropy);
+	let secp_ctx = Secp256k1::new();
+	let payment_id = PaymentId([1; 32]);
+
+	OfferBuilder::new(recipient_pubkey())
+		.amount_msats(1000)
+		.build()
+		.unwrap()
+		.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+		.unwrap()
+		.build_and_sign()
+		.unwrap()
 }
