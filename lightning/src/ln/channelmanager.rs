@@ -15999,7 +15999,7 @@ impl<
 		// See the docs for `ChannelManagerReadArgs` for more.
 
 		let block_hash = header.block_hash();
-		log_trace!(self.logger, "New best block: {} at height {}", block_hash, height);
+		log_info!(self.logger, "New best block: {} at height {}", block_hash, height);
 
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
