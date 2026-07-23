@@ -1,9 +1,9 @@
 [package]
 name = "lightning"
-version = "0.3.0+git"
+version = "0.3.0-beta1"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lightningdevkit/rust-lightning/"
+repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning"
 readme = "../README.md"
 description = """
 A Complete Bitcoin Lightning Library in Rust.
@@ -34,8 +34,8 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-lightning-types = { version = "0.4.0", path = "../lightning-types", default-features = false }
-lightning-invoice = { version = "0.35.0", path = "../lightning-invoice", default-features = false }
+lightning-types = { version = "0.4.0-beta1", path = "../lightning-types", default-features = false }
+lightning-invoice = { version = "0.35.0-beta1", path = "../lightning-invoice", default-features = false }
 lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
 bech32 = { version = "0.11.0", default-features = false }
@@ -54,7 +54,7 @@ inventory = { version = "0.3", optional = true  }
 
 [dev-dependencies]
 regex = "1.5.6"
-lightning-types = { version = "0.4.0", path = "../lightning-types", features = ["_test_utils"] }
+lightning-types = { version = "0.4.0-beta1", path = "../lightning-types", features = ["_test_utils"] }
 lightning-macros = { path = "../lightning-macros" }
 parking_lot = { version = "0.12", default-features = false }
 

@@ -587,7 +587,7 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// (implying scaling all estimated probabilities down by a factor of ~79%) resulted in the
 	/// most accurate total success probabilities.
 	///
-	/// Default value: 1,024 msat (i.e. we're willing to pay 1 sat to avoid each additional hop).
+	/// Default value: 5,120 msat (i.e. we're willing to pay 5.12 sats to avoid each additional hop).
 	///
 	/// [`historical_liquidity_penalty_multiplier_msat`]: Self::historical_liquidity_penalty_multiplier_msat
 	pub base_penalty_msat: u64,
@@ -606,8 +606,8 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// probabilities down by a factor of ~79%) resulted in the most accurate total success
 	/// probabilities.
 	///
-	/// Default value: 131,072 msat (i.e. we're willing to pay 0.125bps to avoid each additional
-	///                              hop).
+	/// Default value: 655,360 msat (i.e. we're willing to pay roughly 6.1 basis points to avoid
+	///                              each additional hop).
 	///
 	/// [`base_penalty_msat`]: Self::base_penalty_msat
 	/// [`historical_liquidity_penalty_amount_multiplier_msat`]: Self::historical_liquidity_penalty_amount_multiplier_msat
@@ -673,8 +673,8 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// track which of several buckets those bounds fall into, exponentially decaying the
 	/// probability of each bucket as new samples are added.
 	///
-	/// Default value: 10,000 msat (i.e. willing to pay 1 sat to avoid an 80% probability channel,
-	///                            or 6 sats to avoid a 25% probability channel).
+	/// Default value: 50,000 msat (i.e. willing to pay 5 sats to avoid an 80% probability channel,
+	///                            or 30 sats to avoid a 25% probability channel).
 	///
 	/// [`liquidity_penalty_multiplier_msat`]: Self::liquidity_penalty_multiplier_msat
 	pub historical_liquidity_penalty_multiplier_msat: u64,
@@ -695,8 +695,8 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// channel, we track which of several buckets those bounds fall into, exponentially decaying
 	/// the probability of each bucket as new samples are added.
 	///
-	/// Default value: 1,250 msat (i.e. willing to pay about 0.125 bps per hop to avoid 78%
-	///                            probability channels, or 0.5bps to avoid a 38% probability
+	/// Default value: 6,250 msat (i.e. willing to pay about 6.4 bps per hop to avoid 78%
+	///                            probability channels, or 25bps to avoid a 38% probability
 	///                            channel).
 	///
 	/// [`liquidity_penalty_amount_multiplier_msat`]: Self::liquidity_penalty_amount_multiplier_msat
@@ -715,7 +715,7 @@ pub struct ProbabilisticScoringFeeParameters {
 	/// as this makes balance discovery attacks harder to execute, thereby creating an incentive
 	/// to restrict `htlc_maximum_msat` and improve privacy.
 	///
-	/// Default value: 250 msat
+	/// Default value: 1,250 msat
 	pub anti_probing_penalty_msat: u64,
 
 	/// This penalty is applied when the total amount flowing over a channel exceeds our current
@@ -787,15 +787,15 @@ pub struct ProbabilisticScoringFeeParameters {
 impl Default for ProbabilisticScoringFeeParameters {
 	fn default() -> Self {
 		Self {
-			base_penalty_msat: 1024,
-			base_penalty_amount_multiplier_msat: 131_072,
+			base_penalty_msat: 5_120,
+			base_penalty_amount_multiplier_msat: 655_360,
 			liquidity_penalty_multiplier_msat: 0,
 			liquidity_penalty_amount_multiplier_msat: 0,
 			manual_node_penalties: new_hash_map(),
-			anti_probing_penalty_msat: 250,
+			anti_probing_penalty_msat: 1_250,
 			considered_impossible_penalty_msat: 1_0000_0000_000,
-			historical_liquidity_penalty_multiplier_msat: 10_000,
-			historical_liquidity_penalty_amount_multiplier_msat: 1_250,
+			historical_liquidity_penalty_multiplier_msat: 50_000,
+			historical_liquidity_penalty_amount_multiplier_msat: 6_250,
 			linear_success_probability: false,
 			probing_diversity_penalty_msat: 0,
 		}
@@ -3609,47 +3609,47 @@ mod tests {
 			info,
 			short_channel_id: 42,
 		});
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 42_252);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 211_262);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 36_005);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 180_032);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 2_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 32_851);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 164_259);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 3_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 30_832);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 154_165);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 4_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 29_886);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 149_434);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 5_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 28_939);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 144_702);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 6_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 28_435);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 142_178);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_450_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_993);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 139_969);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 7_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_993);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 139_969);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 8_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_488);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 137_446);
 		let usage = ChannelUsage {
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 9_950_000_000, htlc_maximum_msat: 1_000 }, ..usage
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 27_047);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 135_238);
 	}
 
 	#[test]
@@ -3984,8 +3984,11 @@ mod tests {
 		let logger = TestLogger::new();
 		let network_graph = network_graph(&logger);
 		let source = source_node_id();
+		let anti_probing_penalty_msat =
+			ProbabilisticScoringFeeParameters::default().anti_probing_penalty_msat;
+		assert_eq!(anti_probing_penalty_msat, 1_250);
 		let params = ProbabilisticScoringFeeParameters {
-			anti_probing_penalty_msat: 500,
+			anti_probing_penalty_msat,
 			..ProbabilisticScoringFeeParameters::zero_penalty()
 		};
 		let scorer = ProbabilisticScorer::new(ProbabilisticScoringDecayParameters::default(), &network_graph, &logger);
@@ -4011,7 +4014,7 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 1_024_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 500);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_250);
 
 		// Check we receive anti-probing penalty for htlc_maximum_msat == channel_capacity/2.
 		let usage = ChannelUsage {
@@ -4019,7 +4022,7 @@ mod tests {
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_024_000, htlc_maximum_msat: 512_000 },
 		};
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 500);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 1_250);
 
 		// Check we receive no anti-probing penalty for htlc_maximum_msat == channel_capacity/2 - 1.
 		let usage = ChannelUsage {
