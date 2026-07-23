@@ -13608,15 +13608,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							});
 							Ok(())
 						},
-						Err(err) => {
-							debug_assert!(err.splice_funding_failed.is_none());
-							Err(self.handle_interactive_tx_msg_err(
-								err,
-								msg.channel_id,
-								counterparty_node_id,
-								user_channel_id,
-							))
-						},
+						Err(err) => Err(self.handle_interactive_tx_msg_err(
+							err,
+							msg.channel_id,
+							counterparty_node_id,
+							user_channel_id,
+						)),
 					}
 				} else {
 					try_channel_entry!(

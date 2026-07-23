@@ -51,9 +51,10 @@ use lightning_0_0_125::util::ser::Writeable as _;
 
 use lightning::blinded_path::message::NextMessageHop;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
-use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType};
+use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType, NegotiationFailureReason};
 use lightning::ln::channel_state::SpliceCandidateStatus;
 use lightning::ln::functional_test_utils::*;
+use lightning::ln::funding::FundingContribution;
 use lightning::ln::msgs;
 use lightning::ln::msgs::BaseMessageHandler as _;
 use lightning::ln::msgs::ChannelMessageHandler as _;
@@ -62,6 +63,7 @@ use lightning::ln::splicing_tests::*;
 use lightning::ln::types::ChannelId;
 use lightning::onion_message::packet::Packet;
 use lightning::sign::OutputSpender;
+use lightning::util::errors::APIError;
 use lightning::util::ser::{MaybeReadable, Writeable};
 use lightning::util::wallet_utils::WalletSourceSync;
 
@@ -822,7 +824,8 @@ fn test_onion_message_intercepted_scid_downgrade_to_0_2() {
 	assert!(result.is_err(), "LDK 0.2 should fail to decode a ShortChannelId variant");
 }
 
-fn downgrade_setup_single_splice() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, ChannelId) {
+fn downgrade_setup_single_splice(
+) -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, ChannelId, TxOut, FundingContribution) {
 	// Build a current node with a single pending (negotiated, not yet locked) splice that node 0
 	// funded (so node 0 is contributory, node 1 is a non-contributory acceptor). Return both
 	// nodes' serialized ChannelManager + ChannelMonitor and the channel id.
@@ -835,7 +838,18 @@ fn downgrade_setup_single_splice() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Chann
 
 	let added_value = Amount::from_sat(50_000);
 	provide_utxo_reserves(&nodes, 2, added_value * 2);
-	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let overlapping_output = TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	};
+	let contribution = do_initiate_splice_in_and_out(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		added_value,
+		vec![overlapping_output.clone()],
+	);
+	let committed_contribution = contribution.clone();
 	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
@@ -844,7 +858,15 @@ fn downgrade_setup_single_splice() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Chann
 	let node_1_ser = nodes[1].node.encode();
 	let mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
 	let mon_1_ser = get_monitor!(nodes[1], channel_id).encode();
-	(node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, channel_id)
+	(
+		node_0_ser,
+		node_1_ser,
+		mon_0_ser,
+		mon_1_ser,
+		channel_id,
+		overlapping_output,
+		committed_contribution,
+	)
 }
 
 #[test]
@@ -853,7 +875,7 @@ fn downgrade_single_splice_loads_on_0_2() {
 	// whether or not we funded it: only odd TLVs are written (the even RBF gate is omitted for a
 	// single round), so 0.2 skips the contribution it can't track and loads the channel. RBF is
 	// the only state that blocks downgrade (see downgrade_rbf_refused_by_0_2).
-	let (node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, _) = downgrade_setup_single_splice();
+	let (node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, _, _, _) = downgrade_setup_single_splice();
 
 	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
 	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
@@ -1030,21 +1052,22 @@ fn upgrade_single_splice_from_0_2() {
 
 	// The inherited splice cannot be RBF'd -- 0.2 persisted neither its feerate nor our contribution
 	// to reconstruct the prior request -- so splice_channel returns a fresh template with no RBF
-	// feerate floor rather than refusing. The new splice is queued to begin once the inherited
-	// splice locks.
+	// feerate floor. Contributing from this template is tested below.
 	let node_id_1 = nodes[1].node.get_our_node_id();
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert!(funding_template.min_rbf_feerate().is_none());
 }
 
 #[test]
-fn splice_inherited_across_0_2_queues_until_lock() {
+fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	// Negotiate a contributory splice on current, downgrade to LDK 0.2, then upgrade back. LDK 0.2
-	// persists neither our contribution nor the splice feerate and does not retain the odd TLVs that
-	// carry them, so the splice returns to current without either. It therefore cannot be RBF'd;
-	// splicing again instead queues a new splice that begins once the inherited splice locks.
+	// persists neither our contribution nor the splice feerate. The splice therefore returns to
+	// current without separate contribution metadata, but its funding transaction still lets us
+	// distinguish a contribution which reuses pending funding from one which is safe to queue for a
+	// fresh splice.
 	// Same single-splice setup as the downgrade tests; we only need node 0 here.
-	let (v3_mgr, _, v3_mon, _, channel_id) = downgrade_setup_single_splice();
+	let (v3_mgr, _, v3_mon, _, channel_id, overlapping_output, committed_contribution) =
+		downgrade_setup_single_splice();
 	let chan_id_bytes = channel_id.0;
 
 	// Downgrade node 0 to LDK 0.2 and re-serialize there, stripping the contribution and feerate.
@@ -1079,23 +1102,67 @@ fn splice_inherited_across_0_2_queues_until_lock() {
 	let channel_id = ChannelId(chan_id_bytes);
 	let node_id_1 = nodes[1].node.get_our_node_id();
 
-	// splice_channel returns a fresh template with no RBF feerate floor rather than refusing.
+	// splice_channel returns a fresh template with no RBF feerate floor rather than refusing. Reuse
+	// an output from before the downgrade and add a unique output, verifying that the funding
+	// transaction catches the overlap and that only the unique output is discarded.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert!(funding_template.min_rbf_feerate().is_none());
+	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
+	let overlapping_contribution = build_splice_out_contribution(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		vec![overlapping_output, output.clone()],
+	)
+	.unwrap();
+	assert_eq!(
+		nodes[0].node.funding_contributed(
+			&channel_id,
+			&node_id_1,
+			overlapping_contribution.clone(),
+			None,
+		),
+		Err(APIError::APIMisuseError {
+			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		})
+	);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	// Contributing queues the splice as `WaitingOnLock`: it cannot replace the inherited splice via
-	// RBF (its feerate and our contribution are absent), so it will be spliced once that splice
-	// locks. A splice-out needs no wallet funds, letting us drive the queue without connecting
-	// blocks to the reloaded node.
-	let outputs = vec![TxOut {
-		value: Amount::from_sat(1_000),
-		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
-	}];
-	initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let (inputs, outputs) = expect_failed_rbf_events(
+		&nodes[0],
+		&channel_id,
+		&overlapping_contribution,
+		NegotiationFailureReason::CannotInitiateRbf,
+	);
+	assert!(inputs.is_empty());
+	assert_eq!(outputs, vec![script_pubkey]);
+
+	// A distinct contribution has no overlap with the inherited funding transaction, so it is safe
+	// to retain until that transaction locks and then negotiate as a fresh splice.
+	let unique_contribution =
+		build_splice_out_contribution(&nodes[0], &nodes[1], channel_id, vec![output]).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, unique_contribution.clone(), None)
+		.unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
 	let channels = nodes[0].node.list_channels();
 	let splice = channels[0].splice_details.as_ref().unwrap();
-	assert!(matches!(
-		splice.candidates.last().unwrap().status,
-		SpliceCandidateStatus::WaitingOnLock,
-	));
+	assert_eq!(splice.candidates.len(), 2);
+	assert_eq!(splice.candidates[1].contribution, Some(unique_contribution));
+	assert_eq!(splice.candidates[1].status, SpliceCandidateStatus::WaitingOnLock);
+
+	// The original contribution remains committed to the inherited funding transaction. Even
+	// though its separately-persisted contribution metadata was stripped by LDK 0.2, submitting
+	// it again while the distinct contribution waits must not release any of its inputs or outputs.
+	assert_eq!(
+		nodes[0].node.funding_contributed(&channel_id, &node_id_1, committed_contribution, None,),
+		Err(APIError::APIMisuseError {
+			err: format!("Duplicate funding contribution for channel {}", channel_id),
+		})
+	);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }

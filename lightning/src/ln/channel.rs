@@ -3009,6 +3009,96 @@ struct NegotiatedCandidate {
 	contribution: Option<FundingContribution>,
 }
 
+/// The inputs and outputs which remain committed to pending funding.
+///
+/// Completed rounds are represented by our stored contribution when available. Their authoritative
+/// funding transactions are used as a fallback when a candidate was loaded from a version that did
+/// not persist our contribution separately. The current round, which does not have a completed
+/// transaction yet, is represented by our stored contribution.
+#[derive(Clone, Copy)]
+struct FundingComponentSet<'a> {
+	negotiated_candidates: &'a [NegotiatedCandidate],
+	current_contribution: Option<&'a FundingContribution>,
+}
+
+impl<'a> FundingComponentSet<'a> {
+	fn inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + 'a {
+		self.negotiated_candidates
+			.iter()
+			.flat_map(|candidate| {
+				let fallback_transaction = candidate.contribution.is_none().then(|| {
+					candidate
+						.funding
+						.funding_transaction
+						.as_ref()
+						.expect("negotiated candidate must have a funding transaction")
+				});
+				candidate
+					.contribution
+					.iter()
+					.flat_map(|contribution| contribution.contributed_inputs())
+					.chain(
+						fallback_transaction
+							.into_iter()
+							.flat_map(|transaction| transaction.input.iter())
+							.map(|input| input.previous_output),
+					)
+			})
+			.chain(
+				self.current_contribution
+					.into_iter()
+					.flat_map(|contribution| contribution.contributed_inputs()),
+			)
+	}
+
+	fn outputs(&self) -> impl Iterator<Item = &'a bitcoin::Script> + 'a {
+		self.negotiated_candidates
+			.iter()
+			.flat_map(|candidate| {
+				let fallback_transaction = candidate.contribution.is_none().then(|| {
+					candidate
+						.funding
+						.funding_transaction
+						.as_ref()
+						.expect("negotiated candidate must have a funding transaction")
+				});
+				candidate
+					.contribution
+					.iter()
+					.flat_map(|contribution| contribution.contributed_outputs())
+					.chain(
+						fallback_transaction
+							.into_iter()
+							.flat_map(|transaction| transaction.output.iter())
+							.map(|output| output.script_pubkey.as_script()),
+					)
+			})
+			.chain(
+				self.current_contribution
+					.into_iter()
+					.flat_map(|contribution| contribution.contributed_outputs()),
+			)
+	}
+
+	fn overlaps(&self, contribution: &FundingContribution) -> bool {
+		contribution
+			.contributed_inputs()
+			.any(|input| self.inputs().any(|pending_input| input == pending_input))
+			|| contribution
+				.contributed_outputs()
+				.any(|output| self.outputs().any(|pending_output| output == pending_output))
+	}
+
+	fn without_current_contribution(mut self) -> Self {
+		self.current_contribution = None;
+		self
+	}
+
+	fn splice_funding_failed(&self, contribution: FundingContribution) -> SpliceFundingFailed {
+		SpliceFundingFailed::from_contribution(contribution, self.inputs(), self.outputs())
+	}
+}
+
 impl_writeable_tlv_based!(NegotiatedCandidate, {
 	(1, funding, required),
 	(3, contribution, option),
@@ -3356,35 +3446,29 @@ impl PendingFunding {
 		feerate_sat_per_kw >= min_feerate
 	}
 
-	/// All stored contributions: those of the negotiated candidates followed by the in-flight
-	/// negotiation round's, if any.
-	fn contributions(&self) -> impl Iterator<Item = &FundingContribution> + '_ {
-		self.negotiated_candidates
-			.iter()
-			.filter_map(|candidate| candidate.contribution.as_ref())
-			.chain(self.negotiation_contribution.as_ref())
+	fn funding_components(&self) -> FundingComponentSet<'_> {
+		FundingComponentSet {
+			negotiated_candidates: &self.negotiated_candidates,
+			current_contribution: self.negotiation_contribution.as_ref(),
+		}
 	}
 
-	fn contributed_inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + '_ {
-		self.contributions().flat_map(|c| c.contributed_inputs())
+	fn can_queue_contribution_for_fresh_splice(&self, contribution: &FundingContribution) -> bool {
+		!self.funding_components().overlaps(contribution)
 	}
 
-	fn contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
-		self.contributions().flat_map(|c| c.contributed_outputs())
-	}
-
-	fn prior_contributed_inputs(&self) -> impl Iterator<Item = bitcoin::OutPoint> + '_ {
-		self.negotiated_candidates
-			.iter()
-			.filter_map(|candidate| candidate.contribution.as_ref())
-			.flat_map(|c| c.contributed_inputs())
-	}
-
-	fn prior_contributed_outputs(&self) -> impl Iterator<Item = &bitcoin::Script> + '_ {
-		self.negotiated_candidates
-			.iter()
-			.filter_map(|candidate| candidate.contribution.as_ref())
-			.flat_map(|c| c.contributed_outputs())
+	/// Filters a new contribution against both the given components and all funding components
+	/// which remain committed to pending rounds.
+	fn unique_contribution_parts<'a>(
+		&'a self, contribution: FundingContribution,
+		existing_inputs: impl Iterator<Item = bitcoin::OutPoint>,
+		existing_outputs: impl Iterator<Item = &'a bitcoin::Script>,
+	) -> Option<(Vec<bitcoin::OutPoint>, Vec<ScriptBuf>)> {
+		let funding_components = self.funding_components();
+		contribution.into_unique_contributions(
+			existing_inputs.chain(funding_components.inputs()),
+			existing_outputs.chain(funding_components.outputs()),
+		)
 	}
 
 	/// Our most recent contribution across rounds, including any round still under negotiation.
@@ -7428,6 +7512,21 @@ pub struct SpliceFundingFailed {
 }
 
 impl SpliceFundingFailed {
+	fn from_contribution<'a>(
+		contribution: FundingContribution,
+		existing_inputs: impl Iterator<Item = bitcoin::OutPoint>,
+		existing_outputs: impl Iterator<Item = &'a bitcoin::Script>,
+	) -> Self {
+		let filtered =
+			contribution.clone().into_unique_contributions(existing_inputs, existing_outputs);
+		match filtered {
+			None => Self { contributed_inputs: vec![], contributed_outputs: vec![], contribution },
+			Some((contributed_inputs, contributed_outputs)) => {
+				Self { contributed_inputs, contributed_outputs, contribution }
+			},
+		}
+	}
+
 	/// Splits into the funding info for `DiscardFunding` (if there are inputs or outputs to
 	/// discard) and the contribution for `SpliceNegotiationFailed`.
 	pub(super) fn into_parts(self) -> (Option<FundingInfo>, FundingContribution) {
@@ -7442,28 +7541,6 @@ impl SpliceFundingFailed {
 			};
 		(funding_info, self.contribution)
 	}
-}
-
-macro_rules! splice_funding_failed_for {
-	($self: expr, $contribution: expr, $contributed_inputs: ident, $contributed_outputs: ident) => {{
-		let contribution = $contribution;
-		let existing_inputs =
-			$self.pending_splice.as_ref().into_iter().flat_map(|ps| ps.$contributed_inputs());
-		let existing_outputs =
-			$self.pending_splice.as_ref().into_iter().flat_map(|ps| ps.$contributed_outputs());
-		let filtered =
-			contribution.clone().into_unique_contributions(existing_inputs, existing_outputs);
-		match filtered {
-			None => SpliceFundingFailed {
-				contributed_inputs: vec![],
-				contributed_outputs: vec![],
-				contribution,
-			},
-			Some((contributed_inputs, contributed_outputs)) => {
-				SpliceFundingFailed { contributed_inputs, contributed_outputs, contribution }
-			},
-		}
-	}};
 }
 
 pub struct SpliceFundingPromotion {
@@ -7489,13 +7566,19 @@ where
 		shutdown_result
 	}
 
-	/// Builds a [`SpliceFundingFailed`] from a contribution, filtering out inputs/outputs
-	/// that are still committed to a prior splice round.
+	/// Builds a [`SpliceFundingFailed`] from a contribution that was never committed to, filtering
+	/// out inputs/outputs that are committed to an existing splice attempt.
 	fn splice_funding_failed_for(&self, contribution: FundingContribution) -> SpliceFundingFailed {
-		// The contribution was never stored in the pending splice state, so
-		// `contributed_inputs()` and `contributed_outputs()` return only prior rounds' entries
-		// for filtering.
-		splice_funding_failed_for!(self, contribution, contributed_inputs, contributed_outputs)
+		match self.pending_splice.as_ref() {
+			Some(pending_splice) => {
+				pending_splice.funding_components().splice_funding_failed(contribution)
+			},
+			None => SpliceFundingFailed::from_contribution(
+				contribution,
+				core::iter::empty(),
+				core::iter::empty(),
+			),
+		}
 	}
 
 	fn abandon_quiescent_action(&mut self) -> Option<SpliceFundingFailed> {
@@ -7693,10 +7776,9 @@ where
 			);
 		}
 
-		// With the in-flight contribution taken, `contributed_inputs()` /
-		// `contributed_outputs()` return only prior rounds' entries for filtering.
+		// With the in-flight contribution taken, the component set contains only prior rounds.
 		let splice_funding_failed = contribution.map(|contribution| {
-			splice_funding_failed_for!(self, contribution, contributed_inputs, contributed_outputs)
+			pending_splice.funding_components().splice_funding_failed(contribution)
 		});
 
 		if self.negotiated_candidates().is_empty() {
@@ -7722,12 +7804,12 @@ where
 			"maybe_splice_funding_failed requires an active funding negotiation"
 		);
 		let contribution = pending_splice.negotiation_contribution.clone()?;
-		Some(splice_funding_failed_for!(
-			self,
-			contribution,
-			prior_contributed_inputs,
-			prior_contributed_outputs
-		))
+		Some(
+			pending_splice
+				.funding_components()
+				.without_current_contribution()
+				.splice_funding_failed(contribution),
+		)
 	}
 
 	#[rustfmt::skip]
@@ -13140,15 +13222,7 @@ where
 		if let Err(e) =
 			contribution.net_value_for_initiator_at_feerate(min_rbf_feerate, spliceable_balance)
 		{
-			log_info!(
-				logger,
-				"Cannot adjust to minimum RBF feerate {}: {}; will proceed as fresh splice after lock",
-				min_rbf_feerate,
-				e,
-			);
-			// Note: try_send_stfu prevents sending stfu until the contribution's
-			// feerate meets the minimum RBF feerate, effectively waiting for the
-			// prior splice to lock before proceeding.
+			log_info!(logger, "Cannot adjust to minimum RBF feerate {}: {}", min_rbf_feerate, e,);
 			return contribution;
 		}
 
@@ -13171,17 +13245,18 @@ where
 
 		match self.quiescent_action.as_ref() {
 			Some(QuiescentAction::Splice { contribution: existing, .. }) => {
-				let pending_splice = self.pending_splice.as_ref();
-				let prior_inputs = pending_splice
-					.into_iter()
-					.flat_map(|pending_splice| pending_splice.contributed_inputs());
-				let prior_outputs = pending_splice
-					.into_iter()
-					.flat_map(|pending_splice| pending_splice.contributed_outputs());
-				return match contribution.into_unique_contributions(
-					existing.contributed_inputs().chain(prior_inputs),
-					existing.contributed_outputs().chain(prior_outputs),
-				) {
+				let unique_contributions = match self.pending_splice.as_ref() {
+					Some(pending_splice) => pending_splice.unique_contribution_parts(
+						contribution,
+						existing.contributed_inputs(),
+						existing.contributed_outputs(),
+					),
+					None => contribution.into_unique_contributions(
+						existing.contributed_inputs(),
+						existing.contributed_outputs(),
+					),
+				};
+				return match unique_contributions {
 					None => Err(QuiescentError::DoNothing),
 					Some((inputs, outputs)) => {
 						Err(QuiescentError::DiscardFunding { inputs, outputs })
@@ -13202,19 +13277,19 @@ where
 		if let Some(funding_negotiation) = initiated_funding_negotiation {
 			let pending_splice =
 				self.pending_splice.as_ref().expect("funding negotiation implies pending splice");
-			let prior_inputs = pending_splice.contributed_inputs();
-			let prior_outputs = pending_splice.contributed_outputs();
 			let unique_contributions = match funding_negotiation {
-				FundingNegotiation::AwaitingAck { context, .. } => contribution
-					.into_unique_contributions(
-						context.contributed_inputs().chain(prior_inputs),
-						context.contributed_outputs().chain(prior_outputs),
+				FundingNegotiation::AwaitingAck { context, .. } => pending_splice
+					.unique_contribution_parts(
+						contribution,
+						context.contributed_inputs(),
+						context.contributed_outputs(),
 					),
 				FundingNegotiation::ConstructingTransaction {
 					interactive_tx_constructor, ..
-				} => contribution.into_unique_contributions(
-					interactive_tx_constructor.contributed_inputs().chain(prior_inputs),
-					interactive_tx_constructor.contributed_outputs().chain(prior_outputs),
+				} => pending_splice.unique_contribution_parts(
+					contribution,
+					interactive_tx_constructor.contributed_inputs(),
+					interactive_tx_constructor.contributed_outputs(),
 				),
 				FundingNegotiation::AwaitingSignatures { .. } => {
 					let session = self
@@ -13222,9 +13297,10 @@ where
 						.interactive_tx_signing_session
 						.as_ref()
 						.expect("pending splice awaiting signatures");
-					contribution.into_unique_contributions(
-						session.contributed_inputs().chain(prior_inputs),
-						session.contributed_outputs().chain(prior_outputs),
+					pending_splice.unique_contribution_parts(
+						contribution,
+						session.contributed_inputs(),
+						session.contributed_outputs(),
 					)
 				},
 			};
@@ -13271,12 +13347,48 @@ where
 
 		// If a pending splice exists with negotiated candidates, attempt to adjust the
 		// contribution's feerate to the minimum RBF feerate so it can proceed as an RBF immediately
-		// rather than waiting for the splice to lock.
-		let contribution = if let Ok(min_rbf_feerate) = self.can_initiate_rbf() {
-			self.maybe_adjust_for_rbf(contribution, min_rbf_feerate, logger)
+		// rather than waiting for the splice to lock. We may only queue it for a later fresh splice
+		// if it does not reuse any inputs or outputs in pending funding transactions. Inspecting the
+		// transactions directly also covers candidates loaded from versions that did not persist
+		// our contribution separately.
+		let (contribution, rbf_failure_reason) = if self.pending_splice.is_some() {
+			match self.can_initiate_rbf() {
+				Ok(min_rbf_feerate) => {
+					let contribution =
+						self.maybe_adjust_for_rbf(contribution, min_rbf_feerate, logger);
+					let failure_reason = if contribution.feerate() < min_rbf_feerate {
+						Some(NegotiationFailureReason::FeeRateTooLow)
+					} else {
+						None
+					};
+					(contribution, failure_reason)
+				},
+				Err(e) => {
+					log_info!(
+						logger,
+						"Cannot initiate splice RBF for channel {}: {}",
+						self.context.channel_id(),
+						e,
+					);
+					(contribution, Some(NegotiationFailureReason::CannotInitiateRbf))
+				},
+			}
 		} else {
-			contribution
+			(contribution, None)
 		};
+
+		if let Some(reason) = rbf_failure_reason {
+			let can_queue_for_fresh_splice =
+				self.pending_splice.as_ref().map_or(true, |pending_splice| {
+					pending_splice.can_queue_contribution_for_fresh_splice(&contribution)
+				});
+			if !can_queue_for_fresh_splice {
+				return Err(QuiescentError::FailSplice(
+					self.splice_funding_failed_for(contribution),
+					reason,
+				));
+			}
+		}
 
 		// A queued splice never coexists with a negotiation we initiated: we return early above if
 		// one is already in flight, and a queued action is cleared the moment it becomes our
@@ -14891,9 +15003,6 @@ where
 				),
 			});
 		}
-		// Since we don't have a pending quiescent action, we should never be in a state where we
-		// sent `stfu` without already having become quiescent.
-		debug_assert!(!self.context.channel_state.is_local_stfu_sent());
 
 		self.quiescent_action = Some(action);
 		if self.context.channel_state.is_quiescent() {
@@ -14974,9 +15083,11 @@ where
 		if is_holder_quiescence_initiator {
 			match self.quiescent_action.take() {
 				None => {
-					debug_assert!(false);
+					// We may have lost a `QuiescentAction::Splice` if we had already started the
+					// quiescence handshake for it, but an existing pending splice became locked,
+					// invalidating the queued splice.
 					return Err((ChannelError::WarnAndDisconnect(
-						"Internal Error: Didn't have anything to do after reaching quiescence".to_owned()
+						"Quiescence no longer needed".to_owned()
 					), QuiescentError::DoNothing));
 				},
 				Some(QuiescentAction::Splice { contribution, locktime }) => {
