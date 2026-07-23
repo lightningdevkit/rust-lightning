@@ -71,6 +71,7 @@ use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::{PublicKey, SecretKey};
 use bitcoin::transaction::{self, Version as TxVersion};
 use bitcoin::transaction::{Transaction, TxIn, TxOut};
+use bitcoin::OutPoint as BitcoinOutPoint;
 use bitcoin::WPubkeyHash;
 
 use crate::io;
@@ -3247,33 +3248,44 @@ pub fn expect_splice_pending_event<'a, 'b, 'c, 'd>(
 }
 
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
-pub fn expect_splice_failed_events<'a, 'b, 'c, 'd>(
-	node: &'a Node<'b, 'c, 'd>, expected_channel_id: &ChannelId,
-	funding_contribution: FundingContribution, expected_reason: NegotiationFailureReason,
-) {
+pub fn expect_failed_rbf_events<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, expected_channel_id: &ChannelId,
+	expected_contribution: &FundingContribution, expected_reason: NegotiationFailureReason,
+) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
 	let events = node.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2);
-	match &events[0] {
-		Event::DiscardFunding { funding_info, .. } => {
-			if let FundingInfo::Contribution { inputs, outputs } = &funding_info {
-				let (expected_inputs, expected_outputs) =
-					funding_contribution.clone().into_contributed_inputs_and_outputs();
-				assert_eq!(*inputs, expected_inputs);
-				assert_eq!(*outputs, expected_outputs);
-			} else {
-				panic!("Expected FundingInfo::Contribution");
-			}
+	assert_eq!(events.len(), 2, "{events:?}");
+	let discarded = match &events[0] {
+		Event::DiscardFunding {
+			channel_id,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(channel_id, expected_channel_id);
+			(inputs.clone(), outputs.clone())
 		},
-		_ => panic!("Unexpected event"),
-	}
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	};
 	match &events[1] {
 		Event::SpliceNegotiationFailed { channel_id, reason, contribution, .. } => {
-			assert_eq!(*expected_channel_id, *channel_id);
-			assert_eq!(expected_reason, *reason);
-			assert_eq!(contribution.as_ref(), Some(&funding_contribution));
+			assert_eq!(channel_id, expected_channel_id);
+			assert_eq!(*reason, expected_reason);
+			assert_eq!(contribution.as_ref(), Some(expected_contribution));
 		},
-		_ => panic!("Unexpected event"),
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}
+	discarded
+}
+
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_splice_failed_events<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, expected_channel_id: &ChannelId,
+	funding_contribution: FundingContribution, expected_reason: NegotiationFailureReason,
+) {
+	let (discarded_inputs, discarded_outputs) =
+		expect_failed_rbf_events(node, expected_channel_id, &funding_contribution, expected_reason);
+	let (expected_inputs, expected_outputs) =
+		funding_contribution.into_contributed_inputs_and_outputs();
+	assert_eq!(discarded_inputs, expected_inputs);
+	assert_eq!(discarded_outputs, expected_outputs);
 }
 
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]

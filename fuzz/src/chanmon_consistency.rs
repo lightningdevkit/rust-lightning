@@ -952,7 +952,8 @@ fn assert_disconnect_action<'a>(
 			// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause
 			// a node to disconnect their counterparty if they're expecting a timely response.
 			let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF")
-				|| msg.data.contains("contribution no longer valid at quiescence");
+				|| msg.data.contains("contribution no longer valid at quiescence")
+				|| msg.data.contains("Quiescence no longer needed");
 			assert!(
 				msg.data.contains("Disconnecting due to timeout awaiting response")
 					|| is_quiescent_msg,
