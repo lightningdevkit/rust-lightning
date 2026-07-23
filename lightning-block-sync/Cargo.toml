@@ -1,9 +1,9 @@
 [package]
 name = "lightning-block-sync"
-version = "0.3.0+git"
+version = "0.3.0-beta1"
 authors = ["Jeffrey Czyz", "Matt Corallo"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lightningdevkit/rust-lightning"
+repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning"
 readme = "../README.md"
 description = """
 Utilities to fetch the chain data from a block source and feed them into Rust Lightning.
@@ -22,13 +22,13 @@ tokio = [ "dep:tokio", "bitreq?/async" ]
 
 [dependencies]
 bitcoin = "0.32.2"
-lightning = { version = "0.3.0", path = "../lightning" }
+lightning = { version = "0.3.0-beta1", path = "../lightning" }
 tokio = { version = "1.35", features = [ "io-util", "net", "time", "rt" ], optional = true }
 serde_json = { version = "1.0", optional = true }
 bitreq = { version = "0.3", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
-lightning = { version = "0.3.0", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.3.0-beta1", path = "../lightning", features = ["_test_utils"] }
 tokio = { version = "1.35", features = [ "macros", "rt" ] }
 
 [lints]

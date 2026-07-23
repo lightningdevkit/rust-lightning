@@ -1,9 +1,9 @@
 [package]
 name = "lightning-persister"
-version = "0.3.0+git"
+version = "0.3.0-beta1"
 authors = ["Valentine Wallace", "Matt Corallo"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lightningdevkit/rust-lightning"
+repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning"
 readme = "../README.md"
 description = """
 Utilities for LDK data persistence and retrieval.
@@ -20,7 +20,7 @@ tokio = ["dep:tokio"]
 
 [dependencies]
 bitcoin = "0.32.2"
-lightning = { version = "0.3.0", path = "../lightning", default-features = false, features = ["std"] }
+lightning = { version = "0.3.0-beta1", path = "../lightning", default-features = false, features = ["std"] }
 tokio = { version = "1.35", optional = true, default-features = false, features = ["rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
@@ -30,7 +30,7 @@ windows-sys = { version = "0.48.0", default-features = false, features = ["Win32
 criterion = { version = "0.4", optional = true, default-features = false }
 
 [dev-dependencies]
-lightning = { version = "0.3.0", path = "../lightning", features = ["_test_utils"] }
+lightning = { version = "0.3.0-beta1", path = "../lightning", features = ["_test_utils"] }
 bitcoin = { version = "0.32.2", default-features = false }
 tokio = { version = "1.35", default-features = false, features = ["macros"] }
 
