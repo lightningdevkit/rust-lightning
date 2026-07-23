@@ -80,6 +80,15 @@ macro_rules! invoice_builder_methods_common { (
 		$invoice_fields.features.set_basic_mpp_optional();
 		$return_value
 	}
+
+	#[doc = concat!("Sets [`", stringify!($invoice_type), "::invoice_features`]")]
+	#[doc = "to indicate MPP must not be used."]
+	///
+	/// This only controls what the invoice advertises. It does not enforce single-HTLC receipt.
+	pub fn disallow_mpp($($self_mut)* $self: $self_type) -> $return_type {
+		$invoice_fields.features.clear_basic_mpp();
+		$return_value
+	}
 } }
 
 #[cfg(test)]
