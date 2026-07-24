@@ -466,9 +466,10 @@ impl OMNameResolver {
 
 	/// Begins the process of resolving a BIP 353 Human Readable Name.
 	///
-	/// Returns a list of [`DNSSECQuery`] onion messages and the [`MessageSendInstructions`] over
-	/// which each should be sent - one entry per provided `destination`.
-	pub fn resolve_name<ES: EntropySource + ?Sized>(
+	/// Sets up the state to handle query responses and returns a list of [`DNSSECQuery`] onion
+	/// messages and the [`MessageSendInstructions`] over which each should be sent - one entry per
+	/// provided `destination`.
+	pub fn initiate_resolution<ES: EntropySource + ?Sized>(
 		&self, payment_id: PaymentId, name: HumanReadableName, destinations: Vec<Destination>,
 		entropy_source: &ES,
 	) -> Result<Vec<(DNSResolverMessage, MessageSendInstructions)>, ()> {
@@ -519,7 +520,7 @@ impl OMNameResolver {
 	/// different [`HumanReadableName`]s.
 	///
 	/// If an [`Offer`] is found, it, as well as the [`PaymentId`] and original `name` passed to
-	/// [`Self::resolve_name`] are returned.
+	/// [`Self::initiate_resolution`] are returned.
 	///
 	/// If the proof is invalid and there are no remaining queries for this name, or if the proof is
 	/// valid and does not contain a valid BIP 353 entry or BOLT 12 [`Offer`], `Err` will be
@@ -551,7 +552,7 @@ impl OMNameResolver {
 	/// queries.
 	///
 	/// If verification succeeds, all matching [`PaymentId`] and [`HumanReadableName`]s passed to
-	/// [`Self::resolve_name`], as well as the resolved bitcoin: URI are returned.
+	/// [`Self::initiate_resolution`], as well as the resolved bitcoin: URI are returned.
 	///
 	/// Note that a single proof for a wildcard DNS entry may complete several requests for
 	/// different [`HumanReadableName`]s.
@@ -684,7 +685,8 @@ impl OMNameResolver {
 	/// A resolution will be considered failed once we have received a [`DNSSECError`] for all the
 	/// queries we made for it, as a [`DNSSECProof`] may still arrive from one of the other
 	/// resolvers we queried. When a resolution does fail, its [`HumanReadableName`] and
-	/// [`PaymentId`] (as passed to [`Self::resolve_name`]) are included in the returned list.
+	/// [`PaymentId`] (as passed to [`Self::initiate_resolution`]) are included in the returned
+	/// list.
 	///
 	/// As with [`Self::handle_dnssec_proof_for_uri`], the [`DNSResolverContext`] is checked against
 	/// the contexts of any pending resolutions for the name to ensure the error was received over a
@@ -733,14 +735,14 @@ mod tests {
 	}
 
 	/// Extracts the DNS [`Name`] and the per-query [`DNSResolverContext`]s from the messages
-	/// returned by [`OMNameResolver::resolve_name`].
+	/// returned by [`OMNameResolver::initiate_resolution`].
 	#[cfg(feature = "dnssec")]
 	fn dns_name_and_contexts(
 		messages: &[(DNSResolverMessage, MessageSendInstructions)],
 	) -> (Name, Vec<DNSResolverContext>) {
 		let name = match &messages[0] {
 			(DNSResolverMessage::DNSSECQuery(DNSSECQuery(name)), _) => name.clone(),
-			_ => panic!("Unexpected resolve_name output"),
+			_ => panic!("Unexpected initiate_resolution output"),
 		};
 		let contexts = messages
 			.iter()
@@ -749,7 +751,7 @@ mod tests {
 					context: MessageContext::DNSResolver(context),
 					..
 				} => context.clone(),
-				_ => panic!("Unexpected resolve_name output"),
+				_ => panic!("Unexpected initiate_resolution output"),
 			})
 			.collect();
 		(name, contexts)
@@ -816,22 +818,30 @@ mod tests {
 		let name = HumanReadableName::new("user", "example.com").unwrap();
 
 		// Queue up a resolution
-		resolver.resolve_name(PaymentId([0; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
+		resolver
+			.initiate_resolution(PaymentId([0; 32]), name.clone(), vec![dest(42)], &keys)
+			.unwrap();
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		// and check that it expires after two blocks
 		resolver.new_best_block(44, 42);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 0);
 
 		// Queue up another resolution
-		resolver.resolve_name(PaymentId([1; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
+		resolver
+			.initiate_resolution(PaymentId([1; 32]), name.clone(), vec![dest(42)], &keys)
+			.unwrap();
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		// it won't expire after one block
 		resolver.new_best_block(45, 42);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 1);
 		// and queue up a second and third resolution of the same name
-		resolver.resolve_name(PaymentId([2; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
-		resolver.resolve_name(PaymentId([3; 32]), name.clone(), vec![dest(42)], &keys).unwrap();
+		resolver
+			.initiate_resolution(PaymentId([2; 32]), name.clone(), vec![dest(42)], &keys)
+			.unwrap();
+		resolver
+			.initiate_resolution(PaymentId([3; 32]), name.clone(), vec![dest(42)], &keys)
+			.unwrap();
 		assert_eq!(resolver.pending_resolves.lock().unwrap().len(), 1);
 		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 3);
 		// after another block the first will expire, but the second and third won't
@@ -857,7 +867,7 @@ mod tests {
 		// Resolve a name, sending the query to two resolvers. Each query gets its own unique
 		// context in its reply path.
 		let messages = resolver
-			.resolve_name(PaymentId([0; 32]), name.clone(), vec![dest(1), dest(2)], &keys)
+			.initiate_resolution(PaymentId([0; 32]), name.clone(), vec![dest(1), dest(2)], &keys)
 			.unwrap();
 		assert_eq!(messages.len(), 2);
 		let (dns_name, contexts) = dns_name_and_contexts(&messages);
@@ -903,10 +913,13 @@ mod tests {
 		let resolver = OMNameResolver::new(42, 42);
 		let name = HumanReadableName::new("user", "example.com").unwrap();
 
-		let messages =
-			resolver.resolve_name(PaymentId([0; 32]), name.clone(), vec![dest(1)], &keys).unwrap();
+		let messages = resolver
+			.initiate_resolution(PaymentId([0; 32]), name.clone(), vec![dest(1)], &keys)
+			.unwrap();
 		let (dns_name, contexts_a) = dns_name_and_contexts(&messages);
-		resolver.resolve_name(PaymentId([1; 32]), name.clone(), vec![dest(2)], &keys).unwrap();
+		resolver
+			.initiate_resolution(PaymentId([1; 32]), name.clone(), vec![dest(2)], &keys)
+			.unwrap();
 		{
 			let pending_resolves = resolver.pending_resolves.lock().unwrap();
 			let pending_queries_for_name = &pending_resolves.iter().next().unwrap().1;

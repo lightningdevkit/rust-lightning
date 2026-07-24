@@ -329,7 +329,7 @@ mod test {
 
 		let messages = payer
 			.resolver
-			.resolve_name(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
+			.initiate_resolution(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
 			.unwrap();
 		payer.pending_messages.lock().unwrap().extend(messages);
 
@@ -396,7 +396,7 @@ mod test {
 
 		let messages = payer
 			.resolver
-			.resolve_name(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
+			.initiate_resolution(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
 			.unwrap();
 		payer.pending_messages.lock().unwrap().extend(messages);
 
@@ -481,7 +481,7 @@ mod test {
 
 		let messages = payer
 			.resolver
-			.resolve_name(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
+			.initiate_resolution(payment_id, name.clone(), vec![resolver_dest], &*payer_keys)
 			.unwrap();
 		payer.pending_messages.lock().unwrap().extend(messages);
 
