@@ -1464,8 +1464,7 @@ impl<
 				// liquidity penalty at all (as the success probability is 100%).
 			} else if total_inflight_amount_msat >= max_liquidity_msat {
 				// Equivalent to hitting the else clause below with the amount equal to the effective
-				// capacity and without any certainty on the liquidity upper bound, plus the
-				// impossibility penalty.
+				// capacity and without any certainty on the liquidity upper bound.
 				let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
 				res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
 						score_params.liquidity_penalty_multiplier_msat,
@@ -1489,12 +1488,11 @@ impl<
 			}
 		}
 
-		if total_inflight_amount_msat >= max_liquidity_msat {
+		if total_inflight_amount_msat > max_liquidity_msat {
 			res = res.saturating_add(score_params.considered_impossible_penalty_msat);
 		}
 
 		if total_inflight_amount_msat >= available_capacity {
-			// We're trying to send more than the capacity, use a max penalty.
 			res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
 				NEGATIVE_LOG10_UPPER_BOUND * 2048,
 				score_params.historical_liquidity_penalty_multiplier_msat,
@@ -3214,6 +3212,8 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2000);
+		let usage = ChannelUsage { amount_msat: 501, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
@@ -3431,22 +3431,22 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
-		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
+		let usage = ChannelUsage { amount_msat: 1_025, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity upper bound.
 		scorer.time_passed(Duration::from_secs(10 * 9));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
-		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
+		let usage = ChannelUsage { amount_msat: 1_025, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		scorer.time_passed(Duration::from_secs(10 * 10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
-		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
+		let usage = ChannelUsage { amount_msat: 1_025, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
@@ -3520,7 +3520,7 @@ mod tests {
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
 		let usage = ChannelUsage {
-			amount_msat: 500,
+			amount_msat: 501,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
@@ -3535,10 +3535,10 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		scorer.time_passed(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 473);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 477);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250), 43, Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 304);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -3546,7 +3546,7 @@ mod tests {
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
 			<ProbabilisticScorer<_, _>>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 300);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 304);
 	}
 
 	#[rustfmt::skip]
@@ -3577,7 +3577,13 @@ mod tests {
 			info,
 			short_channel_id: 42,
 		});
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2000);
+
+		let over_usage = ChannelUsage {
+			amount_msat: 501,
+			..usage
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, over_usage, &params), u64::max_value());
 
 		if decay_before_reload {
 			scorer.time_passed(Duration::from_secs(10));
