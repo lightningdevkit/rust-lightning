@@ -1122,10 +1122,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 	/// These are the same bounds as returned by
 	/// [`Self::historical_estimated_channel_liquidity_probabilities`] (but not those returned by
 	/// [`Self::estimated_channel_liquidity_range`]).
-	#[rustfmt::skip]
 	pub fn historical_estimated_payment_success_probability(
-		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
-		allow_fallback_estimation: bool,
+		&self, scid: u64, target: &NodeId, amount_msat: u64,
+		params: &ProbabilisticScoringFeeParameters, allow_fallback_estimation: bool,
 	) -> Option<f64> {
 		let graph = self.network_graph.read_only();
 
@@ -1138,9 +1137,14 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 					}
 					let dir_liq = liq.as_directed(source, target, capacity_msat);
 
-					let res = dir_liq.liquidity_history.calculate_success_probability_times_billion(
-						&params, amount_msat, capacity_msat
-					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
+					let res = dir_liq
+						.liquidity_history
+						.calculate_success_probability_times_billion(
+							&params,
+							amount_msat,
+							capacity_msat,
+						)
+						.map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
 					if let Some(prob) = res {
 						if prob < PROB_LOWER_BOUND {
 							return Some(PROB_LOWER_BOUND);
@@ -1151,26 +1155,32 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 				}
 				if allow_fallback_estimation {
 					let amt = amount_msat;
-					return Some(
-						self.calc_live_prob(scid, source, target, directed_info, amt, params, true)
-					);
+					return Some(self.calc_live_prob(
+						scid,
+						source,
+						target,
+						directed_info,
+						amt,
+						params,
+						true,
+					));
 				}
 			}
 		}
 		None
 	}
 
-	#[rustfmt::skip]
 	fn calc_live_prob(
 		&self, scid: u64, source: &NodeId, target: &NodeId, directed_info: DirectedChannelInfo,
-		amt: u64, params: &ProbabilisticScoringFeeParameters,
-		min_zero_penalty: bool,
+		amt: u64, params: &ProbabilisticScoringFeeParameters, min_zero_penalty: bool,
 	) -> f64 {
 		let capacity_msat = directed_info.effective_capacity().as_msat();
 		let dummy_liq = ChannelLiquidity::new(Duration::ZERO);
-		let liq = self.channel_liquidities.get(&scid)
-			.unwrap_or(&dummy_liq)
-			.as_directed(&source, &target, capacity_msat);
+		let liq = self.channel_liquidities.get(&scid).unwrap_or(&dummy_liq).as_directed(
+			&source,
+			&target,
+			capacity_msat,
+		);
 		let min_liq = liq.min_liquidity_msat();
 		let max_liq = liq.max_liquidity_msat();
 		if amt <= min_liq {
@@ -1198,15 +1208,23 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 	///
 	/// This will return `Some` for any channel which is present in the [`NetworkGraph`], including
 	/// if we have no bound information beside the channel's capacity.
-	#[rustfmt::skip]
 	pub fn live_estimated_payment_success_probability(
-		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
+		&self, scid: u64, target: &NodeId, amount_msat: u64,
+		params: &ProbabilisticScoringFeeParameters,
 	) -> Option<f64> {
 		let graph = self.network_graph.read_only();
 
 		if let Some(chan) = graph.channels().get(&scid) {
 			if let Some((directed_info, source)) = chan.as_directed_to(target) {
-				return Some(self.calc_live_prob(scid, source, target, directed_info, amount_msat, params, false));
+				return Some(self.calc_live_prob(
+					scid,
+					source,
+					target,
+					directed_info,
+					amount_msat,
+					params,
+					false,
+				));
 			}
 		}
 		None
@@ -1352,17 +1370,18 @@ fn three_f64_pow_9(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
 const MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64: u64 = 78;
 
 #[inline(always)]
-#[rustfmt::skip]
 fn linear_success_probability(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	min_zero_implies_no_successes: bool,
 ) -> (u64, u64) {
-	let (numerator, mut denominator) =
-		(max_liquidity_msat - total_inflight_amount_msat,
-		(max_liquidity_msat - min_liquidity_msat).saturating_add(1));
+	let (numerator, mut denominator) = (
+		max_liquidity_msat - total_inflight_amount_msat,
+		(max_liquidity_msat - min_liquidity_msat).saturating_add(1),
+	);
 
-	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
-		denominator < u64::max_value() / MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64
+	if min_zero_implies_no_successes
+		&& min_liquidity_msat == 0
+		&& denominator < u64::max_value() / MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64
 	{
 		denominator = denominator * MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64 / 64
 	}
