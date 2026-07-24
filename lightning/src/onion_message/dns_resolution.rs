@@ -597,6 +597,9 @@ impl OMNameResolver {
 					Err(()) => Err(requests),
 				}
 			} else {
+				// Note that because each context has a unique random nonce, at most one resolution
+				// can run out of pending queries here. Still, the API returns a Vec as we may join
+				// multiple queries for the same name in the future.
 				let mut failed_resolutions = Vec::new();
 				entry.get_mut().retain_mut(|query| {
 					query.pending_query_contexts.retain(|c| *c != context);
@@ -698,6 +701,9 @@ impl OMNameResolver {
 				// any. If no contexts match (including because a previous error already removed
 				// this context), the error does not pertain to this resolution and it is left
 				// untouched.
+				// Note that because each context has a unique random nonce, at most one resolution
+				// can run out of pending queries here. Still, the API returns a Vec as we may join
+				// multiple queries for the same name in the future.
 				resolution.pending_query_contexts.retain(|c| *c != context);
 				if resolution.pending_query_contexts.is_empty() {
 					failed_resolutions.push((resolution.name, resolution.payment_id));
