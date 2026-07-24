@@ -1110,6 +1110,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 	/// with `scid` towards the given `target` node, based on the historical estimated liquidity
 	/// bounds.
 	///
+	/// Note that probabilities for paths which are highly unlikely to succeed, but not impossible
+	/// are capped to a lower-bound of [`PROB_LOWER_BOUND`].
+	///
 	/// Returns `None` if:
 	///  - the given channel is not in the network graph, the provided `target` is not a party to
 	///    the channel, or we don't have forwarding parameters for either direction in the channel.
@@ -1130,13 +1133,20 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 			if let Some((directed_info, source)) = chan.as_directed_to(target) {
 				if let Some(liq) = self.channel_liquidities.get(&scid) {
 					let capacity_msat = directed_info.effective_capacity().as_msat();
+					if amount_msat >= capacity_msat {
+						return Some(PROB_LOWER_BOUND);
+					}
 					let dir_liq = liq.as_directed(source, target, capacity_msat);
 
 					let res = dir_liq.liquidity_history.calculate_success_probability_times_billion(
 						&params, amount_msat, capacity_msat
 					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
-					if res.is_some() {
-						return res;
+					if let Some(prob) = res {
+						if prob < PROB_LOWER_BOUND {
+							return Some(PROB_LOWER_BOUND);
+						} else {
+							return Some(prob);
+						}
 					}
 				}
 				if allow_fallback_estimation {
@@ -1163,18 +1173,28 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 			.as_directed(&source, &target, capacity_msat);
 		let min_liq = liq.min_liquidity_msat();
 		let max_liq = liq.max_liquidity_msat();
-		if amt <= liq.min_liquidity_msat() {
+		if amt <= min_liq {
 			return 1.0;
-		} else if amt > liq.max_liquidity_msat() {
+		} else if amt > capacity_msat {
 			return 0.0;
+		} else if amt >= max_liq {
+			return PROB_LOWER_BOUND;
 		}
 		let (num, den) =
 			success_probability(amt, min_liq, max_liq, capacity_msat, &params, min_zero_penalty);
-		num as f64 / den as f64
+		let res = num as f64 / den as f64;
+		if res < PROB_LOWER_BOUND {
+			PROB_LOWER_BOUND
+		} else {
+			res
+		}
 	}
 
 	/// Query the probability of payment success sending the given `amount_msat` over the channel
 	/// with `scid` towards the given `target` node, based on the live estimated liquidity bounds.
+	///
+	/// Note that probabilities for paths which are highly unlikely to succeed, but not impossible
+	/// are capped to a lower-bound of [`PROB_LOWER_BOUND`].
 	///
 	/// This will return `Some` for any channel which is present in the [`NetworkGraph`], including
 	/// if we have no bound information beside the channel's capacity.
@@ -1291,7 +1311,17 @@ impl ChannelLiquidity {
 
 /// Bounds `-log10` to avoid excessive liquidity penalties for payments with low success
 /// probabilities.
+///
+/// The log10 equivalent of [`PROB_LOWER_BOUND`].
 const NEGATIVE_LOG10_UPPER_BOUND: u64 = 2;
+
+/// The minimum probability we will use when scoring a channel where we believe success may be
+/// possible, even if its unlikely.
+///
+/// Allowing the probability to go arbitrarily low results in penalties which grow unnecessarily
+/// huge for small changes in probability (as penalties are based on the `log10` of the
+/// probability).
+pub const PROB_LOWER_BOUND: f64 = 0.01;
 
 /// The rough cutoff at which our precision falls off and we should stop bothering to try to log a
 /// ratio, as X in 1/X.
@@ -3910,7 +3940,7 @@ mod tests {
 		assert!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params, false)
 			.unwrap() > 0.35);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500, &params, false),
-			Some(0.0));
+			Some(super::PROB_LOWER_BOUND));
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
@@ -4166,9 +4196,9 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-		// The success probability estimate itself should be zero.
+		// The success probability estimate itself should be PROB_LOWER_BOUND.
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
-			Some(0.0));
+			Some(super::PROB_LOWER_BOUND));
 
 		// Now test again with the amount in the bottom bucket.
 		amount_msat /= 2;
@@ -4185,7 +4215,7 @@ mod tests {
 			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
-			Some(0.0));
+			Some(super::PROB_LOWER_BOUND));
 	}
 
 	#[test]
