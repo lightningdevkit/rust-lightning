@@ -856,7 +856,11 @@ mod tests {
 			resolver.resolve_name(PaymentId([0; 32]), name.clone(), vec![dest(1)], &keys).unwrap();
 		let (dns_name, contexts_a) = dns_name_and_contexts(&messages);
 		resolver.resolve_name(PaymentId([1; 32]), name.clone(), vec![dest(2)], &keys).unwrap();
-		assert_eq!(resolver.pending_resolves.lock().unwrap().iter().next().unwrap().1.len(), 2);
+		{
+			let pending_resolves = resolver.pending_resolves.lock().unwrap();
+			let pending_queries_for_name = &pending_resolves.iter().next().unwrap().1;
+			assert_eq!(pending_queries_for_name.len(), 2);
+		}
 
 		// A single error over payment 0's reply path fails only its (single-query) resolution.
 		let err = DNSSECError { name: dns_name, definitely_unresolvable: false };
@@ -864,8 +868,9 @@ mod tests {
 		assert_eq!(failed, vec![(name, PaymentId([0; 32]))]);
 
 		// Payment 1's resolution is still pending.
-		let pending = resolver.pending_resolves.lock().unwrap();
-		assert_eq!(pending.iter().next().unwrap().1.len(), 1);
-		assert_eq!(pending.iter().next().unwrap().1[0].payment_id, PaymentId([1; 32]));
+		let pending_resolves = resolver.pending_resolves.lock().unwrap();
+		let pending_queries_for_name = &pending_resolves.iter().next().unwrap().1;
+		assert_eq!(pending_queries_for_name.len(), 1);
+		assert_eq!(pending_queries_for_name[0].payment_id, PaymentId([1; 32]));
 	}
 }
