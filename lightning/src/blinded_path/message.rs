@@ -95,10 +95,18 @@ impl BlindedMessagePath {
 		if let IntroductionNode::NodeId(pubkey) = &self.0.introduction_node {
 			let node_id = NodeId::from_pubkey(pubkey);
 			if let Some(node_info) = network_graph.node(&node_id) {
+				// We don't consider channels that are disabled in either direction, as it may be
+				// an indication that the channel has closed and simply hasn't been removed from
+				// our graph yet. If no such channel is found, the `NodeId` representation is
+				// kept.
 				if let Some((scid, channel_info)) = node_info
 					.channels
 						.iter()
 						.filter_map(|scid| network_graph.channel(*scid).map(|info| (*scid, info)))
+						.filter(|(_, info)| {
+							info.one_to_two.as_ref().map(|dir| dir.enabled).unwrap_or(false)
+								&& info.two_to_one.as_ref().map(|dir| dir.enabled).unwrap_or(false)
+						})
 						.min_by_key(|(scid, _)| scid_utils::block_from_scid(*scid))
 				{
 					let direction = if node_id == channel_info.node_one {
@@ -475,3 +483,155 @@ pub(super) fn blinded_hops<T: secp256k1::Signing + secp256k1::Verification>(
 	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
 
+#[cfg(test)]
+mod tests {
+	use bitcoin::constants::ChainHash;
+	use bitcoin::network::Network;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+	use crate::blinded_path::message::{BlindedMessagePath, MessageContext, MessageForwardNode};
+	use crate::blinded_path::IntroductionNode;
+	use crate::ln::msgs::{UnsignedChannelUpdate, MAX_VALUE_MSAT};
+	use crate::routing::gossip::{NetworkGraph, P2PGossipSync};
+	use crate::routing::test_utils::{add_channel, update_channel};
+	use crate::sync::Arc;
+	use crate::types::features::ChannelFeatures;
+	use crate::util::test_utils::{TestKeysInterface, TestLogger};
+
+	fn channel_update(
+		short_channel_id: u64, timestamp: u32, channel_flags: u8,
+	) -> UnsignedChannelUpdate {
+		UnsignedChannelUpdate {
+			chain_hash: ChainHash::using_genesis_block(Network::Testnet),
+			short_channel_id,
+			timestamp,
+			message_flags: 1, // Only must_be_one
+			channel_flags,
+			cltv_expiry_delta: 0,
+			htlc_minimum_msat: 0,
+			htlc_maximum_msat: MAX_VALUE_MSAT,
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			excess_data: Vec::new(),
+		}
+	}
+
+	fn one_hop_path(
+		secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, introduction_node_id: PublicKey,
+		recipient_node_id: PublicKey, entropy: &TestKeysInterface,
+	) -> BlindedMessagePath {
+		let intermediate_nodes =
+			[MessageForwardNode { node_id: introduction_node_id, short_channel_id: None }];
+		BlindedMessagePath::new(
+			&intermediate_nodes,
+			recipient_node_id,
+			//ReceiveAuthKey([42; 32]),
+			MessageContext::Custom(Vec::new()),
+			//false,
+			entropy,
+			secp_ctx,
+		)
+		.unwrap()
+	}
+
+	#[test]
+	fn compact_introduction_node_skips_disabled_channels() {
+		// The compact (DirectedShortChannelId) introduction node encoding must only use
+		// channels that are enabled in both directions: disabled or closed channels may
+		// linger in the local network graph (e.g., when sourcing gossip from rapid gossip
+		// sync, which never removes them), and must not be selected, as senders would be
+		// unable to resolve (or route to) the introduction node.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let gossip_sync = P2PGossipSync::new(Arc::clone(&network_graph), None, Arc::clone(&logger));
+		let entropy = TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let node_a_privkey = SecretKey::from_slice(&[41; 32]).unwrap();
+		let node_b_privkey = SecretKey::from_slice(&[43; 32]).unwrap();
+		let node_a_pubkey = PublicKey::from_secret_key(&secp_ctx, &node_a_privkey);
+		let recipient_pubkey = PublicKey::from_secret_key(&secp_ctx, &node_b_privkey);
+
+		let disabled_scid = 100 << 40 | 1 << 16;
+		let enabled_scid = 200 << 40 | 1 << 16;
+
+		// Add an older channel which is disabled in both directions, as is the case for a
+		// closed channel lingering in the local graph.
+		add_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_a_privkey,
+			&node_b_privkey,
+			ChannelFeatures::from_le_bytes(vec![1]),
+			disabled_scid,
+		);
+		update_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_a_privkey,
+			channel_update(disabled_scid, 1, 2),
+		);
+		update_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_b_privkey,
+			channel_update(disabled_scid, 1, 3),
+		);
+
+		// Add a newer channel which is enabled in both directions.
+		add_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_a_privkey,
+			&node_b_privkey,
+			ChannelFeatures::from_le_bytes(vec![2]),
+			enabled_scid,
+		);
+		update_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_a_privkey,
+			channel_update(enabled_scid, 2, 0),
+		);
+		update_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_b_privkey,
+			channel_update(enabled_scid, 2, 1),
+		);
+
+		// Even though the disabled channel is older, the enabled one is selected.
+		{
+			let network_graph = network_graph.read_only();
+			let mut path = one_hop_path(&secp_ctx, node_a_pubkey, recipient_pubkey, &entropy);
+			path.use_compact_introduction_node(&network_graph);
+			match path.introduction_node() {
+				IntroductionNode::DirectedShortChannelId(_, scid) => {
+					assert_eq!(*scid, enabled_scid)
+				},
+				IntroductionNode::NodeId(..) => panic!("expected a compact introduction node"),
+			}
+		}
+
+		// Once the enabled channel is disabled as well, the `NodeId` encoding is kept.
+		update_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_a_privkey,
+			channel_update(enabled_scid, 3, 2),
+		);
+		update_channel(
+			&gossip_sync,
+			&secp_ctx,
+			&node_b_privkey,
+			channel_update(enabled_scid, 3, 3),
+		);
+
+		let network_graph = network_graph.read_only();
+		let mut path = one_hop_path(&secp_ctx, node_a_pubkey, recipient_pubkey, &entropy);
+		path.use_compact_introduction_node(&network_graph);
+		assert!(
+			matches!(path.introduction_node(), IntroductionNode::NodeId(pubkey) if *pubkey == node_a_pubkey)
+		);
+	}
+}
