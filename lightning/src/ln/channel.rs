@@ -7543,6 +7543,7 @@ pub struct SpliceFundingPromotion {
 	pub monitor_update: Option<ChannelMonitorUpdate>,
 	pub announcement_sigs: Option<msgs::AnnouncementSignatures>,
 	pub discarded_funding: Vec<FundingInfo>,
+	pub splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
 impl<SP: SignerProvider> FundedChannel<SP>
@@ -7650,7 +7651,9 @@ where
 		// `WaitingOn*` status describing what it is waiting on.
 		if let Some(contribution) = self.queued_funding_contribution() {
 			// It begins negotiating at the next quiescence if there is no pending candidate or it can
-			// replace one via RBF; otherwise it must wait for the pending candidate to lock.
+			// replace one via RBF; otherwise its outcome must wait for the pending candidate to lock.
+			// It can then proceed as a fresh splice only if it does not reuse any inputs or outputs
+			// from the promote splice transaction.
 			let status = if self.pending_splice.is_none()
 				|| self.queued_contribution_can_rbf(contribution)
 			{
@@ -12257,7 +12260,7 @@ where
 
 		log_info!(logger, "Promoting splice funding txid {}", splice_txid);
 
-		let discarded_funding = {
+		let (discarded_funding, splice_funding_failed) = {
 			// Scope `funding` to avoid unintentionally using it later since it is swapped below.
 			let funding = pending_splice
 				.negotiated_candidates
@@ -12277,20 +12280,64 @@ where
 				.funding_transaction
 				.as_ref()
 				.expect("Promoted splice funding should have a funding transaction");
+
+			// Replaced candidates cease to be committed at promotion, so they cannot prevent a
+			// queued contribution from proceeding as a fresh splice. Only the promoted transaction
+			// can.
+			let queued_contribution_cannot_be_fresh_splice = match self.quiescent_action.as_ref() {
+				Some(QuiescentAction::Splice { contribution, .. }) => {
+					contribution.contributed_inputs().any(|input| {
+						promoted_tx.input.iter().any(|promoted| input == promoted.previous_output)
+					}) || contribution.contributed_outputs().any(|output| {
+						promoted_tx
+							.output
+							.iter()
+							.any(|promoted| output == promoted.script_pubkey.as_script())
+					})
+				},
+				_ => false,
+			};
+			let queued_rbf_contribution = if queued_contribution_cannot_be_fresh_splice {
+				match self.quiescent_action.take() {
+					Some(QuiescentAction::Splice { contribution, .. }) => Some(contribution),
+					_ => unreachable!(),
+				}
+			} else {
+				None
+			};
+			let splice_funding_failed = queued_rbf_contribution.map(|contribution| {
+				pending_splice.funding_components().splice_funding_failed(contribution)
+			});
+			// A surviving queue remains committed after promotion, so its components must not be
+			// released when the replaced candidates are discarded.
+			let surviving_queued_contribution = match self.quiescent_action.as_ref() {
+				Some(QuiescentAction::Splice { contribution, .. }) => Some(contribution),
+				_ => None,
+			};
+
 			let candidates = core::mem::take(&mut pending_splice.negotiated_candidates);
 			let negotiation_contribution = pending_splice.negotiation_contribution.take();
-			candidates
+			let discarded_funding = candidates
 				.into_iter()
 				.filter_map(|candidate| candidate.contribution)
 				.chain(negotiation_contribution)
 				.filter_map(|contribution| {
 					contribution.into_unique_contributions(
-						promoted_tx.input.iter().map(|i| i.previous_output),
-						promoted_tx.output.iter().map(|o| o.script_pubkey.as_script()),
+						promoted_tx.input.iter().map(|i| i.previous_output).chain(
+							surviving_queued_contribution
+								.into_iter()
+								.flat_map(|contribution| contribution.contributed_inputs()),
+						),
+						promoted_tx.output.iter().map(|o| o.script_pubkey.as_script()).chain(
+							surviving_queued_contribution
+								.into_iter()
+								.flat_map(|contribution| contribution.contributed_outputs()),
+						),
 					)
 				})
 				.map(|(inputs, outputs)| FundingInfo::Contribution { inputs, outputs })
-				.collect::<Vec<_>>()
+				.collect::<Vec<_>>();
+			(discarded_funding, splice_funding_failed)
 		};
 
 		self.context.interactive_tx_signing_session = None;
@@ -12330,6 +12377,7 @@ where
 			monitor_update,
 			announcement_sigs,
 			discarded_funding,
+			splice_funding_failed,
 		})
 	}
 
@@ -12402,7 +12450,13 @@ where
 							&self.context.channel_id,
 						);
 
-						let (funding_txo, monitor_update, announcement_sigs, discarded_funding) =
+						let (
+							funding_txo,
+							monitor_update,
+							announcement_sigs,
+							discarded_funding,
+							splice_funding_failed,
+						) =
 							self.maybe_promote_splice_funding(
 								node_signer, chain_hash, user_config, height, logger,
 							).map(|splice_promotion| (
@@ -12410,9 +12464,16 @@ where
 								splice_promotion.monitor_update,
 								splice_promotion.announcement_sigs,
 								splice_promotion.discarded_funding,
-							)).unwrap_or((None, None, None, Vec::new()));
+								splice_promotion.splice_funding_failed,
+							)).unwrap_or((None, None, None, Vec::new(), None));
 
-						return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding)), announcement_sigs));
+						return Ok((Some(FundingConfirmedMessage::Splice(
+							splice_locked,
+							funding_txo,
+							monitor_update,
+							discarded_funding,
+							splice_funding_failed,
+						)), announcement_sigs));
 					}
 				}
 			}
@@ -12576,7 +12637,13 @@ where
 
 					);
 
-					let (funding_txo, monitor_update, announcement_sigs, discarded_funding) = chain_node_signer
+					let (
+						funding_txo,
+						monitor_update,
+						announcement_sigs,
+						discarded_funding,
+						splice_funding_failed,
+					) = chain_node_signer
 						.and_then(|(chain_hash, node_signer, user_config)| {
 							// We can only promote on blocks connected, which is when we expect
 							// `chain_node_signer` to be `Some`.
@@ -12587,10 +12654,17 @@ where
 							splice_promotion.monitor_update,
 							splice_promotion.announcement_sigs,
 							splice_promotion.discarded_funding,
+							splice_promotion.splice_funding_failed,
 						))
-						.unwrap_or((None, None, None, Vec::new()));
+						.unwrap_or((None, None, None, Vec::new(), None));
 
-					return Ok((Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update, discarded_funding)), timed_out_htlcs, announcement_sigs));
+					return Ok((Some(FundingConfirmedMessage::Splice(
+						splice_locked,
+						funding_txo,
+						monitor_update,
+						discarded_funding,
+						splice_funding_failed,
+					)), timed_out_htlcs, announcement_sigs));
 				}
 			}
 		}
