@@ -14,7 +14,7 @@ use super::async_payments::{
 	ServeStaticInvoice, StaticInvoicePersisted,
 };
 use super::dns_resolution::{
-	DNSResolverMessage, DNSResolverMessageHandler, DNSSECProof, DNSSECQuery,
+	DNSResolverMessage, DNSResolverMessageHandler, DNSSECError, DNSSECProof, DNSSECQuery,
 };
 use super::messenger::{
 	CustomOnionMessageHandler, DefaultMessageRouter, Destination, MessageSendInstructions,
@@ -155,6 +155,7 @@ impl DNSResolverMessageHandler for TestDNSResolverMessageHandler {
 		None
 	}
 	fn handle_dnssec_proof(&self, _message: DNSSECProof, _context: DNSResolverContext) {}
+	fn handle_dnssec_error(&self, _message: DNSSECError, _context: DNSResolverContext) {}
 }
 
 #[derive(Clone, Debug, PartialEq)]
