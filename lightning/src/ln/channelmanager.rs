@@ -64,7 +64,7 @@ use crate::ln::channel::{
 	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, StfuResponse,
 	UpdateFulfillCommitFetch, WithChannelContext,
 };
-use crate::ln::channel_state::ChannelDetails;
+use crate::ln::channel_state::{ChannelDetails, InboundHTLCReference, OutboundHTLCSource};
 use crate::ln::funding::{FundingContribution, FundingTemplate};
 use crate::ln::inbound_payment;
 use crate::ln::interactivetxs::InteractiveTxMessageSend;
@@ -913,6 +913,26 @@ mod fuzzy_channelmanager {
 	}
 
 	impl HTLCSource {
+		pub(crate) fn to_outbound(&self) -> OutboundHTLCSource {
+			let inbound_htlc = |prev_hop: &HTLCPreviousHopData| InboundHTLCReference {
+				channel_id: prev_hop.channel_id,
+				htlc_id: prev_hop.htlc_id,
+			};
+			match self {
+				Self::OutboundRoute { payment_id, .. } => {
+					OutboundHTLCSource::Local { payment_id: *payment_id }
+				},
+				Self::PreviousHopData(prev_hop) => {
+					OutboundHTLCSource::Forwarded { inbound_htlc: inbound_htlc(prev_hop) }
+				},
+				Self::TrampolineForward { previous_hop_data, .. } => {
+					OutboundHTLCSource::TrampolineForwarded {
+						inbound_htlcs: previous_hop_data.iter().map(inbound_htlc).collect(),
+					}
+				},
+			}
+		}
+
 		pub fn failure_type(
 			&self, counterparty_node: PublicKey, channel_id: ChannelId,
 		) -> HTLCHandlingFailureType {

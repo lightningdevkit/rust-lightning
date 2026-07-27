@@ -33,6 +33,7 @@ use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, Channel, DISCONNECT_PEER_AWAITING_RESPONSE_TICKS,
 	MIN_CHAN_DUST_LIMIT_SATOSHIS, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
+use crate::ln::channel_state::OutboundHTLCSource;
 use crate::ln::channelmanager::{
 	PaymentId, RAACommitmentOrder, BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS, ENABLE_GOSSIP_TICKS,
 	MIN_CLTV_EXPIRY_DELTA,
@@ -3425,6 +3426,7 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 	let sending_node = if forwarded_htlc { &nodes[0] } else { &nodes[1] };
 	let (route, second_payment_hash, _, second_payment_secret) =
 		get_route_and_payment_hash!(sending_node, nodes[2], 100000);
+	assert_ne!(second_payment_hash, first_payment_hash);
 	let onion = RecipientOnionFields::secret_only(second_payment_secret, 100000);
 	let id = PaymentId(second_payment_hash.0);
 	sending_node.node.send_payment_with_route(route, second_payment_hash, onion, id).unwrap();
@@ -3439,6 +3441,30 @@ fn do_test_holding_cell_htlc_add_timeouts(forwarded_htlc: bool) {
 		expect_and_process_pending_htlcs(&nodes[1], false);
 	}
 	check_added_monitors(&nodes[1], 0);
+	if forwarded_htlc {
+		let channels = nodes[1].node.list_channels();
+		let inbound_channel =
+			channels.iter().find(|details| details.counterparty.node_id == node_a_id).unwrap();
+		let outbound_channel =
+			channels.iter().find(|details| details.counterparty.node_id == node_c_id).unwrap();
+		let inbound_htlc = inbound_channel
+			.pending_inbound_htlcs
+			.iter()
+			.find(|details| details.payment_hash == second_payment_hash)
+			.unwrap();
+		let outbound_htlc = outbound_channel
+			.pending_outbound_htlcs
+			.iter()
+			.find(|details| details.payment_hash == second_payment_hash)
+			.unwrap();
+		assert_eq!(outbound_htlc.htlc_id, None);
+		let inbound_reference = match &outbound_htlc.source {
+			Some(OutboundHTLCSource::Forwarded { inbound_htlc }) => inbound_htlc,
+			_ => panic!("Unexpected outbound HTLC source"),
+		};
+		assert_eq!(inbound_reference.channel_id, inbound_channel.channel_id);
+		assert_eq!(inbound_reference.htlc_id, inbound_htlc.htlc_id);
+	}
 
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV - LATENCY_GRACE_PERIOD_BLOCKS);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -7219,7 +7245,50 @@ pub fn test_simple_mpp() {
 	route.paths[1].hops[1].short_channel_id = chan_4_id;
 	route.route_params.final_value_msat = 200_000;
 	let paths: &[&[_]] = &[&[&nodes[1], &nodes[3]], &[&nodes[2], &nodes[3]]];
-	send_along_route_with_secret(&nodes[0], route, paths, 200_000, payment_hash, payment_secret);
+	let payment_id = send_along_route_with_secret(
+		&nodes[0],
+		route,
+		paths,
+		200_000,
+		payment_hash,
+		payment_secret,
+	);
+
+	let locally_originated = nodes[0]
+		.node
+		.list_channels()
+		.into_iter()
+		.flat_map(|channel| channel.pending_outbound_htlcs)
+		.collect::<Vec<_>>();
+	assert_eq!(locally_originated.len(), 2);
+	assert!(locally_originated
+		.iter()
+		.all(|details| { details.source == Some(OutboundHTLCSource::Local { payment_id }) }));
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_d_id = nodes[3].node.get_our_node_id();
+	let mut inbound_references = Vec::new();
+	for forwarder in [&nodes[1], &nodes[2]] {
+		let channels = forwarder.node.list_channels();
+		let inbound_channel =
+			channels.iter().find(|details| details.counterparty.node_id == node_a_id).unwrap();
+		let outbound_channel =
+			channels.iter().find(|details| details.counterparty.node_id == node_d_id).unwrap();
+		assert_eq!(inbound_channel.pending_inbound_htlcs.len(), 1);
+		assert_eq!(outbound_channel.pending_outbound_htlcs.len(), 1);
+
+		let outbound_htlc = &outbound_channel.pending_outbound_htlcs[0];
+		assert_eq!(outbound_htlc.payment_hash, payment_hash);
+		let inbound_reference = match &outbound_htlc.source {
+			Some(OutboundHTLCSource::Forwarded { inbound_htlc }) => inbound_htlc,
+			_ => panic!("Unexpected outbound HTLC source"),
+		};
+		assert_eq!(inbound_reference.channel_id, inbound_channel.channel_id);
+		assert_eq!(inbound_reference.htlc_id, inbound_channel.pending_inbound_htlcs[0].htlc_id);
+		inbound_references.push(inbound_reference.clone());
+	}
+	assert_ne!(inbound_references[0], inbound_references[1]);
+
 	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], paths, payment_preimage));
 }
 

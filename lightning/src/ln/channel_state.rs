@@ -17,6 +17,7 @@ use bitcoin::Txid;
 use crate::chain::chaininterface::{FeeEstimator, LowerBoundedFeeEstimator};
 use crate::chain::transaction::OutPoint;
 use crate::ln::channel::Channel;
+use crate::ln::channelmanager::PaymentId;
 use crate::ln::funding::FundingContribution;
 use crate::ln::types::ChannelId;
 use crate::sign::SignerProvider;
@@ -160,6 +161,52 @@ impl_writeable_tlv_based_enum_upgradable!(OutboundHTLCStateDetails,
 	(6, AwaitingRemoteRevokeToRemoveFailure) => {},
 );
 
+/// Identifies an inbound HTLC.
+#[derive(Clone, Debug, PartialEq)]
+pub struct InboundHTLCReference {
+	/// The channel on which the HTLC was received.
+	pub channel_id: ChannelId,
+	/// The HTLC ID assigned by the inbound channel.
+	pub htlc_id: u64,
+}
+
+impl_ser_tlv_based!(InboundHTLCReference, {
+	(0, channel_id, required),
+	(2, htlc_id, required),
+});
+
+/// Describes how an outbound HTLC originated.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutboundHTLCSource {
+	/// A locally initiated payment or probe.
+	Local {
+		/// The payment or probe identifier.
+		payment_id: PaymentId,
+	},
+	/// A forward of a single inbound HTLC.
+	Forwarded {
+		/// The inbound HTLC.
+		inbound_htlc: InboundHTLCReference,
+	},
+	/// A trampoline forward of one or more inbound HTLCs.
+	TrampolineForwarded {
+		/// The inbound HTLCs.
+		inbound_htlcs: Vec<InboundHTLCReference>,
+	},
+}
+
+impl_writeable_tlv_based_enum_upgradable!(OutboundHTLCSource,
+	(0, Local) => {
+		(0, payment_id, required),
+	},
+	(2, Forwarded) => {
+		(0, inbound_htlc, required),
+	},
+	(4, TrampolineForwarded) => {
+		(0, inbound_htlcs, required_vec),
+	},
+);
+
 /// Exposes details around pending outbound HTLCs.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutboundHTLCDetails {
@@ -175,6 +222,10 @@ pub struct OutboundHTLCDetails {
 	/// The block height at which this HTLC expires.
 	pub cltv_expiry: u32,
 	/// The payment hash.
+	///
+	/// A payment hash is not sufficient to correlate HTLCs in a multipart payment because multiple
+	/// parts sharing a payment hash may traverse the same channel. Use [`Self::source`] to correlate
+	/// the HTLC with its locally initiated payment or inbound HTLCs.
 	pub payment_hash: PaymentHash,
 	/// The state of the HTLC in the state machine.
 	///
@@ -200,6 +251,12 @@ pub struct OutboundHTLCDetails {
 	/// Note that dust limits are specific to each party. An HTLC can be dust for the local
 	/// commitment transaction but not for the counterparty's commitment transaction and vice versa.
 	pub is_dust: bool,
+	/// The source of this outbound HTLC.
+	///
+	/// LDK will always fill this field in, but it will be `None` for objects serialized with LDK
+	/// versions prior to 0.4 or when downgrading to a version that does not understand the source
+	/// variant.
+	pub source: Option<OutboundHTLCSource>,
 }
 
 impl_ser_tlv_based!(OutboundHTLCDetails, {
@@ -210,6 +267,7 @@ impl_ser_tlv_based!(OutboundHTLCDetails, {
 	(7, state, upgradable_option),
 	(8, skimmed_fee_msat, required),
 	(10, is_dust, required),
+	(11, source, upgradable_option),
 });
 
 /// Information needed for constructing an invoice route hint for this channel.
@@ -937,8 +995,8 @@ mod tests {
 		ln::{
 			chan_utils::make_funding_redeemscript,
 			channel_state::{
-				InboundHTLCDetails, InboundHTLCStateDetails, OutboundHTLCDetails,
-				OutboundHTLCStateDetails,
+				InboundHTLCDetails, InboundHTLCReference, InboundHTLCStateDetails,
+				OutboundHTLCDetails, OutboundHTLCSource, OutboundHTLCStateDetails,
 			},
 			types::ChannelId,
 		},
@@ -1014,6 +1072,12 @@ mod tests {
 				state: Some(OutboundHTLCStateDetails::AwaitingRemoteRevokeToAdd),
 				skimmed_fee_msat: Some(42),
 				is_dust: false,
+				source: Some(OutboundHTLCSource::TrampolineForwarded {
+					inbound_htlcs: vec![
+						InboundHTLCReference { channel_id: ChannelId([5; 32]), htlc_id: 11 },
+						InboundHTLCReference { channel_id: ChannelId([6; 32]), htlc_id: 12 },
+					],
+				}),
 			}],
 			current_dust_exposure_msat: Some(150_000),
 			splice_details: Some(SpliceDetails {
