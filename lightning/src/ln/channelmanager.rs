@@ -61,8 +61,8 @@ use crate::ln::channel::QuiescentError;
 use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
-	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, StfuResponse,
-	UpdateFulfillCommitFetch, WithChannelContext,
+	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
+	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -13788,6 +13788,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		)?;
 		let mut post_update_data = None;
 		if let Some(splice_promotion) = splice_promotion {
+			let splice_funding_failed = splice_promotion.splice_funding_failed;
 			{
 				let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
 				insert_short_channel_id!(short_to_chan_info, chan);
@@ -13812,6 +13813,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					};
 					pending_events.push_back((event, None));
 				});
+			}
+
+			if let Some(splice_funding_failed) = splice_funding_failed {
+				self.handle_quiescent_error(
+					chan.context.channel_id(),
+					chan.context.get_counterparty_node_id(),
+					chan.context.get_user_id(),
+					QuiescentError::FailSplice(
+						splice_funding_failed,
+						events::NegotiationFailureReason::CannotInitiateRbf,
+					),
+				);
 			}
 
 			if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
@@ -16414,7 +16427,13 @@ impl<
 
 pub(super) enum FundingConfirmedMessage {
 	Establishment(msgs::ChannelReady),
-	Splice(msgs::SpliceLocked, Option<OutPoint>, Option<ChannelMonitorUpdate>, Vec<FundingInfo>),
+	Splice(
+		msgs::SpliceLocked,
+		Option<OutPoint>,
+		Option<ChannelMonitorUpdate>,
+		Vec<FundingInfo>,
+		Option<SpliceFundingFailed>,
+	),
 }
 
 impl<
@@ -16489,7 +16508,13 @@ impl<
 											log_trace!(logger, "Sending channel_ready WITHOUT channel_update");
 										}
 									},
-									Some(FundingConfirmedMessage::Splice(splice_locked, funding_txo, monitor_update_opt, discarded_funding)) => {
+									Some(FundingConfirmedMessage::Splice(
+										splice_locked,
+										funding_txo,
+										monitor_update_opt,
+										discarded_funding,
+										splice_funding_failed,
+									)) => {
 										let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
 										let channel_id = funded_channel.context.channel_id();
 
@@ -16525,6 +16550,18 @@ impl<
 												};
 												pending_events.push_back((event, None));
 											});
+										}
+
+										if let Some(splice_funding_failed) = splice_funding_failed {
+											self.handle_quiescent_error(
+												channel_id,
+												counterparty_node_id,
+												funded_channel.context.get_user_id(),
+												QuiescentError::FailSplice(
+													splice_funding_failed,
+													events::NegotiationFailureReason::CannotInitiateRbf,
+												),
+											);
 										}
 
 										if funded_channel.context.is_connected() {
