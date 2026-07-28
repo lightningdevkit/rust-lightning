@@ -3831,6 +3831,18 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() || total_msat.is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
+
+			// A path key in `update_add_htlc` would mean this hop is inside a blinded path, but
+			// payloads within a blinded path may only contain route blinding TLVs, never a
+			// trampoline packet. When trampoline hops are blinded, it is the trampoline onion that
+			// is blinded so:
+			// - The introduction node receives its path key inside the trampoline onion, created
+			//   by the original sender of the payment.
+			// - Relaying nodes receive their path key in the outer onion's `current_path_key`
+			//   TLV, set by the previous trampoline.
+			if update_add_blinding_point.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
 			return Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
