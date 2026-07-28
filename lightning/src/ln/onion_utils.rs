@@ -423,7 +423,7 @@ pub(super) fn build_trampoline_onion_payloads<'a>(
 ) -> Result<(Vec<msgs::OutboundTrampolinePayload<'a>>, u64), APIError> {
 	let mut res: Vec<msgs::OutboundTrampolinePayload> =
 		Vec::with_capacity(blinded_tail.trampoline_hops.len() + blinded_tail.hops.len());
-	let blinded_tail_with_hop_iter = TailDetails::DirectEntry {
+	let blinded_tail_with_hop_iter = TailDetails::Blinded {
 		hops: &blinded_tail.hops,
 		blinding_point: blinded_tail.blinding_point,
 		final_value_msat: blinded_tail.final_value_msat,
@@ -482,7 +482,7 @@ fn build_onion_payloads<'a>(
 				final_value_msat: bt.final_value_msat,
 			};
 		}
-		TailDetails::DirectEntry {
+		TailDetails::Blinded {
 			hops: &bt.hops,
 			blinding_point: bt.blinding_point,
 			final_value_msat: bt.final_value_msat,
@@ -506,7 +506,7 @@ fn build_onion_payloads<'a>(
 }
 
 enum TailDetails<'a> {
-	DirectEntry {
+	Blinded {
 		hops: &'a [BlindedHop],
 		blinding_point: PublicKey,
 		final_value_msat: u64,
@@ -544,7 +544,7 @@ where
 		if idx == 0 {
 			let declared_incoming_cltv = hop.cltv_expiry_delta().saturating_add(cur_cltv);
 			match blinded_tail.take() {
-				Some(TailDetails::DirectEntry {
+				Some(TailDetails::Blinded {
 					blinding_point,
 					hops,
 					final_value_msat,
@@ -655,7 +655,7 @@ pub(crate) fn set_max_path_length(
 		.blinded_route_hints()
 		.iter()
 		.max_by_key(|path| path.inner_blinded_path().serialized_length())
-		.map(|largest_path| TailDetails::DirectEntry {
+		.map(|largest_path| TailDetails::Blinded {
 			hops: largest_path.blinded_hops(),
 			blinding_point: largest_path.blinding_point(),
 			final_value_msat: final_value_msat_with_overpay_buffer,
