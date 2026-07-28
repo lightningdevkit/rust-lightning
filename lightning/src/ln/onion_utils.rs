@@ -424,7 +424,7 @@ pub(super) fn build_trampoline_onion_payloads<'a>(
 	let mut res: Vec<msgs::OutboundTrampolinePayload> =
 		Vec::with_capacity(blinded_tail.trampoline_hops.len() + blinded_tail.hops.len());
 	let blinded_tail_with_hop_iter = BlindedTailDetails::DirectEntry {
-		hops: blinded_tail.hops.iter(),
+		hops: &blinded_tail.hops,
 		blinding_point: blinded_tail.blinding_point,
 		final_value_msat: blinded_tail.final_value_msat,
 		excess_final_cltv_expiry_delta: blinded_tail.excess_final_cltv_expiry_delta,
@@ -483,7 +483,7 @@ fn build_onion_payloads<'a>(
 			};
 		}
 		BlindedTailDetails::DirectEntry {
-			hops: bt.hops.iter(),
+			hops: &bt.hops,
 			blinding_point: bt.blinding_point,
 			final_value_msat: bt.final_value_msat,
 			excess_final_cltv_expiry_delta: bt.excess_final_cltv_expiry_delta,
@@ -505,9 +505,9 @@ fn build_onion_payloads<'a>(
 	Ok((res, value_msat, cltv))
 }
 
-enum BlindedTailDetails<'a, I: Iterator<Item = &'a BlindedHop>> {
+enum BlindedTailDetails<'a> {
 	DirectEntry {
-		hops: I,
+		hops: &'a [BlindedHop],
 		blinding_point: PublicKey,
 		final_value_msat: u64,
 		excess_final_cltv_expiry_delta: u32,
@@ -522,15 +522,14 @@ enum PayloadCallbackAction {
 	PushBack,
 	PushFront,
 }
-fn build_onion_payloads_callback<'a, 'b, H, B, F, OP>(
-	hops: H, mut blinded_tail: Option<BlindedTailDetails<'a, B>>,
+fn build_onion_payloads_callback<'a, 'b, H, F, OP>(
+	hops: H, mut blinded_tail: Option<BlindedTailDetails<'a>>,
 	recipient_onion: &'a RecipientOnionFields, cur_block_height: u32,
 	keysend_preimage: &Option<PaymentPreimage>, invoice_request: Option<&'a InvoiceRequest>,
 	mut callback: F,
 ) -> Result<(u64, u32), APIError>
 where
 	H: DoubleEndedIterator<Item = OP::PathHopForId>,
-	B: ExactSizeIterator<Item = &'a BlindedHop>,
 	F: FnMut(PayloadCallbackAction, OP),
 	OP: OnionPayload<'a, 'b, ReceiveType = OP>,
 {
@@ -555,7 +554,7 @@ where
 				}) => {
 					let mut blinding_point = Some(blinding_point);
 					let hops_len = hops.len();
-					for (i, blinded_hop) in hops.enumerate() {
+					for (i, blinded_hop) in hops.iter().enumerate() {
 						if i == hops_len - 1 {
 							cur_value_msat += final_value_msat;
 							callback(
@@ -661,7 +660,7 @@ pub(crate) fn set_max_path_length(
 		.iter()
 		.max_by_key(|path| path.inner_blinded_path().serialized_length())
 		.map(|largest_path| BlindedTailDetails::DirectEntry {
-			hops: largest_path.blinded_hops().iter(),
+			hops: largest_path.blinded_hops(),
 			blinding_point: largest_path.blinding_point(),
 			final_value_msat: final_value_msat_with_overpay_buffer,
 			excess_final_cltv_expiry_delta: 0,
