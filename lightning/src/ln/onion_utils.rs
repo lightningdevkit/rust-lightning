@@ -210,7 +210,7 @@ trait OnionPayload<'a, 'b> {
 	) -> Self;
 	fn new_trampoline_entry(
 		amt_to_forward: u64, outgoing_cltv_value: u32, recipient_onion: &'a RecipientOnionFields,
-		packet: msgs::TrampolineOnionPacket,
+		packet: msgs::TrampolineOnionPacket, current_path_key: Option<PublicKey>,
 	) -> Result<Self::ReceiveType, APIError>;
 }
 impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
@@ -262,7 +262,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 
 	fn new_trampoline_entry(
 		amt_to_forward: u64, outgoing_cltv_value: u32, recipient_onion: &'a RecipientOnionFields,
-		packet: msgs::TrampolineOnionPacket,
+		packet: msgs::TrampolineOnionPacket, current_path_key: Option<PublicKey>,
 	) -> Result<Self, APIError> {
 		Ok(Self::TrampolineEntrypoint {
 			amt_to_forward,
@@ -274,7 +274,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 				}
 			}),
 			trampoline_packet: packet,
-			current_path_key: None,
+			current_path_key,
 		})
 	}
 }
@@ -319,6 +319,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundTrampolinePayload<'a> {
 	fn new_trampoline_entry(
 		_amt_to_forward: u64, _outgoing_cltv_value: u32,
 		_recipient_onion: &'a RecipientOnionFields, _packet: msgs::TrampolineOnionPacket,
+		_current_path_key: Option<PublicKey>,
 	) -> Result<Self::ReceiveType, APIError> {
 		Err(APIError::InvalidRoute {
 			err: "Trampoline onions cannot contain Trampoline entrypoints!".to_string(),
@@ -515,6 +516,16 @@ enum TailDetails<'a> {
 	},
 	/// Send to the first trampoline in the route, as the original sender of the payment.
 	SendToTrampoline { trampoline_packet: msgs::TrampolineOnionPacket, final_value_msat: u64 },
+	/// Send to the next trampoline selected by the original payment sender, having received
+	/// trampoline instructions in an incoming payment.
+	ForwardToTrampoline {
+		trampoline_packet: msgs::TrampolineOnionPacket,
+		// If forwarding a trampoline payment inside of a blinded path, this path key will be set
+		// for the trampoline to decrypt its inner onion.
+		current_path_key: Option<PublicKey>,
+		// The exact cltv expiry height that the next trampoline is expecting to receive.
+		trampoline_expiry_height: u32,
+	},
 }
 
 enum PayloadCallbackAction {
@@ -540,6 +551,8 @@ where
 		// exactly as it should be (and the next hop isn't trying to probe to find out if we're
 		// the intended recipient).
 		let value_msat = if cur_value_msat == 0 { hop.fee_msat() } else { cur_value_msat };
+		// The delta added onto `cur_cltv` for this hop.
+		let mut hop_cltv_delta = hop.cltv_expiry_delta();
 		if idx == 0 {
 			let declared_incoming_cltv = hop.cltv_expiry_delta().saturating_add(cur_cltv);
 			match blinded_tail.take() {
@@ -588,8 +601,39 @@ where
 							declared_incoming_cltv,
 							&recipient_onion,
 							trampoline_packet,
+							None,
 						)?,
 					);
+				},
+				Some(TailDetails::ForwardToTrampoline {
+					trampoline_packet,
+					current_path_key,
+					trampoline_expiry_height,
+				}) => {
+					if trampoline_expiry_height < cur_block_height {
+						return Err(APIError::InvalidRoute {
+							err: "Next trampoline's cltv expiry height has already expired"
+								.to_owned(),
+						});
+					}
+					// We have no blinded tail when forwarding, so the amount to forward sits in
+					// the last hop's fee and nothing further is added to the running total.
+					callback(
+						PayloadCallbackAction::PushBack,
+						OP::new_trampoline_entry(
+							hop.fee_msat(),
+							trampoline_expiry_height,
+							&recipient_onion,
+							trampoline_packet,
+							current_path_key,
+						)?,
+					);
+					// We want trampolines to receive an HTLC with exactly the cltv that was
+					// specified in the trampoline payload, so we use this height as our starting
+					// point (rather than the current block height) and do not add any cltv for
+					// the last hop.
+					cur_cltv = trampoline_expiry_height;
+					hop_cltv_delta = 0;
 				},
 				None => {
 					callback(
@@ -617,7 +661,7 @@ where
 		if cur_value_msat >= 21000000 * 100000000 * 1000 {
 			return Err(APIError::InvalidRoute { err: "Channel fees overflowed?".to_owned() });
 		}
-		cur_cltv = cur_cltv.saturating_add(hop.cltv_expiry_delta() as u32);
+		cur_cltv = cur_cltv.saturating_add(hop_cltv_delta as u32);
 		if cur_cltv >= 500000000 {
 			return Err(APIError::InvalidRoute { err: "Channel CLTV overflowed?".to_owned() });
 		}
