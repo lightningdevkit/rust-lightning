@@ -3980,7 +3980,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 
 impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
-		let (update_add_blinding_point, node_signer) = args;
+		let (outer_onion_path_key, node_signer) = args;
 		let receive_auth_key = node_signer.get_receive_auth_key();
 		let phantom_auth_key = node_signer.get_expanded_key().phantom_node_blinded_path_key;
 
@@ -4021,11 +4021,11 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT {
 			return Err(DecodeError::InvalidValue);
 		}
-		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
+		if intro_node_blinding_point.is_some() && outer_onion_path_key.is_some() {
 			return Err(DecodeError::InvalidValue);
 		}
 
-		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+		if let Some(blinding_point) = intro_node_blinding_point.or(outer_onion_path_key) {
 			if next_trampoline.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
