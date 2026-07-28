@@ -668,6 +668,18 @@ impl TxCreationKeys {
 // on-chain funds.
 pub const REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH: usize = 6 + 4 + 34 * 2;
 
+/// The exact length of the script returned by [`get_revokeable_redeemscript`] for a given
+/// `contest_delay`.
+///
+/// This is always at most [`REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH`], and shorter when `contest_delay`
+/// encodes to fewer than the maximum 4 bytes.
+pub fn revokeable_redeemscript_len(contest_delay: u16) -> usize {
+	// 6 bytes of opcodes + the `OP_CSV` value push + two 33-byte public keys (each with a 1-byte
+	// push).
+	let contest_delay_push_len = Builder::new().push_int(contest_delay as i64).into_script().len();
+	6 + contest_delay_push_len + 34 * 2
+}
+
 /// A script either spendable by the revocation
 /// key or the broadcaster_delayed_payment_key and satisfying the relative-locktime OP_CSV constrain.
 /// Encumbering a `to_holder` output on a commitment transaction or 2nd-stage HTLC transactions.
@@ -683,7 +695,7 @@ pub fn get_revokeable_redeemscript(revocation_key: &RevocationKey, contest_delay
 	              .push_opcode(opcodes::all::OP_ENDIF)
 	              .push_opcode(opcodes::all::OP_CHECKSIG)
 	              .into_script();
-	debug_assert!(res.len() <= REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH);
+	debug_assert_eq!(res.len(), revokeable_redeemscript_len(contest_delay));
 	res
 }
 

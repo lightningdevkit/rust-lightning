@@ -109,14 +109,21 @@ pub struct DelayedPaymentOutputDescriptor {
 impl DelayedPaymentOutputDescriptor {
 	/// The maximum length a well-formed witness spending one of these should have.
 	///
+	/// This depends on the descriptor's [`to_self_delay`], whose `OP_CSV` push in the revocable
+	/// redeemscript varies in length.
+	///
 	/// Note: If you have the `grind_signatures` feature enabled, this will be at least 1 byte
 	/// shorter.
-	pub const MAX_WITNESS_LENGTH: u64 = (1 /* witness items */
-		+ 1 /* sig push */
-		+ MAX_STANDARD_SIGNATURE_SIZE
-		+ 1 /* empty vec push */
-		+ 1 /* redeemscript push */
-		+ chan_utils::REVOKEABLE_REDEEMSCRIPT_MAX_LENGTH) as u64;
+	///
+	/// [`to_self_delay`]: Self::to_self_delay
+	pub fn max_witness_length(&self) -> u64 {
+		(1 /* witness items */
+			+ 1 /* sig push */
+			+ MAX_STANDARD_SIGNATURE_SIZE
+			+ 1 /* empty vec push */
+			+ 1 /* redeemscript push */
+			+ chan_utils::revokeable_redeemscript_len(self.to_self_delay)) as u64
+	}
 }
 
 impl_writeable_tlv_based!(DelayedPaymentOutputDescriptor, {
@@ -502,7 +509,7 @@ impl SpendableOutputDescriptor {
 						sequence: Sequence(descriptor.to_self_delay as u32),
 						witness: Witness::new(),
 					});
-					witness_weight += DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH;
+					witness_weight += descriptor.max_witness_length();
 					#[cfg(feature = "grind_signatures")]
 					{
 						// Guarantees a low R signature
@@ -2715,6 +2722,71 @@ impl EntropySource for RandomBytes {
 #[test]
 pub fn dyn_sign() {
 	let _signer: Box<dyn EcdsaChannelSigner>;
+}
+
+// Regression test: the sweep-weight estimate for a `to_local` (`DelayedPaymentOutput`) output must
+// reflect the channel's `to_self_delay`.
+//
+// The revocable redeemscript encodes `to_self_delay` with an `OP_CSV` push that can vary in size
+// from 1 byte (for `to_self_delay <= 16`) up to 4 bytes. `create_spendable_outputs_psbt` used to
+// estimate every such output with the maximum 4-byte push, overshooting the real sweep weight by up
+// to 3 WU for a small `to_self_delay`. If this occurred along with a short signature, an assertion
+// would fail in `KeysManager::spend_spendable_outputs`.
+#[test]
+fn sweep_weight_estimate_accounts_for_to_self_delay() {
+	let secp_ctx = Secp256k1::new();
+	let per_commitment_point =
+		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[1u8; 32]).unwrap());
+	let delayed_payment_key = DelayedPaymentKey(PublicKey::from_secret_key(
+		&secp_ctx,
+		&SecretKey::from_slice(&[3u8; 32]).unwrap(),
+	));
+	let revocation_pubkey = RevocationKey(PublicKey::from_secret_key(
+		&secp_ctx,
+		&SecretKey::from_slice(&[2u8; 32]).unwrap(),
+	));
+	let change_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::from_byte_array([7u8; 20]));
+
+	let estimate = |to_self_delay: u16| {
+		let witness_script =
+			get_revokeable_redeemscript(&revocation_pubkey, to_self_delay, &delayed_payment_key);
+		let descriptor =
+			SpendableOutputDescriptor::DelayedPaymentOutput(DelayedPaymentOutputDescriptor {
+				outpoint: OutPoint { txid: Txid::from_byte_array([1u8; 32]), index: 0 },
+				per_commitment_point,
+				to_self_delay,
+				output: TxOut {
+					value: Amount::from_sat(1_000_000),
+					script_pubkey: witness_script.to_p2wsh(),
+				},
+				revocation_pubkey,
+				channel_keys_id: [1u8; 32],
+				channel_value_satoshis: 1_000_000,
+				channel_transaction_parameters: None,
+			});
+		SpendableOutputDescriptor::create_spendable_outputs_psbt(
+			&secp_ctx,
+			&[&descriptor],
+			vec![],
+			change_script.clone(),
+			253,
+			None,
+		)
+		.unwrap()
+		.1
+	};
+
+	// The estimate should adjust according to the `to_self_delay` push length.
+	let max_estimate = estimate(65_535); // 4-byte `OP_CSV` push
+	for (to_self_delay, push_len) in
+		[(0u16, 1u64), (16, 1), (17, 2), (127, 2), (128, 3), (32_767, 3), (32_768, 4), (65_535, 4)]
+	{
+		assert_eq!(
+			estimate(to_self_delay),
+			max_estimate - (4 - push_len),
+			"wrong sweep-weight estimate for to_self_delay={to_self_delay}",
+		);
+	}
 }
 
 #[cfg(ldk_bench)]
