@@ -3788,7 +3788,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 		let mut short_id: Option<u64> = None;
 		let mut payment_data: Option<FinalOnionHopData> = None;
 		let mut encrypted_tlvs_opt: Option<WithoutLength<Vec<u8>>> = None;
-		let mut intro_node_blinding_point = None;
+		let mut outer_onion_path_key = None;
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
@@ -3805,7 +3805,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 			(6, short_id, option),
 			(8, payment_data, option),
 			(10, encrypted_tlvs_opt, option),
-			(12, intro_node_blinding_point, option),
+			(12, outer_onion_path_key, option),
 			(16, payment_metadata, option),
 			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(20, trampoline_onion_packet, option),
@@ -3823,7 +3823,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT {
 			return Err(DecodeError::InvalidValue);
 		}
-		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
+		if outer_onion_path_key.is_some() && update_add_blinding_point.is_some() {
 			return Err(DecodeError::InvalidValue);
 		}
 
@@ -3848,11 +3848,11 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 				multipath_trampoline_data: payment_data,
 				trampoline_packet: trampoline_onion_packet,
-				current_path_key: intro_node_blinding_point,
+				current_path_key: outer_onion_path_key,
 			}));
 		}
 
-		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+		if let Some(blinding_point) = outer_onion_path_key.or(update_add_blinding_point) {
 			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -3892,7 +3892,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						payment_relay,
 						payment_constraints,
 						features,
-						intro_node_blinding_point,
+						intro_node_blinding_point: outer_onion_path_key,
 						next_blinding_override,
 					}))
 				},
@@ -3912,7 +3912,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					Ok(Self::Dummy(InboundOnionDummyPayload {
 						payment_relay,
 						payment_constraints,
-						intro_node_blinding_point,
+						intro_node_blinding_point: outer_onion_path_key,
 					}))
 				},
 				ChaChaTriPolyReadAdapter {
@@ -3936,7 +3936,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						payment_secret,
 						payment_constraints,
 						payment_context,
-						intro_node_blinding_point,
+						intro_node_blinding_point: outer_onion_path_key,
 						keysend_preimage,
 						invoice_request,
 						custom_tlvs,
