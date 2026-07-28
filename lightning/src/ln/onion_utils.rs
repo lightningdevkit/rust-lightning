@@ -477,7 +477,7 @@ fn build_onion_payloads<'a>(
 	// among the Trampoline onion payloads.
 	let blinded_tail_with_hop_iter = path.blinded_tail.as_ref().map(|bt| {
 		if let Some(trampoline_packet) = trampoline_packet {
-			return TailDetails::TrampolineEntry {
+			return TailDetails::SendToTrampoline {
 				trampoline_packet,
 				final_value_msat: bt.final_value_msat,
 			};
@@ -512,10 +512,8 @@ enum TailDetails<'a> {
 		final_value_msat: u64,
 		excess_final_cltv_expiry_delta: u32,
 	},
-	TrampolineEntry {
-		trampoline_packet: msgs::TrampolineOnionPacket,
-		final_value_msat: u64,
-	},
+	/// Send to the first trampoline in the route, as the original sender of the payment.
+	SendToTrampoline { trampoline_packet: msgs::TrampolineOnionPacket, final_value_msat: u64 },
 }
 
 enum PayloadCallbackAction {
@@ -580,7 +578,7 @@ where
 						}
 					}
 				},
-				Some(TailDetails::TrampolineEntry { trampoline_packet, final_value_msat }) => {
+				Some(TailDetails::SendToTrampoline { trampoline_packet, final_value_msat }) => {
 					cur_value_msat += final_value_msat;
 					callback(
 						PayloadCallbackAction::PushBack,
