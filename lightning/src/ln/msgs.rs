@@ -2633,18 +2633,10 @@ mod fuzzy_internal_msgs {
 			outgoing_cltv_value: u32,
 			multipath_trampoline_data: Option<FinalOnionHopData>,
 			trampoline_packet: TrampolineOnionPacket,
-		},
-		/// This is used for Trampoline hops that are not the blinded path intro hop.
-		/// We would only ever construct this variant when we are a Trampoline node forwarding a
-		/// payment along a blinded path.
-		#[allow(unused)]
-		BlindedTrampolineEntrypoint {
-			amt_to_forward: u64,
-			outgoing_cltv_value: u32,
-			multipath_trampoline_data: Option<FinalOnionHopData>,
-			trampoline_packet: TrampolineOnionPacket,
-			/// The blinding point this hop needs to use for its Trampoline onion.
-			current_path_key: PublicKey,
+			/// The blinding point to include in the outer onion. Only set when forwarding within
+			/// a blinded trampoline path for relaying nodes (the introduction node receives its
+			/// path key inside of the TrampolineOnionPacket, set by the original sender).
+			current_path_key: Option<PublicKey>,
 		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
@@ -3618,26 +3610,13 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 				outgoing_cltv_value,
 				ref multipath_trampoline_data,
 				ref trampoline_packet,
-			} => {
-				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
-					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
-					(8, multipath_trampoline_data, option),
-					(20, trampoline_packet, required)
-				});
-			},
-			Self::BlindedTrampolineEntrypoint {
-				amt_to_forward,
-				outgoing_cltv_value,
 				current_path_key,
-				ref multipath_trampoline_data,
-				ref trampoline_packet,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(8, multipath_trampoline_data, option),
-					(12, current_path_key, required),
+					(12, current_path_key, option),
 					(20, trampoline_packet, required)
 				});
 			},
@@ -6582,6 +6561,7 @@ mod tests {
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 			trampoline_packet,
+			current_path_key: None,
 		};
 		let encoded_payload = msg.encode();
 

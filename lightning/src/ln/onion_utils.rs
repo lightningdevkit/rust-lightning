@@ -274,6 +274,7 @@ impl<'a, 'b> OnionPayload<'a, 'b> for msgs::OutboundOnionPayload<'a> {
 				}
 			}),
 			trampoline_packet: packet,
+			current_path_key: None,
 		})
 	}
 }
