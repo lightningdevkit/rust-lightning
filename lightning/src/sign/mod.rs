@@ -746,9 +746,12 @@ pub trait ChannelSigner {
 	///
 	/// Note that the commitment number starts at `(1 << 48) - 1` and counts backwards.
 	///
-	/// This method is *not* asynchronous. This method is expected to always return `Ok`
-	/// immediately after we reconnect to peers, and returning an `Err` may lead to an immediate
-	/// `panic`. This method will be made asynchronous in a future release.
+	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a new
+	/// commitment point and should be retried later. Once the signer is ready to provide a new
+	/// commitment point after previously returning an `Err`, [`ChannelManager::signer_unblocked`]
+	/// must be called.
+	///
+	/// [`ChannelManager::signer_unblocked`]: crate::ln::channelmanager::ChannelManager::signer_unblocked
 	fn get_per_commitment_point(
 		&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<PublicKey, ()>;
