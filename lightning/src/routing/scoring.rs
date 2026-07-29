@@ -60,6 +60,7 @@ use crate::routing::log_approx;
 use crate::routing::router::{BlindedPathCandidate, CandidateRouteHop, Path, PublicHopCandidate};
 use crate::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::util::logger::Logger;
+use crate::util::math::powf64;
 use crate::util::ser::{Readable, ReadableArgs, Writeable, Writer};
 use bucketed_history::{
 	DirectedHistoricalLiquidityTracker, HistoricalBucketRangeTracker, HistoricalLiquidityTracker,
@@ -1981,16 +1982,6 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> Writeable for CombinedScorer
 
 #[cfg(c_bindings)]
 impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> Score for ProbabilisticScorer<G, L> {}
-
-#[cfg(feature = "std")]
-#[inline]
-fn powf64(n: f64, exp: f64) -> f64 {
-	n.powf(exp)
-}
-#[cfg(not(feature = "std"))]
-fn powf64(n: f64, exp: f64) -> f64 {
-	libm::pow(n, exp)
-}
 
 mod bucketed_history {
 	use super::*;
