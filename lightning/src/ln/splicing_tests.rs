@@ -9595,6 +9595,8 @@ fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
 fn test_discarded_rbf_reports_feerate_too_low() {
 	// If we previously contributed and a stale contribution can no longer be adjusted to the
 	// required RBF feerate, it must be discarded with the contribution-specific failure reason.
+	// Multiple failures queued before events are handled must each preserve the ordering between
+	// releasing the contribution and reporting its failure.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -9645,26 +9647,42 @@ fn test_discarded_rbf_reports_feerate_too_low() {
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
-	assert_eq!(
-		nodes[0].node.funding_contributed(
-			&channel_id,
-			&node_id_1,
-			stale_contribution.clone(),
-			None,
-		),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
-		})
-	);
+	for _ in 0..2 {
+		assert_eq!(
+			nodes[0].node.funding_contributed(
+				&channel_id,
+				&node_id_1,
+				stale_contribution.clone(),
+				None,
+			),
+			Err(APIError::APIMisuseError {
+				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			})
+		);
+	}
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	let (inputs, outputs) = expect_failed_rbf_events(
-		&nodes[0],
-		&channel_id,
-		&stale_contribution,
-		NegotiationFailureReason::FeeRateTooLow,
-	);
-	assert!(inputs.is_empty());
-	assert_eq!(outputs, vec![script_pubkey]);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 4, "{events:?}");
+	for pair in events.chunks_exact(2) {
+		let [Event::DiscardFunding {
+			channel_id: discarded_channel_id,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		}, Event::SpliceNegotiationFailed {
+			channel_id: failed_channel_id,
+			reason,
+			contribution,
+			..
+		}] = pair
+		else {
+			panic!("Unexpected splice failure events: {pair:?}");
+		};
+		assert_eq!(*discarded_channel_id, channel_id);
+		assert!(inputs.is_empty());
+		assert_eq!(outputs, std::slice::from_ref(&script_pubkey));
+		assert_eq!(*failed_channel_id, channel_id);
+		assert_eq!(*reason, NegotiationFailureReason::FeeRateTooLow);
+		assert_eq!(contribution.as_ref(), Some(&stale_contribution));
+	}
 	assert_no_queued_splice(&nodes[0], &channel_id);
 
 	let details = nodes[0]
@@ -10211,20 +10229,30 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 		.unwrap()
 		.build()
 		.unwrap();
-	let result = nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None);
-	assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
+	for _ in 0..2 {
+		let result =
+			nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None);
+		assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
+	}
 
-	// SpliceNegotiationFailed is emitted. DiscardFunding is not emitted because all inputs/outputs
-	// are filtered out (same UTXOs reused for RBF, still committed to the prior splice tx).
+	// Each attempt emits SpliceNegotiationFailed without DiscardFunding because all inputs and
+	// outputs are filtered out (the same UTXOs remain committed to the prior splice transaction).
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1, "{events:?}");
-	match &events[0] {
-		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::FeeRateTooLow);
-			assert!(contribution.is_some());
-		},
-		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
+	assert_eq!(events.len(), 2, "{events:?}");
+	for event in events {
+		match event {
+			Event::SpliceNegotiationFailed {
+				channel_id: cid,
+				reason,
+				contribution: failed_contribution,
+				..
+			} => {
+				assert_eq!(cid, channel_id);
+				assert_eq!(reason, NegotiationFailureReason::FeeRateTooLow);
+				assert_eq!(failed_contribution, Some(contribution.clone()));
+			},
+			other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+		}
 	}
 }
 
