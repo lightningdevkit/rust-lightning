@@ -1,0 +1,5 @@
+# API Updates
+ * `DelayedPaymentOutputDescriptor::MAX_WITNESS_LENGTH` was removed in favor of
+   the new `DelayedPaymentOutputDescriptor::max_witness_length` method, which
+   returns a tighter witness weight by accounting for the descriptor's
+   `to_self_delay` (#4833).
