@@ -1144,6 +1144,12 @@ pub struct UserConfig {
 	/// [`Event::InvoiceReceived`]: crate::events::Event::InvoiceReceived
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
+	#[deprecated(
+		since = "0.4.0",
+		note = "Instead, manually handle invoice messages at the OffersMessageHandler layer, \
+		        delegating validation to an OffersMessageFlow where relevant, then pay using \
+		        ChannelManager::pay_for_bolt12_invoice (being careful to avoid duplicative payments)."
+	)]
 	pub manually_handle_bolt12_invoices: bool,
 	#[cfg(dual_funding)]
 	/// If this is set to `true`, dual-funded channels will be enabled.
@@ -1189,6 +1195,7 @@ pub struct UserConfig {
 	pub reject_inbound_splices: bool,
 }
 
+#[allow(deprecated)]
 impl Default for UserConfig {
 	fn default() -> Self {
 		UserConfig {
@@ -1212,6 +1219,7 @@ impl Default for UserConfig {
 // implement Readable here in a naive way (which is a bit easier for the fuzzer to handle). We
 // don't really want to ever expose this to users (if we did we'd want to use TLVs).
 #[cfg(fuzzing)]
+#[allow(deprecated)]
 impl Readable for UserConfig {
 	fn read<R: crate::io::Read>(reader: &mut R) -> Result<Self, crate::ln::msgs::DecodeError> {
 		let channel_handshake_config = Readable::read(reader)?;
