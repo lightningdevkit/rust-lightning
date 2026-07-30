@@ -1138,8 +1138,8 @@ pub enum Event {
 	/// Indicates a [`Bolt12Invoice`] in response to an [`InvoiceRequest`] or a [`Refund`] was
 	/// received.
 	///
-	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_invoices`] is set.
-	/// Use [`ChannelManager::send_payment_for_bolt12_invoice`] to pay the invoice or
+	/// This event will only be generated if [`UserConfig::manually_handle_bolt12_invoices`] is set
+	/// (deprecated). Use [`ChannelManager::send_payment_for_bolt12_invoice`] to pay the invoice or
 	/// [`ChannelManager::abandon_payment`] to abandon the associated payment. See those docs for
 	/// further details.
 	///
