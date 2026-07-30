@@ -877,6 +877,7 @@ fn ignore_unexpected_static_invoice() {
 }
 
 #[test]
+#[allow(deprecated)] // Tests the deprecated send_payment_for_bolt12_invoice.
 fn ignore_duplicate_invoice() {
 	// When a sender tries to pay an async recipient it could potentially end up receiving two
 	// invoices: one static invoice that it received from always-online node and a fresh invoice
