@@ -16212,16 +16212,23 @@ impl<
 	> chain::Listen for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		{
+		let is_rescan = {
 			let best_block = self.best_block.read().unwrap();
-			assert_eq!(best_block.block_hash, header.prev_blockhash,
-				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-			assert_eq!(best_block.height, height - 1,
-				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
-		}
+			let is_rescan =
+				best_block.block_hash == header.block_hash() && best_block.height == height;
+			if !is_rescan {
+				assert_eq!(best_block.block_hash, header.prev_blockhash,
+					"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+				assert_eq!(best_block.height, height - 1,
+					"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+			}
+			is_rescan
+		};
 
 		self.transactions_confirmed(header, txdata, height);
-		self.best_block_updated(header, height);
+		if !is_rescan {
+			self.best_block_updated(header, height);
+		}
 	}
 
 	fn blocks_disconnected(&self, fork_point: BlockLocator) {
