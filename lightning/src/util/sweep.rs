@@ -623,16 +623,22 @@ where
 	fn filtered_block_connected(
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
 	) {
-		let mut spending_tx_opt;
+		let mut spending_tx_opt = None;
 		{
 			let mut state_lock = self.sweeper_state.lock().unwrap();
-			assert_eq!(state_lock.best_block.block_hash, header.prev_blockhash,
-				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-			assert_eq!(state_lock.best_block.height, height - 1,
-				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+			let is_rescan = state_lock.best_block.block_hash == header.block_hash()
+				&& state_lock.best_block.height == height;
+			if !is_rescan {
+				assert_eq!(state_lock.best_block.block_hash, header.prev_blockhash,
+					"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+				assert_eq!(state_lock.best_block.height, height - 1,
+					"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+			}
 
 			self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
-			spending_tx_opt = self.best_block_updated_internal(&mut *state_lock, header, height);
+			if !is_rescan {
+				spending_tx_opt = self.best_block_updated_internal(&mut *state_lock, header, height);
+			}
 
 			self.persist_state(&*state_lock).unwrap_or_else(|e| {
 				log_error!(self.logger, "Error persisting OutputSweeper: {:?}", e);
