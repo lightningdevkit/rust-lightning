@@ -1180,14 +1180,24 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 
 						if let Some(pending_claim) = self.claimable_outpoints.get(package.outpoints()[0]) {
 							if let Some(request) = self.pending_claim_requests.get_mut(&pending_claim.0) {
-								assert!(request.merge_package(package, new_best_height + 1).is_ok());
-								// Using a HashMap guarantee us than if we have multiple outpoints getting
-								// resurrected only one bump claim tx is going to be broadcast
-								bump_candidates.insert(pending_claim.clone(), request.clone());
+								if request.can_merge_with(&package, new_best_height + 1) {
+									assert!(request.merge_package(package, new_best_height + 1).is_ok());
+									// Using a HashMap guarantee us than if we have multiple outpoints getting
+									// resurrected only one bump claim tx is going to be broadcast
+									bump_candidates.insert(pending_claim.clone(), request.clone());
+									continue;
+								}
 							}
 						}
+						// While we really should push the new package through the generation below
+						// (as it is not, in fact, locktimed to a later height), to avoid additional
+						// complexity we shove the package in the locktimed set instead, which will
+						// result in it getting handled when the reorg processing finishes and the
+						// new tip is connected.
+						let package_locktime = package.package_locktime(0);
+						self.locktimed_packages.entry(package_locktime).or_default().push(package);
 					},
-					_ => {},
+					OnchainEvent::Claim { .. } => {},
 				}
 			} else {
 				self.onchain_events_awaiting_threshold_conf.push(entry);
