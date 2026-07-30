@@ -763,13 +763,19 @@ where
 		&self, header: &Header, txdata: &chain::transaction::TransactionData, height: u32,
 	) {
 		let mut state_lock = self.sweeper_state.lock().unwrap();
-		assert_eq!(state_lock.best_block.block_hash, header.prev_blockhash,
-			"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-		assert_eq!(state_lock.best_block.height, height - 1,
-			"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+		let is_rescan = state_lock.best_block.block_hash == header.block_hash()
+			&& state_lock.best_block.height == height;
+		if !is_rescan {
+			assert_eq!(state_lock.best_block.block_hash, header.prev_blockhash,
+				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+			assert_eq!(state_lock.best_block.height, height - 1,
+				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+		}
 
 		self.transactions_confirmed_internal(&mut state_lock, header, txdata, height);
-		self.best_block_updated_internal(&mut state_lock, header, height);
+		if !is_rescan {
+			self.best_block_updated_internal(&mut state_lock, header, height);
+		}
 	}
 
 	fn blocks_disconnected(&self, fork_point: BlockLocator) {
@@ -1328,5 +1334,76 @@ mod tests {
 			!sweeper.pending_sweep.load(Ordering::Acquire),
 			"pending_sweep flag was not reset when the future was dropped",
 		);
+	}
+
+	#[test]
+	fn filtered_block_connected_allows_same_block_rescan() {
+		let best_block = BlockLocator::new(BlockHash::all_zeros(), 0);
+		let sweeper: OutputSweeper<
+			DummyBroadcaster,
+			Box<DummyChangeDestSource>,
+			DummyFeeEstimator,
+			DummyFilter,
+			PendingKVStore,
+			DummyLogger,
+			DummyOutputSpender,
+		> = OutputSweeper::new(
+			best_block.clone(),
+			DummyBroadcaster,
+			DummyFeeEstimator,
+			None,
+			DummyOutputSpender,
+			Box::new(DummyChangeDestSource),
+			PendingKVStore,
+			DummyLogger,
+		);
+
+		let header = Header {
+			version: bitcoin::block::Version::NO_SOFT_FORK_SIGNALLING,
+			prev_blockhash: best_block.block_hash,
+			merkle_root: bitcoin::hash_types::TxMerkleNode::all_zeros(),
+			time: 1,
+			bits: bitcoin::pow::CompactTarget::from_consensus(42),
+			nonce: 42,
+		};
+		let tracked_outpoint = bitcoin::OutPoint { txid: Txid::all_zeros(), vout: 0 };
+		let spending_tx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![bitcoin::TxIn { previous_output: tracked_outpoint, ..Default::default() }],
+			output: Vec::new(),
+		};
+		let descriptor = SpendableOutputDescriptor::StaticOutput {
+			outpoint: OutPoint { txid: tracked_outpoint.txid, index: tracked_outpoint.vout as u16 },
+			output: TxOut { value: Amount::from_sat(100_000), script_pubkey: ScriptBuf::new() },
+			channel_keys_id: None,
+		};
+		sweeper.sweeper_state.lock().unwrap().outputs.push(TrackedSpendableOutput {
+			descriptor,
+			channel_id: None,
+			counterparty_node_id: None,
+			status: OutputSpendStatus::PendingFirstConfirmation {
+				first_broadcast_hash: best_block.block_hash,
+				latest_broadcast_height: best_block.height,
+				latest_spending_tx: spending_tx.clone(),
+			},
+		});
+
+		sweeper.filtered_block_connected(&header, &[], 1);
+		let txdata = [(0, &spending_tx)];
+		sweeper.filtered_block_connected(&header, &txdata, 1);
+
+		let current_best_block = sweeper.current_best_block();
+		assert_eq!(current_best_block.block_hash, header.block_hash());
+		assert_eq!(current_best_block.height, 1);
+		assert_eq!(current_best_block.get_hash_at_height(0), Some(best_block.block_hash));
+		assert!(matches!(
+			sweeper.tracked_spendable_outputs()[0].status,
+			OutputSpendStatus::PendingThresholdConfirmations {
+				confirmation_height: 1,
+				confirmation_hash,
+				..
+			} if confirmation_hash == header.block_hash()
+		));
 	}
 }

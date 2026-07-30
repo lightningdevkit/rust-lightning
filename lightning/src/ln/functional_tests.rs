@@ -3006,6 +3006,28 @@ pub fn test_drop_messages_peer_disconnect_b() {
 }
 
 #[xtest(feature = "_externalize_tests")]
+pub fn test_filtered_block_connected_allows_same_block_rescan() {
+	let chanmon_cfgs = create_chanmon_cfgs(1);
+	let node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
+	let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
+
+	let best_block = nodes[0].node.current_best_block();
+	let height = best_block.height + 1;
+	let header = create_dummy_header(best_block.block_hash, height);
+	nodes[0].node.filtered_block_connected(&header, &[], height);
+	nodes[0].node.filtered_block_connected(&header, &[], height);
+
+	let current_best_block = nodes[0].node.current_best_block();
+	assert_eq!(current_best_block.block_hash, header.block_hash());
+	assert_eq!(current_best_block.height, height);
+	assert_eq!(
+		current_best_block.get_hash_at_height(best_block.height),
+		Some(best_block.block_hash)
+	);
+}
+
+#[xtest(feature = "_externalize_tests")]
 pub fn test_channel_ready_without_best_block_updated() {
 	// Previously, if we were offline when a funding transaction was locked in, and then we came
 	// back online, calling best_block_updated once followed by transactions_confirmed, we'd not
