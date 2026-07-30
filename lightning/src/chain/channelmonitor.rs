@@ -2700,8 +2700,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 
 	/// Checks if the monitor is fully resolved. Resolved monitor is one that has claimed all of
 	/// its outputs and balances (i.e. [`Self::get_claimable_balances`] returns an empty set) and
-	/// which does not have any payment preimages for HTLCs which are still pending on other
-	/// channels.
+	/// which does not have any unacked [`MonitorEvent`]s which may contain resolutions for HTLCs
+	/// which are still pending on other channels.
 	///
 	/// Additionally may update state to track when the balances set became empty.
 	///
@@ -2718,16 +2718,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		let current_height = self.current_best_block().height;
 		let mut inner = self.inner.lock().unwrap();
 
+		// Unacked `MonitorEvent`s may contain the outbound-edge resolution of an inbound-edge HTLC
+		// that is present on another channel, in the case of a forward. Archiving while unacked
+		// monitor events are present could lead to the inbound edge channel not receiving the preimage
+		// in time (for forward claims), or to the inbound edge closing due to an HTLC timeout (for
+		// forward fails).
+		let no_unacked_monitor_events =
+			inner.pending_monitor_events.is_empty() && inner.provided_monitor_events.is_empty();
+
 		if inner.is_closed_without_updates()
 			&& is_all_funds_claimed
 			&& !inner.funding_spend_seen
 		{
 			// We closed the channel without ever advancing it and didn't have any funds in it. There's
-			// nothing for us to ever do with this monitor, so we archive it as soon as any pending
-			// `MonitorEvent`s have been processed. This may be necessary in the case that the monitor
+			// nothing for us to ever do with this monitor, so we archive it as soon as all pending
+			// `MonitorEvent`s have been acked. This may be necessary in the case that the monitor
 			// initiated the channel close -- archiving now may leave the `ChannelManager` with a
 			// `Channel` that has no corresponding monitor, which is not allowed on restart.
-			return (inner.pending_monitor_events.is_empty(), false);
+			return (no_unacked_monitor_events, false);
 		}
 
 		if is_all_funds_claimed && !inner.funding_spend_seen {
@@ -2735,21 +2743,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			is_all_funds_claimed = false;
 		}
 
-		// As long as HTLCs remain unresolved, they'll be present as a `Balance`. After that point,
-		// if they contained a preimage, an event will appear in `pending_monitor_events` which,
-		// once processed, implies the preimage exists in the corresponding inbound channel.
-		let preimages_not_needed_elsewhere = inner.pending_monitor_events.is_empty();
+		if !no_unacked_monitor_events {
+			return (false, false);
+		}
 
-		match (inner.balances_empty_height, is_all_funds_claimed, preimages_not_needed_elsewhere) {
-			(Some(balances_empty_height), true, true) => {
+		match (inner.balances_empty_height, is_all_funds_claimed) {
+			(Some(balances_empty_height), true) => {
 				// Claimed all funds, check if reached the blocks threshold.
 				(current_height >= balances_empty_height + ARCHIVAL_DELAY_BLOCKS, false)
 			},
-			(Some(_), false, _)|(Some(_), _, false) => {
-				// previously assumed we claimed all funds, but we have new funds to claim or
-				// preimages are suddenly needed (because of a duplicate-hash HTLC).
-				// This should never happen as once the `Balance`s and preimages are clear, we
-				// should never create new ones.
+			(Some(_), false) => {
+				// previously assumed we claimed all funds, but we have new funds to claim.
+				// This should never happen as once the `Balance`s are clear, we should never
+				// create new ones.
 				debug_assert!(false,
 					"Thought we were done claiming funds, but claimable_balances now has entries");
 				log_error!(logger,
@@ -2758,17 +2764,17 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				inner.balances_empty_height = None;
 				(false, true)
 			},
-			(None, true, true) => {
-				// Claimed all funds and preimages can be deleted, but `balances_empty_height` is
-				// None. It is set to the current block height.
+			(None, true) => {
+				// Claimed all funds, but `balances_empty_height` is None. It is set to the current
+				// block height.
 				log_debug!(logger,
 					"ChannelMonitor funded at {} is now fully resolved. It will become archivable in {} blocks",
 					inner.get_funding_txo(), ARCHIVAL_DELAY_BLOCKS);
 				inner.balances_empty_height = Some(current_height);
 				(false, true)
 			},
-			(None, false, _)|(None, _, false) => {
-				// Have funds to claim or our preimages are still needed.
+			(None, false) => {
+				// Have funds to claim.
 				(false, false)
 			},
 		}
