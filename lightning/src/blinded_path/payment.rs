@@ -930,7 +930,8 @@ pub(super) fn blinded_hops<F: ForwardTlvsInfo, T: secp256k1::Signing + secp256k1
 	utils::construct_blinded_hops(secp_ctx, path, session_priv)
 }
 
-/// `None` if underflow occurs.
+/// `None` if the inbound amount is insufficient to pay the fee and still forward a non-zero
+/// amount.
 pub(crate) fn amt_to_forward_msat(
 	inbound_amt_msat: u64, payment_relay: &PaymentRelay,
 ) -> Option<u64> {
@@ -938,18 +939,24 @@ pub(crate) fn amt_to_forward_msat(
 	let base = payment_relay.fee_base_msat as u128;
 	let prop = payment_relay.fee_proportional_millionths as u128;
 
-	let post_base_fee_inbound_amt =
-		if let Some(amt) = inbound_amt.checked_sub(base) { amt } else { return None };
-	let mut amt_to_forward =
-		(post_base_fee_inbound_amt * 1_000_000 + 1_000_000 + prop - 1) / (prop + 1_000_000);
+	let post_base_fee_inbound_amt = inbound_amt.checked_sub(base)?;
+	let fee_for = |amt_to_forward: u128| ((amt_to_forward * prop) / 1_000_000) + base;
 
-	let fee = ((amt_to_forward * prop) / 1_000_000) + base;
-	if inbound_amt.checked_sub(fee)? < amt_to_forward {
-		// Rounding up the forwarded amount resulted in underpaying this node, so take an extra 1 msat
-		// in fee to compensate.
-		amt_to_forward -= 1;
+	// Round the forwarded amount down so that the fee we retain always covers the fee we require.
+	// Because the division rounds down we may be able to forward one more msat while still
+	// retaining our full fee, so check for that case explicitly. Note that a
+	// `fee_proportional_millionths` above 1_000_000 means each additional msat forwarded can cost
+	// us more than one msat in fee, so we cannot simply adjust by one msat after the fact.
+	let mut amt_to_forward = (post_base_fee_inbound_amt * 1_000_000) / (prop + 1_000_000);
+	let one_more = amt_to_forward + 1;
+	if inbound_amt >= one_more + fee_for(one_more) {
+		amt_to_forward = one_more;
 	}
-	debug_assert_eq!(amt_to_forward + fee, inbound_amt);
+
+	if amt_to_forward == 0 {
+		return None;
+	}
+	debug_assert!(amt_to_forward + fee_for(amt_to_forward) <= inbound_amt);
 	u64::try_from(amt_to_forward).ok()
 }
 
@@ -1433,5 +1440,28 @@ mod tests {
 			fee_base_msat: 1,
 		};
 		assert!(super::amt_to_forward_msat(2, &payment_relay).is_none());
+	}
+
+	#[test]
+	fn amt_to_forward_msat_prop_fee_above_one_hundred_percent() {
+		// Nothing bounds the `fee_proportional_millionths` we accept in a blinded path's
+		// `PaymentRelay`, and a forwarding node applies it verbatim to the inbound HTLC amount.
+		// Above 1_000_000 each additional msat forwarded costs us more than one msat in fee, so
+		// check that we forward the largest amount which still leaves us the fee we require.
+		// Previously this was broken because we rounded the forwarded amount up and then tried to
+		// correct for it by taking a single extra msat in fee.
+		for prop in [1_500_000, 2_000_000, 3_000_000, u32::MAX] {
+			let payment_relay = PaymentRelay {
+				cltv_expiry_delta: 0,
+				fee_proportional_millionths: prop,
+				fee_base_msat: 0,
+			};
+			for inbound_amt in 1_000_000..1_000_010 {
+				let amt = super::amt_to_forward_msat(inbound_amt, &payment_relay).unwrap();
+				let fee = (amt as u128 * prop as u128) / 1_000_000;
+				assert!(amt > 0);
+				assert!(amt as u128 + fee <= inbound_amt as u128);
+			}
+		}
 	}
 }
