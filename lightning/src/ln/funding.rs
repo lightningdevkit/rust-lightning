@@ -526,6 +526,7 @@ fn validate_inputs(inputs: &[ConfirmedUtxo]) -> Result<(), FundingContributionEr
 		}
 
 		use crate::util::ser::Writeable;
+		const MESSAGE_TYPE_PREFIX_LEN: usize = 2;
 		const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
 			channel_id: ChannelId([0; 32]),
 			serial_id: 0,
@@ -535,7 +536,9 @@ fn validate_inputs(inputs: &[ConfirmedUtxo]) -> Result<(), FundingContributionEr
 			// Mutually exclusive with prevtx, which is accounted for below.
 			shared_input_txid: None,
 		};
-		let message_len = MESSAGE_TEMPLATE.serialized_length() + input.prevtx.serialized_length();
+		let message_len = MESSAGE_TYPE_PREFIX_LEN
+			+ MESSAGE_TEMPLATE.serialized_length()
+			+ input.prevtx.serialized_length();
 		(message_len <= LN_MAX_MSG_LEN)
 			.then(|| ())
 			.ok_or(FundingContributionError::PrevTxTooLarge)?;
@@ -2788,17 +2791,31 @@ mod tests {
 	}
 
 	#[test]
-	fn test_build_funding_contribution_rejects_oversized_prevtx() {
+	fn test_build_funding_contribution_rejects_prevtx_exceeding_wire_message_limit() {
 		use crate::util::ser::Writeable;
 
 		let feerate = FeeRate::from_sat_per_kwu(2000);
 		let prevtx = Transaction {
 			input: vec![],
-			output: vec![funding_output_sats(50_000); 2_200],
+			output: vec![
+				funding_output_sats(50_000),
+				TxOut {
+					value: Amount::ZERO,
+					script_pubkey: ScriptBuf::from_bytes(vec![0; 65_430]),
+				},
+			],
 			version: Version::TWO,
 			lock_time: bitcoin::absolute::LockTime::ZERO,
 		};
-		assert!(prevtx.serialized_length() > crate::ln::LN_MAX_MSG_LEN);
+		let msg = crate::ln::msgs::TxAddInput {
+			channel_id: crate::ln::types::ChannelId([0; 32]),
+			serial_id: 0,
+			prevtx: Some(prevtx.clone()),
+			prevtx_out: 0,
+			sequence: 0,
+			shared_input_txid: None,
+		};
+		assert_eq!(msg.serialized_length() + 2, crate::ln::LN_MAX_MSG_LEN + 1);
 
 		let wallet = SingleUtxoWallet {
 			utxo: ConfirmedUtxo::new_p2wpkh(prevtx, 0).unwrap(),
