@@ -116,6 +116,14 @@ test out the patch set and opine on the technical merits of the patch. PR should
 be reviewed first on the conceptual level before focusing on code style or
 grammar fixes.
 
+Before requesting human review, wait for AI to complete its initial review
+and address its feedback. Once the pull request is ready, use the "Assign random
+reviewer" button in Forgejo.
+
+Most pull requests require one human reviewer. The primary reviewer may request
+a second reviewer for complex changes, such as changes to the channel state
+machine, or when there is design uncertainty.
+
 Coding Conventions
 ------------------
 
