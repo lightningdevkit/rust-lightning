@@ -3,7 +3,7 @@ name = "lightning-macros"
 version = "0.2.2+git"
 authors = ["Elias Rohrer"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lightningdevkit/rust-lightning/"
+repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning/"
 description = """
 Proc macros used by LDK
 """

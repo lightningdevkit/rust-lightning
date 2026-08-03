@@ -3,7 +3,7 @@ name = "lightning-transaction-sync"
 version = "0.3.0+git"
 authors = ["Elias Rohrer"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lightningdevkit/rust-lightning"
+repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning/"
 readme = "../README.md"
 description = """
 Utilities for syncing LDK via the transaction-based `Confirm` interface.
