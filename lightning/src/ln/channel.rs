@@ -13507,6 +13507,10 @@ where
 		let pending_splice =
 			self.pending_splice.as_mut().expect("pending_splice should exist for RBF");
 		debug_assert!(!pending_splice.negotiated_candidates.is_empty());
+		debug_assert!(
+			pending_splice.funding_negotiation.is_none(),
+			"A new RBF cannot begin while another funding negotiation is in progress",
+		);
 
 		let new_holder_funding_key = pending_splice
 			.negotiated_candidates
@@ -15125,6 +15129,17 @@ where
 					), QuiescentError::DoNothing));
 				},
 				Some(QuiescentAction::Splice { contribution, locktime }) => {
+					if self.pending_splice.is_some() {
+						if !self.queued_contribution_can_rbf(&contribution) {
+							let msg = "Waiting for splice to lock before potentially proceeding with queued contribution".into();
+							self.quiescent_action = Some(QuiescentAction::Splice { contribution, locktime });
+							return Err((
+								ChannelError::WarnAndDisconnect(msg),
+								QuiescentError::DoNothing,
+							));
+						}
+					}
+
 					// Re-validate the contribution now that we're quiescent and
 					// balances are stable. Outbound HTLCs may have been sent between
 					// funding_contributed and quiescence, reducing the holder's
@@ -15152,12 +15167,11 @@ where
 							),
 						));
 					}
-					let prior_contribution = contribution.clone();
+
 					let prev_funding_input = self.funding.to_splice_funding_input();
 					let our_funding_contribution = contribution.net_value();
 					let funding_feerate_per_kw = contribution.feerate().to_sat_per_kwu() as u32;
-					let (our_funding_inputs, our_funding_outputs) = contribution.into_tx_parts();
-
+					let (our_funding_inputs, our_funding_outputs) = contribution.clone().into_tx_parts();
 					let context = FundingNegotiationContext {
 						is_initiator: true,
 						our_funding_contribution,
@@ -15169,21 +15183,10 @@ where
 					};
 
 					if self.pending_splice.is_some() {
-						if let Err(e) = self.can_initiate_rbf() {
-							let failed = self.splice_funding_failed_for(prior_contribution);
-							return Err((
-								ChannelError::WarnAndDisconnect(e),
-								QuiescentError::FailSplice(
-									failed,
-									NegotiationFailureReason::CannotInitiateRbf,
-								),
-							));
-						}
-						let tx_init_rbf = self.send_tx_init_rbf(context, prior_contribution);
+						let tx_init_rbf = self.send_tx_init_rbf(context, contribution);
 						return Ok(Some(StfuResponse::TxInitRbf(tx_init_rbf)));
 					}
-
-					let splice_init = self.send_splice_init(context, prior_contribution);
+					let splice_init = self.send_splice_init(context, contribution);
 					debug_assert!(self.pending_splice.is_some());
 					return Ok(Some(StfuResponse::SpliceInit(splice_init)));
 				},
@@ -15243,26 +15246,13 @@ where
 			#[allow(irrefutable_let_patterns)]
 			if let QuiescentAction::Splice { contribution, .. } = action {
 				if self.pending_splice.is_some() {
-					match self.can_initiate_rbf() {
-						Err(msg) => {
-							log_given_level!(
-								logger,
-								logger_level,
-								"Waiting on sending stfu for splice RBF: {msg}"
-							);
-							return None;
-						},
-						Ok(min_rbf_feerate) if contribution.feerate() < min_rbf_feerate => {
-							log_given_level!(
-								logger,
-								logger_level,
-								"Waiting for splice to lock: feerate {} below minimum RBF feerate {}",
-								contribution.feerate(),
-								min_rbf_feerate,
-							);
-							return None;
-						},
-						_ => {},
+					if !self.queued_contribution_can_rbf(contribution) {
+						log_given_level!(
+							logger,
+							logger_level,
+							"Waiting for splice to lock before potentially proceeding with queued contribution"
+						);
+						return None;
 					}
 				}
 			}
