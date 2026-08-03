@@ -7374,13 +7374,14 @@ fn test_splice_rbf_after_splice_locked() {
 }
 
 #[test]
-fn test_splice_rbf_stfu_after_splice_locked() {
-	// Test that we don't send tx_init_rbf when we've already sent splice_locked.
+fn test_queued_rbf_survives_stfu_response_after_splice_locked() {
+	// Test that we don't send tx_init_rbf when we've already sent splice_locked, while preserving a
+	// contribution that can proceed as a fresh splice after the pending splice promotes.
 	//
 	// Scenario: node 0 initiates an RBF and sends STFU, but before receiving the counterparty's
 	// STFU response, it mines enough blocks to send splice_locked (setting sent_funding_txid).
-	// When node 1's STFU arrives, the stfu() handler should detect that RBF is no longer valid
-	// and return WarnAndDisconnect instead of sending tx_init_rbf.
+	// When node 1's STFU arrives, the stfu() handler should retain the queued contribution and
+	// disconnect to reset quiescence rather than sending tx_init_rbf.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -7404,18 +7405,17 @@ fn test_splice_rbf_stfu_after_splice_locked() {
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
 
-	// Provide more UTXOs for the RBF attempt.
-	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	// Provide a fresh input for the RBF attempt.
+	let rbf_reserves = provide_utxo_reserves(&nodes, 1, added_value * 2);
 
-	// Initiate RBF from node 0 with fresh inputs so the RBF round has a unique input that
-	// survives filtering when the failure cleanup runs.
+	// Use only the fresh input so the contribution does not overlap the pending splice and can be
+	// retried after it promotes.
 	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let input = ConfirmedUtxo::new_p2wpkh(rbf_reserves, 0).unwrap();
 	let funding_contribution = funding_template
 		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
-		.with_coin_selection_source_sync(&wallet)
-		.add_value(added_value)
+		.add_inputs(vec![input])
 		.unwrap()
 		.build()
 		.unwrap();
@@ -7435,52 +7435,37 @@ fn test_splice_rbf_stfu_after_splice_locked() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let _splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
 
-	// Now deliver node 1's STFU to node 0. The stfu() handler should detect that RBF is no
-	// longer valid (we already sent splice_locked) and return WarnAndDisconnect.
+	// Now deliver node 1's STFU to node 0. The stfu() handler should detect that RBF is no longer
+	// valid, retain the contribution, and return WarnAndDisconnect to reset quiescence.
 	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	match &msg_events[0] {
-		MessageSendEvent::HandleError { action, .. } => {
-			assert_eq!(
-				*action,
-				msgs::ErrorAction::DisconnectPeerWithWarning {
-					msg: msgs::WarningMessage {
-						channel_id,
-						data: format!(
-							"Channel {} already sent splice_locked, cannot RBF",
-							channel_id,
-						),
-					},
-				}
-			);
-		},
-		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
-	}
-
-	// Node 0 should emit DiscardFunding + SpliceNegotiationFailed for the RBF contribution.
-	// The change output is filtered (same script_pubkey as the first splice's change output),
-	// but the input survives because it's a different UTXO from the first splice.
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2, "{events:?}");
-	match &events[0] {
-		Event::DiscardFunding {
-			funding_info: FundingInfo::Contribution { inputs, outputs },
+	assert!(matches!(
+		msg_events[0],
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
 			..
-		} => {
-			assert!(!inputs.is_empty());
-			assert!(outputs.is_empty());
-		},
-		other => panic!("Expected DiscardFunding, got {:?}", other),
-	}
-	match &events[1] {
-		Event::SpliceNegotiationFailed { channel_id: cid, reason, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::CannotInitiateRbf);
-		},
-		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
-	}
+		}
+	));
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// Applying the requested disconnect resets quiescence without failing the contribution. The
+	// promotion tests cover the two subsequent outcomes: overlapping contributions are failed,
+	// while non-overlapping contributions begin a fresh splice.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	let details = nodes[0]
+		.node
+		.list_channels()
+		.iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap()
+		.splice_details
+		.clone()
+		.unwrap();
+	assert_eq!(details.candidates.last().unwrap().contribution, Some(funding_contribution));
 }
 
 #[test]
@@ -9858,9 +9843,16 @@ fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
 
 #[test]
 fn test_splice_revalidation_at_quiescence() {
+	do_test_splice_revalidation_at_quiescence(false);
+	do_test_splice_revalidation_at_quiescence(true);
+}
+
+fn do_test_splice_revalidation_at_quiescence(pending_splice_locks: bool) {
 	// When an outbound HTLC is committed between funding_contributed and quiescence, the
 	// holder's balance decreases. If the splice-out was marginal at funding_contributed time,
-	// the re-validation at quiescence should fail and emit SpliceNegotiationFailed + DiscardFunding.
+	// the re-validation at quiescence should fail and emit SpliceNegotiationFailed + DiscardFunding
+	// when it would proceed immediately. If a pending splice locks first, the queued contribution
+	// should instead remain pending and be re-validated once it can proceed as a fresh splice.
 	//
 	// Flow:
 	// 1. Send payment #1 (update_add + CS) → node 0 awaits RAA
@@ -9869,7 +9861,8 @@ fn test_splice_revalidation_at_quiescence() {
 	// 4. Send payment #2 (update_add + CS) → balance reduced
 	// 5. Process node 1's CS → node 0 sends RAA, stfu delayed (payment #2 pending)
 	// 6. Complete payment #2's exchange → stfu fires
-	// 7. stfu exchange → quiescence → re-validation fails
+	// 7. Optionally lock a pending splice, then exchange stfu
+	// 8. Either re-validation fails immediately or is deferred until the queued splice can proceed
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
@@ -9884,6 +9877,15 @@ fn test_splice_revalidation_at_quiescence() {
 	let initial_channel_value_sat = 100_000;
 	let (_, _, channel_id, _) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let pending_splice_tx = if pending_splice_locks {
+		let added_value = Amount::from_sat(50_000);
+		provide_utxo_reserves(&nodes, 1, added_value * 2);
+		let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+		Some(splice_channel(&nodes[0], &nodes[1], channel_id, contribution).0)
+	} else {
+		None
+	};
 
 	let _ = provide_anchor_reserves(&nodes);
 
@@ -9907,12 +9909,21 @@ fn test_splice_revalidation_at_quiescence() {
 	// includes payment #1. stfu is delayed — awaiting RAA.
 	let outputs = vec![TxOut {
 		value: Amount::from_sat(70_000),
-		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 	}];
 
-	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
+	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
+	let contribution = if pending_splice_locks {
+		funding_template
+			.without_prior_contribution(feerate, FeeRate::MAX)
+			.add_outputs(outputs)
+			.build()
+			.unwrap()
+	} else {
+		funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap()
+	};
 
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty(), "stfu should be delayed");
@@ -9977,7 +9988,17 @@ fn test_splice_revalidation_at_quiescence() {
 	nodes[1].node.handle_revoke_and_ack(node_id_0, &raa_0b);
 	check_added_monitors(&nodes[1], 1);
 
-	// Step 7: stfu exchange → quiescence → re-validation fails → disconnect.
+	// If a prior splice becomes locked while the stfu response is delayed, the queued contribution
+	// cannot proceed as an RBF at this quiescence and must remain queued without being re-validated.
+	if let Some(splice_tx) = pending_splice_tx {
+		mine_transaction(&nodes[0], &splice_tx);
+		mine_transaction(&nodes[1], &splice_tx);
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+		let _ = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	}
+
+	// Complete the stfu exchange after the holder's balance has fallen below the contribution's
+	// requirements.
 	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
 	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
 	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
@@ -9988,12 +10009,31 @@ fn test_splice_revalidation_at_quiescence() {
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
 	assert!(matches!(msg_events[0], MessageSendEvent::HandleError { .. }));
 
-	expect_splice_failed_events(
-		&nodes[0],
-		&channel_id,
-		contribution,
-		NegotiationFailureReason::ContributionInvalid,
-	);
+	if pending_splice_locks {
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		let details = nodes[0]
+			.node
+			.list_channels()
+			.iter()
+			.find(|channel| channel.channel_id == channel_id)
+			.unwrap()
+			.splice_details
+			.clone()
+			.unwrap();
+		let queued = details.candidates.last().unwrap();
+		assert_eq!(queued.status, SpliceCandidateStatus::WaitingOnLock);
+		assert_eq!(queued.contribution, Some(contribution));
+	} else {
+		expect_splice_failed_events(
+			&nodes[0],
+			&channel_id,
+			contribution,
+			NegotiationFailureReason::ContributionInvalid,
+		);
+	}
 }
 
 #[test]
