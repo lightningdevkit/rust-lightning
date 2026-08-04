@@ -192,6 +192,10 @@ impl BlindedMessagePath {
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
+		if self.0.blinded_hops.len() <= 1 {
+			// The resulting blinded path has to always be left with at least one hop.
+			return Err(());
+		}
 		let control_tlvs_ss = node_signer.ecdh(Recipient::Node, &self.0.blinding_point, None)?;
 		let rho = onion_utils::gen_rho_from_shared_secret(&control_tlvs_ss.secret_bytes());
 		let encrypted_control_tlvs = &self.0.blinded_hops.get(0).ok_or(())?.encrypted_payload;

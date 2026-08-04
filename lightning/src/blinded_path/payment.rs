@@ -193,6 +193,11 @@ impl BlindedPaymentPath {
 		NL::Target: NodeIdLookUp,
 		T: secp256k1::Signing + secp256k1::Verification,
 	{
+		if self.inner_path.blinded_hops.len() <= 1 {
+			// The resulting blinded path has to always be left with at least one hop.
+			return Err(());
+		}
+
 		match self.decrypt_intro_payload::<NS>(node_signer) {
 			Ok((
 				BlindedPaymentTlvs::Forward(ForwardTlvs { short_channel_id, .. }),
