@@ -846,6 +846,39 @@ fn we_are_intro_node() {
 }
 
 #[test]
+fn malformed_one_hop_reply_path_does_not_panic_when_we_are_intro_node() {
+	// A reply path may be provided by an untrusted sender. If its only hop is a forward hop for us,
+	// advancing it must reject the path instead of leaving a zero-hop destination behind.
+	let nodes = create_nodes(2);
+	let secp_ctx = Secp256k1::new();
+	let intermediate_nodes =
+		[MessageForwardNode { node_id: nodes[0].node_id, short_channel_id: None }];
+	let valid_reply_path = BlindedMessagePath::new(
+		&intermediate_nodes,
+		nodes[1].node_id,
+		nodes[1].messenger.node_signer.get_receive_auth_key(),
+		MessageContext::Custom(Vec::new()),
+		false,
+		&*nodes[1].entropy_source,
+		&secp_ctx,
+	);
+	let malformed_reply_path = BlindedMessagePath::from_blinded_path(
+		nodes[0].node_id,
+		valid_reply_path.blinding_point(),
+		vec![valid_reply_path.blinded_hops()[0].clone()],
+	);
+
+	let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+		nodes[0].messenger.handle_onion_message_response(
+			TestCustomMessage::Pong,
+			Responder::new(malformed_reply_path).respond(),
+		)
+	}));
+	assert!(result.is_ok(), "responding over a malformed reply path must not panic");
+	assert_eq!(result.unwrap(), Err(SendError::BlindedPathAdvanceFailed));
+}
+
+#[test]
 fn invalid_blinded_path_error() {
 	// Make sure we error as expected if a provided blinded path has 0 hops.
 	let nodes = create_nodes(3);
