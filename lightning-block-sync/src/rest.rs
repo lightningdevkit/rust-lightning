@@ -7,7 +7,7 @@ use crate::http::{BinaryResponse, HttpClient, HttpClientError, JsonResponse, ToP
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
 use bitcoin::hash_types::BlockHash;
-use bitcoin::OutPoint;
+use bitcoin::{OutPoint, TxOut};
 
 use std::convert::TryFrom;
 use std::convert::TryInto;
@@ -77,15 +77,15 @@ impl UtxoSource for RestClient {
 		}
 	}
 
-	fn is_output_unspent<'a>(
+	fn get_unspent_txout<'a>(
 		&'a self, outpoint: OutPoint,
-	) -> impl Future<Output = BlockSourceResult<bool>> + Send + 'a {
+	) -> impl Future<Output = BlockSourceResult<Option<TxOut>>> + Send + 'a {
 		async move {
 			let resource_path =
 				format!("getutxos/{}-{}.json", outpoint.txid.to_string(), outpoint.vout);
 			let utxo_result =
 				self.request_resource::<JsonResponse, GetUtxosResponse>(&resource_path).await?;
-			Ok(utxo_result.hit_bitmap_nonempty)
+			Ok(utxo_result.utxo)
 		}
 	}
 }
@@ -151,21 +151,26 @@ mod tests {
 		let client = RestClient::new(server.endpoint());
 
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
-		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
-		assert_eq!(unspent_output, false);
+		let unspent_output = client.get_unspent_txout(outpoint).await.unwrap();
+		assert_eq!(unspent_output, None);
 	}
 
 	#[tokio::test]
 	async fn parses_positive_getutxos() {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(
 			// A real response contains lots more data, but we actually only look at the "bitmap"
-			// field, so this should suffice for testing
-			"{\"chainHeight\": 1, \"bitmap\":\"1\",\"utxos\":[]}",
+			// and "utxos" fields, so this should suffice for testing
+			"{\"chainHeight\": 1, \"bitmap\":\"1\",\"utxos\":
+				[{\"height\": 1, \"value\": 0.07, \"scriptPubKey\": {\"hex\": \"0014abcd\"}}]}",
 		));
 		let client = RestClient::new(server.endpoint());
 
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
-		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
-		assert_eq!(unspent_output, true);
+		let unspent_output = client.get_unspent_txout(outpoint).await.unwrap();
+		let expected = TxOut {
+			value: bitcoin::Amount::from_sat(7_000_000),
+			script_pubkey: bitcoin::ScriptBuf::from_hex("0014abcd").unwrap(),
+		};
+		assert_eq!(unspent_output, Some(expected));
 	}
 }

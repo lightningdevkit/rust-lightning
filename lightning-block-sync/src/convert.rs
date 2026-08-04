@@ -4,11 +4,12 @@ use crate::rpc::RpcClientError;
 use crate::utils::hex_to_work;
 use crate::{BlockHeaderData, BlockSourceError};
 
+use bitcoin::amount::Amount;
 use bitcoin::block::{Block, Header};
 use bitcoin::consensus::encode;
 use bitcoin::hash_types::{BlockHash, TxMerkleNode, Txid};
 use bitcoin::hex::FromHex;
-use bitcoin::Transaction;
+use bitcoin::{ScriptBuf, Transaction, TxOut};
 
 use serde_json;
 
@@ -295,12 +296,53 @@ impl TryInto<BlockHash> for JsonResponse {
 	}
 }
 
-/// The REST `getutxos` endpoint retuns a whole pile of data we don't care about and one bit we do
-/// - whether the `hit bitmap` field had any entries. Thus we condense the result down into only
-/// that.
+/// Converts a JSON value into a transaction output. The JSON value is expected to be an object
+/// with a `value` field and a `scriptPubKey` object containing a `hex` field, as returned by the
+/// `gettxout` RPC and in the entries of a REST `getutxos` response.
+impl TryInto<TxOut> for JsonResponse {
+	type Error = &'static str;
+
+	fn try_into(self) -> Result<TxOut, &'static str> {
+		let value_btc = self
+			.0
+			.get("value")
+			.ok_or("missing value field")?
+			.as_f64()
+			.ok_or("expected JSON number")?;
+		let value = Amount::from_btc(value_btc).map_err(|_| "invalid value")?;
+		let script_hex = self
+			.0
+			.get("scriptPubKey")
+			.ok_or("missing scriptPubKey field")?
+			.get("hex")
+			.ok_or("missing script hex field")?
+			.as_str()
+			.ok_or("expected JSON string")?;
+		let script_pubkey = ScriptBuf::from_hex(script_hex).map_err(|_| "invalid script hex")?;
+		Ok(TxOut { value, script_pubkey })
+	}
+}
+
+/// Converts a JSON value into an unspent transaction output as returned by the `gettxout` RPC. A
+/// `null` response indicates the output doesn't exist or has been spent.
+impl TryInto<Option<TxOut>> for JsonResponse {
+	type Error = &'static str;
+
+	fn try_into(self) -> Result<Option<TxOut>, &'static str> {
+		if self.0.is_null() {
+			return Ok(None);
+		}
+		let txout: TxOut = self.try_into()?;
+		Ok(Some(txout))
+	}
+}
+
+/// The REST `getutxos` endpoint returns a whole pile of data we don't care about beyond whether
+/// the queried output is a member of the UTXO set (i.e. the `hit bitmap` field had an entry) and,
+/// if so, the output itself. Thus we condense the result down into only that.
 #[cfg(feature = "rest-client")]
 pub(crate) struct GetUtxosResponse {
-	pub(crate) hit_bitmap_nonempty: bool,
+	pub(crate) utxo: Option<TxOut>,
 }
 
 #[cfg(feature = "rest-client")]
@@ -308,10 +350,11 @@ impl TryInto<GetUtxosResponse> for JsonResponse {
 	type Error = &'static str;
 
 	fn try_into(self) -> Result<GetUtxosResponse, &'static str> {
-		let bitmap_str = self
-			.0
-			.as_object()
-			.ok_or("expected an object")?
+		if !self.0.is_object() {
+			return Err("expected an object");
+		}
+		let mut response = self.0;
+		let bitmap_str = response
 			.get("bitmap")
 			.ok_or("missing bitmap field")?
 			.as_str()
@@ -325,7 +368,16 @@ impl TryInto<GetUtxosResponse> for JsonResponse {
 				hit_bitmap_nonempty = true;
 			}
 		}
-		Ok(GetUtxosResponse { hit_bitmap_nonempty })
+		if !hit_bitmap_nonempty {
+			return Ok(GetUtxosResponse { utxo: None });
+		}
+		let utxo = response
+			.get_mut("utxos")
+			.ok_or("missing utxos field")?
+			.get_mut(0)
+			.ok_or("missing utxo entry")?
+			.take();
+		Ok(GetUtxosResponse { utxo: Some(JsonResponse(utxo).try_into()?) })
 	}
 }
 
@@ -772,6 +824,31 @@ pub(crate) mod tests {
 				assert!(e.contains("transaction couldn't be signed"));
 			},
 			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_txout_from_json_response_with_null() {
+		let response = JsonResponse(serde_json::Value::Null);
+		match TryInto::<Option<TxOut>>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(txout) => assert_eq!(txout, None),
+		}
+	}
+
+	#[test]
+	fn into_txout_from_json_response_with_valid_txout() {
+		let response = JsonResponse(serde_json::json!({
+			"value": 0.07,
+			"scriptPubKey": { "hex": "0014abcd" },
+		}));
+		match TryInto::<Option<TxOut>>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(txout) => {
+				let txout = txout.unwrap();
+				assert_eq!(txout.value.to_sat(), 7_000_000);
+				assert_eq!(txout.script_pubkey.to_bytes(), vec![0x00, 0x14, 0xab, 0xcd]);
+			},
 		}
 	}
 }

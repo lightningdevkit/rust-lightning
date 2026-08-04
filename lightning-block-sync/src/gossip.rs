@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
 /// A trait which extends [`BlockSource`] and can be queried to fetch the block at a given height
-/// as well as whether a given output is unspent (i.e. a member of the current UTXO set).
+/// as well as outputs which are members of the current UTXO set.
 ///
 /// Note that while this is implementable for a [`BlockSource`] which returns filtered block data
 /// (i.e. [`BlockData::HeaderOnly`] for [`BlockSource::get_block`] requests), such an
@@ -35,11 +35,11 @@ pub trait UtxoSource: BlockSource + 'static {
 		&'a self, block_height: u32,
 	) -> impl Future<Output = BlockSourceResult<BlockHash>> + Send + 'a;
 
-	/// Returns true if the given output has *not* been spent, i.e. is a member of the current UTXO
-	/// set.
-	fn is_output_unspent<'a>(
+	/// Returns the output at the given outpoint if it has *not* been spent, i.e. is a member of
+	/// the current UTXO set, or `None` otherwise.
+	fn get_unspent_txout<'a>(
 		&'a self, outpoint: OutPoint,
-	) -> impl Future<Output = BlockSourceResult<bool>> + Send + 'a;
+	) -> impl Future<Output = BlockSourceResult<Option<TxOut>>> + Send + 'a;
 }
 
 #[cfg(feature = "tokio")]
@@ -162,7 +162,7 @@ where
 		let transaction_index = ((short_channel_id >> 2 * 8) & 0xffffff) as u32;
 		let output_index = (short_channel_id & 0xffff) as u16;
 
-		let (outpoint, output);
+		let outpoint;
 
 		'tx_found: loop {
 			macro_rules! process_block {
@@ -176,7 +176,6 @@ where
 					}
 
 					outpoint = OutPoint::new(transaction.compute_txid(), output_index.into());
-					output = transaction.output[output_index as usize].clone();
 				}};
 			}
 			{
@@ -229,13 +228,9 @@ where
 			}
 			break 'tx_found;
 		}
-		let outpoint_unspent =
-			source.is_output_unspent(outpoint).await.map_err(|_| UtxoLookupError::UnknownTx)?;
-		if outpoint_unspent {
-			Ok(output)
-		} else {
-			Err(UtxoLookupError::UnknownTx)
-		}
+		let txout =
+			source.get_unspent_txout(outpoint).await.map_err(|_| UtxoLookupError::UnknownTx)?;
+		txout.ok_or(UtxoLookupError::UnknownTx)
 	}
 }
 
