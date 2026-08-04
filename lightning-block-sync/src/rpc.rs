@@ -5,7 +5,7 @@ use crate::gossip::UtxoSource;
 use crate::http::{HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
-use bitcoin::hash_types::BlockHash;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::{OutPoint, TxOut};
 
 use serde_json;
@@ -190,6 +190,16 @@ impl UtxoSource for RpcClient {
 		}
 	}
 
+	fn get_block_txids<'a>(
+		&'a self, block_hash: &'a BlockHash,
+	) -> impl Future<Output = BlockSourceResult<Vec<Txid>>> + Send + 'a {
+		async move {
+			let header_hash = serde_json::json!(block_hash.to_string());
+			let verbosity = serde_json::json!(1);
+			Ok(self.call_method("getblock", &[header_hash, verbosity]).await?)
+		}
+	}
+
 	fn get_unspent_txout<'a>(
 		&'a self, outpoint: OutPoint,
 	) -> impl Future<Output = BlockSourceResult<Option<TxOut>>> + Send + 'a {
@@ -341,5 +351,16 @@ mod tests {
 			script_pubkey: bitcoin::ScriptBuf::from_hex("0014abcd").unwrap(),
 		};
 		assert_eq!(unspent_output, Some(expected));
+	}
+
+	#[tokio::test]
+	async fn fetches_block_txids() {
+		let txid = bitcoin::Txid::from_byte_array([1; 32]);
+		let response = serde_json::json!({ "result": { "nTx": 1, "tx": [txid.to_string()] }});
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
+		let block_hash = BlockHash::from_byte_array([0; 32]);
+		let txids = client.get_block_txids(&block_hash).await.unwrap();
+		assert_eq!(txids, vec![txid]);
 	}
 }

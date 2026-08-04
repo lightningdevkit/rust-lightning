@@ -296,6 +296,30 @@ impl TryInto<BlockHash> for JsonResponse {
 	}
 }
 
+/// Converts a JSON value into the txids of a block's transactions. The JSON value is expected to
+/// be an object with a `tx` array of txid strings, as returned by the `getblock` RPC with
+/// verbosity 1 or the REST `block/notxdetails` endpoint.
+impl TryInto<Vec<Txid>> for JsonResponse {
+	type Error = &'static str;
+
+	fn try_into(self) -> Result<Vec<Txid>, &'static str> {
+		let txid_list = self
+			.0
+			.as_object()
+			.ok_or("expected JSON object")?
+			.get("tx")
+			.ok_or("missing tx field")?
+			.as_array()
+			.ok_or("expected JSON array")?;
+		let mut txids = Vec::with_capacity(txid_list.len());
+		for txid in txid_list {
+			let txid_str = txid.as_str().ok_or("expected JSON string")?;
+			txids.push(Txid::from_str(txid_str).map_err(|_| "invalid txid")?);
+		}
+		Ok(txids)
+	}
+}
+
 /// Converts a JSON value into a transaction output. The JSON value is expected to be an object
 /// with a `value` field and a `scriptPubKey` object containing a `hex` field, as returned by the
 /// `gettxout` RPC and in the entries of a REST `getutxos` response.
@@ -824,6 +848,29 @@ pub(crate) mod tests {
 				assert!(e.contains("transaction couldn't be signed"));
 			},
 			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_txid_vec_from_json_response_with_invalid_txid_data() {
+		let response = JsonResponse(serde_json::json!({ "tx": ["foobar"] }));
+		match TryInto::<Vec<Txid>>::try_into(response) {
+			Err(e) => {
+				assert_eq!(e, "invalid txid");
+			},
+			Ok(_) => panic!("Expected error"),
+		}
+	}
+
+	#[test]
+	fn into_txid_vec_from_json_response_with_valid_txid_data() {
+		let txids = vec![Txid::from_slice(&[1; 32]).unwrap(), Txid::from_slice(&[2; 32]).unwrap()];
+		let response = JsonResponse(serde_json::json!({
+			"tx": txids.iter().map(|txid| txid.to_string()).collect::<Vec<_>>(),
+		}));
+		match TryInto::<Vec<Txid>>::try_into(response) {
+			Err(e) => panic!("Unexpected error: {:?}", e),
+			Ok(parsed) => assert_eq!(parsed, txids),
 		}
 	}
 

@@ -1,0 +1,9 @@
+# API Updates
+
+ * `lightning-block-sync`'s `UtxoSource` trait now fetches block txid lists
+   (via `UtxoSource::get_block_txids`) rather than full blocks when verifying
+   gossip against the chain, and `UtxoSource::is_output_unspent` was replaced
+   by `UtxoSource::get_unspent_txout`, which additionally returns the output
+   itself. This reduces the bandwidth required to validate network graph
+   when using Bitcoin Core as a chain source. Custom implementations of
+	 `UtxoSource` must implement the new methods.

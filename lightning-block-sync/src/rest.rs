@@ -6,7 +6,7 @@ use crate::gossip::UtxoSource;
 use crate::http::{BinaryResponse, HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
-use bitcoin::hash_types::BlockHash;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::{OutPoint, TxOut};
 
 use std::convert::TryFrom;
@@ -74,6 +74,15 @@ impl UtxoSource for RestClient {
 		async move {
 			let resource_path = format!("blockhashbyheight/{}.bin", block_height);
 			Ok(self.request_resource::<BinaryResponse, _>(&resource_path).await?)
+		}
+	}
+
+	fn get_block_txids<'a>(
+		&'a self, block_hash: &'a BlockHash,
+	) -> impl Future<Output = BlockSourceResult<Vec<Txid>>> + Send + 'a {
+		async move {
+			let resource_path = format!("block/notxdetails/{}.json", block_hash.to_string());
+			Ok(self.request_resource::<JsonResponse, _>(&resource_path).await?)
 		}
 	}
 
@@ -172,5 +181,19 @@ mod tests {
 			script_pubkey: bitcoin::ScriptBuf::from_hex("0014abcd").unwrap(),
 		};
 		assert_eq!(unspent_output, Some(expected));
+	}
+
+	#[tokio::test]
+	async fn parses_block_txids() {
+		let txid = bitcoin::Txid::from_byte_array([1; 32]);
+		let server = HttpServer::responding_with_ok(MessageBody::Content(format!(
+			"{{\"nTx\": 1, \"tx\": [\"{}\"]}}",
+			txid
+		)));
+		let client = RestClient::new(server.endpoint());
+
+		let block_hash = BlockHash::from_byte_array([0; 32]);
+		let txids = client.get_block_txids(&block_hash).await.unwrap();
+		assert_eq!(txids, vec![txid]);
 	}
 }
