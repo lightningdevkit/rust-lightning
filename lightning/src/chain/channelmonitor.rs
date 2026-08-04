@@ -6224,18 +6224,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			macro_rules! log_claim {
 				($tx_info: expr, $holder_tx: expr, $htlc: expr, $source_avail: expr) => {
 					let outbound_htlc = $holder_tx == $htlc.offered;
-					// HTLCs must either be claimed by a matching script type or through the
-					// revocation path:
-					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					debug_assert!(!$htlc.offered || offered_preimage_claim || offered_timeout_claim || revocation_sig_claim);
-					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					debug_assert!($htlc.offered || accepted_preimage_claim || accepted_timeout_claim || revocation_sig_claim);
-					// Further, only exactly one of the possible spend paths should have been
-					// matched by any HTLC spend:
-					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
-					debug_assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
-					                 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
-					                 revocation_sig_claim as u8, 1);
 					if ($holder_tx && revocation_sig_claim) ||
 							(outbound_htlc && !$source_avail && (accepted_preimage_claim || offered_preimage_claim)) {
 						log_error!(logger, "Input spending {} ({}:{}) in {} resolves {} HTLC with payment hash {} with {}!",
@@ -6248,13 +6236,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							if outbound_htlc { "outbound" } else { "inbound" }, &$htlc.payment_hash,
 							if revocation_sig_claim { "revocation sig" } else if accepted_preimage_claim || offered_preimage_claim { "preimage" } else { "timeout" });
 					}
+					// HTLCs must either be claimed by a matching script type or through the
+					// revocation path:
+					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+					assert!(!$htlc.offered || offered_preimage_claim || offered_timeout_claim || revocation_sig_claim, "offered {htlc_claim:?}");
+					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+					assert!($htlc.offered || accepted_preimage_claim || accepted_timeout_claim || revocation_sig_claim, "!offered {htlc_claim:?}");
+					// Further, only exactly one of the possible spend paths should have been
+					// matched by any HTLC spend:
+					#[cfg(not(fuzzing))] // Note that the fuzzer is not bound by pesky things like "signatures"
+					assert_eq!(accepted_preimage_claim as u8 + accepted_timeout_claim as u8 +
+					                 offered_preimage_claim as u8 + offered_timeout_claim as u8 +
+					                 revocation_sig_claim as u8, 1);
 				}
 			}
 
 			macro_rules! check_htlc_valid_counterparty {
 				($htlc_output: expr, $per_commitment_data: expr) => {
 						for &(ref pending_htlc, ref pending_source) in $per_commitment_data {
-							if pending_htlc.payment_hash == $htlc_output.payment_hash && pending_htlc.amount_msat == $htlc_output.amount_msat {
+							if pending_htlc.offered == $htlc_output.offered && pending_htlc.payment_hash == $htlc_output.payment_hash && pending_htlc.amount_msat == $htlc_output.amount_msat {
 								if let &Some(ref source) = pending_source {
 									log_claim!("revoked counterparty commitment tx", false, pending_htlc, true);
 									payment_data = Some(((**source).clone(), $htlc_output.payment_hash, $htlc_output.amount_msat));
@@ -6266,7 +6266,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 
 			macro_rules! scan_commitment {
-				($funding_spent: expr, $htlcs: expr, $tx_info: expr, $holder_tx: expr) => {
+				($funding_spent: expr, $htlcs: expr, $tx_info: expr, $holder_tx: expr, $spent_counterparty_revoked: expr) => {
 					for (ref htlc_output, source_option) in $htlcs {
 						if Some(input.previous_output.vout) == htlc_output.transaction_output_index {
 							if let Some(ref source) = source_option {
@@ -6277,7 +6277,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 								// has timed out, or we screwed up. In any case, we should now
 								// resolve the source HTLC with the original sender.
 								payment_data = Some(((*source).clone(), htlc_output.payment_hash, htlc_output.amount_msat));
-							} else if !$holder_tx {
+							} else if $spent_counterparty_revoked {
 								if let Some(current_counterparty_commitment_txid) = &$funding_spent.current_counterparty_commitment_txid {
 									check_htlc_valid_counterparty!(htlc_output, $funding_spent.counterparty_claimable_outpoints.get(current_counterparty_commitment_txid).unwrap());
 								}
@@ -6314,21 +6314,28 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			if input.previous_output.txid == funding_spent.current_holder_commitment_tx.trust().txid() {
 				scan_commitment!(
 					funding_spent, holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES),
-					"our latest holder commitment tx", true
+					"our latest holder commitment tx", true, false
 				);
 			}
 			if let Some(prev_holder_commitment_tx) = funding_spent.prev_holder_commitment_tx.as_ref() {
 				if input.previous_output.txid == prev_holder_commitment_tx.trust().txid() {
 					scan_commitment!(
 						funding_spent, holder_commitment_htlcs!(self, PREV_WITH_SOURCES).unwrap(),
-						"our previous holder commitment tx", true
+						"our previous holder commitment tx", true, false
 					);
 				}
 			}
 			if let Some(ref htlc_outputs) = funding_spent.counterparty_claimable_outpoints.get(&input.previous_output.txid) {
+				let mut spent_counterparty_revoked = true;
+				if funding_spent.current_counterparty_commitment_txid == Some(input.previous_output.txid) {
+					spent_counterparty_revoked = false;
+				}
+				if funding_spent.prev_counterparty_commitment_txid == Some(input.previous_output.txid) {
+					spent_counterparty_revoked = false;
+				}
 				let htlcs = htlc_outputs.iter()
 					.map(|&(ref a, ref b)| (a, b.as_ref().map(|boxed| &**boxed)));
-				scan_commitment!(funding_spent, htlcs, "counterparty commitment tx", false);
+				scan_commitment!(funding_spent, htlcs, "counterparty commitment tx", false, spent_counterparty_revoked);
 			}
 
 			// Check that scan_commitment, above, decided there is some source worth relaying an
