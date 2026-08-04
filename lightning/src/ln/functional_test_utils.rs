@@ -316,11 +316,25 @@ fn do_connect_block_with_consistency_checks<'a, 'b, 'c, 'd>(
 fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(
 	node: &'a Node<'b, 'c, 'd>, block: Block, skip_intermediaries: bool,
 ) {
-	let height = node.best_block_info().1 + 1;
 	eprintln!("Connecting block using Block Connection Style: {:?}", *node.connect_style.borrow());
-	// Update the block internally before handing it over to LDK, to ensure our assertions regarding
-	// transaction broadcast are correct.
-	node.blocks.lock().unwrap().push((block.clone(), height));
+	let (new_block, height) = {
+		let mut blocks = node.blocks.lock().unwrap();
+		let existing =
+			blocks.iter().rev().find(|(candidate, _)| candidate == &block).map(|(_, h)| *h);
+		if let Some(height) = existing {
+			// We're being handed a block we've already connected, i.e. this is a redundant rescan
+			// rather than a new block. Reuse the height it was originally connected at rather than
+			// extending the chain.
+			(false, height)
+		} else {
+			let height = blocks.last().unwrap().1 + 1;
+			// Update the block internally before handing it over to LDK, to ensure our assertions
+			// regarding transaction broadcast are correct.
+			blocks.push((block.clone(), height));
+			(true, height)
+		}
+	};
+
 	if !skip_intermediaries {
 		let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
 		match *node.connect_style.borrow() {
@@ -393,14 +407,16 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(
 		}
 	}
 
-	for tx in &block.txdata {
-		for input in &tx.input {
-			node.wallet_source.remove_utxo(input.previous_output);
-		}
-		let wallet_script = node.wallet_source.get_change_script().unwrap();
-		for (idx, output) in tx.output.iter().enumerate() {
-			if output.script_pubkey == wallet_script {
-				node.wallet_source.add_utxo(tx.clone(), idx as u32);
+	if new_block {
+		for tx in &block.txdata {
+			for input in &tx.input {
+				node.wallet_source.remove_utxo(input.previous_output);
+			}
+			let wallet_script = node.wallet_source.get_change_script().unwrap();
+			for (idx, output) in tx.output.iter().enumerate() {
+				if output.script_pubkey == wallet_script {
+					node.wallet_source.add_utxo(tx.clone(), idx as u32);
+				}
 			}
 		}
 	}
