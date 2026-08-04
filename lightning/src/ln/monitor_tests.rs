@@ -2859,17 +2859,19 @@ fn do_test_anchors_aggregated_revoked_htlc_tx(p2a_anchor: bool) {
 	let mut events = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	// Certain block `ConnectStyle`s cause an extra `ChannelClose` event to be emitted since the
 	// best block is updated before the confirmed transactions are notified.
-	match *nodes[1].connect_style.borrow() {
-		ConnectStyle::BestBlockFirst|ConnectStyle::BestBlockFirstReorgsOnlyTip|ConnectStyle::BestBlockFirstSkippingBlocks => {
-			assert_eq!(events.len(), 4);
-			if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = events.remove(0) {}
-			else { panic!("unexpected event"); }
-			if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = events.remove(1) {}
-			else { panic!("unexpected event"); }
-
-		},
-		_ => assert_eq!(events.len(), 2),
-	};
+	if nodes[1].connect_style.borrow().updates_best_block_first() {
+		assert_eq!(events.len(), 4);
+		if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = events.remove(0) {
+		} else {
+			panic!("unexpected event");
+		}
+		if let Event::BumpTransaction(BumpTransactionEvent::ChannelClose { .. }) = events.remove(1) {
+		} else {
+			panic!("unexpected event");
+		}
+	} else {
+		assert_eq!(events.len(), 2);
+	}
 	let htlc_tx = {
 		let secret_key = SecretKey::from_slice(&[1; 32]).unwrap();
 		let public_key = PublicKey::new(secret_key.public_key(&secp));
