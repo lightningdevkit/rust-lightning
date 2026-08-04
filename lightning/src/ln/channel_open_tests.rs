@@ -176,6 +176,82 @@ fn test_0conf_limiting() {
 }
 
 #[test]
+fn test_unfunded_channel_peer_limit_multiple_requests() {
+	// Tests that a peer cannot bypass the `MAX_UNFUNDED_CHANNEL_PEERS` limit by sending us several
+	// `open_channel` messages in quick succession, before we get a chance to accept any of them.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	// Note that create_network connects the nodes together for us
+	let node_b = nodes[1].node.get_our_node_id();
+	nodes[0].node.create_channel(node_b, 100_000, 0, 42, None, None).unwrap();
+	let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b);
+	let init_msg = &msgs::Init {
+		features: nodes[0].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+
+	// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
+	for _ in 0..MAX_UNFUNDED_CHANNEL_PEERS {
+		let random_pk = PublicKey::from_secret_key(
+			&nodes[0].node.secp_ctx,
+			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap(),
+		);
+		nodes[1].node.peer_connected(random_pk, init_msg, true).unwrap();
+
+		handle_and_accept_open_channel(&nodes[1], random_pk, &open_channel_msg);
+		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, random_pk);
+		open_channel_msg.common_fields.temporary_channel_id =
+			ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
+	}
+
+	// Now have one more peer request two channels before we accept either of them.
+	let last_random_pk = PublicKey::from_secret_key(
+		&nodes[0].node.secp_ctx,
+		&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap(),
+	);
+	nodes[1].node.peer_connected(last_random_pk, init_msg, true).unwrap();
+
+	for _ in 0..2 {
+		nodes[1].node.handle_open_channel(last_random_pk, &open_channel_msg);
+		open_channel_msg.common_fields.temporary_channel_id =
+			ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
+	}
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+
+	// Neither of them should be acceptable, as the peer still has no funded channel with us and
+	// we're already at the limit of peers with unfunded channels.
+	for event in events {
+		match event {
+			Event::OpenChannelRequest { temporary_channel_id, .. } => {
+				match nodes[1].node.accept_inbound_channel(
+					&temporary_channel_id,
+					&last_random_pk,
+					23,
+					None,
+				) {
+					Err(APIError::APIMisuseError { err }) => assert_eq!(
+						err,
+						"Too many peers with unfunded channels, refusing to accept new ones"
+					),
+					_ => panic!(),
+				}
+				assert_eq!(
+					get_err_msg(&nodes[1], &last_random_pk).channel_id,
+					temporary_channel_id
+				);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+}
+
+#[test]
 fn test_inbound_anchors_manual_acceptance() {
 	let anchors_cfg = test_default_channel_config();
 	do_test_manual_inbound_accept_with_override(anchors_cfg, None);

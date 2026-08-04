@@ -3271,7 +3271,8 @@ pub(crate) const ENABLE_GOSSIP_TICKS: u8 = 5;
 pub(super) const MAX_UNFUNDED_CHANS_PER_PEER: usize = 4;
 
 /// The maximum number of peers from which we will allow pending unfunded channels. Once we reach
-/// this many peers we reject new (inbound) channels from peers with which we don't have a channel.
+/// this many peers we reject new (inbound) channels from peers with which we don't have a funded
+/// channel.
 pub(super) const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
 
 /// The maximum allowed size for peer storage, in bytes.
@@ -11389,7 +11390,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let is_only_peer_channel = peer_state.total_channel_count() == 1;
+		let peer_lacks_funded_channels =
+			Self::unfunded_channel_count(peer_state, self.best_block.read().unwrap().height)
+				== peer_state.total_channel_count();
 
 		// Find (and remove) the channel in the unaccepted table. If it's not there, something weird is
 		// happening and return an error. N.B. that we create channel with an outbound SCID of zero so
@@ -11494,10 +11497,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 			return Err(APIError::APIMisuseError { err: err_str });
 		} else {
-			// If this peer already has some channels, a new channel won't increase our number of peers
-			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
-			// channels per-peer we can accept channels from a peer with existing ones.
-			if is_only_peer_channel && peers_without_funded_channels > MAX_UNFUNDED_CHANNEL_PEERS {
+			// If this peer already has a funded channel with us, accepting another channel won't
+			// increase the number of unfunded channels. Otherwise, make sure we don't end up with
+			// too many peers with unfunded channels afterwards.
+			if peer_lacks_funded_channels
+				&& peers_without_funded_channels > MAX_UNFUNDED_CHANNEL_PEERS
+			{
 				let send_msg_err_event = MessageSendEvent::HandleError {
 					node_id: channel.context().get_counterparty_node_id(),
 					action: msgs::ErrorAction::SendErrorMessage {
