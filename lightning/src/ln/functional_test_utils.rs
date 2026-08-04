@@ -166,6 +166,9 @@ pub enum ConnectStyle {
 	/// Provides the full block via the `chain::Listen` interface. In the current code this is
 	/// equivalent to `TransactionsFirst` with some additional assertions.
 	FullBlockViaListen,
+	/// Provides the full block via the `chain::Listen` interface, but replays it a second time
+	/// similar to what a filtering client might do.
+	ReplayedFullBlockViaListen,
 }
 
 impl ConnectStyle {
@@ -180,6 +183,7 @@ impl ConnectStyle {
 			ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks => true,
 			ConnectStyle::TransactionsFirstReorgsOnlyTip => true,
 			ConnectStyle::FullBlockViaListen => false,
+			ConnectStyle::ReplayedFullBlockViaListen => false,
 		}
 	}
 
@@ -194,6 +198,7 @@ impl ConnectStyle {
 			ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks => false,
 			ConnectStyle::TransactionsFirstReorgsOnlyTip => false,
 			ConnectStyle::FullBlockViaListen => false,
+			ConnectStyle::ReplayedFullBlockViaListen => true,
 		}
 	}
 
@@ -201,7 +206,7 @@ impl ConnectStyle {
 		use core::hash::{BuildHasher, Hasher};
 		// Get a random value using the only std API to do so - the DefaultHasher
 		let rand_val = std::collections::hash_map::RandomState::new().build_hasher().finish();
-		let res = match rand_val % 9 {
+		let res = match rand_val % 10 {
 			0 => ConnectStyle::BestBlockFirst,
 			1 => ConnectStyle::BestBlockFirstSkippingBlocks,
 			2 => ConnectStyle::BestBlockFirstReorgsOnlyTip,
@@ -211,6 +216,7 @@ impl ConnectStyle {
 			6 => ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks,
 			7 => ConnectStyle::TransactionsFirstReorgsOnlyTip,
 			8 => ConnectStyle::FullBlockViaListen,
+			9 => ConnectStyle::ReplayedFullBlockViaListen,
 			_ => unreachable!(),
 		};
 		eprintln!("Using Block Connection Style: {:?}", res);
@@ -331,7 +337,14 @@ fn do_connect_block_without_consistency_checks<'a, 'b, 'c, 'd>(node: &'a Node<'b
 			ConnectStyle::FullBlockViaListen => {
 				node.chain_monitor.chain_monitor.block_connected(&block, height);
 				node.node.block_connected(&block, height);
-			}
+			},
+			ConnectStyle::ReplayedFullBlockViaListen => {
+				let header = &block.header;
+				node.chain_monitor.chain_monitor.filtered_block_connected(header, &[], height);
+				node.node.filtered_block_connected(header, &[], height);
+				node.chain_monitor.chain_monitor.block_connected(&block, height);
+				node.node.block_connected(&block, height);
+			},
 		}
 	}
 
@@ -382,7 +395,7 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 		let prev = node.blocks.lock().unwrap().last().unwrap().clone();
 
 		match *node.connect_style.borrow() {
-			ConnectStyle::FullBlockViaListen => {
+			ConnectStyle::FullBlockViaListen | ConnectStyle::ReplayedFullBlockViaListen => {
 				node.chain_monitor.chain_monitor.block_disconnected(&orig.0.header, orig.1);
 				Listen::block_disconnected(node.node, &orig.0.header, orig.1);
 			},
