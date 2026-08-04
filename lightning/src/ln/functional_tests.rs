@@ -3939,12 +3939,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	if *nodes[1].connect_style.borrow() == ConnectStyle::FullBlockViaListen {
-		// We rely on the ability to connect a block redundantly, which isn't allowed via
-		// `chain::Listen`, so we never run the test if we randomly get assigned that
-		// connect_style.
-		return;
-	}
+
 	let funding_tx = create_announced_chan_between_nodes(&nodes, 0, 1).3;
 	let error_message = "Channel force-closed";
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
