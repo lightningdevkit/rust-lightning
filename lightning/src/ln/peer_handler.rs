@@ -1721,7 +1721,7 @@ where
 			debug_assert!(false, "node_id should be set by the time we send a message");
 		}
 		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message).expect("TODO: Handled in the next commit"));
 	}
 
 	fn do_read_event(
@@ -2691,8 +2691,9 @@ where
 					{
 						continue;
 					}
-					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
-					peer.gossip_broadcast_buffer.push_back(encoded_message);
+					if let Ok(encoded_message) = MessageBuf::from_encoded(&encoded_msg) {
+						peer.gossip_broadcast_buffer.push_back(encoded_message);
+					}
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -2733,8 +2734,9 @@ where
 					{
 						continue;
 					}
-					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
-					peer.gossip_broadcast_buffer.push_back(encoded_message);
+					if let Ok(encoded_message) = MessageBuf::from_encoded(&encoded_msg) {
+						peer.gossip_broadcast_buffer.push_back(encoded_message);
+					}
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -2770,8 +2772,9 @@ where
 					{
 						continue;
 					}
-					let encoded_message = MessageBuf::from_encoded(&encoded_msg);
-					peer.gossip_broadcast_buffer.push_back(encoded_message);
+					if let Ok(encoded_message) = MessageBuf::from_encoded(&encoded_msg) {
+						peer.gossip_broadcast_buffer.push_back(encoded_message);
+					}
 				}
 			},
 			_ => {
@@ -4251,7 +4254,7 @@ mod tests {
 		peers[0].read_event(&mut fd_dup, &act_three).unwrap();
 
 		let not_init_msg = msgs::Ping { ponglen: 4, byteslen: 0 };
-		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg);
+		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg).unwrap();
 		assert!(peers[0].read_event(&mut fd_dup, &msg_bytes).is_err());
 	}
 
