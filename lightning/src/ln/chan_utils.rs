@@ -98,7 +98,7 @@ pub fn htlc_timeout_tx_weight(channel_type_features: &ChannelTypeFeatures) -> u6
 }
 
 /// Describes the type of HTLC claim as determined by analyzing the witness.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum HTLCClaim {
 	/// Claims an offered output on a commitment transaction through the timeout path.
 	OfferedTimeout,
