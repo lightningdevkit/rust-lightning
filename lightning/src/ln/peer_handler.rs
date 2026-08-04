@@ -1371,7 +1371,7 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 			log_trace!(logger, "Enqueueing message {:?} to {}", message, log_pubkey!(peer.their_node_id.unwrap().0))
 		}
 		peer.msgs_sent_since_pong += 1;
-		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message));
+		peer.pending_outbound_buffer.push_back(peer.channel_encryptor.encrypt_message(message).expect("TODO: Handled in the next commit"));
 	}
 
 	/// Append a message to a peer's pending outbound/write gossip broadcast buffer
@@ -2028,7 +2028,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, MessageBuf::from_encoded(&encoded_msg));
+					if let Ok(encoded_message) = MessageBuf::from_encoded(&encoded_msg) {
+						self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_message);
+					}
 				}
 			},
 			wire::Message::NodeAnnouncement(ref msg) => {
@@ -2056,7 +2058,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, MessageBuf::from_encoded(&encoded_msg));
+					if let Ok(encoded_message) = MessageBuf::from_encoded(&encoded_msg) {
+						self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_message);
+					}
 				}
 			},
 			wire::Message::ChannelUpdate(ref msg) => {
@@ -2079,7 +2083,9 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 					if except_node.is_some() && peer.their_node_id.as_ref().map(|(pk, _)| pk) == except_node {
 						continue;
 					}
-					self.enqueue_encoded_gossip_broadcast(&mut *peer, MessageBuf::from_encoded(&encoded_msg));
+					if let Ok(encoded_message) = MessageBuf::from_encoded(&encoded_msg) {
+						self.enqueue_encoded_gossip_broadcast(&mut *peer, encoded_message);
+					}
 				}
 			},
 			_ => debug_assert!(false, "We shouldn't attempt to forward anything but gossip messages"),
@@ -3220,7 +3226,7 @@ mod tests {
 		assert_eq!(peers[0].read_event(&mut fd_dup, &act_three).unwrap(), false);
 
 		let not_init_msg = msgs::Ping { ponglen: 4, byteslen: 0 };
-		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg);
+		let msg_bytes = dup_encryptor.encrypt_message(&not_init_msg).unwrap();
 		assert!(peers[0].read_event(&mut fd_dup, &msg_bytes).is_err());
 	}
 
