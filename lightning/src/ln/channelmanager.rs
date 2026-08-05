@@ -8043,7 +8043,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			// If this peer already has some channels, a new channel won't increase our number of peers
 			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
 			// channels per-peer we can accept channels from a peer with existing ones.
-			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
+			if is_only_peer_channel && peers_without_funded_channels > MAX_UNFUNDED_CHANNEL_PEERS {
 				let send_msg_err_event = events::MessageSendEvent::HandleError {
 					node_id: channel_phase.context().get_counterparty_node_id(),
 					action: msgs::ErrorAction::SendErrorMessage{
@@ -15919,7 +15919,7 @@ mod tests {
 		let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 		// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
-		for _ in 0..super::MAX_UNFUNDED_CHANNEL_PEERS - 1 {
+		for _ in 0..super::MAX_UNFUNDED_CHANNEL_PEERS {
 			let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
 				&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 			nodes[1].node.peer_connected(random_pk, &msgs::Init {
