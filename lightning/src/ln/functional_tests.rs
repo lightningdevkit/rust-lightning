@@ -2362,16 +2362,6 @@ pub fn test_htlc_ignore_latest_remote_commitment() {
 	let node_a_id = nodes[0].node.get_our_node_id();
 	let node_b_id = nodes[1].node.get_our_node_id();
 
-	match *nodes[1].connect_style.borrow() {
-		ConnectStyle::FullBlockViaListen
-		| ConnectStyle::FullBlockDisconnectionsSkippingViaListen => {
-			// We rely on the ability to connect a block redundantly, which isn't allowed via
-			// `chain::Listen`, so we never run the test if we randomly get assigned that
-			// connect_style.
-			return;
-		},
-		_ => {},
-	}
 	let funding_tx = create_announced_chan_between_nodes(&nodes, 0, 1).3;
 	let message = "Channel force-closed".to_owned();
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
@@ -3003,6 +2993,28 @@ pub fn test_drop_messages_peer_disconnect_b() {
 	do_test_drop_messages_peer_disconnect(4, false);
 	do_test_drop_messages_peer_disconnect(5, false);
 	do_test_drop_messages_peer_disconnect(6, false);
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_filtered_block_connected_allows_same_block_rescan() {
+	let chanmon_cfgs = create_chanmon_cfgs(1);
+	let node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
+	let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
+
+	let best_block = nodes[0].node.current_best_block();
+	let height = best_block.height + 1;
+	let header = create_dummy_header(best_block.block_hash, height);
+	nodes[0].node.filtered_block_connected(&header, &[], height);
+	nodes[0].node.filtered_block_connected(&header, &[], height);
+
+	let current_best_block = nodes[0].node.current_best_block();
+	assert_eq!(current_best_block.block_hash, header.block_hash());
+	assert_eq!(current_best_block.height, height);
+	assert_eq!(
+		current_best_block.get_hash_at_height(best_block.height),
+		Some(best_block.block_hash)
+	);
 }
 
 #[xtest(feature = "_externalize_tests")]
