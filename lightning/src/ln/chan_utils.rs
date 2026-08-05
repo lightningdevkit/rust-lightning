@@ -192,7 +192,7 @@ pub fn aggregated_htlc_timeout_input_output_pair_weight(
 }
 
 /// Describes the type of HTLC claim as determined by analyzing the witness.
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum HTLCClaim {
 	/// Claims an offered output on a commitment transaction through the timeout path.
 	OfferedTimeout,

@@ -12009,7 +12009,7 @@ where
 				// Mutually exclusive with prevtx, which is accounted for below.
 				shared_input_txid: None,
 			};
-			let message_len = MESSAGE_TEMPLATE.serialized_length() + prevtx.serialized_length();
+			let message_len = 2 + MESSAGE_TEMPLATE.serialized_length() + prevtx.serialized_length();
 			if message_len > LN_MAX_MSG_LEN {
 				return Err(APIError::APIMisuseError {
 					err: format!(

@@ -26,6 +26,16 @@ PIN_RELEASE_DEPS # pin the release dependencies
 # Starting with version 0.27.8, the `hyper-rustls` crate has an MSRV of rustc 1.85.
 [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p hyper-rustls --precise "0.27.7" --verbose
 
+# Starting with version 0.1.35, the `jobserver` crate has an MSRV of rustc 1.85.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p jobserver --precise "0.1.34" --verbose
+
+# Starting with version 0.11.16, the `quinn-proto` crate depends on `rand` 0.10, which pulls in
+# `chacha20` 0.10, `cpufeatures` 0.3, `rand_core` 0.10, `rand_pcg` 0.10 and `getrandom` 0.4, all of
+# which are edition 2024 and thus not even parsable by our MSRV's cargo. `quinn` only reaches us as
+# an unused optional dependency of `reqwest`, so it is never built, but cargo still insists on
+# reading the manifests.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p quinn-proto --precise "0.11.15" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking Transaction Sync Clients with features."

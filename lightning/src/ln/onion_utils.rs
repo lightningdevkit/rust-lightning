@@ -17,6 +17,9 @@ use crate::events::HTLCHandlingFailureReason;
 use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs::{self, DecodeError};
+use crate::ln::types::ChannelId;
+use crate::ln::wire::Encode;
+use crate::ln::LN_MAX_MSG_LEN;
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::routing::gossip::NetworkUpdate;
 use crate::routing::router::{BlindedTail, Path, RouteHop, RouteParameters, TrampolineHop};
@@ -26,7 +29,7 @@ use crate::types::payment::{PaymentHash, PaymentPreimage};
 use crate::util::errors::APIError;
 use crate::util::logger::Logger;
 use crate::util::ser::{
-	LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer,
+	BigSize, LengthCalculatingWriter, Readable, ReadableArgs, VecWriter, Writeable, Writer,
 };
 
 use bitcoin::hashes::cmp::fixed_time_eq;
@@ -896,7 +899,6 @@ fn build_unencrypted_failure_packet(
 	hold_time: u32, min_packet_len: usize,
 ) -> OnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
-	assert!(failure_data.len() <= 64531);
 
 	// Failure len is 2 bytes type plus the data.
 	let failure_len = 2 + failure_data.len();
@@ -931,6 +933,9 @@ fn build_unencrypted_failure_packet(
 	// Prepare attribution data.
 	let mut packet = OnionErrorPacket { data: writer.0, attribution_data: None };
 	update_attribution_data(&mut packet, shared_secret, hold_time);
+
+	// The failure packets we build ourselves must always be small enough to send to our peer.
+	debug_assert!(update_fail_htlc_wire_len(&packet) <= LN_MAX_MSG_LEN);
 
 	packet
 }
@@ -2722,6 +2727,31 @@ pub(crate) const HMAC_LEN: usize = 4;
 // subsequent node, the number of HMACs decreases by 1. 20 + 19 + 18 + ... + 1 = 20 * 21 / 2 = 210.
 pub(crate) const HMAC_COUNT: usize = MAX_HOPS * (MAX_HOPS + 1) / 2;
 
+fn update_fail_htlc_wire_len(onion_error: &OnionErrorPacket) -> usize {
+	let empty_msg_len = msgs::UpdateFailHTLC {
+		channel_id: ChannelId([0; 32]),
+		htlc_id: 0,
+		reason: Vec::new(),
+		attribution_data: None,
+	}
+	.serialized_length();
+
+	let attribution_data_len =
+		onion_error.attribution_data.as_ref().map_or(0, |attribution_data| {
+			let value_len = attribution_data.serialized_length();
+			// Attribution data is written as a TLV of type 1
+			BigSize(1).serialized_length()
+				+ BigSize(value_len as u64).serialized_length()
+				+ value_len
+		});
+
+	// Messages are prefixed with their two-byte type on the wire.
+	msgs::UpdateFailHTLC::TYPE.serialized_length()
+		+ empty_msg_len
+		+ onion_error.data.len()
+		+ attribution_data_len
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 /// Attribution data allows the sender of an HTLC to identify which hop failed an HTLC robustly,
 /// preventing earlier hops from corrupting the HTLC failure information (or at least allowing the
@@ -2907,6 +2937,12 @@ fn process_failure_packet(
 
 	// Add this node's attribution data.
 	update_attribution_data(onion_error, shared_secret, hold_time);
+
+	// A downstream peer could send us a maximum-sized failure packet without attribution data, in
+	// which case adding ours would push the `update_fail_htlc` over the message size limit.
+	if update_fail_htlc_wire_len(onion_error) > LN_MAX_MSG_LEN {
+		onion_error.attribution_data = None;
+	}
 }
 
 /// Updates fulfill attribution data with the given hold time for an intermediate or final node. If no downstream
@@ -3980,29 +4016,20 @@ mod tests {
 
 	#[test]
 	fn test_failure_packet_max_size() {
-		// Create a failure message of the maximum size of 65535 bytes. It is composed of:
-		// - 32 bytes channel id
-		// - 8 bytes htlc id
-		// - 2 bytes reason length
-		//    - 32 bytes of hmac
-		//    - 2 bytes of failure type
-		//    - 2 bytes of failure length
-		//    - 64531 bytes of failure data
-		//    - 2 bytes of pad len (0)
-		// - 1 byte attribution data tlv type
-		// - 3 bytes attribution data tlv length
-		//    - 80 bytes of attribution data hold times
-		//    - 840 bytes of attribution data hmacs
-		let failure_data = vec![0; 64531];
-
 		let shared_secret = [0; 32];
+		let reason = LocalHTLCFailureReason::TemporaryNodeFailure;
+
+		let empty = super::build_unencrypted_failure_packet(&shared_secret, reason, &[], 0, 0);
+		let failure_data = vec![0; LN_MAX_MSG_LEN - update_fail_htlc_wire_len(&empty)];
+
 		let onion_error = super::build_unencrypted_failure_packet(
 			&shared_secret,
-			LocalHTLCFailureReason::TemporaryNodeFailure,
+			reason,
 			&failure_data,
 			0,
 			DEFAULT_MIN_FAILURE_PACKET_LEN,
 		);
+		assert!(onion_error.attribution_data.is_some());
 
 		let msg = UpdateFailHTLC {
 			channel_id: ChannelId([0; 32]),
@@ -4012,8 +4039,26 @@ mod tests {
 		};
 
 		let mut buffer = Vec::new();
+		msgs::UpdateFailHTLC::TYPE.write(&mut buffer).unwrap();
 		msg.write(&mut buffer).unwrap();
+		assert_eq!(buffer.len(), LN_MAX_MSG_LEN);
+		assert_eq!(update_fail_htlc_wire_len(&msg.into()), buffer.len());
+	}
 
-		assert_eq!(buffer.len(), 65535);
+	#[test]
+	fn relaying_max_sized_failure_packet_does_not_exceed_wire_limit() {
+		let empty = OnionErrorPacket { data: Vec::new(), attribution_data: None };
+		let msg = UpdateFailHTLC {
+			channel_id: ChannelId([0; 32]),
+			htlc_id: 0,
+			reason: vec![0; LN_MAX_MSG_LEN - update_fail_htlc_wire_len(&empty)],
+			attribution_data: None,
+		};
+
+		let onion_error =
+			HTLCFailReason::from_msg(&msg).get_encrypted_failure_packet(&[1; 32], &None);
+		assert!(onion_error.attribution_data.is_none());
+
+		assert_eq!(update_fail_htlc_wire_len(&onion_error), LN_MAX_MSG_LEN);
 	}
 }
