@@ -9,49 +9,24 @@ on:
 
 jobs:
   semver-checks:
-    runs-on: ubuntu-latest
+    runs-on: debian-trixie
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: Install Rust stable toolchain
         run: |
           rustup default stable
           rustup override set stable
-      - name: Check SemVer with default features
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-            feature-group: default-features
-      - name: Check SemVer *without* default features
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-            feature-group: only-explicit-features
-      - name: Check lightning-background-processor SemVer
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-            package: lightning-background-processor
-            feature-group: only-explicit-features
-            features: futures
-      - name: Check lightning-block-sync SemVer
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-            package: lightning-block-sync
-            feature-group: only-explicit-features
-            features: rpc-client,rest-client
-      - name: Check lightning-transaction-sync electrum SemVer
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-            manifest-path: lightning-transaction-sync/Cargo.toml
-            feature-group: only-explicit-features
-            features: electrum
-      - name: Check lightning-transaction-sync esplora-blocking SemVer
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-            manifest-path: lightning-transaction-sync/Cargo.toml
-            feature-group: only-explicit-features
-            features: esplora-blocking
-      - name: Check lightning-transaction-sync esplora-async SemVer
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-            manifest-path: lightning-transaction-sync/Cargo.toml
-            feature-group: only-explicit-features
-            features: esplora-async
+      - name: Install SemVer Checker
+        run: cargo install cargo-semver-checks --locked
+      - name: Check SemVer with all features
+        run: cargo semver-checks
+      - name: Check SemVer without any non-default features
+        run: cargo semver-checks --only-explicit-features
+      - name: Check lightning-transaction-sync SemVer
+        run: |
+          cd lightning-transaction-sync
+          cargo semver-checks
+          cargo semver-checks --only-explicit-features
