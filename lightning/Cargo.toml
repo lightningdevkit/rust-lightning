@@ -1,6 +1,6 @@
 [package]
 name = "lightning"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lightningdevkit/rust-lightning/"
@@ -33,7 +33,7 @@ grind_signatures = []
 default = ["std", "grind_signatures"]
 
 [dependencies]
-lightning-types = { version = "0.2.0", path = "../lightning-types", default-features = false }
+lightning-types = { version = "0.2.12", path = "../lightning-types", default-features = false }
 lightning-invoice = { version = "0.33.0", path = "../lightning-invoice", default-features = false }
 
 bech32 = { version = "0.11.0", default-features = false }
