@@ -5,7 +5,7 @@ set -eox pipefail
 source "$(dirname "$0")/ci-tests-common.sh"
 
 echo -e "\n\nTesting no_std builds"
-for DIR in lightning-invoice lightning-rapid-gossip-sync lightning-liquidity; do
+for DIR in lightning-invoice lightning-payer-proof lightning-rapid-gossip-sync lightning-liquidity; do
 	cargo test -p $DIR --quiet --color always --no-default-features
 done
 

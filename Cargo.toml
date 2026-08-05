@@ -8,6 +8,7 @@ members = [
     "lightning-types",
     "lightning-block-sync",
     "lightning-invoice",
+    "lightning-payer-proof",
     "lightning-net-tokio",
     "lightning-persister",
     "lightning-background-processor",

@@ -9,5 +9,6 @@ default = []
 [dependencies]
 lightning = { path = "../lightning", default-features = false }
 lightning-invoice = { path = "../lightning-invoice", default-features = false }
+lightning-payer-proof = { path = "../lightning-payer-proof", default-features = false }
 lightning-rapid-gossip-sync = { path = "../lightning-rapid-gossip-sync", default-features = false }
 lightning-background-processor = { path = "../lightning-background-processor", default-features = false }

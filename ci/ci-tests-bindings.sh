@@ -9,7 +9,7 @@ echo -e "\n\nTesting c_bindings builds"
 # disable doctests in `c_bindings` so we skip doctests entirely here.
 RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test --quiet --color always --lib --bins --tests
 
-for DIR in lightning-invoice lightning-rapid-gossip-sync; do
+for DIR in lightning-invoice lightning-payer-proof lightning-rapid-gossip-sync; do
 	# check if there is a conflict between no_std and the c_bindings cfg
 	RUSTFLAGS="$RUSTFLAGS --cfg=c_bindings" cargo test -p $DIR --quiet --color always --no-default-features
 done
