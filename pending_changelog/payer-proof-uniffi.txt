@@ -1,0 +1,4 @@
+# API Updates
+ * A new `lightning-payer-proof-uniffi` crate exposes `lightning-payer-proof`'s two verification
+   calls to the languages uniffi targets, returning a flat record of owned plain values. It is its
+   own workspace, as `uniffi` depends on a tree well above LDK's MSRV.
