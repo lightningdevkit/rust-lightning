@@ -34,11 +34,9 @@ jobs:
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
           rustup target add thumbv7m-none-eabi
-          sudo apt-get -y install gcc-arm-none-eabi
       - name: shellcheck the CI and `contrib` scripts
         if: "matrix.platform == 'ubuntu-latest'"
         run: |
-          sudo apt-get -y install shellcheck
           shellcheck ci/*.sh -aP ci
           shellcheck contrib/*.sh -aP contrib
       - name: Set RUSTFLAGS to deny warnings
@@ -237,10 +235,6 @@ jobs:
         run: |
           rustup default ${{ env.TOOLCHAIN }}
           rustup override set ${{ env.TOOLCHAIN }}
-      - name: Install dependencies for honggfuzz
-        run: |
-          sudo apt-get update
-          sudo apt-get -y install build-essential binutils-dev libunwind-dev
       - name: Pin the regex dependency
         run: |
           cd fuzz && cargo update -p regex --precise "1.9.6" && cargo update -p libc --precise 0.2.183 && cd ..
