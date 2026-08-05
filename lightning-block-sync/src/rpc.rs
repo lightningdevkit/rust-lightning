@@ -5,8 +5,8 @@ use crate::gossip::UtxoSource;
 use crate::http::{HttpClient, HttpClientError, JsonResponse, ToParseErrorMessage};
 use crate::{BlockData, BlockHeaderData, BlockSource, BlockSourceResult};
 
-use bitcoin::hash_types::BlockHash;
-use bitcoin::OutPoint;
+use bitcoin::hash_types::{BlockHash, Txid};
+use bitcoin::{OutPoint, TxOut};
 
 use serde_json;
 
@@ -190,16 +190,24 @@ impl UtxoSource for RpcClient {
 		}
 	}
 
-	fn is_output_unspent<'a>(
+	fn get_block_txids<'a>(
+		&'a self, block_hash: &'a BlockHash,
+	) -> impl Future<Output = BlockSourceResult<Vec<Txid>>> + Send + 'a {
+		async move {
+			let header_hash = serde_json::json!(block_hash.to_string());
+			let verbosity = serde_json::json!(1);
+			Ok(self.call_method("getblock", &[header_hash, verbosity]).await?)
+		}
+	}
+
+	fn get_unspent_txout<'a>(
 		&'a self, outpoint: OutPoint,
-	) -> impl Future<Output = BlockSourceResult<bool>> + Send + 'a {
+	) -> impl Future<Output = BlockSourceResult<Option<TxOut>>> + Send + 'a {
 		async move {
 			let txid_param = serde_json::json!(outpoint.txid.to_string());
 			let vout_param = serde_json::json!(outpoint.vout);
 			let include_mempool = serde_json::json!(false);
-			let utxo_opt: serde_json::Value =
-				self.call_method("gettxout", &[txid_param, vout_param, include_mempool]).await?;
-			Ok(!utxo_opt.is_null())
+			Ok(self.call_method("gettxout", &[txid_param, vout_param, include_mempool]).await?)
 		}
 	}
 }
@@ -322,17 +330,37 @@ mod tests {
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
-		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
-		assert_eq!(unspent_output, false);
+		let unspent_output = client.get_unspent_txout(outpoint).await.unwrap();
+		assert_eq!(unspent_output, None);
 	}
 
 	#[tokio::test]
 	async fn fetches_utxo() {
-		let response = serde_json::json!({ "result": {"bestblock": 1, "confirmations": 42}});
+		let response = serde_json::json!({ "result": {
+			"bestblock": 1,
+			"confirmations": 42,
+			"value": 0.07,
+			"scriptPubKey": { "hex": "0014abcd" },
+		}});
 		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
 		let client = RpcClient::new(CREDENTIALS, server.endpoint());
 		let outpoint = OutPoint::new(bitcoin::Txid::from_byte_array([0; 32]), 0);
-		let unspent_output = client.is_output_unspent(outpoint).await.unwrap();
-		assert_eq!(unspent_output, true);
+		let unspent_output = client.get_unspent_txout(outpoint).await.unwrap();
+		let expected = TxOut {
+			value: bitcoin::Amount::from_sat(7_000_000),
+			script_pubkey: bitcoin::ScriptBuf::from_hex("0014abcd").unwrap(),
+		};
+		assert_eq!(unspent_output, Some(expected));
+	}
+
+	#[tokio::test]
+	async fn fetches_block_txids() {
+		let txid = bitcoin::Txid::from_byte_array([1; 32]);
+		let response = serde_json::json!({ "result": { "nTx": 1, "tx": [txid.to_string()] }});
+		let server = HttpServer::responding_with_ok(MessageBody::Content(response));
+		let client = RpcClient::new(CREDENTIALS, server.endpoint());
+		let block_hash = BlockHash::from_byte_array([0; 32]);
+		let txids = client.get_block_txids(&block_hash).await.unwrap();
+		assert_eq!(txids, vec![txid]);
 	}
 }

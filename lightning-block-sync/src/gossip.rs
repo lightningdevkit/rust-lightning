@@ -2,11 +2,10 @@
 //! current UTXO set. This module defines an implementation of the LDK API required to do so
 //! against a [`BlockSource`] which implements a few additional methods for accessing the UTXO set.
 
-use crate::{BlockData, BlockSource, BlockSourceError, BlockSourceResult};
+use crate::{BlockSource, BlockSourceError, BlockSourceResult};
 
-use bitcoin::block::Block;
 use bitcoin::constants::ChainHash;
-use bitcoin::hash_types::BlockHash;
+use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::transaction::{OutPoint, TxOut};
 
 use lightning::routing::utxo::{UtxoFuture, UtxoLookup, UtxoLookupError, UtxoResult};
@@ -20,26 +19,28 @@ use std::pin::{pin, Pin};
 use std::sync::{Arc, Mutex};
 use std::task::Poll;
 
-/// A trait which extends [`BlockSource`] and can be queried to fetch the block at a given height
-/// as well as whether a given output is unspent (i.e. a member of the current UTXO set).
-///
-/// Note that while this is implementable for a [`BlockSource`] which returns filtered block data
-/// (i.e. [`BlockData::HeaderOnly`] for [`BlockSource::get_block`] requests), such an
-/// implementation will reject all gossip as it is not fully able to verify the UTXOs referenced.
+/// A trait which extends [`BlockSource`] and can be queried to fetch the txids of the
+/// transactions in a block as well as outputs which are members of the current UTXO set.
 pub trait UtxoSource: BlockSource + 'static {
 	/// Fetches the block hash of the block at the given height.
 	///
-	/// This will, in turn, be passed to to [`BlockSource::get_block`] to fetch the block needed
-	/// for gossip validation.
+	/// This will, in turn, be passed to [`Self::get_block_txids`] to fetch the txids of the block
+	/// needed for gossip validation.
 	fn get_block_hash_by_height<'a>(
 		&'a self, block_height: u32,
 	) -> impl Future<Output = BlockSourceResult<BlockHash>> + Send + 'a;
 
-	/// Returns true if the given output has *not* been spent, i.e. is a member of the current UTXO
-	/// set.
-	fn is_output_unspent<'a>(
+	/// Fetches the txids of all transactions in the block with the given hash, in the order the
+	/// transactions appear in the block.
+	fn get_block_txids<'a>(
+		&'a self, block_hash: &'a BlockHash,
+	) -> impl Future<Output = BlockSourceResult<Vec<Txid>>> + Send + 'a;
+
+	/// Returns the output at the given outpoint if it has *not* been spent, i.e. is a member of
+	/// the current UTXO set, or `None` otherwise.
+	fn get_unspent_txout<'a>(
 		&'a self, outpoint: OutPoint,
-	) -> impl Future<Output = BlockSourceResult<bool>> + Send + 'a;
+	) -> impl Future<Output = BlockSourceResult<Option<TxOut>>> + Send + 'a;
 }
 
 #[cfg(feature = "tokio")]
@@ -135,10 +136,10 @@ where
 {
 	source: Blocks,
 	spawn: S,
-	block_cache: Arc<Mutex<VecDeque<(u32, Block)>>>,
+	txid_cache: Arc<Mutex<VecDeque<(u32, Vec<Txid>)>>>,
 }
 
-const BLOCK_CACHE_SIZE: usize = 5;
+const TXID_CACHE_SIZE: usize = 50;
 
 impl<S: FutureSpawner, Blocks: Deref + Send + Sync + Clone> GossipVerifier<S, Blocks>
 where
@@ -151,44 +152,34 @@ where
 		Self {
 			source,
 			spawn,
-			block_cache: Arc::new(Mutex::new(VecDeque::with_capacity(BLOCK_CACHE_SIZE))),
+			txid_cache: Arc::new(Mutex::new(VecDeque::with_capacity(TXID_CACHE_SIZE))),
 		}
 	}
 
 	async fn retrieve_utxo(
-		source: Blocks, block_cache: Arc<Mutex<VecDeque<(u32, Block)>>>, short_channel_id: u64,
+		source: Blocks, txid_cache: Arc<Mutex<VecDeque<(u32, Vec<Txid>)>>>, short_channel_id: u64,
 	) -> Result<TxOut, UtxoLookupError> {
 		let block_height = (short_channel_id >> 5 * 8) as u32; // block height is most significant three bytes
 		let transaction_index = ((short_channel_id >> 2 * 8) & 0xffffff) as u32;
 		let output_index = (short_channel_id & 0xffff) as u16;
 
-		let (outpoint, output);
-
-		'tx_found: loop {
-			macro_rules! process_block {
-				($block: expr) => {{
-					if transaction_index as usize >= $block.txdata.len() {
+		let mut cached_txid = None;
+		{
+			let recent_blocks = txid_cache.lock().unwrap();
+			for (height, txids) in recent_blocks.iter() {
+				if *height == block_height {
+					if transaction_index as usize >= txids.len() {
 						return Err(UtxoLookupError::UnknownTx);
 					}
-					let transaction = &$block.txdata[transaction_index as usize];
-					if output_index as usize >= transaction.output.len() {
-						return Err(UtxoLookupError::UnknownTx);
-					}
-
-					outpoint = OutPoint::new(transaction.compute_txid(), output_index.into());
-					output = transaction.output[output_index as usize].clone();
-				}};
-			}
-			{
-				let recent_blocks = block_cache.lock().unwrap();
-				for (height, block) in recent_blocks.iter() {
-					if *height == block_height {
-						process_block!(block);
-						break 'tx_found;
-					}
+					cached_txid = Some(txids[transaction_index as usize]);
+					break;
 				}
 			}
+		}
 
+		let txid = if let Some(txid) = cached_txid {
+			txid
+		} else {
 			let ((_, tip_height_opt), block_hash) = Joiner::new(
 				pin!(source.get_best_block()),
 				pin!(source.get_block_hash_by_height(block_height)),
@@ -205,37 +196,30 @@ where
 					return Err(UtxoLookupError::UnknownTx);
 				}
 			}
-			let block_data =
-				source.get_block(&block_hash).await.map_err(|_| UtxoLookupError::UnknownTx)?;
-			let block = match block_data {
-				BlockData::HeaderOnly(_) => return Err(UtxoLookupError::UnknownTx),
-				BlockData::FullBlock(block) => block,
-			};
-			process_block!(block);
+			let txids = source
+				.get_block_txids(&block_hash)
+				.await
+				.map_err(|_| UtxoLookupError::UnknownTx)?;
+			if transaction_index as usize >= txids.len() {
+				return Err(UtxoLookupError::UnknownTx);
+			}
+			let txid = txids[transaction_index as usize];
 			{
-				let mut recent_blocks = block_cache.lock().unwrap();
-				let mut insert = true;
-				for (height, _) in recent_blocks.iter() {
-					if *height == block_height {
-						insert = false;
-					}
-				}
-				if insert {
-					if recent_blocks.len() >= BLOCK_CACHE_SIZE {
+				let mut recent_blocks = txid_cache.lock().unwrap();
+				if !recent_blocks.iter().any(|(height, _)| *height == block_height) {
+					if recent_blocks.len() >= TXID_CACHE_SIZE {
 						recent_blocks.pop_front();
 					}
-					recent_blocks.push_back((block_height, block));
+					recent_blocks.push_back((block_height, txids));
 				}
 			}
-			break 'tx_found;
-		}
-		let outpoint_unspent =
-			source.is_output_unspent(outpoint).await.map_err(|_| UtxoLookupError::UnknownTx)?;
-		if outpoint_unspent {
-			Ok(output)
-		} else {
-			Err(UtxoLookupError::UnknownTx)
-		}
+			txid
+		};
+
+		let outpoint = OutPoint::new(txid, output_index.into());
+		let txout =
+			source.get_unspent_txout(outpoint).await.map_err(|_| UtxoLookupError::UnknownTx)?;
+		txout.ok_or(UtxoLookupError::UnknownTx)
 	}
 }
 
@@ -247,9 +231,9 @@ where
 		let res = UtxoFuture::new(notifier);
 		let fut = res.clone();
 		let source = self.source.clone();
-		let block_cache = Arc::clone(&self.block_cache);
+		let txid_cache = Arc::clone(&self.txid_cache);
 		let _not_polled = self.spawn.spawn(async move {
-			let res = Self::retrieve_utxo(source, block_cache, scid).await;
+			let res = Self::retrieve_utxo(source, txid_cache, scid).await;
 			fut.resolve(res);
 		});
 		UtxoResult::Async(res)
