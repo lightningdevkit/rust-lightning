@@ -35,7 +35,14 @@ impl<'a> fmt::Display for PrintableString<'a> {
 		for c in self.0.chars() {
 			let is_other = is_unicode_general_category_other(c);
 			let is_unassigned = is_unicode_general_category_unassigned(c);
-			let c = if c.is_control() || is_other || is_unassigned {
+			// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR (general
+			// categories `Zl`/`Zp`) are covered by neither `char::is_control`
+			// (`Cc` only) nor the top-level `C` tables above, but terminals and
+			// log viewers commonly render them as hard line breaks, allowing an
+			// attacker-controlled string to inject forged lines into operator
+			// logs — so the generated separator table filters them as well.
+			let is_line_separator = is_unicode_general_category_separator(c);
+			let c = if c.is_control() || is_other || is_unassigned || is_line_separator {
 				core::char::REPLACEMENT_CHARACTER
 			} else {
 				c
@@ -77,5 +84,18 @@ mod tests {
 		// U+13440 is in the Egyptian Hieroglyph Format Controls block, but its
 		// general category is `Mn`, not `Cf`, so the `Cf` range ends at U+1343F.
 		assert_eq!(format!("{}", PrintableString("x\u{1343F}y\u{13440}z")), "x\u{FFFD}y\u{13440}z");
+	}
+
+	#[test]
+	fn sanitizes_line_and_paragraph_separators() {
+		// U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR are general
+		// categories `Zl`/`Zp`, not `Cc`, so `char::is_control` does not catch
+		// them, yet terminals and log viewers commonly render them as hard line
+		// breaks. As with the bidi overrides above, an attacker-controlled string
+		// must not be able to use them to inject forged log lines.
+		assert_eq!(
+			format!("{}", PrintableString("ok\u{2028}forged\u{2029}more")),
+			"ok\u{FFFD}forged\u{FFFD}more"
+		);
 	}
 }

@@ -13,7 +13,7 @@ rm *_target.rs
 [ "$(git diff)" != "" ] && exit 1
 popd
 
-cargo install --color always --force honggfuzz --no-default-features
+cargo install --color always --force honggfuzz --no-default-features --version "=0.5.59" --locked
 sed -i 's/lto = true//' Cargo.toml
 
 export RUSTFLAGS="--cfg=secp256k1_fuzz --cfg=hashes_fuzz"

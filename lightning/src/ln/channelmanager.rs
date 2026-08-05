@@ -2902,7 +2902,8 @@ pub(crate) const ENABLE_GOSSIP_TICKS: u8 = 5;
 const MAX_UNFUNDED_CHANS_PER_PEER: usize = 4;
 
 /// The maximum number of peers from which we will allow pending unfunded channels. Once we reach
-/// this many peers we reject new (inbound) channels from peers with which we don't have a channel.
+/// this many peers we reject new (inbound) channels from peers with which we don't have a funded
+/// channel.
 const MAX_UNFUNDED_CHANNEL_PEERS: usize = 50;
 
 /// The maximum number of peers which we do not have a (funded) channel with. Once we reach this
@@ -7949,7 +7950,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})?;
 		let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 		let peer_state = &mut *peer_state_lock;
-		let is_only_peer_channel = peer_state.total_channel_count() == 1;
+		let peer_lacks_funded_channels =
+			Self::unfunded_channel_count(peer_state, self.best_block.read().unwrap().height)
+				== peer_state.total_channel_count();
 
 		// Find (and remove) the channel in the unaccepted table. If it's not there, something weird is
 		// happening and return an error. N.B. that we create channel with an outbound SCID of zero so
@@ -8040,10 +8043,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 			return Err(APIError::APIMisuseError { err: err_str });
 		} else {
-			// If this peer already has some channels, a new channel won't increase our number of peers
-			// with unfunded channels, so as long as we aren't over the maximum number of unfunded
-			// channels per-peer we can accept channels from a peer with existing ones.
-			if is_only_peer_channel && peers_without_funded_channels >= MAX_UNFUNDED_CHANNEL_PEERS {
+			// If this peer already has a funded channel with us, accepting another channel won't
+			// increase the number of unfunded channels. Otherwise, make sure we don't end up with
+			// too many peers with unfunded channels afterwards.
+			if peer_lacks_funded_channels
+				&& peers_without_funded_channels > MAX_UNFUNDED_CHANNEL_PEERS
+			{
 				let send_msg_err_event = events::MessageSendEvent::HandleError {
 					node_id: channel_phase.context().get_counterparty_node_id(),
 					action: msgs::ErrorAction::SendErrorMessage{
@@ -15919,7 +15924,7 @@ mod tests {
 		let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
 
 		// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
-		for _ in 0..super::MAX_UNFUNDED_CHANNEL_PEERS - 1 {
+		for _ in 0..super::MAX_UNFUNDED_CHANNEL_PEERS {
 			let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
 				&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
 			nodes[1].node.peer_connected(random_pk, &msgs::Init {
@@ -15969,6 +15974,74 @@ mod tests {
 			_ => panic!("Unexpected event"),
 		}
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, last_random_pk);
+	}
+
+	#[test]
+	fn test_unfunded_channel_peer_limit_multiple_requests() {
+		// Tests that a peer cannot bypass the `MAX_UNFUNDED_CHANNEL_PEERS` limit by sending us several
+		// `open_channel` messages in quick succession, before we get a chance to accept any of them.
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let mut settings = test_default_channel_config();
+		settings.manually_accept_inbound_channels = true;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(settings)]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		// Note that create_network connects the nodes together for us
+
+		nodes[0].node.create_channel(nodes[1].node.get_our_node_id(), 100_000, 0, 42, None, None).unwrap();
+		let mut open_channel_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, nodes[1].node.get_our_node_id());
+
+		// First, get us up to MAX_UNFUNDED_CHANNEL_PEERS so we can test at the edge
+		for _ in 0..super::MAX_UNFUNDED_CHANNEL_PEERS {
+			let random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+				&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
+			nodes[1].node.peer_connected(random_pk, &msgs::Init {
+				features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+			}, true).unwrap();
+
+			nodes[1].node.handle_open_channel(random_pk, &open_channel_msg);
+			let events = nodes[1].node.get_and_clear_pending_events();
+			match events[0] {
+				Event::OpenChannelRequest { temporary_channel_id, .. } => {
+					nodes[1].node.accept_inbound_channel(&temporary_channel_id, &random_pk, 23).unwrap();
+				}
+				_ => panic!("Unexpected event"),
+			}
+			get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, random_pk);
+			open_channel_msg.common_fields.temporary_channel_id = ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
+		}
+
+		// Now have one more peer request two channels before we accept either of them.
+		let last_random_pk = PublicKey::from_secret_key(&nodes[0].node.secp_ctx,
+			&SecretKey::from_slice(&nodes[1].keys_manager.get_secure_random_bytes()).unwrap());
+		nodes[1].node.peer_connected(last_random_pk, &msgs::Init {
+			features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+		}, true).unwrap();
+
+		for _ in 0..2 {
+			nodes[1].node.handle_open_channel(last_random_pk, &open_channel_msg);
+			open_channel_msg.common_fields.temporary_channel_id = ChannelId::temporary_from_entropy_source(&nodes[0].keys_manager);
+		}
+
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 2);
+
+		// Neither of them should be acceptable, as the peer still has no funded channel with us and
+		// we're already at the limit of peers with unfunded channels.
+		for event in events {
+			match event {
+				Event::OpenChannelRequest { temporary_channel_id, .. } => {
+					match nodes[1].node.accept_inbound_channel(&temporary_channel_id, &last_random_pk, 23) {
+						Err(APIError::APIMisuseError { err }) =>
+							assert_eq!(err, "Too many peers with unfunded channels, refusing to accept new ones"),
+						_ => panic!(),
+					}
+					assert_eq!(get_err_msg(&nodes[1], &last_random_pk).channel_id, temporary_channel_id);
+				},
+				_ => panic!("Unexpected event"),
+			}
+		}
 	}
 
 	#[test]

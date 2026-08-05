@@ -10,11 +10,15 @@
 
 """Generate Unicode general-category predicates from `UnicodeData.txt`.
 
-Emits two `pub(crate)` functions taking a `char`, split into two disjoint
-buckets across the Unicode top-level `C` ("Other") category so callers can
-compose them:
+Emits three `pub(crate)` functions taking a `char`, split into disjoint
+buckets across the Unicode top-level `C` ("Other") and `Z` ("Separator")
+categories so callers can compose them:
 
     is_unicode_general_category_other         — Cc / Cf / Cs / Co (assigned)
+    is_unicode_general_category_separator     — Zl / Zp (line and paragraph
+                                                    separators; `Zs` is
+                                                    excluded as it contains
+                                                    U+0020 SPACE)
     is_unicode_general_category_unassigned    — Cn  (plus codepoints above
                                                     U+10FFFF, which aren't
                                                     valid codepoints at all)
@@ -126,6 +130,7 @@ def parse_categories(path):
 
 
 ASSIGNED_OTHER_CATS = frozenset({"Cc", "Cf", "Cs", "Co"})
+SEPARATOR_CATS = frozenset({"Zl", "Zp"})
 
 
 def coalesce_ranges(cats, names, target_cats, *, label):
@@ -238,10 +243,11 @@ def _emit_matches_body(lines, arms):
 	lines.append("\t)")
 
 
-def render_rust(other_ranges, unassigned_ranges):
-	"""Render the final Rust source defining both `char`-taking predicates.
+def render_rust(other_ranges, separator_ranges, unassigned_ranges):
+	"""Render the final Rust source defining the `char`-taking predicates.
 
-	`other_ranges` and `unassigned_ranges` are lists of `(start, end, label)`.
+	`other_ranges`, `separator_ranges`, and `unassigned_ranges` are lists of
+	`(start, end, label)`.
 	The unassigned function additionally gets a synthetic final arm catching
 	`u32` values above U+10FFFF — these aren't valid Unicode codepoints, so
 	by definition they have no general category and the unassigned bucket is
@@ -259,6 +265,19 @@ def render_rust(other_ranges, unassigned_ranges):
 	lines.append("pub(crate) fn is_unicode_general_category_other(c: char) -> bool {")
 	other_arms = [(_pattern(s, e), label) for s, e, label in other_ranges]
 	_emit_matches_body(lines, other_arms)
+	lines.append("}")
+	lines.append("")
+
+	lines.append("/// Returns `true` if `c` is in Unicode general category `Zl` (Line")
+	lines.append("/// Separator) or `Zp` (Paragraph Separator). Terminals and log viewers")
+	lines.append("/// commonly render these as hard line breaks, so untrusted strings filter")
+	lines.append("/// them alongside the `C` buckets. `Zs` (Space Separator) is deliberately")
+	lines.append("/// excluded: it contains U+0020 SPACE and other ordinary spacing")
+	lines.append("/// characters.")
+	lines.append("#[allow(dead_code)]")
+	lines.append("pub(crate) fn is_unicode_general_category_separator(c: char) -> bool {")
+	separator_arms = [(_pattern(s, e), label) for s, e, label in separator_ranges]
+	_emit_matches_body(lines, separator_arms)
 	lines.append("}")
 	lines.append("")
 
@@ -289,8 +308,9 @@ def main(argv):
 
 	cats, names = parse_categories(args.unicode_data)
 	other = coalesce_ranges(cats, names, ASSIGNED_OTHER_CATS, label=True)
+	separator = coalesce_ranges(cats, names, SEPARATOR_CATS, label=True)
 	unassigned = coalesce_ranges(cats, names, frozenset({"Cn"}), label=False)
-	rust = render_rust(other, unassigned)
+	rust = render_rust(other, separator, unassigned)
 
 	if args.output is None:
 		sys.stdout.write(rust)
@@ -299,6 +319,7 @@ def main(argv):
 		print(
 			f"Wrote {args.output} "
 			f"({len(other)} assigned-Other ranges, "
+			f"{len(separator)} separator ranges, "
 			f"{len(unassigned)} unassigned ranges).",
 			file=sys.stderr,
 		)
