@@ -237,7 +237,7 @@ jobs:
           rustup override set ${{ env.TOOLCHAIN }}
       - name: Pin the regex dependency
         run: |
-          cd fuzz && cargo update -p regex --precise "1.9.6" && cargo update -p libc --precise 0.2.183 && cd ..
+          cd fuzz && cargo update -p regex --precise "1.9.6" && cargo update -p libc --precise 0.2.183 && cargo update -p honggfuzz --precise 0.5.59 && cargo update -p semver --precise 1.0.27 && cd ..
       - name: Sanity check fuzz targets on Rust ${{ env.TOOLCHAIN }}
         run: |
           cd fuzz
