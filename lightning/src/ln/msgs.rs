@@ -2633,18 +2633,10 @@ mod fuzzy_internal_msgs {
 			outgoing_cltv_value: u32,
 			multipath_trampoline_data: Option<FinalOnionHopData>,
 			trampoline_packet: TrampolineOnionPacket,
-		},
-		/// This is used for Trampoline hops that are not the blinded path intro hop.
-		/// We would only ever construct this variant when we are a Trampoline node forwarding a
-		/// payment along a blinded path.
-		#[allow(unused)]
-		BlindedTrampolineEntrypoint {
-			amt_to_forward: u64,
-			outgoing_cltv_value: u32,
-			multipath_trampoline_data: Option<FinalOnionHopData>,
-			trampoline_packet: TrampolineOnionPacket,
-			/// The blinding point this hop needs to use for its Trampoline onion.
-			current_path_key: PublicKey,
+			/// The blinding point to include in the outer onion. Only set when forwarding within
+			/// a blinded trampoline path for relaying nodes (the introduction node receives its
+			/// path key inside of the TrampolineOnionPacket, set by the original sender).
+			current_path_key: Option<PublicKey>,
 		},
 		Receive {
 			payment_data: Option<FinalOnionHopData>,
@@ -3618,26 +3610,13 @@ impl<'a> Writeable for OutboundOnionPayload<'a> {
 				outgoing_cltv_value,
 				ref multipath_trampoline_data,
 				ref trampoline_packet,
-			} => {
-				_encode_varint_length_prefixed_tlv!(w, {
-					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
-					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
-					(8, multipath_trampoline_data, option),
-					(20, trampoline_packet, required)
-				});
-			},
-			Self::BlindedTrampolineEntrypoint {
-				amt_to_forward,
-				outgoing_cltv_value,
 				current_path_key,
-				ref multipath_trampoline_data,
-				ref trampoline_packet,
 			} => {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, HighZeroBytesDroppedBigSize(*amt_to_forward), required),
 					(4, HighZeroBytesDroppedBigSize(*outgoing_cltv_value), required),
 					(8, multipath_trampoline_data, option),
-					(12, current_path_key, required),
+					(12, current_path_key, option),
 					(20, trampoline_packet, required)
 				});
 			},
@@ -3788,7 +3767,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 		let mut short_id: Option<u64> = None;
 		let mut payment_data: Option<FinalOnionHopData> = None;
 		let mut encrypted_tlvs_opt: Option<WithoutLength<Vec<u8>>> = None;
-		let mut intro_node_blinding_point = None;
+		let mut outer_onion_path_key = None;
 		let mut payment_metadata: Option<WithoutLength<Vec<u8>>> = None;
 		let mut total_msat = None;
 		let mut keysend_preimage: Option<PaymentPreimage> = None;
@@ -3805,7 +3784,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 			(6, short_id, option),
 			(8, payment_data, option),
 			(10, encrypted_tlvs_opt, option),
-			(12, intro_node_blinding_point, option),
+			(12, outer_onion_path_key, option),
 			(16, payment_metadata, option),
 			(18, total_msat, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(20, trampoline_onion_packet, option),
@@ -3823,7 +3802,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT {
 			return Err(DecodeError::InvalidValue);
 		}
-		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
+		if outer_onion_path_key.is_some() && update_add_blinding_point.is_some() {
 			return Err(DecodeError::InvalidValue);
 		}
 
@@ -3831,16 +3810,28 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 			if payment_metadata.is_some() || encrypted_tlvs_opt.is_some() || total_msat.is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
+
+			// A path key in `update_add_htlc` would mean this hop is inside a blinded path, but
+			// payloads within a blinded path may only contain route blinding TLVs, never a
+			// trampoline packet. When trampoline hops are blinded, it is the trampoline onion that
+			// is blinded so:
+			// - The introduction node receives its path key inside the trampoline onion, created
+			//   by the original sender of the payment.
+			// - Relaying nodes receive their path key in the outer onion's `current_path_key`
+			//   TLV, set by the previous trampoline.
+			if update_add_blinding_point.is_some() {
+				return Err(DecodeError::InvalidValue);
+			}
 			return Ok(Self::TrampolineEntrypoint(InboundTrampolineEntrypointPayload {
 				amt_to_forward: amt.ok_or(DecodeError::InvalidValue)?,
 				outgoing_cltv_value: cltv_value.ok_or(DecodeError::InvalidValue)?,
 				multipath_trampoline_data: payment_data,
 				trampoline_packet: trampoline_onion_packet,
-				current_path_key: intro_node_blinding_point,
+				current_path_key: outer_onion_path_key,
 			}));
 		}
 
-		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+		if let Some(blinding_point) = outer_onion_path_key.or(update_add_blinding_point) {
 			if short_id.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -3880,7 +3871,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						payment_relay,
 						payment_constraints,
 						features,
-						intro_node_blinding_point,
+						intro_node_blinding_point: outer_onion_path_key,
 						next_blinding_override,
 					}))
 				},
@@ -3900,7 +3891,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 					Ok(Self::Dummy(InboundOnionDummyPayload {
 						payment_relay,
 						payment_constraints,
-						intro_node_blinding_point,
+						intro_node_blinding_point: outer_onion_path_key,
 					}))
 				},
 				ChaChaTriPolyReadAdapter {
@@ -3924,7 +3915,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 						payment_secret,
 						payment_constraints,
 						payment_context,
-						intro_node_blinding_point,
+						intro_node_blinding_point: outer_onion_path_key,
 						keysend_preimage,
 						invoice_request,
 						custom_tlvs,
@@ -3968,7 +3959,7 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundOnionPaylo
 
 impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampolinePayload {
 	fn read<R: Read>(r: &mut R, args: (Option<PublicKey>, NS)) -> Result<Self, DecodeError> {
-		let (update_add_blinding_point, node_signer) = args;
+		let (outer_onion_path_key, node_signer) = args;
 		let receive_auth_key = node_signer.get_receive_auth_key();
 		let phantom_auth_key = node_signer.get_expanded_key().phantom_node_blinded_path_key;
 
@@ -4009,11 +4000,11 @@ impl<NS: NodeSigner> ReadableArgs<(Option<PublicKey>, NS)> for InboundTrampoline
 		if amt.unwrap_or(0) > MAX_VALUE_MSAT {
 			return Err(DecodeError::InvalidValue);
 		}
-		if intro_node_blinding_point.is_some() && update_add_blinding_point.is_some() {
+		if intro_node_blinding_point.is_some() && outer_onion_path_key.is_some() {
 			return Err(DecodeError::InvalidValue);
 		}
 
-		if let Some(blinding_point) = intro_node_blinding_point.or(update_add_blinding_point) {
+		if let Some(blinding_point) = intro_node_blinding_point.or(outer_onion_path_key) {
 			if next_trampoline.is_some() || payment_data.is_some() || payment_metadata.is_some() {
 				return Err(DecodeError::InvalidValue);
 			}
@@ -6570,6 +6561,7 @@ mod tests {
 			amt_to_forward: 0x0badf00d01020304,
 			outgoing_cltv_value: 0xffffffff,
 			trampoline_packet,
+			current_path_key: None,
 		};
 		let encoded_payload = msg.encode();
 

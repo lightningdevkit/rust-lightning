@@ -2216,6 +2216,7 @@ fn test_trampoline_onion_payload_construction_vectors() {
 				),
 				total_msat: 150153000,
 			}),
+			current_path_key: None,
 		},
 	];
 

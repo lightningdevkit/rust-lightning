@@ -5438,7 +5438,8 @@ impl<
 	#[rustfmt::skip]
 	fn construct_pending_htlc_fail_msg<'a>(
 		&self, msg: &msgs::UpdateAddHTLC, counterparty_node_id: &PublicKey,
-		shared_secret: [u8; 32], inbound_err: InboundHTLCErr
+		shared_secret: [u8; 32], trampoline_shared_secret: &Option<[u8; 32]>,
+		inbound_err: InboundHTLCErr,
 	) -> HTLCFailureMsg {
 		let logger = WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash));
 		log_info!(logger, "Failed to accept/forward incoming HTLC: {}", inbound_err.msg);
@@ -5455,7 +5456,7 @@ impl<
 		}
 
 		let failure = HTLCFailReason::reason(inbound_err.reason, inbound_err.err_data.to_vec())
-					.get_encrypted_failure_packet(&shared_secret, &None);
+					.get_encrypted_failure_packet(&shared_secret, trampoline_shared_secret);
 		return HTLCFailureMsg::Relay(msgs::UpdateFailHTLC {
 			channel_id: msg.channel_id,
 			htlc_id: msg.htlc_id,
@@ -7818,6 +7819,11 @@ impl<
 					}
 				}
 
+				// If the HTLC is invalid, we'll "double wrap" the error so that it can be
+				// propagated to the original sender.
+				let trampoline_shared_secret =
+					next_hop.trampoline_shared_secret().map(|ss| ss.secret_bytes());
+
 				match self.get_pending_htlc_info(
 					&update_add_htlc,
 					shared_secret,
@@ -7923,6 +7929,7 @@ impl<
 							&update_add_htlc,
 							&incoming_counterparty_node_id,
 							shared_secret,
+							&trampoline_shared_secret,
 							inbound_err,
 						);
 						htlc_fails.push((htlc_fail, failure_type, htlc_failure));

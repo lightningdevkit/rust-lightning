@@ -2740,7 +2740,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 			false,
 		);
 
-		expect_payment_failed_conditions(&nodes[0], payment_hash, false, failure);
+		expect_payment_failed_conditions(&nodes[0], payment_hash, blinded, failure);
 
 		// Because we support blinded paths, we also assert on our expected logs to make sure
 		// that the failure reason hidden by obfuscated blinded errors is as expected.
