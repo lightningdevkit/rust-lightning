@@ -3735,7 +3735,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 
 	fn process_all_events(&mut self) {
 		let mut last_pass_no_updates = false;
-		for i in 0..std::usize::MAX {
+		for i in 0..usize::MAX {
 			if i == MAX_SETTLE_ITERATIONS {
 				panic!(
 					"It may take many iterations to settle the state, but it should not take forever"

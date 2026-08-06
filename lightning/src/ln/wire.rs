@@ -724,11 +724,11 @@ mod tests {
 
 	#[test]
 	fn read_unknown_message() {
-		let buffer = &::core::u16::MAX.to_be_bytes();
+		let buffer = &u16::MAX.to_be_bytes();
 		let message = read(&mut &buffer[..], &IgnoringMessageHandler {}).unwrap();
 		match message {
-			Message::Unknown(::core::u16::MAX) => (),
-			_ => panic!("Expected message type {}; found: {}", ::core::u16::MAX, message.type_id()),
+			Message::Unknown(u16::MAX) => (),
+			_ => panic!("Expected message type {}; found: {}", u16::MAX, message.type_id()),
 		}
 	}
 

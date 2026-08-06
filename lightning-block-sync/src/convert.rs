@@ -682,7 +682,7 @@ pub(crate) mod tests {
 		let block = genesis_block(Network::Bitcoin);
 		let response = JsonResponse(serde_json::json!({
 			"bestblockhash": block.block_hash().to_string(),
-			"blocks": std::u64::MAX,
+			"blocks": u64::MAX,
 		}));
 		match TryInto::<(BlockHash, Option<u32>)>::try_into(response) {
 			Err(e) => {

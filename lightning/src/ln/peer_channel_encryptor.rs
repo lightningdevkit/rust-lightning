@@ -33,7 +33,7 @@ use crate::util::ser::VecWriter;
 /// Maximum Lightning message data length according to
 /// [BOLT-8](https://github.com/lightning/bolts/blob/v1.0/08-transport.md#lightning-message-specification)
 /// and [BOLT-1](https://github.com/lightning/bolts/blob/master/01-messaging.md#lightning-message-format):
-pub const LN_MAX_MSG_LEN: usize = ::core::u16::MAX as usize; // Must be equal to 65535
+pub const LN_MAX_MSG_LEN: usize = u16::MAX as usize; // Must be equal to 65535
 
 /// The (rough) size buffer to pre-allocate when encoding a message. Messages should reliably be
 /// smaller than this size by at least 32 bytes or so.
@@ -1062,7 +1062,7 @@ mod tests {
 	#[test]
 	fn max_msg_len_limit_value() {
 		assert_eq!(LN_MAX_MSG_LEN, 65535);
-		assert_eq!(LN_MAX_MSG_LEN, ::core::u16::MAX as usize);
+		assert_eq!(LN_MAX_MSG_LEN, u16::MAX as usize);
 	}
 
 	#[test]
