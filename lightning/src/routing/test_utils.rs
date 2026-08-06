@@ -362,8 +362,8 @@ fn do_build_graph(with_validation: bool) -> (
 		cltv_expiry_delta: (5 << 4) | 3,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: u32::max_value(),
-		fee_proportional_millionths: u32::max_value(),
+		fee_base_msat: u32::MAX,
+		fee_proportional_millionths: u32::MAX,
 		excess_data: Vec::new()
 	});
 	update_channel(&gossip_sync, &secp_ctx, &privkeys[1], UnsignedChannelUpdate {
@@ -392,8 +392,8 @@ fn do_build_graph(with_validation: bool) -> (
 		cltv_expiry_delta: (5 << 4) | 3,
 		htlc_minimum_msat: 0,
 		htlc_maximum_msat: MAX_VALUE_MSAT,
-		fee_base_msat: u32::max_value(),
-		fee_proportional_millionths: u32::max_value(),
+		fee_base_msat: u32::MAX,
+		fee_proportional_millionths: u32::MAX,
 		excess_data: Vec::new()
 	});
 	update_channel(&gossip_sync, &secp_ctx, &privkeys[7], UnsignedChannelUpdate {

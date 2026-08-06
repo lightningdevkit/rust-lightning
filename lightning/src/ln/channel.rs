@@ -11336,7 +11336,7 @@ where
 		let normal_feerate =
 			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
 		let mut proposed_max_feerate =
-			if self.funding.is_outbound() { normal_feerate } else { u32::max_value() };
+			if self.funding.is_outbound() { normal_feerate } else { u32::MAX };
 
 		// The spec requires that (when the channel does not have anchors) we only send absolute
 		// channel fees no greater than the absolute channel fee on the current commitment

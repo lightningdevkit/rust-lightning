@@ -2275,7 +2275,7 @@ impl OutboundPayments {
 				continue 'path_check;
 			}
 			let dest_hop_idx = if path.blinded_tail.is_some() && path.blinded_tail.as_ref().unwrap().hops.len() > 1 {
-				usize::max_value() } else { path.hops.len() - 1 };
+				usize::MAX } else { path.hops.len() - 1 };
 			for (idx, hop) in path.hops.iter().enumerate() {
 				if idx != dest_hop_idx && hop.pubkey == our_node_id {
 					path_errs.push(Err(APIError::InvalidRoute{err: "Path went through us but wasn't a simple rebalance loop to us".to_owned()}));

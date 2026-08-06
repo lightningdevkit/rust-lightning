@@ -178,7 +178,7 @@ impl_ser_tlv_based_enum!(FundingPurpose,
 
 // TODO: Define typed abstraction over feerates to handle their conversions.
 pub(crate) fn compute_feerate_sat_per_1000_weight(fee_sat: u64, weight: u64) -> u32 {
-	(fee_sat * 1000 / weight).try_into().unwrap_or(u32::max_value())
+	(fee_sat * 1000 / weight).try_into().unwrap_or(u32::MAX)
 }
 pub(crate) const fn fee_for_weight(feerate_sat_per_1000_weight: u32, weight: u64) -> u64 {
 	(feerate_sat_per_1000_weight as u64 * weight).div_ceil(1000)

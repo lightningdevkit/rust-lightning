@@ -264,8 +264,8 @@ impl<'a> Router for TestRouter<'a> {
 											CandidateRouteHop::FirstHop(FirstHopCandidate {
 												details: first_hops[idx],
 												payer_node_id: &node_id,
-												payer_node_counter: u32::max_value(),
-												target_node_counter: u32::max_value(),
+												payer_node_counter: u32::MAX,
+												target_node_counter: u32::MAX,
 											});
 										scorer.channel_penalty_msat(
 											&candidate,
@@ -300,8 +300,8 @@ impl<'a> Router for TestRouter<'a> {
 									CandidateRouteHop::PrivateHop(PrivateHopCandidate {
 										hint: &route_hint,
 										target_node_id: &target_node_id,
-										source_node_counter: u32::max_value(),
-										target_node_counter: u32::max_value(),
+										source_node_counter: u32::MAX,
+										target_node_counter: u32::MAX,
 									});
 								scorer.channel_penalty_msat(&candidate, usage, &Default::default());
 							}
@@ -1747,7 +1747,7 @@ impl BaseMessageHandler for TestRoutingMessageHandler {
 			msg: msgs::GossipTimestampFilter {
 				chain_hash: ChainHash::using_genesis_block(Network::Testnet),
 				first_timestamp: gossip_start_time as u32,
-				timestamp_range: u32::max_value(),
+				timestamp_range: u32::MAX,
 			},
 		});
 

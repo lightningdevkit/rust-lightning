@@ -626,10 +626,10 @@ fn adjust_min_max_htlc_for_dust_exposure(
 	}
 
 	if local_dust_exposure_msat as i64 + buffer_dust_limit_timeout_sat as i64 * 1000 - 1
-		> max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::max_value())
+		> max_dust_htlc_exposure_msat.try_into().unwrap_or(i64::MAX)
 	{
 		remaining_msat_below_dust_exposure_limit = Some(cmp::min(
-			remaining_msat_below_dust_exposure_limit.unwrap_or(u64::max_value()),
+			remaining_msat_below_dust_exposure_limit.unwrap_or(u64::MAX),
 			max_dust_htlc_exposure_msat.saturating_sub(local_dust_exposure_msat),
 		));
 		dust_exposure_dust_limit_msat =

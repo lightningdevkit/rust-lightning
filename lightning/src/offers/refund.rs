@@ -1287,7 +1287,7 @@ mod tests {
 
 	#[test]
 	fn builds_refund_with_absolute_expiry() {
-		let future_expiry = Duration::from_secs(u64::max_value());
+		let future_expiry = Duration::from_secs(u64::MAX);
 		let past_expiry = Duration::from_secs(0);
 		let now = future_expiry - Duration::from_secs(1_000);
 

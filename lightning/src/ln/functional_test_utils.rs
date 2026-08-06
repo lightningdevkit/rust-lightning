@@ -5875,7 +5875,7 @@ pub fn create_trampoline_forward_blinded_tail<ES: EntropySource>(
 		payee_node_id,
 		payee_receive_key,
 		payee_tlvs,
-		u64::max_value(),
+		u64::MAX,
 		min_final_cltv_expiry_delta as u16,
 		entropy_source,
 		secp_ctx,
