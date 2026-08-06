@@ -849,9 +849,10 @@ pub enum SpliceCandidateStatus {
 	WaitingOnQuiescence,
 	/// We have committed a contribution but cannot replace the pending candidate via RBF (our
 	/// contribution's feerate is too low, the channel is zero-conf, or a candidate is already
-	/// locking). It will be spliced once the pending candidate locks or, when only the feerate
-	/// prevents the RBF, sooner if the counterparty initiates an RBF that the contribution can
-	/// be included in.
+	/// locking). Once the pending candidate locks, the contribution will begin a fresh splice if
+	/// it does not reuse any inputs or outputs from pending funding; otherwise it will be discarded.
+	/// When only the feerate prevents the RBF, it may instead be included sooner if the counterparty
+	/// initiates an RBF.
 	WaitingOnLock,
 	/// We have proposed this round to the counterparty and are awaiting their acknowledgement.
 	AwaitingAck {
