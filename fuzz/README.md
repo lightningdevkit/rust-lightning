@@ -31,11 +31,12 @@ cargo update
 cargo install --force honggfuzz
 ```
 
-In some environments, you may want to pin the honggfuzz version to `0.5.52`:
+In some environments, you may want to pin the honggfuzz version to `0.5.61`,
+the last version supporting older rustc versions:
 
 ```shell
-cargo update -p honggfuzz --precise "0.5.52"
-cargo install --force honggfuzz --version "0.5.52"
+cargo update -p honggfuzz --precise "0.5.61"
+cargo install --force honggfuzz --version "0.5.61"
 ```
 
 #### cargo-fuzz / libFuzzer
