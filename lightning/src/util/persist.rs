@@ -409,6 +409,32 @@ pub struct PaginatedListResponse {
 	pub next_page_token: Option<PageToken>,
 }
 
+/// A single key-value pair returned by [`PaginatedKVStoreSync::list_paginated_with_values`] or
+/// [`PaginatedKVStore::list_paginated_with_values`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaginatedEntry {
+	/// The key the value is stored under.
+	pub key: String,
+
+	/// The value stored under `key`.
+	pub value: Vec<u8>,
+}
+
+/// Represents the response from [`PaginatedKVStoreSync::list_paginated_with_values`] or
+/// [`PaginatedKVStore::list_paginated_with_values`].
+///
+/// Contains the entries of the current page and a token for retrieving the next page of results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaginatedListWithValuesResponse {
+	/// The entries of this page, ordered from most recently created to least recently created.
+	pub entries: Vec<PaginatedEntry>,
+
+	/// A token that can be passed to the next call to continue pagination.
+	///
+	/// Is `None` if there are no more pages to retrieve.
+	pub next_page_token: Option<PageToken>,
+}
+
 /// Extends [`KVStoreSync`] with paginated key listing in reverse creation order.
 ///
 /// While [`KVStoreSync::list`] returns all keys at once in arbitrary order, this trait adds a
@@ -449,6 +475,44 @@ pub trait PaginatedKVStoreSync: KVStoreSync {
 	fn list_paginated(
 		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
 	) -> Result<PaginatedListResponse, io::Error>;
+
+	/// Returns a paginated list of key-value pairs that are stored under the given
+	/// `secondary_namespace` in `primary_namespace`, ordered from most recently created to least
+	/// recently created.
+	///
+	/// This behaves like [`list_paginated`], except that the value stored under each key is returned
+	/// alongside it. Page token semantics are identical, and ordering is identical in the absence
+	/// of the concurrent changes described below.
+	///
+	/// The default implementation lists the page and then reads each key individually. A page is
+	/// therefore not an atomic snapshot: keys that are removed before their value is read are
+	/// omitted from the returned entries. If a listed key is removed and recreated before it is
+	/// read, the replacement value may be returned at the original key's position.
+	///
+	/// Stores that can retrieve a page of keys and values in a single backend operation - such as
+	/// SQL-backed stores issuing one query per page - should override this to avoid that per-key
+	/// access pattern. Such implementations satisfy the same contract, because a concurrently
+	/// removed or created key is either included in the atomically-fetched page or absent from it
+	/// entirely.
+	///
+	/// [`list_paginated`]: Self::list_paginated
+	fn list_paginated_with_values(
+		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
+	) -> Result<PaginatedListWithValuesResponse, io::Error> {
+		let response = self.list_paginated(primary_namespace, secondary_namespace, page_token)?;
+
+		let mut entries = Vec::with_capacity(response.keys.len());
+		for key in response.keys {
+			match self.read(primary_namespace, secondary_namespace, &key) {
+				Ok(value) => entries.push(PaginatedEntry { key, value }),
+				// The key was removed after we listed it, so it's not part of this page.
+				Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+				Err(e) => return Err(e),
+			}
+		}
+
+		Ok(PaginatedListWithValuesResponse { entries, next_page_token: response.next_page_token })
+	}
 }
 
 /// A wrapper around a [`PaginatedKVStoreSync`] that implements the [`PaginatedKVStore`] trait.
@@ -508,6 +572,20 @@ where
 
 		async move { res }
 	}
+
+	// Forwarding to the sync method (rather than using the default implementation) preserves any
+	// batched override the wrapped store may have.
+	fn list_paginated_with_values(
+		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
+	) -> impl Future<Output = Result<PaginatedListWithValuesResponse, io::Error>> + MaybeSend
+	where
+		Self: MaybeSync,
+	{
+		let res =
+			self.0.list_paginated_with_values(primary_namespace, secondary_namespace, page_token);
+
+		async move { res }
+	}
 }
 
 /// Extends [`KVStore`] with paginated key listing in reverse creation order.
@@ -552,6 +630,68 @@ pub trait PaginatedKVStore: KVStore {
 	fn list_paginated(
 		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
 	) -> impl Future<Output = Result<PaginatedListResponse, io::Error>> + 'static + MaybeSend;
+
+	/// Returns a paginated list of key-value pairs that are stored under the given
+	/// `secondary_namespace` in `primary_namespace`, ordered from most recently created to least
+	/// recently created.
+	///
+	/// This behaves like [`list_paginated`], except that the value stored under each key is returned
+	/// alongside it. Page token semantics are identical, and ordering is identical in the absence
+	/// of the concurrent changes described below.
+	///
+	/// The default implementation lists the page and then reads the corresponding values
+	/// concurrently. A page is therefore not an atomic snapshot: keys that are removed before their
+	/// value is read are omitted from the returned entries. If a listed key is removed and recreated
+	/// before it is read, the replacement value may be returned at the original key's position.
+	///
+	/// Stores that can retrieve a page of keys and values in a single backend operation - such as
+	/// SQL-backed stores issuing one query per page - should override this to avoid that per-key
+	/// access pattern. Such implementations satisfy the same contract, because a concurrently
+	/// removed or created key is either included in the atomically-fetched page or absent from it
+	/// entirely.
+	///
+	/// Adapters wrapping another [`PaginatedKVStore`] should explicitly forward this method to
+	/// preserve a batched override. Otherwise, this default implementation will issue a separate
+	/// read for each key. Type-erased adapters must also allow the returned future to borrow the
+	/// adapter, as described below.
+	///
+	/// Note that unlike the other methods on this trait, the returned future is not `'static`, as
+	/// the default implementation must borrow the store to read the values after listing completes.
+	///
+	/// [`list_paginated`]: Self::list_paginated
+	fn list_paginated_with_values(
+		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
+	) -> impl Future<Output = Result<PaginatedListWithValuesResponse, io::Error>> + MaybeSend
+	where
+		Self: MaybeSync,
+	{
+		async move {
+			let response =
+				self.list_paginated(primary_namespace, secondary_namespace, page_token).await?;
+
+			let mut futures = Vec::with_capacity(response.keys.len());
+			for key in response.keys {
+				let read_fut = self.read(primary_namespace, secondary_namespace, &key);
+				futures.push(ResultFuture::Pending(Box::pin(async move { (key, read_fut.await) })));
+			}
+
+			let future_results = MultiResultFuturePoller::new(futures).await;
+			let mut entries = Vec::with_capacity(future_results.len());
+			for (key, result) in future_results {
+				match result {
+					Ok(value) => entries.push(PaginatedEntry { key, value }),
+					// The key was removed after we listed it, so it's not part of this page.
+					Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+					Err(e) => return Err(e),
+				}
+			}
+
+			Ok(PaginatedListWithValuesResponse {
+				entries,
+				next_page_token: response.next_page_token,
+			})
+		}
+	}
 }
 
 /// Provides additional interface methods that are required for [`KVStoreSync`]-to-[`KVStoreSync`]
@@ -1867,6 +2007,144 @@ mod tests {
 	use core::cmp;
 
 	const EXPECTED_UPDATES_PER_PAYMENT: u64 = 5;
+
+	// A store that lists a key whose read fails after the page is listed.
+	struct ReadErrorStore {
+		failed_key: &'static str,
+		error_kind: io::ErrorKind,
+	}
+
+	impl KVStoreSync for ReadErrorStore {
+		fn read(
+			&self, _primary_namespace: &str, _secondary_namespace: &str, key: &str,
+		) -> Result<Vec<u8>, io::Error> {
+			if key == self.failed_key {
+				Err(io::Error::new(self.error_kind, "read failed"))
+			} else {
+				Ok(vec![7u8; 4])
+			}
+		}
+
+		fn write(
+			&self, _primary_namespace: &str, _secondary_namespace: &str, _key: &str, _buf: Vec<u8>,
+		) -> Result<(), io::Error> {
+			unreachable!()
+		}
+
+		fn remove(
+			&self, _primary_namespace: &str, _secondary_namespace: &str, _key: &str, _lazy: bool,
+		) -> Result<(), io::Error> {
+			unreachable!()
+		}
+
+		fn list(
+			&self, _primary_namespace: &str, _secondary_namespace: &str,
+		) -> Result<Vec<String>, io::Error> {
+			unreachable!()
+		}
+	}
+
+	impl PaginatedKVStoreSync for ReadErrorStore {
+		fn list_paginated(
+			&self, _primary_namespace: &str, _secondary_namespace: &str,
+			_page_token: Option<PageToken>,
+		) -> Result<PaginatedListResponse, io::Error> {
+			let keys = vec!["first".to_string(), self.failed_key.to_string(), "second".to_string()];
+			Ok(PaginatedListResponse { keys, next_page_token: None })
+		}
+	}
+
+	#[test]
+	fn list_paginated_with_values_skips_removed_keys() {
+		let store = ReadErrorStore { failed_key: "removed", error_kind: io::ErrorKind::NotFound };
+		let response = store.list_paginated_with_values("ns", "sub", None).unwrap();
+
+		let expected = vec![
+			PaginatedEntry { key: "first".to_string(), value: vec![7u8; 4] },
+			PaginatedEntry { key: "second".to_string(), value: vec![7u8; 4] },
+		];
+		assert_eq!(response.entries, expected);
+		assert!(response.next_page_token.is_none());
+	}
+
+	#[test]
+	fn list_paginated_with_values_propagates_read_errors() {
+		let store =
+			ReadErrorStore { failed_key: "denied", error_kind: io::ErrorKind::PermissionDenied };
+		let error = store.list_paginated_with_values("ns", "sub", None).unwrap_err();
+
+		assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+	}
+
+	// An async counterpart of `ReadErrorStore` that relies on the default
+	// `PaginatedKVStore::list_paginated_with_values` implementation.
+	struct AsyncReadErrorStore(ReadErrorStore);
+
+	impl KVStore for AsyncReadErrorStore {
+		fn read(
+			&self, primary_namespace: &str, secondary_namespace: &str, key: &str,
+		) -> impl Future<Output = Result<Vec<u8>, io::Error>> + 'static + MaybeSend {
+			let res = self.0.read(primary_namespace, secondary_namespace, key);
+			async move { res }
+		}
+
+		fn write(
+			&self, _primary_namespace: &str, _secondary_namespace: &str, _key: &str, _buf: Vec<u8>,
+		) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+			async move { unreachable!() }
+		}
+
+		fn remove(
+			&self, _primary_namespace: &str, _secondary_namespace: &str, _key: &str, _lazy: bool,
+		) -> impl Future<Output = Result<(), io::Error>> + 'static + MaybeSend {
+			async move { unreachable!() }
+		}
+
+		fn list(
+			&self, _primary_namespace: &str, _secondary_namespace: &str,
+		) -> impl Future<Output = Result<Vec<String>, io::Error>> + 'static + MaybeSend {
+			async move { unreachable!() }
+		}
+	}
+
+	impl PaginatedKVStore for AsyncReadErrorStore {
+		fn list_paginated(
+			&self, primary_namespace: &str, secondary_namespace: &str,
+			page_token: Option<PageToken>,
+		) -> impl Future<Output = Result<PaginatedListResponse, io::Error>> + 'static + MaybeSend {
+			let res = self.0.list_paginated(primary_namespace, secondary_namespace, page_token);
+			async move { res }
+		}
+	}
+
+	#[test]
+	fn async_list_paginated_with_values_skips_removed_keys() {
+		let store = AsyncReadErrorStore(ReadErrorStore {
+			failed_key: "removed",
+			error_kind: io::ErrorKind::NotFound,
+		});
+		let future = PaginatedKVStore::list_paginated_with_values(&store, "ns", "sub", None);
+		let response = poll_sync_future(future).unwrap();
+
+		let expected = vec![
+			PaginatedEntry { key: "first".to_string(), value: vec![7u8; 4] },
+			PaginatedEntry { key: "second".to_string(), value: vec![7u8; 4] },
+		];
+		assert_eq!(response.entries, expected);
+		assert!(response.next_page_token.is_none());
+	}
+
+	#[test]
+	fn async_list_paginated_with_values_propagates_read_errors() {
+		let store = AsyncReadErrorStore(ReadErrorStore {
+			failed_key: "denied",
+			error_kind: io::ErrorKind::PermissionDenied,
+		});
+		let future = PaginatedKVStore::list_paginated_with_values(&store, "ns", "sub", None);
+		let error = poll_sync_future(future).unwrap_err();
+
+		assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+	}
 
 	#[test]
 	fn converts_u64_to_update_name() {

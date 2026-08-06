@@ -664,6 +664,110 @@ mod tests {
 	}
 
 	#[test]
+	fn test_paginated_listing_with_values() {
+		use lightning::util::persist::{KVStoreSync, PaginatedKVStoreSync};
+
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_paginated_listing_with_values_v2");
+		let fs_store = FilesystemStoreV2::new(temp_path).unwrap();
+
+		// Give each key a distinct value so we can tell they're paired up correctly.
+		let keys: Vec<String> = (0..5).map(|i| format!("key{}", i)).collect();
+		for (i, key) in keys.iter().enumerate() {
+			KVStoreSync::write(&fs_store, "ns", "sub", key, vec![i as u8; 32]).unwrap();
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+
+		let response =
+			PaginatedKVStoreSync::list_paginated_with_values(&fs_store, "ns", "sub", None).unwrap();
+		assert_eq!(response.entries.len(), 5);
+		assert!(response.next_page_token.is_none());
+
+		// Newest first, with each value matching its key.
+		assert_eq!(response.entries[0].key, "key4");
+		assert_eq!(response.entries[0].value, vec![4u8; 32]);
+		assert_eq!(response.entries[4].key, "key0");
+		assert_eq!(response.entries[4].value, vec![0u8; 32]);
+
+		// Ordering must match the keys-only listing exactly.
+		let keys_only =
+			PaginatedKVStoreSync::list_paginated(&fs_store, "ns", "sub", None).unwrap().keys;
+		let with_values: Vec<String> =
+			response.entries.iter().map(|entry| entry.key.clone()).collect();
+		assert_eq!(keys_only, with_values);
+	}
+
+	#[test]
+	fn test_paginated_listing_with_values_with_pagination() {
+		use lightning::util::persist::{KVStoreSync, PaginatedKVStoreSync};
+
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_paginated_listing_with_values_with_pagination_v2");
+		let fs_store = FilesystemStoreV2::new(temp_path).unwrap();
+
+		let data = vec![42u8; 32];
+
+		let num_keys = PAGE_SIZE + 50;
+		for i in 0..num_keys {
+			let key = format!("key{:04}", i);
+			KVStoreSync::write(&fs_store, "ns", "sub", &key, data.clone()).unwrap();
+			if i % 10 == 0 {
+				std::thread::sleep(std::time::Duration::from_millis(1));
+			}
+		}
+
+		let response1 =
+			PaginatedKVStoreSync::list_paginated_with_values(&fs_store, "ns", "sub", None).unwrap();
+		assert_eq!(response1.entries.len(), PAGE_SIZE);
+		assert!(response1.next_page_token.is_some());
+
+		let response2 = PaginatedKVStoreSync::list_paginated_with_values(
+			&fs_store,
+			"ns",
+			"sub",
+			response1.next_page_token,
+		)
+		.unwrap();
+		assert_eq!(response2.entries.len(), 50);
+		assert!(response2.next_page_token.is_none());
+
+		// No duplicates across pages, and every value came back intact.
+		let all_keys: std::collections::HashSet<_> =
+			response1.entries.iter().chain(response2.entries.iter()).map(|e| &e.key).collect();
+		assert_eq!(all_keys.len(), num_keys);
+		for entry in response1.entries.iter().chain(response2.entries.iter()) {
+			assert_eq!(entry.value, data);
+		}
+	}
+
+	#[cfg(feature = "tokio")]
+	#[tokio::test]
+	async fn test_paginated_listing_with_values_async() {
+		use lightning::util::persist::{KVStore, PaginatedKVStore};
+
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_paginated_listing_with_values_async_v2");
+		let fs_store = FilesystemStoreV2::new(temp_path).unwrap();
+
+		let keys: Vec<String> = (0..5).map(|i| format!("key{}", i)).collect();
+		for (i, key) in keys.iter().enumerate() {
+			KVStore::write(&fs_store, "ns", "sub", key, vec![i as u8; 32]).await.unwrap();
+			std::thread::sleep(std::time::Duration::from_millis(10));
+		}
+
+		let response = PaginatedKVStore::list_paginated_with_values(&fs_store, "ns", "sub", None)
+			.await
+			.unwrap();
+		assert_eq!(response.entries.len(), 5);
+		assert!(response.next_page_token.is_none());
+
+		assert_eq!(response.entries[0].key, "key4");
+		assert_eq!(response.entries[0].value, vec![4u8; 32]);
+		assert_eq!(response.entries[4].key, "key0");
+		assert_eq!(response.entries[4].value, vec![0u8; 32]);
+	}
+
+	#[test]
 	fn test_page_token_after_deletion() {
 		use lightning::util::persist::{KVStoreSync, PaginatedKVStoreSync};
 
