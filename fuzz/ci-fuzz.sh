@@ -21,7 +21,11 @@ cargo run ../hfuzz_workspace/full_stack_target/input
 cargo clean
 popd
 
-cargo install --color always --force honggfuzz --no-default-features
+# Pin honggfuzz as newer versions require a newer rustc than our fuzz CI uses.
+# This pins both the honggfuzz binary and the library dependency built into the
+# fuzz targets below.
+cargo update -p honggfuzz --precise "0.5.61"
+cargo install --color always --force honggfuzz --version "0.5.61" --no-default-features --locked
 
 # Because we're fuzzing relatively few iterations, the maximum possible
 # compiler optimizations aren't necessary, so we turn off LTO
