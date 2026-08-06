@@ -9847,6 +9847,7 @@ fn test_splice_revalidation_at_quiescence() {
 	do_test_splice_revalidation_at_quiescence(true);
 }
 
+#[cfg(test)]
 fn do_test_splice_revalidation_at_quiescence(pending_splice_locks: bool) {
 	// When an outbound HTLC is committed between funding_contributed and quiescence, the
 	// holder's balance decreases. If the splice-out was marginal at funding_contributed time,
