@@ -16662,6 +16662,15 @@ impl<
 
 		let block_hash = header.block_hash();
 		log_trace!(self.logger, "{} transactions included in block {} at height {} provided", txdata.len(), block_hash, height);
+		struct LazyTxid<'a>(&'a Transaction);
+		impl<'a> core::fmt::Display for LazyTxid<'a> {
+			fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+				write!(f, "{}", self.0.compute_txid())
+			}
+		}
+		for (_, tx) in txdata.iter() {
+			log_debug!(self.logger, "Confirmed transaction {} in block {} at height {}", LazyTxid(tx), block_hash, height);
+		}
 
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
