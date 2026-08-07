@@ -16899,7 +16899,8 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			// and new versions map the default values to None and allow the TLV entries here to
 			// override that.
 			(1, self.context.minimum_depth, option),
-			(2, chan_type, option),
+			(2, chan_type, option), // We started writing the duplicative copy in channel_parameters
+									// in 0.0.116, and support skipping writing this as of 0.3.
 			(3, self.funding.counterparty_selected_channel_reserve_satoshis, option),
 			(4, serialized_holder_selected_reserve, option),
 			(5, self.context.config, required),
@@ -17274,9 +17275,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 
 		let mut holder_max_htlc_value_in_flight_msat =
 			Some(get_legacy_default_holder_max_htlc_value_in_flight_msat(channel_value_satoshis));
-		// Prior to supporting channel type negotiation, all of our channels were static_remotekey
-		// only, so we default to that if none was written.
-		let mut channel_type = Some(ChannelTypeFeatures::only_static_remote_key());
+		let mut channel_type = None;
 		let mut channel_creation_height = 0u32;
 		// Starting in 0.2, all the elements in this vector will be `Some`, but they are still
 		// serialized as options to maintain backwards compatibility
@@ -17426,17 +17425,20 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			return Err(DecodeError::InvalidValue);
 		}
 
-		let chan_features = verify_channel_type_features(channel_type, None)?;
-		if chan_features.supports_any_optional_bits()
-			|| chan_features.requires_unknown_bits_from(&our_supported_features)
+		if let Some(channel_type) = channel_type {
+			let chan_features = verify_channel_type_features(Some(channel_type), None)?;
+
+			if chan_features != channel_parameters.channel_type_features {
+				return Err(DecodeError::InvalidValue);
+			}
+		}
+		let chan_type = &channel_parameters.channel_type_features;
+		if chan_type.supports_any_optional_bits()
+			|| chan_type.requires_unknown_bits_from(&our_supported_features)
 		{
 			// If the channel was written by a new version and negotiated with features we don't
 			// understand yet, refuse to read it.
 			return Err(DecodeError::UnknownRequiredFeature);
-		}
-
-		if chan_features != channel_parameters.channel_type_features {
-			return Err(DecodeError::InvalidValue);
 		}
 
 		let mut secp_ctx = Secp256k1::new();
