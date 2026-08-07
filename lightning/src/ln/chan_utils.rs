@@ -1239,7 +1239,9 @@ impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
 
 		let mut additional_features = ChannelTypeFeatures::empty();
 		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
-		chain::package::verify_channel_type_features(&channel_type_features, Some(&additional_features))?;
+		let channel_type_features = chain::package::verify_channel_type_features(
+			channel_type_features, Some(&additional_features)
+		)?;
 
 		Ok(Self {
 			holder_pubkeys: holder_pubkeys.0.unwrap(),
@@ -1248,7 +1250,7 @@ impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
 			counterparty_parameters,
 			funding_outpoint,
 			splice_parent_funding_txid,
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key()),
+			channel_type_features,
 			channel_value_satoshis,
 		})
 	}
@@ -1684,7 +1686,9 @@ impl Readable for CommitmentTransaction {
 
 		let mut additional_features = ChannelTypeFeatures::empty();
 		additional_features.set_anchors_nonzero_fee_htlc_tx_required();
-		chain::package::verify_channel_type_features(&channel_type_features, Some(&additional_features))?;
+		let channel_type_features = chain::package::verify_channel_type_features(
+			channel_type_features, Some(&additional_features)
+		)?;
 
 		Ok(Self {
 			commitment_number: commitment_number.0.unwrap(),
@@ -1695,7 +1699,7 @@ impl Readable for CommitmentTransaction {
 			keys: keys.0.unwrap(),
 			built: built.0.unwrap(),
 			nondust_htlcs,
-			channel_type_features: channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key())
+			channel_type_features,
 		})
 	}
 }
