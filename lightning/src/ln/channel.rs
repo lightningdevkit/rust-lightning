@@ -35,6 +35,7 @@ use crate::chain::channelmonitor::{
 	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, CommitmentHTLCData,
 	LATENCY_GRACE_PERIOD_BLOCKS,
 };
+use crate::chain::package::verify_channel_type_features;
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BlockLocator;
 use crate::events::{ClosureReason, FundingInfo, NegotiationFailureReason};
@@ -17422,7 +17423,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			return Err(DecodeError::InvalidValue);
 		}
 
-		let chan_features = channel_type.unwrap();
+		let chan_features = verify_channel_type_features(channel_type, None)?;
 		if chan_features.supports_any_optional_bits()
 			|| chan_features.requires_unknown_bits_from(&our_supported_features)
 		{

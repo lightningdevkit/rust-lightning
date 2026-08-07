@@ -67,6 +67,7 @@ use lightning::util::errors::APIError;
 use lightning::util::ser::{MaybeReadable, Writeable};
 use lightning::util::wallet_utils::WalletSourceSync;
 
+use lightning_types::features::ChannelTypeFeatures;
 use lightning_types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 
 use bitcoin::script::Builder;
@@ -1165,4 +1166,81 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
+fn upgrade_zero_fee_commitments_from_0_2() {
+	// LDK 0.2 negotiated `option_zero_fee_commitments` using a staging feature bit, which was
+	// later replaced by the bit the feature was ultimately assigned. Because the channel type is
+	// persisted rather than re-negotiated, test that a channel written by 0.2 is read back with
+	// the staging bit swapped for the final one, and remains usable.
+	let (node_a_ser, node_b_ser, mon_a_ser, mon_b_ser, chan_id_bytes, preimage);
+	{
+		let chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+
+		let mut cfg = lightning_0_2_utils::test_default_anchors_channel_config();
+		cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+		let cfgs = &[Some(cfg.clone()), Some(cfg)];
+		let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, cfgs);
+		let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let chan_id = lightning_0_2_utils::create_announced_chan_between_nodes_with_value(
+			&nodes, 0, 1, 10_000_000, 0,
+		)
+		.2;
+		chan_id_bytes = chan_id.0;
+
+		// 0.2 negotiated the channel type with the staging bit, i.e. required bit 140.
+		let mut staging_flags = vec![0u8; 18];
+		staging_flags[17] = 1 << (140 - 8 * 17);
+		for node in nodes.iter() {
+			let channels = node.node.list_channels();
+			let channel_type = channels[0].channel_type.as_ref().unwrap();
+			assert_eq!(channel_type.le_flags(), &staging_flags[..]);
+		}
+
+		let payment_preimage =
+			lightning_0_2_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		preimage = PaymentPreimage(payment_preimage.0 .0);
+
+		node_a_ser = nodes[0].node.encode();
+		node_b_ser = nodes[1].node.encode();
+		mon_a_ser = get_monitor_0_2!(nodes[0], chan_id).encode();
+		mon_b_ser = get_monitor_0_2!(nodes[1], chan_id).encode();
+	}
+
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+
+	// Our TestChannelSigner will fail as we're jumping ahead, so disable its state-based checks
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let (node_a, node_b);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+	let a_mons = &[&mon_a_ser[..]];
+	reload_node!(nodes[0], config.clone(), &node_a_ser, a_mons, persister_a, chain_mon_a, node_a);
+	reload_node!(nodes[1], config, &node_b_ser, &[&mon_b_ser], persister_b, chain_mon_b, node_b);
+
+	// Both the `ChannelManager` and the `ChannelMonitor` should now use the final feature bit.
+	let chan_id = ChannelId(chan_id_bytes);
+	let final_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
+	for node in nodes.iter() {
+		let channels = node.node.list_channels();
+		let details = channels.iter().find(|c| c.channel_id == chan_id).unwrap();
+		assert_eq!(details.channel_type.as_ref(), Some(&final_type));
+		assert_eq!(get_monitor!(node, chan_id).channel_type_features(), final_type);
+	}
+
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+
+	// The channel is still usable across the swap.
+	claim_payment(&nodes[0], &[&nodes[1]], preimage);
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 }
