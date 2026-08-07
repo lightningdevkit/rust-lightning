@@ -1110,6 +1110,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 	/// with `scid` towards the given `target` node, based on the historical estimated liquidity
 	/// bounds.
 	///
+	/// Note that probabilities for paths which are highly unlikely to succeed, but not impossible
+	/// are capped to a lower-bound of [`PROB_LOWER_BOUND`].
+	///
 	/// Returns `None` if:
 	///  - the given channel is not in the network graph, the provided `target` is not a party to
 	///    the channel, or we don't have forwarding parameters for either direction in the channel.
@@ -1119,10 +1122,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 	/// These are the same bounds as returned by
 	/// [`Self::historical_estimated_channel_liquidity_probabilities`] (but not those returned by
 	/// [`Self::estimated_channel_liquidity_range`]).
-	#[rustfmt::skip]
 	pub fn historical_estimated_payment_success_probability(
-		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
-		allow_fallback_estimation: bool,
+		&self, scid: u64, target: &NodeId, amount_msat: u64,
+		params: &ProbabilisticScoringFeeParameters, allow_fallback_estimation: bool,
 	) -> Option<f64> {
 		let graph = self.network_graph.read_only();
 
@@ -1130,63 +1132,99 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ProbabilisticScorer<G, L> {
 			if let Some((directed_info, source)) = chan.as_directed_to(target) {
 				if let Some(liq) = self.channel_liquidities.get(&scid) {
 					let capacity_msat = directed_info.effective_capacity().as_msat();
+					if amount_msat >= capacity_msat {
+						return Some(PROB_LOWER_BOUND);
+					}
 					let dir_liq = liq.as_directed(source, target, capacity_msat);
 
-					let res = dir_liq.liquidity_history.calculate_success_probability_times_billion(
-						&params, amount_msat, capacity_msat
-					).map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
-					if res.is_some() {
-						return res;
+					let res = dir_liq
+						.liquidity_history
+						.calculate_success_probability_times_billion(
+							&params,
+							amount_msat,
+							capacity_msat,
+						)
+						.map(|p| p as f64 / (1024 * 1024 * 1024) as f64);
+					if let Some(prob) = res {
+						if prob < PROB_LOWER_BOUND {
+							return Some(PROB_LOWER_BOUND);
+						} else {
+							return Some(prob);
+						}
 					}
 				}
 				if allow_fallback_estimation {
 					let amt = amount_msat;
-					return Some(
-						self.calc_live_prob(scid, source, target, directed_info, amt, params, true)
-					);
+					return Some(self.calc_live_prob(
+						scid,
+						source,
+						target,
+						directed_info,
+						amt,
+						params,
+						true,
+					));
 				}
 			}
 		}
 		None
 	}
 
-	#[rustfmt::skip]
 	fn calc_live_prob(
 		&self, scid: u64, source: &NodeId, target: &NodeId, directed_info: DirectedChannelInfo,
-		amt: u64, params: &ProbabilisticScoringFeeParameters,
-		min_zero_penalty: bool,
+		amt: u64, params: &ProbabilisticScoringFeeParameters, min_zero_penalty: bool,
 	) -> f64 {
 		let capacity_msat = directed_info.effective_capacity().as_msat();
 		let dummy_liq = ChannelLiquidity::new(Duration::ZERO);
-		let liq = self.channel_liquidities.get(&scid)
-			.unwrap_or(&dummy_liq)
-			.as_directed(&source, &target, capacity_msat);
+		let liq = self.channel_liquidities.get(&scid).unwrap_or(&dummy_liq).as_directed(
+			&source,
+			&target,
+			capacity_msat,
+		);
 		let min_liq = liq.min_liquidity_msat();
 		let max_liq = liq.max_liquidity_msat();
-		if amt <= liq.min_liquidity_msat() {
+		if amt <= min_liq {
 			return 1.0;
-		} else if amt > liq.max_liquidity_msat() {
+		} else if amt > capacity_msat {
 			return 0.0;
+		} else if amt >= max_liq {
+			return PROB_LOWER_BOUND;
 		}
 		let (num, den) =
 			success_probability(amt, min_liq, max_liq, capacity_msat, &params, min_zero_penalty);
-		num as f64 / den as f64
+		let res = num as f64 / den as f64;
+		if res < PROB_LOWER_BOUND {
+			PROB_LOWER_BOUND
+		} else {
+			res
+		}
 	}
 
 	/// Query the probability of payment success sending the given `amount_msat` over the channel
 	/// with `scid` towards the given `target` node, based on the live estimated liquidity bounds.
 	///
+	/// Note that probabilities for paths which are highly unlikely to succeed, but not impossible
+	/// are capped to a lower-bound of [`PROB_LOWER_BOUND`].
+	///
 	/// This will return `Some` for any channel which is present in the [`NetworkGraph`], including
 	/// if we have no bound information beside the channel's capacity.
-	#[rustfmt::skip]
 	pub fn live_estimated_payment_success_probability(
-		&self, scid: u64, target: &NodeId, amount_msat: u64, params: &ProbabilisticScoringFeeParameters,
+		&self, scid: u64, target: &NodeId, amount_msat: u64,
+		params: &ProbabilisticScoringFeeParameters,
 	) -> Option<f64> {
 		let graph = self.network_graph.read_only();
 
 		if let Some(chan) = graph.channels().get(&scid) {
 			if let Some((directed_info, source)) = chan.as_directed_to(target) {
-				return Some(self.calc_live_prob(scid, source, target, directed_info, amount_msat, params, false));
+				return Some(self.calc_live_prob(
+					scid,
+					source,
+					target,
+					directed_info,
+					amount_msat,
+					params,
+					false,
+				));
 			}
 		}
 		None
@@ -1291,7 +1329,17 @@ impl ChannelLiquidity {
 
 /// Bounds `-log10` to avoid excessive liquidity penalties for payments with low success
 /// probabilities.
+///
+/// The log10 equivalent of [`PROB_LOWER_BOUND`].
 const NEGATIVE_LOG10_UPPER_BOUND: u64 = 2;
+
+/// The minimum probability we will use when scoring a channel where we believe success may be
+/// possible, even if its unlikely.
+///
+/// Allowing the probability to go arbitrarily low results in penalties which grow unnecessarily
+/// huge for small changes in probability (as penalties are based on the `log10` of the
+/// probability).
+pub const PROB_LOWER_BOUND: f64 = 0.01;
 
 /// The rough cutoff at which our precision falls off and we should stop bothering to try to log a
 /// ratio, as X in 1/X.
@@ -1322,17 +1370,18 @@ fn three_f64_pow_9(a: f64, b: f64, c: f64) -> (f64, f64, f64) {
 const MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64: u64 = 78;
 
 #[inline(always)]
-#[rustfmt::skip]
 fn linear_success_probability(
 	total_inflight_amount_msat: u64, min_liquidity_msat: u64, max_liquidity_msat: u64,
 	min_zero_implies_no_successes: bool,
 ) -> (u64, u64) {
-	let (numerator, mut denominator) =
-		(max_liquidity_msat - total_inflight_amount_msat,
-		(max_liquidity_msat - min_liquidity_msat).saturating_add(1));
+	let (numerator, mut denominator) = (
+		max_liquidity_msat - total_inflight_amount_msat,
+		(max_liquidity_msat - min_liquidity_msat).saturating_add(1),
+	);
 
-	if min_zero_implies_no_successes && min_liquidity_msat == 0 &&
-		denominator < u64::max_value() / MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64
+	if min_zero_implies_no_successes
+		&& min_liquidity_msat == 0
+		&& denominator < u64::max_value() / MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64
 	{
 		denominator = denominator * MIN_ZERO_IMPLIES_NO_SUCCESSES_PENALTY_ON_64 / 64
 	}
@@ -1464,8 +1513,7 @@ impl<
 				// liquidity penalty at all (as the success probability is 100%).
 			} else if total_inflight_amount_msat >= max_liquidity_msat {
 				// Equivalent to hitting the else clause below with the amount equal to the effective
-				// capacity and without any certainty on the liquidity upper bound, plus the
-				// impossibility penalty.
+				// capacity and without any certainty on the liquidity upper bound.
 				let negative_log10_times_2048 = NEGATIVE_LOG10_UPPER_BOUND * 2048;
 				res = Self::combined_penalty_msat(amount_msat, negative_log10_times_2048,
 						score_params.liquidity_penalty_multiplier_msat,
@@ -1489,12 +1537,11 @@ impl<
 			}
 		}
 
-		if total_inflight_amount_msat >= max_liquidity_msat {
+		if total_inflight_amount_msat > max_liquidity_msat {
 			res = res.saturating_add(score_params.considered_impossible_penalty_msat);
 		}
 
 		if total_inflight_amount_msat >= available_capacity {
-			// We're trying to send more than the capacity, use a max penalty.
 			res = res.saturating_add(Self::combined_penalty_msat(amount_msat,
 				NEGATIVE_LOG10_UPPER_BOUND * 2048,
 				score_params.historical_liquidity_penalty_multiplier_msat,
@@ -3193,6 +3240,8 @@ mod tests {
 		let usage = ChannelUsage { amount_msat: 250, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
 		let usage = ChannelUsage { amount_msat: 500, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2000);
+		let usage = ChannelUsage { amount_msat: 501, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 		let usage = ChannelUsage { amount_msat: 750, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
@@ -3410,22 +3459,22 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
 		let usage = ChannelUsage { amount_msat: 1, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
-		let usage = ChannelUsage { amount_msat: 1_023, ..usage };
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
 		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2_000);
+		let usage = ChannelUsage { amount_msat: 1_025, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		// Fully decay liquidity upper bound.
 		scorer.time_passed(Duration::from_secs(10 * 9));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
-		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
+		let usage = ChannelUsage { amount_msat: 1_025, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		scorer.time_passed(Duration::from_secs(10 * 10));
 		let usage = ChannelUsage { amount_msat: 0, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 0);
-		let usage = ChannelUsage { amount_msat: 1_024, ..usage };
+		let usage = ChannelUsage { amount_msat: 1_025, ..usage };
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 	}
 
@@ -3499,7 +3548,7 @@ mod tests {
 		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
 		let source = source_node_id();
 		let usage = ChannelUsage {
-			amount_msat: 500,
+			amount_msat: 501,
 			inflight_htlc_msat: 0,
 			effective_capacity: EffectiveCapacity::Total { capacity_msat: 1_000, htlc_maximum_msat: 1_000 },
 		};
@@ -3514,10 +3563,10 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
 
 		scorer.time_passed(Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 473);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 477);
 
 		scorer.payment_path_failed(&payment_path_for_amount(250), 43, Duration::from_secs(10));
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 300);
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 304);
 
 		let mut serialized_scorer = Vec::new();
 		scorer.write(&mut serialized_scorer).unwrap();
@@ -3525,7 +3574,7 @@ mod tests {
 		let mut serialized_scorer = io::Cursor::new(&serialized_scorer);
 		let deserialized_scorer =
 			<ProbabilisticScorer<_, _>>::read(&mut serialized_scorer, (decay_params, &network_graph, &logger)).unwrap();
-		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 300);
+		assert_eq!(deserialized_scorer.channel_penalty_msat(&candidate, usage, &params), 304);
 	}
 
 	#[rustfmt::skip]
@@ -3556,7 +3605,13 @@ mod tests {
 			info,
 			short_channel_id: 42,
 		});
-		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), u64::max_value());
+		assert_eq!(scorer.channel_penalty_msat(&candidate, usage, &params), 2000);
+
+		let over_usage = ChannelUsage {
+			amount_msat: 501,
+			..usage
+		};
+		assert_eq!(scorer.channel_penalty_msat(&candidate, over_usage, &params), u64::max_value());
 
 		if decay_before_reload {
 			scorer.time_passed(Duration::from_secs(10));
@@ -3883,7 +3938,7 @@ mod tests {
 		assert!(scorer.historical_estimated_payment_success_probability(42, &target, 1, &params, false)
 			.unwrap() > 0.35);
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, 500, &params, false),
-			Some(0.0));
+			Some(super::PROB_LOWER_BOUND));
 
 		// Even after we tell the scorer we definitely have enough available liquidity, it will
 		// still remember that there was some failure in the past, and assign a non-0 penalty.
@@ -4139,9 +4194,9 @@ mod tests {
 		assert_eq!(scorer.historical_estimated_channel_liquidity_probabilities(42, &target),
 			Some(([32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[0, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
-		// The success probability estimate itself should be zero.
+		// The success probability estimate itself should be PROB_LOWER_BOUND.
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
-			Some(0.0));
+			Some(super::PROB_LOWER_BOUND));
 
 		// Now test again with the amount in the bottom bucket.
 		amount_msat /= 2;
@@ -4158,7 +4213,7 @@ mod tests {
 			Some(([63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
 				[32, 31, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])));
 		assert_eq!(scorer.historical_estimated_payment_success_probability(42, &target, amount_msat, &params, false),
-			Some(0.0));
+			Some(super::PROB_LOWER_BOUND));
 	}
 
 	#[test]
