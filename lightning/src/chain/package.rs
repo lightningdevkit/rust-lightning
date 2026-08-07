@@ -89,9 +89,12 @@ pub(crate) fn weight_received_htlc(channel_type_features: &ChannelTypeFeatures) 
 /// Resolves and verifies a just-deserialized channel type features field.
 ///
 /// `None` is mapped to [`ChannelTypeFeatures::only_static_remote_key`].
-#[rustfmt::skip]
-pub(crate) fn verify_channel_type_features(channel_type_features: Option<ChannelTypeFeatures>, additional_permitted_features: Option<&ChannelTypeFeatures>) -> Result<ChannelTypeFeatures, DecodeError> {
-	let mut features = channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
+pub(crate) fn verify_channel_type_features(
+	channel_type_features: Option<ChannelTypeFeatures>,
+	additional_permitted_features: Option<&ChannelTypeFeatures>,
+) -> Result<ChannelTypeFeatures, DecodeError> {
+	let mut features =
+		channel_type_features.unwrap_or(ChannelTypeFeatures::only_static_remote_key());
 
 	if features.supports_anchor_zero_fee_commitments_staging() {
 		features.clear_anchor_zero_fee_commitments_staging();
