@@ -1407,6 +1407,114 @@ fn conditionally_round_fwd_amt() {
 }
 
 #[test]
+fn forward_prop_fee_above_one_hundred_percent() {
+	// The `payment_relay` a forwarding node applies comes from the blinded path, which is authored
+	// by the recipient, and nothing bounds its `fee_proportional_millionths` to 1_000_000. Above
+	// that, each additional msat forwarded costs the forwarding node more than one msat in fee. A
+	// sender is also free to pick an `update_add_htlc` amount which does not correspond to any
+	// amount the path's fee schedule would produce, so check that a forwarding node handed such an
+	// amount forwards as much as it can while still retaining the fee it requires. Previously this
+	// was broken because we rounded the forwarded amount up and then tried to correct for it by
+	// taking a single extra msat in fee.
+	let secp_ctx = Secp256k1::new();
+	let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], bitcoin::Network::Testnet);
+	let logger = test_utils::TestLogger::with_id("".to_owned());
+
+	let bob_node_id = keys_manager.get_node_id(Recipient::Node).unwrap();
+	let carol_secret = SecretKey::from_slice(&[3; 32]).unwrap();
+	let carol_node_id = PublicKey::from_secret_key(&secp_ctx, &carol_secret);
+
+	let intermediate_nodes = [PaymentForwardNode {
+		node_id: bob_node_id,
+		tlvs: ForwardTlvs {
+			short_channel_id: 42,
+			payment_relay: PaymentRelay {
+				cltv_expiry_delta: 0,
+				fee_proportional_millionths: 2_000_001,
+				fee_base_msat: 0,
+			},
+			payment_constraints: PaymentConstraints {
+				max_cltv_expiry: u32::max_value(),
+				htlc_minimum_msat: 0,
+			},
+			next_blinding_override: None,
+			features: BlindedHopFeatures::empty(),
+		},
+		htlc_maximum_msat: 999_999_999,
+	}];
+	let payee_tlvs = ReceiveTlvs {
+		payment_secret: PaymentSecret([42; 32]),
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::max_value(),
+			htlc_minimum_msat: 0,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
+			payment_metadata: None,
+		}),
+	};
+	let blinded_path = BlindedPaymentPath::new(
+		&intermediate_nodes,
+		carol_node_id,
+		keys_manager.get_receive_auth_key(),
+		payee_tlvs,
+		999_999_999,
+		TEST_FINAL_CLTV as u16,
+		&keys_manager,
+		&secp_ctx,
+	)
+	.unwrap();
+
+	let amt_msat = 5000;
+	let path = Path {
+		hops: vec![RouteHop {
+			pubkey: bob_node_id,
+			node_features: NodeFeatures::empty(),
+			short_channel_id: 42,
+			channel_features: ChannelFeatures::empty(),
+			fee_msat: 10_001,
+			cltv_expiry_delta: 0,
+			maybe_announced_channel: false,
+		}],
+		blinded_tail: Some(BlindedTail {
+			trampoline_hops: vec![],
+			hops: blinded_path.blinded_hops().to_vec(),
+			blinding_point: blinded_path.blinding_point(),
+			excess_final_cltv_expiry_delta: 0,
+			final_value_msat: amt_msat,
+		}),
+	};
+	let session_priv = SecretKey::from_slice(&[4; 32]).unwrap();
+	let recipient_onion = RecipientOnionFields::spontaneous_empty(amt_msat);
+	let (bob_onion, _, _) = onion_utils::create_payment_onion(
+		&secp_ctx,
+		&path,
+		&session_priv,
+		&recipient_onion,
+		800_000,
+		&PaymentHash([0; 32]),
+		&None,
+		None,
+		[0; 32],
+	)
+	.unwrap();
+
+	let bob_update_add = update_add_msg(15_001, 800_000 + TEST_FINAL_CLTV, None, bob_onion);
+	let (bob_peeled_onion, next_packet_details) =
+		onion_payment::decode_incoming_update_add_htlc_onion(
+			&bob_update_add,
+			&keys_manager,
+			&logger,
+			&secp_ctx,
+		)
+		.unwrap();
+
+	assert!(matches!(bob_peeled_onion, onion_utils::Hop::BlindedForward { .. }));
+	// We forward 5000 msat and keep 10_001, one msat above the 10_000 we require, as forwarding
+	// 5001 would cost 10_002 in fee and no longer fit in the inbound amount.
+	assert_eq!(next_packet_details.unwrap().outgoing_amt_msat, 5000);
+}
+
+#[test]
 #[rustfmt::skip]
 fn custom_tlvs_to_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
