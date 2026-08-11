@@ -1,4 +1,433 @@
-# 0.2.1 - Jan 29, 2025 - "Electrum Confirmations Logged"
+# 0.3.0 - TODO - "TODO"
+
+During the 0.3 release cycle, and due to persistent outages and issues with
+GitHub, primary development for `rust-lightning` moved to
+https://git.rust-bitcoin.org/lightningdevkit/rust-lightning. Issues filed on the
+original GitHub repository are mirrored and the git tree is synchronized to
+GitHub regularly.
+
+## API Updates
+ * Splicing now supports RBFing pending splices and the splicing APIs have
+   changed in order to support this (#4427, #4290, #4486, #4516, #4490, etc)
+ * Splicing now supports splicing funds in and out in the same splice (#4261).
+ * Async signing via the `[Ecdsa]ChannelSigner` interfaces is now supported on
+   all methods which are expected to support async (#4197, #4355, #4579).
+ * `UserConfig::manually_accept_inbound_channels` has been removed
+   (it is now always `true`). As incoming channels are now expected to be
+   examined in event handling, `ChannelHandshakeLimits::max_funding_satoshis`
+   has been removed (#4354, #4318).
+ * `ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx` now defaults to
+   `true`. It is expected that the lightning network will continue to slowly
+   deprecate pre-anchor channels (#4354).
+ * Anchor channels can now require zero counterparty reserve balance with
+   `ChannelManager::create_channel_to_trusted_peer_0reserve` and
+   `ChannelManager::accept_inbound_channel_from_trusted_peer` (#4428).
+ * `ChainMonitor::new` now takes a `deferred` which skips writing
+   `ChannelMonitorUpdate`s until `ChainMonitor::flush`. The background processor
+   calls this automatically after `ChannelManager` persistence. When enabled,
+   this prevents force-closures due to stale `ChannelManager`s (#4351).
+ * The `LSPS2ServiceHandler` now expects LDK's `ChannelClosed` events to be
+   forwarded to the new `channel_closed` method (#4656).
+ * Any HTLC can now be intercepted by setting
+   `UserConfig::htlc_interception_flags` to the appropriate value (#4300, #4338)
+ * `LSPS1` service support has been added (#4282).
+ * Support for BOLT 12 `PayerProof`s has been added (#4297).
+ * Log output has been updated to avoid including the peer, channel, and payment
+   data which also appear in the structured `Record`. Please ensure you log the
+   structured `Record` data along with the text itself (#4217, #4228).
+ * BOLT 12 payments can now receive arbitrary `payment_metadata` similar to BOLT
+   11. The `MessageRouter` or `Router` can insert data into the
+   `payment_metadata` map. It can then be read from
+   `PaymentPurpose::Bolt12OfferPayment::payment_context` (#4584).
+ * `ChannelManager::pay_for_offer_from_human_readable_name` has been removed in
+   favor of the standalone `bitcoin-payment-instructions` crate (#4539, #4543).
+ * `PaginatedKVStore` was added, with `FilesystemStore` requiring migration to
+   the added `FilesystemStoreV2` for pagination support (#4347).
+ * Phantom nodes can now receive to BOLT 12 offers (#4335).
+ * `Event::DiscardFunding` is now used to communicate inputs and outputs which
+   were not included in a splice, rather than `SpliceNegotiationFailed` (#4388).
+ * Many bounds have been converted to being directly on a `Trait`, rather than a
+   `Deref<Target = Trait>`, with a blanket `impl Trait` for `Deref` (#4311).
+ * `ProbabilisticScoringFeeParameters::default()` had its penalties 5x'd, better
+   reflecting the price/performance tradeoff users want (#4811).
+ * `pay_for_bolt11_invoice` now takes an `OptionalBolt11PaymentParams` offering
+   both custom TLVs and to pay only part of an MPP payment (#4263, #4373).
+ * Many types previously deserialized with `(BlockHash, X)` are now deserialized
+   with `(BlockLocator, X)` (#4266, #4576).
+ * `BroadcasterInterface::broadcast_transactions` now takes a
+   `TransactionType` for additional context (#4353, #4393, #4570).
+ * `lightning_net_tokio::tor_connect_outbound` was added (#4305).
+ * `Event::PaymentForwarded` now contains a list of previous/next HTLCs, in
+   preparation for future support for trampoline forwards (#4304, #4767, #4793).
+ * `lightning-background-processor` now calls
+   `ChainMonitor::archive_fully_resolved_channel_monitors` regularly (#4288).
+ * `ChannelHandshakeConfig::max_inbound_htlc_value_in_flight_percent_of_channel`
+   has been split into `[un]announced_channel_...` variants (#4529).
+ * `UtxoLookup` now uses a `Notifier` to indicate completion, which ultimately
+   completes `P2PGossipSync::validation_completion_future` (#4294, #4348).
+ * The MSRV of `rust-lightning` has been bumped to rustc 1.75 (#4002).
+ * Various async interfaces which previously used `Pin<Box<dyn Future<..>>>` now
+   use `impl Future<..>` thanks to the MSRV update (#4175).
+ * `BlindedPaymentPath` now supports adding dummy hops to obscure the recipient.
+   While these are used by `DefaultRouter`, the privacy they provide is limited
+   due to unique features of the dummy hops (#4152).
+ * `DefaultMessageRouter` now examines the `MessageContext` to determine how
+   aggressively to pad paths, making a space-privacy tradeoff (#4213).
+ * `VerifiedInvoiceRequest` is now parameterized based on the key derivation
+   strategy. Several APIs have changed as a result (#3964).
+ * `InFlightHtlcs` now tracks blinded paths, avoiding path saturation (#4072).
+ * `UpdateAddHTLC::accountable` was added and is now relayed for forwarded
+   payments, see bLIP #4 (#4232).
+ * `RecentPaymentDetails::is_probe` was added (#4603).
+ * `RecentPaymentDetails::{pending_fee_msat,fee_paid_msat}` were added (#4674).
+ * `ChannelDetails::splice_details` was added to list pending splices (#4687).
+ * `ChannelDetails::next_splice_out_maximum_sat` was added (#4550).
+ * `ChannelDetails::current_dust_exposure_msat` was added (#4470).
+ * `Event::OnionMessageIntercepted::prev_hop` was added (#4682).
+ * `LSPS2ServiceHandler::htlc_intercepted` now returns an `Err` if the SCID does
+   not match an LSPS2 service SCID (#4160).
+
+## Backwards Compatibility
+ * Payment metadata is now committed to in the payment secret. Thus, any
+   existing BOLT 11 invoices issued with payment metadata will be invalidated
+   on upgrade (and any newly issued invoices will be invalidated on downgrade).
+   If this is problematic for you please open an issue (#4528, #4628).
+ * Existing BOLT 12 refunds which have been issued but not yet claimed will not
+   be claimable on 0.3 (#4685).
+ * Outbound payments which are awaiting a BOLT 12 invoice response to our BOLT
+   12 invoice request message will not be able to complete on 0.3 (#4213, #4685)
+ * Receives over blinded payment paths are now authenticated with a
+   `ReceiveAuthKey` similar to blinded message paths. In doing so, LDK 0.3+ will
+   not accept payments over blinded paths created by prior versions. Note that
+   this does *not* invalidate existing BOLT 12 offers (#4126).
+ * `Event::SpliceNegotiationFailed` no longer lists inputs and outputs which
+   were not included in a finalized splice. Such fields are dropped on upgrade
+   and prior versions of LDK will see empty lists on downgrade (#4388).
+ * HTLCs which were first received on an LDK version prior to LDK 0.2 will no
+   longer be intercepted. Instead, they will be handled as if they were not
+   intercepted and be forwarded/failed automatically (#4300).
+ * Downgrading from LDK 0.3 while a splice is pending will fail when using
+   async monitor updates (#4336).
+ * Setting `OptionalBolt11PaymentParams::declared_total_mpp_value_msat_override`
+   or `RecipientOnionFields::total_mpp_amount_msat` for a payment will break
+   downgrade to 0.2 until the payment completes (#4373).
+ * Downgrading below 0.3 with zero-reserve channels is not supported (#4428).
+ * A pending splice negotiated before upgrading from a prior LDK version (e.g.
+   0.2) cannot be RBF'd (#4687).
+ * As RBF is not supported on prior LDK versions, downgrade after an RBF is not
+   supported (#4427, #4687).
+ * `ChannelSigner::get_per_commitment_point` must return `Ok(..)` for existing
+   and previously revoked points during the first deserialization of a
+   `ChannelManager` last written by LDK prior to 0.3.
+   It may resume/begin async operation thereafter (#4197).
+ * A `Route::route_params` of `None` is now deprecated and it will be required
+   in a future version of LDK (#4704).
+
+## Performance Improvements
+ * `MonitorUpdatingPersisterAsync::read_all_channel_monitors_with_updates` now
+   reads monitors and updates from channels in parallel to speed up startup.
+   `read_all_channel_monitors_with_updates_parallel` was also added which is
+   even faster (#4147).
+ * `lightning-block-sync::init::synchronize_listeners` has additional
+   parallelism and caching (#4266).
+
+## Bug Fixes
+ * 0-conf channels which see a reorg immediately after their funding transaction
+   confirms are no longer immediately closed (#4231).
+ * Gossip about our channels is now forwarded to all peers even those who signal
+   that we should not send them gossip. This fixes issues where an LDK node has
+   multiple public channels but only one channel/path out to the broader network
+   causing gossip about other channels to not propagate (#4216).
+ * HTLCs which are added in a commitment in a `ChannelMonitorUpdate` that
+   is only applied after the block containing the commitment transaction
+   confirms are now properly failed. This should not impact users of a
+  `ChainMonitor` which applies a `ChannelMonitorUpdate` immediately (#4434).
+ 
+
+# 0.2.5 - Aug 4, 2026 - "The MegaScan Project"
+
+## Bug Fixes
+ * LDK will no longer generate compact blinded paths with introduction nodes
+   defined by channel references for channels which are closed. This ensures
+   compact blinded paths built by LDK are reachable (#4828).
+
+## Security
+0.2.5 fixes an on-chain funds-theft vulnerability for nodes forwarding HTLCs
+which accept channels from untrusted nodes and several denial of service
+vulnerabilities when forwarding HTLCs, accepting onion messages which merit a
+response, or in rare cases after a reorg when claiming HTLCs on chain.
+ * When processing an un-revoked counterparty's HTLC claim, ChannelMonitor will
+   no longer confuse two HTLCs with equivalent `payment_hash` and amounts,
+   leading to incorrect HTLC resolution (#4854).
+ * LDK will no longer panic when an onion message contains an invalid reply path
+   with the local node as the listed introduction point (#4850).
+ * LDK will no longer panic attempting to send messages which are too large to
+   fit in the lightning protocol's framing, including in cases where an HTLC
+   failure contains an oversized failure onion (in which case it will instead
+   decline to include attribution data) or when splicing with a transaction
+   which is too large (#4845, #4852).
+ * LDK's limit of 50 peers with unfunded channels is now properly enforced when
+   peers flood us with `open_channel` messages (#4851).
+ * LDK will no longer panic in rare cases when multiple pending HTLCs which
+   expire at different heights are being claimed on-chain and a reorg occurs
+   which changes whether we wish to batch our claim (#4849).
+ * `UntrustedString` and `PrintableString` now filter line- and paragraph-break
+   characters as well as control characters, providing additional robustness
+   especially for log parsing (#4848).
+
+Thanks to Project Loupe and Kyle W. Santiago for reporting security issues fixed
+in this release.
+
+
+# 0.1.12 - Aug 4, 2026 - "Bitcoin's MegaScan"
+
+## Bug Fixes
+ * LDK will no longer generate compact blinded paths with introduction nodes
+   defined by channel references for channels which are closed. This ensures
+   compact blinded paths built by LDK are reachable (#4828).
+
+## Security
+0.1.12 fixes an on-chain funds-theft vulnerability for nodes forwarding HTLCs
+which accept channels from untrusted nodes and a denial of service vulnerability
+when accepting onion messages which merit a response.
+ * When processing an un-revoked counterparty's HTLC claim, ChannelMonitor will
+   no longer confuse two HTLCs with equivalent `payment_hash` and amounts,
+   leading to incorrect HTLC resolution (#4854).
+ * LDK will no longer panic when an onion message contains an invalid reply path
+   with the local node as the listed introduction point (#4850).
+ * LDK will no longer panic attempting to send messages which are too large to
+   fit in the lightning protocol's framing, though no known cases of this exist
+   in 0.1 (#4852).
+ * `UntrustedString` and `PrintableString` now filter line- and paragraph-break
+   characters as well as control characters, providing additional robustness
+   especially for log parsing (#4848).
+ * LDK's limit of 50 peers with unfunded channels is now properly enforced when
+   peers flood us with `open_channel` messages (#4851).
+ * LDK will no longer panic in rare cases when multiple pending HTLCs which
+   expire at different heights are being claimed on-chain and a reorg occurs
+   which changes whether we wish to batch our claim. Note that unlike in 0.2,
+   0.1 should not ever meet the last criteria, making this fix theoretical
+   (#4849).
+
+Thanks to Project Loupe and Kyle W. Santiago for reporting security issues fixed
+in this release.
+
+
+# 0.2.4 - Jun 25, 2026 - "Release the CI"
+
+## Bug Fixes
+ * 0.2.3 broke the MSRV of the `lightning` crate, which now again compiles on
+   `rustc` 1.63 (#4737).
+
+
+# 0.1.11 - Jun 24, 2026 - "CI Matters"
+
+## Bug Fixes
+ * 0.1.10 broke the MSRV of the `lightning` crate, which now again compiles on
+   `rustc` 1.63 (#4737).
+
+
+# 0.2.3 - Jun 18, 2026 - "Through the Loupe"
+
+## API Updates
+ * `DefaultMessageRouter` will now always generate blinded message paths that
+   provide no privacy (where our node is the introduction node) for nodes with
+   public channels. This works around an issue which will appear for any nodes
+   with LND peers that enable onion messaging - such peers will refuse to
+   forward BOLT 12 messages from unknown third parties, which most BOLT 12
+   payers rely on today (#4647).
+ * Explicit `amount_msats` of 0 is rejected in BOLT 12 `Offer`s; `OfferBuilder`
+   now maps 0-amounts to an amount of `None` (#4324).
+
+## Bug Fixes
+ * `Features::supports_zero_conf` no longer clears the `ZeroConf` features and
+   `Features::requires_zero_conf` now correctly reports required, rather than
+   supported, status (#4517).
+ * If an MPP payment is claimed but `ChannelMonitorUpdate`s for some parts are
+   still being completed asynchronously, further channel updates (e.g.
+   forwarding another payment) are pending and the node restarts, the channel
+   could have become stuck (#4520).
+ * The presence of unconfirmed transactions actually no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4590).
+ * LSPS1, LSPS2, and LSPS5 persistence will no longer get stuck and refuse to
+   persist again after a single failure from the KVStore (#4597, #4282).
+ * Dropping the future returned by
+   `OutputSweeper::regenerate_and_broadcast_spend_if_necessary` no longer
+   results in future calls to the same method being spuriously ignored (#4598).
+ * Used async-receive offers are no longer refreshed on every timer tick once
+   their refresh time is reached (#4672).
+ * `FilesystemStore::list_all_keys` will no longer fail if there are stale
+   intermediate files lying around from a previous unclean shutdown (#4618).
+ * When forwarding an HTLC while in a blinded path with proportional fees over
+   200%, LDK will no longer spuriously allow a forward that pays us 1 msat too
+   little in fees (#4697).
+ * Fixed a rare case where a channel could get stuck on reconnect when using
+   both async `ChannelMonitorUpdate` persistence and async signing (#4684).
+ * If we had exactly zero balance in a zero-fee-commitment channel, the
+   counterparty was able to splice all of their balance out, violating the
+   reserve requirements they'd otherwise be forced to keep (#4580).
+ * Providing an `Event::HTLCIntercepted` to the `LSPS2ServiceHandler` twice no
+   longer results in spuriously opening a channel early (#4656).
+ * `Event::PaymentSent::fee_paid_msat` is no longer `None` in cases where
+   `ChannelManager::abandon_payment` was called before the payment ultimately
+   completes anyway (#4651).
+ * `AnchorDescriptor::previous_utxo` now provides the correct `script_pubkey`
+   for non-zero-commitment-fee anchor channels (#4669).
+ * Syncing a `ChainMonitor` using the `Confirm` trait will no longer write some
+   full `ChannelMonitor`s to disk several times per block (#4544).
+ * `OMDomainResolver` now correctly accounts for failed queries when rate
+   limiting, ensuring we continue to respond to queries after failures (#4591).
+ * Calling `ChannelManager::send_payment_with_route` without a `route_params`
+   and with an invalid `Route` will no longer panic (#4707).
+ * `LSPS2ServiceHandler::channel_open_failed` now correctly fails intercepted
+   HTLCs rather than allowing them to fail just before expiry (#4677).
+ * `StaticInvoice::is_offer_expired` was corrected to check offer, rather than
+   static invoice, expiry (#4594).
+ * `lightning-custom-message`'s handling of `peer_connected` events now ensures
+   that sub-handlers will see a `peer_disconnected` event if a different
+   sub-handler refused the connection by `Err`ing `peer_connected` (#4595).
+ * Replay protection for LSPS5 signatures now detects replays which are only
+   different in the encoded signature's case (#4701).
+ * When `lightning-liquidity` is configured in the background processor, there
+   is no longer a stream of `Persisting LiquidityManager...` log spam (#4246).
+ * Incomplete MPP keysend payments will no longer see their HTLCs held until
+   expiry (#4558).
+ * `InvoiceRequestBuilder` will no longer accept a `quantity` of `0` for a
+   BOLT 12 `Offer`, allowing any quantity up to a bound (#4667).
+ * `lightning-custom-message` handlers that return `Ok(None)` when asked to
+   deserialize a message in their defined range no longer cause panics (#4709).
+ * Several spurious debug assertions were fixed (#4537, #4618, #4026)
+
+## Security
+0.2.3 fixes several underestimates of the anchor reserves required to ensure we
+can reliably close channels, several denial-of-service vulnerabilities and a
+sanitization issue.
+ * `Bolt11Invoice::recover_payee_pub_key` no longer panics if called on an
+   invoice which set an explicit public key, rather than relying on public key
+   recovery. Note that this method is called from
+   `PaymentParameters::from_bolt11_invoice` (#4717).
+ * Maliciously-crafted unpayable invoices which have overflowing feerates will
+   no longer cause an `unwrap` failure panic (#4716).
+ * Parsing an `LSPSDateTime` which is before 1970 no longer panics. This is
+   reachable when parsing messages from counterparties (#4715).
+ * `possiblyrandom` did not properly generate random data except when it was
+   explicitly configured to. By default this means LDK is vulnerable to various
+   HashDoS attacks (#4719).
+ * `OMNameResolver` will no longer panic when looking up payment instructions
+   which include unicode characters at the start of a TXT record (#4718).
+ * When using the `anchor_channel_reserves` module to calculate reserves
+   required to pay for fees when closing anchor channels, zero-fee-commitment
+   channels were not considered. This could allow a counterparty to open many
+   channels, leaving us unable to properly force-close (#4592).
+ * The `anchor_channel_reserves` module overestimated the value of `Utxo`s in
+   the wallet by ignoring the `TxIn` cost to spend them (#4670).
+ * `PrintableString` did not properly sanitize unicode format characters,
+   allowing an attacker to corrupt the rendering of logs or UI (#4593, #4605).
+ * RGS data is now limited in how large of a graph it is able to cause a client
+   to store in memory. Note that RGS data is still considered a DoS vector in
+   general and you should only use semi-trusted RGS data (#4713).
+ * Counterparty-provided strings in failure messages are no longer logged in
+   full, reducing the ability of such a counterparty to spam our logs (#4714).
+ * Reading a corrupted `ChannelManager` or `ProbabilisticScorer` can no longer
+   cause us to allocate large amounts of memory (#4712).
+
+Thanks to Project Loupe for reporting most of the issues fixed in this release.
+
+
+# 0.1.10 - Jun 18, 2026 - "Loupe de Loupe"
+
+## API Updates
+ * `DefaultMessageRouter` will now always generate blinded message paths that
+   provide no privacy (where our node is the introduction node) for nodes with
+   public channels. This works around an issue which will appear for any nodes
+   with LND peers that enable onion messaging - such peers will refuse to
+   forward BOLT 12 messages from unknown third parties, which most BOLT 12
+   payers rely on today (#4647).
+ * Explicit `amount_msats` of 0 is rejected in BOLT 12 `Offer`s; `OfferBuilder`
+   now maps 0-amounts to an amount of `None` (#4324).
+
+## Bug Fixes
+ * Async `ChannelMonitorUpdate` persistence operations which complete, but are
+   not marked as complete in a persisted `ChannelManager` prior to restart,
+   followed immediately by a block connection and then another restart could
+   result in some channel operations hanging leading for force-closures (#4377).
+ * If an MPP payment is claimed but `ChannelMonitorUpdate`s for some parts are
+   still being completed asynchronously, further channel updates (e.g.
+   forwarding another payment) are pending and the node restarts, the channel
+   could have become stuck (#4520).
+ * The presence of unconfirmed transactions actually no longer causes
+   `ElectrumSyncClient` to spuriously fail to sync (#4590).
+ * `FilesystemStore::list_all_keys` will no longer fail if there are stale
+   intermediate files lying around from a previous unclean shutdown (#4618).
+ * When forwarding an HTLC while in a blinded path with proportional fees over
+   200%, LDK will no longer spuriously allow a forward that pays us 1 msat too
+   little in fees (#4697).
+ * Fixed a rare case where a channel could get stuck on reconnect when using
+   both async `ChannelMonitorUpdate` persistence and async signing (#4684).
+ * `Event::PaymentSent::fee_paid_msat` is no longer `None` in cases where
+   `ChannelManager::abandon_payment` was called before the payment ultimately
+   completes anyway (#4651).
+ * Syncing a `ChainMonitor` using the `Confirm` trait will no longer write some
+   full `ChannelMonitor`s to disk several times per block (#4544).
+ * `OMDomainResolver` now correctly accounts for failed queries when rate
+   limiting, ensuring we continue to respond to queries after failures (#4591).
+ * Calling `ChannelManager::send_payment_with_route` without a `route_params`
+   and with an invalid `Route` will no longer panic (#4707).
+ * `lightning-custom-message`'s handling of `peer_connected` events now ensures
+   that sub-handlers will see a `peer_disconnected` event if a different
+   sub-handler refused the connection by `Err`ing `peer_connected` (#4595).
+ * Incomplete MPP keysend payments will no longer see their HTLCs held until
+   expiry (#4558).
+ * `InvoiceRequestBuilder` will no longer accept a `quantity` of `0` for a
+   BOLT 12 `Offer`, allowing any quantity up to a bound (#4667).
+ * `lightning-custom-message` handlers that return `Ok(None)` when asked to
+   deserialize a message in their defined range no longer cause panics (#4709).
+ * Several spurious debug assertions were fixed (#4537, #4618).
+
+## Security
+0.1.10 fixes a sanitization issue and several denial-of-service vulnerabilities.
+ * `Bolt11Invoice::recover_payee_pub_key` no longer panics if called on an
+   invoice which set an explicit public key, rather than relying on public key
+   recovery. This method is called from `payment_parameters_from_invoice` and
+   `payment_parameters_from_variable_amount_invoice` (#4717).
+ * Maliciously-crafted unpayable invoices which have overflowing feerates will
+   no longer cause an `unwrap` failure panic (#4716).
+ * `possiblyrandom` did not properly generate random data except when it was
+   explicitly configured to. By default this means LDK is vulnerable to various
+   HashDoS attacks (#4719).
+ * `OMNameResolver` will no longer panic when looking up payment instructions
+   which include unicode characters at the start of a TXT record (#4718).
+ * `PrintableString` did not properly sanitize unicode format characters,
+   allowing an attacker to corrupt the rendering of logs or UI (#4593, #4605).
+ * RGS data is now limited in how large of a graph it is able to cause a client
+   to store in memory. Note that RGS data is still considered a DoS vector in
+   general and you should only use semi-trusted RGS data (#4713).
+ * Counterparty-provided strings in failure messages are no longer logged in
+   full, reducing the ability of such a counterparty to spam our logs (#4714).
+ * Reading a corrupted `ChannelManager` or `ProbabilisticScorer` can no longer
+   cause us to allocate large amounts of memory (#4712).
+
+Thanks to Project Loupe for reporting most of the issues fixed in this release.
+
+
+# 0.2.2 - Feb 6, 2026 - "An Async Splicing Production"
+
+## API Updates
+ * The `SplicePrototype` feature flag has been updated to refer to feature bit
+   63 - the same as `SpliceProduction`. This resolves a compatibility issue with
+   eclair nodes due to the use of the same splicing feature flag (155) they were
+   using for a pre-standardization version of splicing (#4387).
+
+## Bug Fixes
+ * Async `ChannelMonitorUpdate` persistence operations which complete, but are
+   not marked as complete in a persisted `ChannelManager` prior to restart,
+   followed immediately by a block connection and then another restart could
+   result in some channel operations hanging leading for force-closures (#4377).
+ * A debug assertion failure reachable when receiving an invalid splicing
+   message from a peer was fixed (#4383).
+
+
+# 0.2.1 - Jan 29, 2026 - "Electrum Confirmations Logged"
 
 ## API Updates
  * The `AttributionData` struct is now public, correcting an issue where it was
