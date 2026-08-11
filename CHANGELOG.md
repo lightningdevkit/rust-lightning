@@ -33,6 +33,39 @@ Thanks to Project Loupe and Kyle W. Santiago for reporting security issues fixed
 in this release.
 
 
+# 0.1.12 - Aug 4, 2026 - "Bitcoin's MegaScan"
+
+## Bug Fixes
+ * LDK will no longer generate compact blinded paths with introduction nodes
+   defined by channel references for channels which are closed. This ensures
+   compact blinded paths built by LDK are reachable (#4828).
+
+## Security
+0.1.12 fixes an on-chain funds-theft vulnerability for nodes forwarding HTLCs
+which accept channels from untrusted nodes and several denial of service
+vulnerabilities when accepting HTLCs which merit a response, or in rare cases
+after a reorg when claiming HTLCs on chain.
+ * When processing an un-revoked counterparty's HTLC claim, ChannelMonitor will
+   no longer confuse two HTLCs with equivalent `payment_hash` and amounts,
+   leading to incorrect HTLC resolution (#4854).
+ * LDK will no longer panic when an onion message contains an invalid reply path
+   with the local node as the listed introduction point (#4850).
+ * LDK will no longer panic attempting to send messages which are too large to
+   fit in the lightning protocol's framing, though no known cases of this exist
+   in 0.1 (#4852).
+ * LDK will no longer panic in rare cases when multiple pending HTLCs which
+   expire at different heights are being claimed on-chain and a reorg occurs
+   which changes whether we wish to batch our claim (#4849).
+ * `UntrustedString` and `PrintableString` now filter line- and paragraph-break
+   characters as well as control characters, providing additional robustness
+   especially for log parsing (#4848).
+ * LDK's limit of 50 peers with unfunded channels is now properly enforced when
+   peers flood us with `open_channel` messages (#4851).
+
+Thanks to Project Loupe and Kyle W. Santiago for reporting security issues fixed
+in this release.
+
+
 # 0.2.4 - Jun 25, 2026 - "Release the CI"
 
 ## Bug Fixes
