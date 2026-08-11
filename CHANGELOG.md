@@ -8,8 +8,8 @@
 ## Security
 0.2.5 fixes an on-chain funds-theft vulnerability for nodes forwarding HTLCs
 which accept channels from untrusted nodes and several denial of service
-vulnerabilities when forwarding HTLCs, accepting HTLCs which merit a response,
-or in rare cases after a reorg when claiming HTLCs on chain.
+vulnerabilities when forwarding HTLCs, accepting onion messages which merit a
+response, or in rare cases after a reorg when claiming HTLCs on chain.
  * When processing an un-revoked counterparty's HTLC claim, ChannelMonitor will
    no longer confuse two HTLCs with equivalent `payment_hash` and amounts,
    leading to incorrect HTLC resolution (#4854).
@@ -42,9 +42,8 @@ in this release.
 
 ## Security
 0.1.12 fixes an on-chain funds-theft vulnerability for nodes forwarding HTLCs
-which accept channels from untrusted nodes and several denial of service
-vulnerabilities when accepting HTLCs which merit a response, or in rare cases
-after a reorg when claiming HTLCs on chain.
+which accept channels from untrusted nodes and a denial of service vulnerability
+when accepting onion messages which merit a response.
  * When processing an un-revoked counterparty's HTLC claim, ChannelMonitor will
    no longer confuse two HTLCs with equivalent `payment_hash` and amounts,
    leading to incorrect HTLC resolution (#4854).
@@ -53,14 +52,16 @@ after a reorg when claiming HTLCs on chain.
  * LDK will no longer panic attempting to send messages which are too large to
    fit in the lightning protocol's framing, though no known cases of this exist
    in 0.1 (#4852).
- * LDK will no longer panic in rare cases when multiple pending HTLCs which
-   expire at different heights are being claimed on-chain and a reorg occurs
-   which changes whether we wish to batch our claim (#4849).
  * `UntrustedString` and `PrintableString` now filter line- and paragraph-break
    characters as well as control characters, providing additional robustness
    especially for log parsing (#4848).
  * LDK's limit of 50 peers with unfunded channels is now properly enforced when
    peers flood us with `open_channel` messages (#4851).
+ * LDK will no longer panic in rare cases when multiple pending HTLCs which
+   expire at different heights are being claimed on-chain and a reorg occurs
+   which changes whether we wish to batch our claim. Note that unlike in 0.2,
+   0.1 should not ever meet the last criteria, making this fix theoretical
+   (#4849).
 
 Thanks to Project Loupe and Kyle W. Santiago for reporting security issues fixed
 in this release.
