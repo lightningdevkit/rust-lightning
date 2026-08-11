@@ -495,6 +495,11 @@ pub trait PaginatedKVStoreSync: KVStoreSync {
 	/// removed or created key is either included in the atomically-fetched page or absent from it
 	/// entirely.
 	///
+	/// Stores using the default implementation *MUST* ensure they return errors with
+	/// [`io::ErrorKind::NotFound`] in response to [`KVStoreSync::read`] calls which fail due to a
+	/// missing entry and *MUST NOT* return errors with [`io::ErrorKind::NotFound`] in case of any
+	/// other [`KVStoreSync::read`] failure.
+	///
 	/// [`list_paginated`]: Self::list_paginated
 	fn list_paginated_with_values(
 		&self, primary_namespace: &str, secondary_namespace: &str, page_token: Option<PageToken>,
@@ -657,6 +662,11 @@ pub trait PaginatedKVStore: KVStore {
 	///
 	/// Note that unlike the other methods on this trait, the returned future is not `'static`, as
 	/// the default implementation must borrow the store to read the values after listing completes.
+	///
+	/// Stores using the default implementation *MUST* ensure they return errors with
+	/// [`io::ErrorKind::NotFound`] in response to [`KVStore::read`] calls which fail due to a
+	/// missing entry and *MUST NOT* return errors with [`io::ErrorKind::NotFound`] in case of any
+	/// other [`KVStore::read`] failure.
 	///
 	/// [`list_paginated`]: Self::list_paginated
 	fn list_paginated_with_values(
