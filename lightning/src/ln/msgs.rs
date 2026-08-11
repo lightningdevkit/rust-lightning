@@ -4478,10 +4478,7 @@ impl QueryChannelRange {
 	///
 	/// Overflow returns `0xffffffff`, otherwise returns `first_blocknum + number_of_blocks`.
 	pub fn end_blocknum(&self) -> u32 {
-		match self.first_blocknum.checked_add(self.number_of_blocks) {
-			Some(block) => block,
-			None => u32::max_value(),
-		}
+		self.first_blocknum.checked_add(self.number_of_blocks).unwrap_or(u32::MAX)
 	}
 }
 

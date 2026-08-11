@@ -7998,7 +7998,7 @@ where
 		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
 		// these, but for now we just have to treat them as normal.
 
-		let mut pending_idx = core::usize::MAX;
+		let mut pending_idx = usize::MAX;
 		let mut htlc_value_msat = 0;
 		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
@@ -8035,7 +8035,7 @@ where
 				break;
 			}
 		}
-		if pending_idx == core::usize::MAX {
+		if pending_idx == usize::MAX {
 			return UpdateFulfillFetch::DuplicateClaim {};
 		}
 
@@ -8229,7 +8229,7 @@ where
 		// on-chain ChannelsMonitors during block rescan. Ideally we'd figure out a way to drop
 		// these, but for now we just have to treat them as normal.
 
-		let mut pending_idx = core::usize::MAX;
+		let mut pending_idx = usize::MAX;
 		for (idx, htlc) in self.context.pending_inbound_htlcs.iter().enumerate() {
 			if htlc.htlc_id == htlc_id_arg {
 				match htlc.state {
@@ -8245,7 +8245,7 @@ where
 				pending_idx = idx;
 			}
 		}
-		if pending_idx == core::usize::MAX {
+		if pending_idx == usize::MAX {
 			return Err(ChannelError::Ignore(format!("Unable to find a pending HTLC which matched the given HTLC ID ({})", htlc_id_arg)));
 		}
 
@@ -11336,7 +11336,7 @@ where
 		let normal_feerate =
 			fee_estimator.bounded_sat_per_1000_weight(ConfirmationTarget::NonAnchorChannelFee);
 		let mut proposed_max_feerate =
-			if self.funding.is_outbound() { normal_feerate } else { u32::max_value() };
+			if self.funding.is_outbound() { normal_feerate } else { u32::MAX };
 
 		// The spec requires that (when the channel does not have anchors) we only send absolute
 		// channel fees no greater than the absolute channel fee on the current commitment

@@ -66,7 +66,7 @@ pub fn blinded_payment_path(
 					fee_base_msat: chan_upd.fee_base_msat,
 				},
 				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: u32::max_value(),
+					max_cltv_expiry: u32::MAX,
 					htlc_minimum_msat: intro_node_min_htlc_opt.take()
 						.unwrap_or_else(|| channel_upds[idx - 1].htlc_minimum_msat),
 				},
@@ -81,7 +81,7 @@ pub fn blinded_payment_path(
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat:
 				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
 		},
@@ -171,7 +171,7 @@ fn do_one_hop_blinded_path(success: bool) {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
@@ -215,7 +215,7 @@ fn one_hop_blinded_path_with_dummy_hops() {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
@@ -297,7 +297,7 @@ fn mpp_to_one_hop_blinded_path() {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd_1_3.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
@@ -1528,7 +1528,7 @@ fn custom_tlvs_to_blinded_path() {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
@@ -1582,7 +1582,7 @@ fn fails_receive_tlvs_authentication() {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
@@ -1612,7 +1612,7 @@ fn fails_receive_tlvs_authentication() {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
@@ -2219,7 +2219,7 @@ fn test_trampoline_forward_payload_encoded_as_receive() {
 		let payee_tlvs = blinded_path::payment::TrampolineForwardTlvs {
 			next_trampoline: alice_node_id,
 			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: u32::max_value(),
+				max_cltv_expiry: u32::MAX,
 				htlc_minimum_msat: amt_msat,
 			},
 			features: BlindedHopFeatures::empty(),
@@ -2400,7 +2400,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: amt_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
@@ -2702,7 +2702,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 		ReceiveTlvs {
 			payment_secret,
 			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: u32::max_value(),
+				max_cltv_expiry: u32::MAX,
 				htlc_minimum_msat: original_amt_msat,
 			},
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
@@ -2912,7 +2912,7 @@ fn send_trampoline_mpp_payment<'a, 'b, 'c>(
 			tlvs: blinded_path::payment::TrampolineForwardTlvs {
 				next_trampoline,
 				payment_constraints: PaymentConstraints {
-					max_cltv_expiry: u32::max_value(),
+					max_cltv_expiry: u32::MAX,
 					htlc_minimum_msat: 1,
 				},
 				features: BlindedHopFeatures::empty(),
@@ -2924,12 +2924,12 @@ fn send_trampoline_mpp_payment<'a, 'b, 'c>(
 				next_blinding_override: None,
 			},
 			node_id: carol_node_id,
-			htlc_maximum_msat: u64::max_value(),
+			htlc_maximum_msat: u64::MAX,
 		}];
 		let payee_tlvs = ReceiveTlvs {
 			payment_secret: PaymentSecret([0; 32]),
 			payment_constraints: PaymentConstraints {
-				max_cltv_expiry: u32::max_value(),
+				max_cltv_expiry: u32::MAX,
 				htlc_minimum_msat: 1,
 			},
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {

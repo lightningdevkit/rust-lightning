@@ -1573,7 +1573,7 @@ impl Bolt11Invoice {
 	pub fn would_expire(&self, at_time: Duration) -> bool {
 		self.duration_since_epoch()
 			.checked_add(self.expiry_time())
-			.unwrap_or_else(|| Duration::new(u64::max_value(), 1_000_000_000 - 1))
+			.unwrap_or_else(|| Duration::new(u64::MAX, 1_000_000_000 - 1))
 			< at_time
 	}
 

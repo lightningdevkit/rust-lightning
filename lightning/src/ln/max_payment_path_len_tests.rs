@@ -252,7 +252,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret,
 		payment_constraints: PaymentConstraints {
-			max_cltv_expiry: u32::max_value(),
+			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd_1_2.htlc_minimum_msat,
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {

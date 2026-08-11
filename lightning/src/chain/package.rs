@@ -1543,7 +1543,7 @@ impl PackageTemplate {
 	) -> u32 {
 		let feerate_estimate = fee_estimator.bounded_sat_per_1000_weight(conf_target);
 		if self.feerate_previous != 0 {
-			let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
+			let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::MAX);
 			match feerate_strategy {
 				FeerateStrategy::RetryPrevious => previous_feerate,
 				FeerateStrategy::HighestOfPreviousOrNew => cmp::max(previous_feerate, feerate_estimate),
@@ -1555,7 +1555,7 @@ impl PackageTemplate {
 					// so we choose to bump our previous feerate by 25%, making sure we don't use a
 					// lower feerate or overpay by a large margin by limiting it to 5x the new fee
 					// estimate.
-					let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::max_value());
+					let previous_feerate = self.feerate_previous.try_into().unwrap_or(u32::MAX);
 					let mut new_feerate = previous_feerate.saturating_add(previous_feerate / 4);
 					if new_feerate > feerate_estimate * 5 {
 						new_feerate = cmp::max(feerate_estimate * 5, previous_feerate);

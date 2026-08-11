@@ -954,7 +954,7 @@ mod tests {
 		let nonce = Nonce::from_entropy_source(&entropy);
 		let secp_ctx = Secp256k1::new();
 
-		let future_expiry = Duration::from_secs(u64::max_value());
+		let future_expiry = Duration::from_secs(u64::MAX);
 		let past_expiry = Duration::from_secs(0);
 
 		let valid_offer =

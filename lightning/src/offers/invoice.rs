@@ -2224,7 +2224,7 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let payment_id = PaymentId([1; 32]);
 
-		let future_expiry = Duration::from_secs(u64::max_value());
+		let future_expiry = Duration::from_secs(u64::MAX);
 		let past_expiry = Duration::from_secs(0);
 
 		if let Err(e) = OfferBuilder::new(recipient_pubkey())
@@ -2263,7 +2263,7 @@ mod tests {
 	#[cfg(feature = "std")]
 	#[test]
 	fn builds_invoice_from_refund_with_expiration() {
-		let future_expiry = Duration::from_secs(u64::max_value());
+		let future_expiry = Duration::from_secs(u64::MAX);
 		let past_expiry = Duration::from_secs(0);
 
 		if let Err(e) = RefundBuilder::new(vec![1; 32], payer_pubkey(), 1000)
@@ -2534,7 +2534,7 @@ mod tests {
 			.unwrap()
 			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 			.unwrap()
-			.quantity(u64::max_value())
+			.quantity(u64::MAX)
 			.unwrap()
 			.build_unchecked_and_sign()
 			.respond_with_no_std(payment_paths(), payment_hash(), now())

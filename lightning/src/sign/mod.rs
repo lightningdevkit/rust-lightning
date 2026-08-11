@@ -2481,7 +2481,7 @@ impl SignerProvider for KeysManager {
 		// roll over, we may generate duplicate keys for two different channels, which could result
 		// in loss of funds. Because we only support 32-bit+ systems, assert that our `AtomicUsize`
 		// doesn't reach `u32::MAX`.
-		assert!(child_idx < core::u32::MAX as usize, "2^32 channels opened without restart");
+		assert!(child_idx < u32::MAX as usize, "2^32 channels opened without restart");
 		let mut id = [0; 32];
 		id[0..4].copy_from_slice(&(child_idx as u32).to_be_bytes());
 		id[4..8].copy_from_slice(&self.starting_time_nanos.to_be_bytes());

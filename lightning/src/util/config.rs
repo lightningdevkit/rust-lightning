@@ -313,7 +313,7 @@ impl Readable for ChannelHandshakeConfig {
 ///
 /// These limits are only applied to our counterparty's limits, not our own.
 ///
-/// Use `0` or `<type>::max_value()` as appropriate to skip checking.
+/// Use `0` or `<type>::MAX` as appropriate to skip checking.
 ///
 /// Provides sane defaults for most configurations.
 ///
@@ -333,7 +333,7 @@ pub struct ChannelHandshakeLimits {
 	/// The remote node sets a limit on the minimum size of HTLCs we can send to them. This allows
 	/// you to limit the maximum minimum-size they can require.
 	///
-	/// Default value: `u64::max_value`
+	/// Default value: `u64::MAX`
 	pub max_htlc_minimum_msat: u64,
 	/// The remote node sets a limit on the maximum value of pending HTLCs to them at any given
 	/// time to limit their funds exposure to HTLCs. This allows you to set a minimum such value.
@@ -344,7 +344,7 @@ pub struct ChannelHandshakeLimits {
 	/// time, ensuring that we are able to be punished if we broadcast an old state. This allows to
 	/// you limit the amount which we will have to keep to ourselves (and cannot use for HTLCs).
 	///
-	/// Default value: `u64::max_value`.
+	/// Default value: `u64::MAX`.
 	pub max_channel_reserve_satoshis: u64,
 	/// The remote node sets a limit on the maximum number of pending HTLCs to them at any given
 	/// time. This allows you to set a minimum such value.
