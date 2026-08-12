@@ -379,13 +379,16 @@ type DynMessageRouter = lightning::onion_message::messenger::DefaultMessageRoute
 >;
 
 #[cfg(not(c_bindings))]
-type DynSignerProvider = dyn lightning::sign::SignerProvider<EcdsaSigner = lightning::sign::InMemorySigner>
-	+ Send
+type DynSignerProvider = dyn lightning::sign::SignerProvider<
+		EcdsaSigner = lightning::sign::InMemorySigner<&'static (dyn Logger + Send + Sync)>,
+	> + Send
 	+ Sync;
 
 #[cfg(not(c_bindings))]
 type DynChannelManager = lightning::ln::channelmanager::ChannelManager<
-	&'static (dyn chain::Watch<lightning::sign::InMemorySigner> + Send + Sync),
+	&'static (dyn chain::Watch<lightning::sign::InMemorySigner<&'static (dyn Logger + Send + Sync)>>
+	              + Send
+	              + Sync),
 	&'static (dyn BroadcasterInterface + Send + Sync),
 	&'static (dyn EntropySource + Send + Sync),
 	&'static (dyn lightning::sign::NodeSigner + Send + Sync),
@@ -826,12 +829,12 @@ use futures_util::{dummy_waker, Joiner, OptionalSelector, Selector, SelectorOutp
 /// #     fn send_data(&mut self, _data: &[u8], _continue_read: bool) -> usize { 0 }
 /// #     fn disconnect_socket(&mut self) {}
 /// # }
-/// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<StoreSync>, Arc<lightning::sign::KeysManager>>;
+/// # type ChainMonitor<B, F, FE> = lightning::chain::chainmonitor::ChainMonitor<lightning::sign::InMemorySigner<Arc<Logger>>, Arc<F>, Arc<B>, Arc<FE>, Arc<Logger>, Arc<StoreSync>, Arc<lightning::sign::KeysManager<Arc<Logger>>>>;
 /// # type NetworkGraph = lightning::routing::gossip::NetworkGraph<Arc<Logger>>;
 /// # type P2PGossipSync<UL> = lightning::routing::gossip::P2PGossipSync<Arc<NetworkGraph>, Arc<UL>, Arc<Logger>>;
 /// # type ChannelManager<B, F, FE> = lightning::ln::channelmanager::SimpleArcChannelManager<ChainMonitor<B, F, FE>, B, FE, Logger>;
-/// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
-/// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager>, Arc<lightning::sign::KeysManager>, Arc<ChannelManager<B, F, FE>>, Arc<Store>, Arc<DefaultTimeProvider>, Arc<B>>;
+/// # type OnionMessenger<B, F, FE> = lightning::onion_message::messenger::OnionMessenger<Arc<lightning::sign::KeysManager<Arc<Logger>>>, Arc<lightning::sign::KeysManager<Arc<Logger>>>, Arc<Logger>, Arc<ChannelManager<B, F, FE>>, Arc<lightning::onion_message::messenger::DefaultMessageRouter<Arc<NetworkGraph>, Arc<Logger>, Arc<lightning::sign::KeysManager<Arc<Logger>>>>>, Arc<ChannelManager<B, F, FE>>, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler, lightning::ln::peer_handler::IgnoringMessageHandler>;
+/// # type LiquidityManager<B, F, FE> = lightning_liquidity::LiquidityManager<Arc<lightning::sign::KeysManager<Arc<Logger>>>, Arc<lightning::sign::KeysManager<Arc<Logger>>>, Arc<ChannelManager<B, F, FE>>, Arc<Store>, Arc<DefaultTimeProvider>, Arc<B>>;
 /// # type Scorer = RwLock<lightning::routing::scoring::ProbabilisticScorer<Arc<NetworkGraph>, Arc<Logger>>>;
 /// # type PeerManager<B, F, FE, UL> = lightning::ln::peer_handler::SimpleArcPeerManager<SocketDescriptor, ChainMonitor<B, F, FE>, B, FE, Arc<UL>, Logger, F, StoreSync>;
 /// # type OutputSweeper<B, D, FE, F, O> = lightning::util::sweep::OutputSweeper<Arc<B>, Arc<D>, Arc<FE>, Arc<F>, Arc<Store>, Arc<Logger>, Arc<O>>;
@@ -1962,7 +1965,7 @@ mod tests {
 	use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
 	use lightning::routing::router::{CandidateRouteHop, DefaultRouter, Path, RouteHop};
 	use lightning::routing::scoring::{ChannelUsage, LockableScore, ScoreLookUp, ScoreUpdate};
-	use lightning::sign::{ChangeDestinationSourceSync, InMemorySigner, KeysManager, NodeSigner};
+	use lightning::sign::{ChangeDestinationSourceSync, NodeSigner};
 	use lightning::types::features::{ChannelFeatures, NodeFeatures};
 	use lightning::types::payment::PaymentHash;
 	use lightning::util::config::UserConfig;
@@ -1993,6 +1996,8 @@ mod tests {
 
 	const EVENT_DEADLINE: Duration =
 		Duration::from_millis(5 * (FRESHNESS_TIMER.as_millis() as u64));
+	type InMemorySigner = lightning::sign::InMemorySigner<Arc<test_utils::TestLogger>>;
+	type KeysManager = lightning::sign::KeysManager<Arc<test_utils::TestLogger>>;
 
 	/// Reads a directory and returns only non-`.tmp` files.
 	/// The file system may return files in any order, and during persistence
@@ -2464,8 +2469,13 @@ mod tests {
 			let scorer = Arc::new(LockingWrapper::new(TestScorer::new()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let seed = [i as u8; 32];
-			let keys_manager =
-				Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos(), true));
+			let keys_manager = Arc::new(KeysManager::new(
+				&seed,
+				now.as_secs(),
+				now.subsec_nanos(),
+				true,
+				Arc::clone(&logger),
+			));
 			let router = Arc::new(DefaultRouter::new(
 				Arc::clone(&network_graph),
 				Arc::clone(&logger),
@@ -2481,8 +2491,13 @@ mod tests {
 			let kv_store =
 				Arc::new(Persister::new(format!("{}_persister_{}", &persist_dir, i).into()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
-			let keys_manager =
-				Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_nanos(), true));
+			let keys_manager = Arc::new(KeysManager::new(
+				&seed,
+				now.as_secs(),
+				now.subsec_nanos(),
+				true,
+				Arc::clone(&logger),
+			));
 			let chain_monitor = Arc::new(chainmonitor::ChainMonitor::new(
 				Some(Arc::clone(&chain_source)),
 				Arc::clone(&tx_broadcaster),

@@ -17910,6 +17910,8 @@ mod tests {
 	use crate::types::payment::{PaymentHash, PaymentPreimage};
 	use crate::util::config::UserConfig;
 	use crate::util::errors::APIError;
+	#[cfg(ldk_test_vectors)]
+	use crate::util::logger::Logger;
 	use crate::util::ser::{ReadableArgs, Writeable};
 	use crate::util::test_utils::{
 		self, OnGetShutdownScriptpubkey, TestFeeEstimator, TestKeysInterface, TestLogger,
@@ -17948,20 +17950,20 @@ mod tests {
 	}
 
 	#[cfg(ldk_test_vectors)]
-	struct Keys {
-		signer: crate::sign::InMemorySigner,
+	struct Keys<'a> {
+		signer: crate::sign::InMemorySigner<&'a TestLogger>,
 	}
 
 	#[cfg(ldk_test_vectors)]
-	impl EntropySource for Keys {
+	impl EntropySource for Keys<'_> {
 		fn get_secure_random_bytes(&self) -> [u8; 32] {
 			[0; 32]
 		}
 	}
 
 	#[cfg(ldk_test_vectors)]
-	impl SignerProvider for Keys {
-		type EcdsaSigner = InMemorySigner;
+	impl<'a> SignerProvider for Keys<'a> {
+		type EcdsaSigner = InMemorySigner<&'a TestLogger>;
 
 		fn generate_channel_keys_id(&self, _inbound: bool, _user_channel_id: u128) -> [u8; 32] {
 			self.signer.channel_keys_id()
@@ -18874,9 +18876,7 @@ mod tests {
 		use crate::ln::channel::{HTLCOutputInCommitment, PredictedNextFee};
 		use crate::ln::channel_keys::{DelayedPaymentBasepoint, HtlcBasepoint};
 		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
-		use crate::sync::Arc;
 		use crate::types::payment::PaymentPreimage;
-		use crate::util::logger::Logger;
 		use crate::util::test_utils::{
 			preimage_from_hex, pubkey_from_hex, public_from_secret_hex, secret_from_hex,
 		};
@@ -18891,7 +18891,7 @@ mod tests {
 
 		// Test vectors from BOLT 3 Appendices C and F (anchors):
 		let feeest = TestFeeEstimator::new(15000);
-		let logger: Arc<dyn Logger> = Arc::new(TestLogger::new());
+		let logger = TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 
 		let signer = InMemorySigner::new(
@@ -18910,6 +18910,7 @@ mod tests {
 			],
 			[0; 32],
 			[0; 32],
+			&logger,
 		);
 
 		let holder_pubkeys = signer.pubkeys(&secp_ctx);
@@ -18936,7 +18937,7 @@ mod tests {
 			0,
 			42,
 			None,
-			&*logger,
+			&logger,
 			None,
 		)
 		.unwrap(); // Nothing uses their network key in this test
@@ -19564,11 +19565,9 @@ mod tests {
 		};
 		use crate::ln::channel::HTLCOutputInCommitment;
 		use crate::sign::{ecdsa::EcdsaChannelSigner, ChannelDerivationParameters, HTLCDescriptor};
-		use crate::sync::Arc;
 		use crate::types::features::ChannelTypeFeatures;
 		use crate::types::payment::PaymentPreimage;
 		use crate::util::config::UserConfig;
-		use crate::util::logger::Logger;
 		use crate::util::test_utils::{
 			payment_hash_from_hex, preimage_from_hex, pubkey_from_hex, secret_from_hex,
 		};
@@ -19581,7 +19580,7 @@ mod tests {
 		use core::str::FromStr;
 
 		let feeest = TestFeeEstimator::new(250); // Fee doesn't matter
-		let logger: Arc<dyn Logger> = Arc::new(TestLogger::new());
+		let logger = TestLogger::new();
 		let secp_ctx = Secp256k1::new();
 
 		let alice_funding_privkey =
@@ -19608,6 +19607,7 @@ mod tests {
 			[0xff; 32],
 			[0; 32],
 			[0; 32],
+			&logger,
 		);
 		let alice_keys_provider = Keys { signer: alice_signer.clone() };
 		let alice_pubkeys = alice_signer.pubkeys(&secp_ctx);
@@ -19635,6 +19635,7 @@ mod tests {
 			[0xff; 32],
 			[0; 32],
 			[0; 32],
+			&logger,
 		);
 
 		// Test vectors only provide revocation_basepoint for bob, override it here.
@@ -19661,7 +19662,7 @@ mod tests {
 			0,
 			0,
 			None,
-			&*logger,
+			&logger,
 			None,
 		)
 		.unwrap();

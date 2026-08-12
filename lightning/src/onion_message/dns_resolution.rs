@@ -727,7 +727,7 @@ mod tests {
 	use super::*;
 
 	#[cfg(feature = "dnssec")]
-	use crate::util::test_utils::pubkey;
+	use crate::util::test_utils::{pubkey, TestLogger};
 
 	#[cfg(feature = "dnssec")]
 	fn dest(b: u8) -> Destination {
@@ -813,7 +813,8 @@ mod tests {
 	#[test]
 	#[cfg(feature = "dnssec")]
 	fn test_expiry() {
-		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true);
+		let logger = TestLogger::new();
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true, &logger);
 		let resolver = OMNameResolver::new(42, 42);
 		let name = HumanReadableName::new("user", "example.com").unwrap();
 
@@ -860,7 +861,8 @@ mod tests {
 	#[test]
 	#[cfg(feature = "dnssec")]
 	fn test_dnssec_error() {
-		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true);
+		let logger = TestLogger::new();
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true, &logger);
 		let resolver = OMNameResolver::new(42, 42);
 		let name = HumanReadableName::new("user", "example.com").unwrap();
 
@@ -909,7 +911,8 @@ mod tests {
 		// An error only counts against the resolution whose blinded path (context) it was received
 		// over; other resolutions for the same name (queued with a different `PaymentId`, and thus a
 		// different context) are left untouched.
-		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true);
+		let logger = TestLogger::new();
+		let keys = crate::sign::KeysManager::new(&[33; 32], 0, 0, true, &logger);
 		let resolver = OMNameResolver::new(42, 42);
 		let name = HumanReadableName::new("user", "example.com").unwrap();
 

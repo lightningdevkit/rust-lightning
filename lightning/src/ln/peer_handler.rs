@@ -944,8 +944,18 @@ pub type SimpleArcPeerManager<SD, M, T, F, C, L, CF, S> = PeerManager<
 	Arc<SimpleArcOnionMessenger<M, T, F, L>>,
 	Arc<L>,
 	IgnoringMessageHandler,
-	Arc<KeysManager>,
-	Arc<ChainMonitor<InMemorySigner, Arc<CF>, Arc<T>, Arc<F>, Arc<L>, Arc<S>, Arc<KeysManager>>>,
+	Arc<KeysManager<Arc<L>>>,
+	Arc<
+		ChainMonitor<
+			InMemorySigner<Arc<L>>,
+			Arc<CF>,
+			Arc<T>,
+			Arc<F>,
+			Arc<L>,
+			Arc<S>,
+			Arc<KeysManager<Arc<L>>>,
+		>,
+	>,
 >;
 
 /// SimpleRefPeerManager is a type alias for a PeerManager reference, and is the reference
@@ -967,8 +977,16 @@ pub type SimpleRefPeerManager<
 	&'h SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'graph, 'logger, 'i, 'j, 'k, M, T, F, L>,
 	&'logger L,
 	IgnoringMessageHandler,
-	&'c KeysManager,
-	&'j ChainMonitor<&'a M, C, &'b T, &'c F, &'logger L, &'c KeysManager, &'c KeysManager>,
+	&'c KeysManager<&'logger L>,
+	&'j ChainMonitor<
+		&'a M,
+		C,
+		&'b T,
+		&'c F,
+		&'logger L,
+		&'c KeysManager<&'logger L>,
+		&'c KeysManager<&'logger L>,
+	>,
 >;
 
 /// A generic trait which is implemented for all [`PeerManager`]s. This makes bounding functions or

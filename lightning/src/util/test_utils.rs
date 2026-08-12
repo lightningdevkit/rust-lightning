@@ -2080,6 +2080,7 @@ impl TestSignerFactory for DefaultSignerFactory {
 			now.subsec_nanos(),
 			if let Some(provided_seed) = phantom_seed { provided_seed } else { seed },
 			v2_remote_key_derivation,
+			Arc::new(TestLogger::new()),
 		);
 		let dphantom = DynPhantomKeysInterface::new(phantom);
 		let backing = Box::new(dphantom) as Box<dyn DynKeysInterfaceTrait<EcdsaSigner = DynSigner>>;

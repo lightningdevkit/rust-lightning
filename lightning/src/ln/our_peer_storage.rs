@@ -36,8 +36,14 @@ use crate::prelude::*;
 /// ```
 /// use lightning::ln::our_peer_storage::DecryptedOurPeerStorage;
 /// use lightning::sign::{KeysManager, NodeSigner};
+/// use lightning::util::logger::{Logger, Record};
+/// struct FakeLogger;
+/// impl Logger for FakeLogger {
+///     fn log(&self, record: Record) { println!("{:?}", record); }
+/// }
+/// let logger = FakeLogger;
 /// let seed = [1u8; 32];
-/// let keys_mgr = KeysManager::new(&seed, 42, 42, true);
+/// let keys_mgr = KeysManager::new(&seed, 42, 42, true, &logger);
 /// let key = keys_mgr.get_peer_storage_key();
 /// let decrypted_ops = DecryptedOurPeerStorage::new(vec![1, 2, 3]);
 /// let our_peer_storage = decrypted_ops.encrypt(&key, &[0u8; 32]);
