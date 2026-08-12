@@ -925,6 +925,15 @@ impl RouteParameters {
 		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
 	}
 
+	/// Constructs single-path [`RouteParameters`] to `target_node_id` with no fee cap.
+	pub(crate) fn from_probe_target(target_node_id: PublicKey, amount_msat: u64) -> Self {
+		let payment_params =
+			PaymentParameters::from_node_id(target_node_id, MIN_FINAL_CLTV_EXPIRY_DELTA as u32)
+				.with_max_path_count(1);
+		Self { payment_params, final_value_msat: amount_msat, max_total_routing_fee_msat: None }
+	}
+
+
 	/// Sets the maximum number of hops that can be included in a payment path, based on the provided
 	/// [`RecipientOnionFields`] and blinded paths.
 	#[rustfmt::skip]
