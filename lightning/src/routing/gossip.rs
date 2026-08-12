@@ -2114,22 +2114,37 @@ impl<L: Logger> NetworkGraph<L> {
 		Ok(())
 	}
 
-	/// If we already have all the information for a channel that we're gonna get, there's no
-	/// reason to redundantly process it.
+	/// If an announcement is trivially bogus, or we already have all the information for a channel
+	/// that we're gonna get, there's no reason to redundantly process it (or check its
+	/// signatures).
 	///
 	/// In those cases, this will return an `Err` that we can return immediately. Otherwise it will
 	/// return an `Ok(())`.
 	fn pre_channel_announcement_validation_check<U: UtxoLookup>(
 		&self, msg: &msgs::UnsignedChannelAnnouncement, utxo_lookup: &Option<U>,
 	) -> Result<(), LightningError> {
-		let channels = self.channels.read().unwrap();
-
 		if msg.node_id_1 >= msg.node_id_2 {
 			return Err(LightningError {
 				err: "node_ids in channel_announcements must be sorted".to_owned(),
 				action: ErrorAction::IgnoreError,
 			});
 		}
+
+		if msg.bitcoin_key_1 == msg.bitcoin_key_2 {
+			return Err(LightningError {
+				err: "Channel announcement node had a channel with itself".to_owned(),
+				action: ErrorAction::IgnoreError,
+			});
+		}
+
+		if msg.chain_hash != self.chain_hash {
+			return Err(LightningError {
+				err: "Channel announcement chain hash does not match genesis hash".to_owned(),
+				action: ErrorAction::IgnoreAndLog(Level::Debug),
+			});
+		}
+
+		let channels = self.channels.read().unwrap();
 
 		if let Some(chan) = channels.get(&msg.short_channel_id) {
 			if chan.capacity_sats.is_some() {
@@ -2171,20 +2186,6 @@ impl<L: Logger> NetworkGraph<L> {
 		&self, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>, utxo_lookup: &Option<U>,
 	) -> Result<(), LightningError> {
-		if msg.node_id_1 == msg.node_id_2 || msg.bitcoin_key_1 == msg.bitcoin_key_2 {
-			return Err(LightningError {
-				err: "Channel announcement node had a channel with itself".to_owned(),
-				action: ErrorAction::IgnoreError,
-			});
-		}
-
-		if msg.chain_hash != self.chain_hash {
-			return Err(LightningError {
-				err: "Channel announcement chain hash does not match genesis hash".to_owned(),
-				action: ErrorAction::IgnoreAndLog(Level::Debug),
-			});
-		}
-
 		{
 			let removed_channels = self.removed_channels.lock().unwrap();
 			let removed_nodes = self.removed_nodes.lock().unwrap();
