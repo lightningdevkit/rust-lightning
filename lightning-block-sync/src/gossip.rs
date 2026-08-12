@@ -2,7 +2,7 @@
 //! current UTXO set. This module defines an implementation of the LDK API required to do so
 //! against a [`BlockSource`] which implements a few additional methods for accessing the UTXO set.
 
-use crate::{BlockSource, BlockSourceError, BlockSourceResult};
+use crate::{BlockSource, BlockSourceResult};
 
 use bitcoin::constants::ChainHash;
 use bitcoin::hash_types::{BlockHash, Txid};
@@ -15,9 +15,8 @@ use lightning::util::wakers::Notifier;
 use std::collections::VecDeque;
 use std::future::Future;
 use std::ops::Deref;
-use std::pin::{pin, Pin};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::task::Poll;
 
 /// A trait which extends [`BlockSource`] and can be queried to fetch the txids of the
 /// transactions in a block as well as outputs which are members of the current UTXO set.
@@ -57,71 +56,6 @@ impl FutureSpawner for TokioSpawner {
 	}
 }
 
-/// A trivial future which joins two other futures and polls them at the same time, returning only
-/// once both complete.
-pub(crate) struct Joiner<
-	'a,
-	A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
-	B: Future<Output = Result<BlockHash, BlockSourceError>>,
-> {
-	pub a: Pin<&'a mut A>,
-	pub b: Pin<&'a mut B>,
-	a_res: Option<(BlockHash, Option<u32>)>,
-	b_res: Option<BlockHash>,
-}
-
-impl<
-		'a,
-		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
-		B: Future<Output = Result<BlockHash, BlockSourceError>>,
-	> Joiner<'a, A, B>
-{
-	fn new(a: Pin<&'a mut A>, b: Pin<&'a mut B>) -> Self {
-		Self { a, b, a_res: None, b_res: None }
-	}
-}
-
-impl<
-		'a,
-		A: Future<Output = Result<(BlockHash, Option<u32>), BlockSourceError>>,
-		B: Future<Output = Result<BlockHash, BlockSourceError>>,
-	> Future for Joiner<'a, A, B>
-{
-	type Output = Result<((BlockHash, Option<u32>), BlockHash), BlockSourceError>;
-	fn poll(mut self: Pin<&mut Self>, ctx: &mut core::task::Context<'_>) -> Poll<Self::Output> {
-		if self.a_res.is_none() {
-			match self.a.as_mut().poll(ctx) {
-				Poll::Ready(res) => {
-					if let Ok(ok) = res {
-						self.a_res = Some(ok);
-					} else {
-						return Poll::Ready(Err(res.unwrap_err()));
-					}
-				},
-				Poll::Pending => {},
-			}
-		}
-		if self.b_res.is_none() {
-			match self.b.as_mut().poll(ctx) {
-				Poll::Ready(res) => {
-					if let Ok(ok) = res {
-						self.b_res = Some(ok);
-					} else {
-						return Poll::Ready(Err(res.unwrap_err()));
-					}
-				},
-				Poll::Pending => {},
-			}
-		}
-		if let Some(b_res) = self.b_res {
-			if let Some(a_res) = self.a_res {
-				return Poll::Ready(Ok((a_res, b_res)));
-			}
-		}
-		Poll::Pending
-	}
-}
-
 /// A struct which wraps a [`UtxoSource`] and a few LDK objects and implements the LDK
 /// [`UtxoLookup`] trait.
 ///
@@ -137,6 +71,7 @@ where
 	source: Blocks,
 	spawn: S,
 	txid_cache: Arc<Mutex<VecDeque<(u32, Vec<Txid>)>>>,
+	latest_tip_height: Arc<AtomicU32>,
 }
 
 const TXID_CACHE_SIZE: usize = 50;
@@ -153,11 +88,13 @@ where
 			source,
 			spawn,
 			txid_cache: Arc::new(Mutex::new(VecDeque::with_capacity(TXID_CACHE_SIZE))),
+			latest_tip_height: Arc::new(AtomicU32::new(0)),
 		}
 	}
 
 	async fn retrieve_utxo(
-		source: Blocks, txid_cache: Arc<Mutex<VecDeque<(u32, Vec<Txid>)>>>, short_channel_id: u64,
+		source: Blocks, txid_cache: Arc<Mutex<VecDeque<(u32, Vec<Txid>)>>>,
+		latest_tip_height: Arc<AtomicU32>, short_channel_id: u64,
 	) -> Result<TxOut, UtxoLookupError> {
 		let block_height = (short_channel_id >> 5 * 8) as u32; // block height is most significant three bytes
 		let transaction_index = ((short_channel_id >> 2 * 8) & 0xffffff) as u32;
@@ -180,22 +117,28 @@ where
 		let txid = if let Some(txid) = cached_txid {
 			txid
 		} else {
-			let ((_, tip_height_opt), block_hash) = Joiner::new(
-				pin!(source.get_best_block()),
-				pin!(source.get_block_hash_by_height(block_height)),
-			)
-			.await
-			.map_err(|_| UtxoLookupError::UnknownTx)?;
-			if let Some(tip_height) = tip_height_opt {
-				// If the block doesn't yet have five confirmations, error out.
-				//
-				// The BOLT spec requires nodes wait for six confirmations before announcing a
-				// channel, and we give them one block of headroom in case we're delayed seeing a
-				// block.
-				if block_height + 5 > tip_height {
-					return Err(UtxoLookupError::UnknownTx);
+			// If the block doesn't yet have five confirmations, error out.
+			//
+			// The BOLT spec requires nodes wait for six confirmations before announcing a
+			// channel, and we give them one block of headroom in case we're delayed seeing a
+			// block.
+			//
+			// Only fetch the current tip if the most recent one we've seen doesn't already bury
+			// the block deeply enough, as the tip we fetch can only be higher.
+			if block_height + 5 > latest_tip_height.load(Ordering::Relaxed) {
+				let (_, tip_height_opt) =
+					source.get_best_block().await.map_err(|_| UtxoLookupError::UnknownTx)?;
+				if let Some(tip_height) = tip_height_opt {
+					latest_tip_height.fetch_max(tip_height, Ordering::Relaxed);
+					if block_height + 5 > tip_height {
+						return Err(UtxoLookupError::UnknownTx);
+					}
 				}
 			}
+			let block_hash = source
+				.get_block_hash_by_height(block_height)
+				.await
+				.map_err(|_| UtxoLookupError::UnknownTx)?;
 			let txids = source
 				.get_block_txids(&block_hash)
 				.await
@@ -232,8 +175,9 @@ where
 		let fut = res.clone();
 		let source = self.source.clone();
 		let txid_cache = Arc::clone(&self.txid_cache);
+		let latest_tip_height = Arc::clone(&self.latest_tip_height);
 		let _not_polled = self.spawn.spawn(async move {
-			let res = Self::retrieve_utxo(source, txid_cache, scid).await;
+			let res = Self::retrieve_utxo(source, txid_cache, latest_tip_height, scid).await;
 			fut.resolve(res);
 		});
 		UtxoResult::Async(res)
