@@ -3975,12 +3975,16 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 		Ok(initial_commitment_tx)
 	}
 
-	#[rustfmt::skip]
 	fn initial_commitment_signed<L: Logger>(
-		&mut self, channel_id: ChannelId, counterparty_signature: Signature, holder_commitment_point: &mut HolderCommitmentPoint,
-		best_block: BlockLocator, signer_provider: &SP, logger: &L,
+		&mut self, channel_id: ChannelId, counterparty_signature: Signature,
+		holder_commitment_point: &mut HolderCommitmentPoint, best_block: BlockLocator,
+		signer_provider: &SP, logger: &L,
 	) -> Result<(ChannelMonitor<SP::EcdsaSigner>, CommitmentTransaction), ChannelError> {
-		let initial_commitment_tx = match self.check_counterparty_commitment_signature(&counterparty_signature, holder_commitment_point, logger) {
+		let initial_commitment_tx = match self.check_counterparty_commitment_signature(
+			&counterparty_signature,
+			holder_commitment_point,
+			logger,
+		) {
 			Ok(res) => res,
 			Err(ChannelError::Close(e)) => {
 				// TODO(dual_funding): Update for V2 established channels.
@@ -3992,29 +3996,46 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 			Err(e) => {
 				// The only error we know how to handle is ChannelError::Close, so we fall over here
 				// to make sure we don't continue with an inconsistent state.
-				panic!("unexpected error type from check_counterparty_commitment_signature {:?}", e);
-			}
+				panic!(
+					"unexpected error type from check_counterparty_commitment_signature {:?}",
+					e
+				);
+			},
 		};
 		let context = self.context();
-		let commitment_data = context.build_commitment_transaction(self.funding(),
+		let commitment_data = context.build_commitment_transaction(
+			self.funding(),
 			context.counterparty_next_commitment_transaction_number,
-			&context.counterparty_next_commitment_point.unwrap(), false, false, logger);
+			&context.counterparty_next_commitment_point.unwrap(),
+			false,
+			false,
+			logger,
+		);
 		let counterparty_initial_commitment_tx = commitment_data.tx;
 		let counterparty_trusted_tx = counterparty_initial_commitment_tx.trust();
 		let counterparty_initial_bitcoin_tx = counterparty_trusted_tx.built_transaction();
 
-		log_trace!(logger, "Initial counterparty tx for channel {} is: txid {} tx {}",
-			&context.channel_id(), counterparty_initial_bitcoin_tx.txid, encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction));
+		log_trace!(
+			logger,
+			"Initial counterparty tx for channel {} is: txid {} tx {}",
+			&context.channel_id(),
+			counterparty_initial_bitcoin_tx.txid,
+			encode::serialize_hex(&counterparty_initial_bitcoin_tx.transaction)
+		);
 
 		let holder_commitment_tx = HolderCommitmentTransaction::new(
 			initial_commitment_tx,
 			counterparty_signature,
 			Vec::new(),
 			&self.funding().get_holder_pubkeys().funding_pubkey,
-			&self.funding().counterparty_funding_pubkey()
+			&self.funding().counterparty_funding_pubkey(),
 		);
 
-		if context.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new()).is_err() {
+		if context
+			.holder_signer
+			.validate_holder_commitment(&holder_commitment_tx, Vec::new())
+			.is_err()
+		{
 			// TODO(dual_funding): Update for V2 established channels.
 			if !self.funding().is_outbound() {
 				self.funding_mut().channel_transaction_parameters.funding_outpoint = None;
@@ -4031,41 +4052,65 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 		assert!(!context.channel_state.is_monitor_update_in_progress()); // We have not had any monitor(s) yet to fail update!
 		if !is_v2_established {
 			if context.is_batch_funding() {
-				context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::WAITING_FOR_BATCH);
+				context.channel_state = ChannelState::AwaitingChannelReady(
+					AwaitingChannelReadyFlags::WAITING_FOR_BATCH,
+				);
 			} else {
-				context.channel_state = ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
+				context.channel_state =
+					ChannelState::AwaitingChannelReady(AwaitingChannelReadyFlags::new());
 			}
 		}
-		if holder_commitment_point.advance(&context.holder_signer, &context.secp_ctx, logger).is_err() {
+		if holder_commitment_point
+			.advance(&context.holder_signer, &context.secp_ctx, logger)
+			.is_err()
+		{
 			// We only fail to advance our commitment point/number if we're currently
 			// waiting for our signer to unblock and provide a commitment point.
 			// We cannot send accept_channel/open_channel before this has occurred, so if we
 			// err here by the time we receive funding_created/funding_signed, something has gone wrong.
-			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive {}", self.received_msg());
+			debug_assert!(
+				false,
+				"We should be ready to advance our commitment point by the time we receive {}",
+				self.received_msg()
+			);
 			// TODO(dual_funding): Update for V2 established channels.
 			if !self.funding().is_outbound() {
 				self.funding_mut().channel_transaction_parameters.funding_outpoint = None;
 			}
-			return Err(ChannelError::close("Failed to advance holder commitment point".to_owned()));
+			return Err(ChannelError::close(
+				"Failed to advance holder commitment point".to_owned(),
+			));
 		}
 
 		let context = self.context();
 		let funding = self.funding();
-		let obscure_factor = get_commitment_transaction_number_obscure_factor(&funding.get_holder_pubkeys().payment_point, &funding.get_counterparty_pubkeys().payment_point, funding.is_outbound());
-		let shutdown_script = context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
+		let obscure_factor = get_commitment_transaction_number_obscure_factor(
+			&funding.get_holder_pubkeys().payment_point,
+			&funding.get_counterparty_pubkeys().payment_point,
+			funding.is_outbound(),
+		);
+		let shutdown_script =
+			context.shutdown_scriptpubkey.clone().map(|script| script.into_inner());
 		let monitor_signer = signer_provider.derive_channel_signer(context.channel_keys_id);
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
 		let channel_monitor = ChannelMonitor::new(
-			context.secp_ctx.clone(), monitor_signer, shutdown_script,
-			funding.get_holder_selected_contest_delay(), &context.destination_script,
-			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
-			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
+			context.secp_ctx.clone(),
+			monitor_signer,
+			shutdown_script,
+			funding.get_holder_selected_contest_delay(),
+			&context.destination_script,
+			&funding.channel_transaction_parameters,
+			funding.is_outbound(),
+			obscure_factor,
+			holder_commitment_tx,
+			best_block,
+			context.counterparty_node_id,
+			context.channel_id(),
 			context.is_manual_broadcast,
 		);
-		channel_monitor.provide_initial_counterparty_commitment_tx(
-			counterparty_initial_commitment_tx.clone(),
-		);
+		channel_monitor
+			.provide_initial_counterparty_commitment_tx(counterparty_initial_commitment_tx.clone());
 
 		self.context_mut().counterparty_next_commitment_transaction_number -= 1;
 
