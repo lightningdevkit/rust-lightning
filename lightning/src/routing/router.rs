@@ -253,6 +253,143 @@ impl Router for FixedRouter {
 	}
 }
 
+/// Builds a probe [`Path`] by walking randomly through the public gossip graph.
+///
+/// Picks a usable channel from `first_hops`, then walks announced channels that are enabled in
+/// both directions and can carry `amount_msat`, without revisiting the payer or any previous hop.
+/// Walk edges whose CLTV would push the path over [`DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA`] (plus the
+/// final hop's CLTV) are skipped. `max_hops` is clamped to `[2, MAX_PATH_LENGTH_ESTIMATE]` and used
+/// as the target path length. The amount is not clamped into HTLC bounds — callers should retry
+/// with a smaller amount on failure.
+pub fn build_random_walk_probe_path<L: Logger, GL: Logger, ES: EntropySource>(
+	network_graph: &NetworkGraph<GL>, entropy_source: &ES, logger: L, payer: &PublicKey,
+	first_hops: &[&ChannelDetails], amount_msat: u64, max_hops: u8,
+) -> Result<Path, &'static str> {
+	let target_hops = max_hops.clamp(2, MAX_PATH_LENGTH_ESTIMATE) as usize;
+
+	let payer_id = NodeId::from_pubkey(payer);
+	let usable_first_hop = |c: &&&ChannelDetails| {
+		c.is_usable
+			&& c.get_outbound_payment_scid().is_some()
+			&& amount_msat >= c.next_outbound_htlc_minimum_msat
+			// Leave room for fees on later hops.
+			&& amount_msat.saturating_mul(2) <= c.next_outbound_htlc_limit_msat
+	};
+	let usable_count = first_hops.iter().filter(usable_first_hop).count();
+	if usable_count == 0 {
+		return Err("no usable first hops for random-walk probe");
+	}
+	let first_hop = *first_hops
+		.iter()
+		.filter(usable_first_hop)
+		.nth(random_in_range(entropy_source, 0, usable_count as u64 - 1) as usize)
+		.unwrap();
+
+	let first_peer = first_hop.counterparty.node_id;
+	let mut hop_pubkeys = Vec::with_capacity(target_hops);
+	hop_pubkeys.push(first_peer);
+
+	let graph = network_graph.read_only();
+	let mut current_node_id = NodeId::from_pubkey(&first_peer);
+	let mut cltv_so_far = 0u32;
+
+	for _ in 1..target_hops {
+		let Some(node_info) = graph.node(&current_node_id) else {
+			break;
+		};
+		let candidate = |&scid: &u64| {
+			let channel = graph.channel(scid)?;
+			random_walk_next_hop(
+				channel,
+				&current_node_id,
+				amount_msat,
+				&payer_id,
+				&hop_pubkeys,
+				cltv_so_far,
+			)
+		};
+		let candidate_count = node_info.channels.iter().filter_map(candidate).count();
+		if candidate_count == 0 {
+			break;
+		}
+		let (next_id, next_pubkey, edge_cltv) = node_info
+			.channels
+			.iter()
+			.filter_map(candidate)
+			.nth(random_in_range(entropy_source, 0, candidate_count as u64 - 1) as usize)
+			.unwrap();
+		hop_pubkeys.push(next_pubkey);
+		cltv_so_far = cltv_so_far.saturating_add(edge_cltv);
+		current_node_id = next_id;
+	}
+
+	if hop_pubkeys.len() < target_hops {
+		return Err("random-walk probe path dead-ended before reaching hop count");
+	}
+
+	let route_params =
+		RouteParameters::from_probe_target(*hop_pubkeys.last().unwrap(), amount_msat);
+	let random_seed_bytes = entropy_source.get_secure_random_bytes();
+	let mut route = build_route_from_hops_internal(
+		payer,
+		&hop_pubkeys,
+		&route_params,
+		&graph,
+		logger,
+		&random_seed_bytes,
+		Some(&[first_hop]),
+	)?;
+	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph, &random_seed_bytes);
+	route.paths.into_iter().next().ok_or("random-walk probe built an empty route")
+}
+
+fn random_in_range<ES: EntropySource>(
+	entropy_source: &ES, min_inclusive: u64, max_inclusive: u64,
+) -> u64 {
+	debug_assert!(min_inclusive <= max_inclusive);
+	let range = max_inclusive.saturating_sub(min_inclusive).saturating_add(1);
+	let seed = entropy_source.get_secure_random_bytes();
+	let mut buf = [0u8; 8];
+	buf.copy_from_slice(&seed[..8]);
+	min_inclusive + u64::from_be_bytes(buf) % range
+}
+
+fn random_walk_next_hop(
+	channel: &crate::routing::gossip::ChannelInfo, from: &NodeId, amount_msat: u64,
+	payer_id: &NodeId, hop_pubkeys: &[PublicKey], cltv_so_far: u32,
+) -> Option<(NodeId, PublicKey, u32)> {
+	let (directed, next_node_id) = channel.as_directed_from(from)?;
+	if next_node_id == payer_id
+		|| hop_pubkeys.iter().any(|pk| NodeId::from_pubkey(pk) == *next_node_id)
+	{
+		return None;
+	}
+	let one_to_two = channel.one_to_two.as_ref()?;
+	let two_to_one = channel.two_to_one.as_ref()?;
+	if !one_to_two.enabled || !two_to_one.enabled {
+		return None;
+	}
+	let update = directed.direction();
+	if amount_msat < update.htlc_minimum_msat || amount_msat > update.htlc_maximum_msat {
+		return None;
+	}
+	if amount_msat > directed.effective_capacity().as_msat() {
+		return None;
+	}
+	let fee = compute_fees(amount_msat, update.fees)?;
+	if fee > amount_msat / 2 {
+		return None;
+	}
+	let edge_cltv = update.cltv_expiry_delta as u32;
+	if cltv_so_far.saturating_add(edge_cltv).saturating_add(MIN_FINAL_CLTV_EXPIRY_DELTA as u32)
+		> DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA
+	{
+		return None;
+	}
+	let next_pubkey = PublicKey::try_from(*next_node_id).ok()?;
+	Some((*next_node_id, next_pubkey, edge_cltv))
+}
+
 /// A trait defining behavior for routing a payment.
 pub trait Router {
 	/// Finds a [`Route`] for a payment between the given `payer` and a payee.
@@ -923,6 +1060,14 @@ impl RouteParameters {
 	#[rustfmt::skip]
 	pub fn from_payment_params_and_value(payment_params: PaymentParameters, final_value_msat: u64) -> Self {
 		Self { payment_params, final_value_msat, max_total_routing_fee_msat: Some(final_value_msat / 100 + 50_000) }
+	}
+
+	/// Constructs single-path [`RouteParameters`] to `target_node_id` with no fee cap.
+	pub(crate) fn from_probe_target(target_node_id: PublicKey, amount_msat: u64) -> Self {
+		let payment_params =
+			PaymentParameters::from_node_id(target_node_id, MIN_FINAL_CLTV_EXPIRY_DELTA as u32)
+				.with_max_path_count(1);
+		Self { payment_params, final_value_msat: amount_msat, max_total_routing_fee_msat: None }
 	}
 
 	/// Sets the maximum number of hops that can be included in a payment path, based on the provided
@@ -4038,7 +4183,7 @@ pub fn build_route_from_hops<L: Logger, GL: Logger>(
 ) -> Result<Route, &'static str> {
 	let graph_lock = network_graph.read_only();
 	let mut route = build_route_from_hops_internal(our_node_pubkey, hops, &route_params,
-		&graph_lock, logger, random_seed_bytes)?;
+		&graph_lock, logger, random_seed_bytes, None)?;
 	add_random_cltv_offset(&mut route, &route_params.payment_params, &graph_lock, random_seed_bytes);
 	Ok(route)
 }
@@ -4047,6 +4192,7 @@ pub fn build_route_from_hops<L: Logger, GL: Logger>(
 fn build_route_from_hops_internal<L: Logger>(
 	our_node_pubkey: &PublicKey, hops: &[PublicKey], route_params: &RouteParameters,
 	network_graph: &ReadOnlyNetworkGraph, logger: L, random_seed_bytes: &[u8; 32],
+	first_hops: Option<&[&ChannelDetails]>,
 ) -> Result<Route, &'static str> {
 
 	struct HopScorer {
@@ -4094,7 +4240,7 @@ fn build_route_from_hops_internal<L: Logger>(
 
 	let scorer = HopScorer { our_node_id, hop_ids };
 
-	get_route(our_node_pubkey, route_params, network_graph, None, logger, &scorer, &Default::default(), random_seed_bytes)
+	get_route(our_node_pubkey, route_params, network_graph, first_hops, logger, &scorer, &Default::default(), random_seed_bytes)
 }
 
 #[cfg(test)]
@@ -4109,10 +4255,10 @@ mod tests {
 	use crate::ln::types::ChannelId;
 	use crate::routing::gossip::{EffectiveCapacity, NetworkGraph, NodeId, P2PGossipSync};
 	use crate::routing::router::{
-		add_random_cltv_offset, build_route_from_hops_internal, default_node_features, get_route,
-		BlindedPathCandidate, BlindedTail, CandidateRouteHop, InFlightHtlcs, Path, Payee,
-		PaymentParameters, PublicHopCandidate, Route, RouteHint, RouteHintHop, RouteHop,
-		RouteParameters, RoutingFees, ScorerAccountingForInFlightHtlcs,
+		add_random_cltv_offset, build_random_walk_probe_path, build_route_from_hops_internal,
+		default_node_features, get_route, BlindedPathCandidate, BlindedTail, CandidateRouteHop,
+		InFlightHtlcs, Path, Payee, PaymentParameters, PublicHopCandidate, Route, RouteHint,
+		RouteHintHop, RouteHop, RouteParameters, RoutingFees, ScorerAccountingForInFlightHtlcs,
 		DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA, MAX_PATH_LENGTH_ESTIMATE,
 	};
 	use crate::routing::scoring::{
@@ -4127,6 +4273,7 @@ mod tests {
 	use crate::util::ser::Writer;
 	use crate::util::ser::{FixedLengthReader, Readable, ReadableArgs, Writeable};
 	use crate::util::test_utils as ln_test_utils;
+	use alloc::collections::VecDeque;
 
 	use bitcoin::amount::Amount;
 	use bitcoin::bech32::primitives::decode::CheckedHrpstring;
@@ -4264,6 +4411,93 @@ mod tests {
 			],
 			payinfo
 		)
+	}
+
+	fn probe_first_hop_to_node1(nodes: &[PublicKey]) -> ChannelDetails {
+		get_channel_details(Some(2), nodes[1], InitFeatures::from_le_bytes(vec![0b11]), 1_000_000)
+	}
+
+	#[test]
+	fn random_walk_probe_path_on_real_graph() {
+		let logger = ln_test_utils::TestLogger::new();
+		let (network_graph, _) = match super::bench_utils::read_graph_scorer(&logger) {
+			Ok(res) => res,
+			Err(e) => {
+				eprintln!("{}", e);
+				return;
+			},
+		};
+		let payer = super::bench_utils::payer_pubkey();
+		let entropy = ln_test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let amount_msat = 100_000;
+		let max_hops = 4u8;
+
+		let mut nodes = network_graph.read_only().nodes().clone();
+		let node_ids: Vec<NodeId> = nodes.range(..).map(|(id, _)| *id).collect();
+		assert!(!node_ids.is_empty());
+
+		let mut path = None;
+		for i in 0..64 {
+			let peer = PublicKey::from_slice(node_ids[i % node_ids.len()].as_slice()).unwrap();
+			let first_hop = super::bench_utils::first_hop(peer);
+			if let Ok(built) = build_random_walk_probe_path(
+				&*network_graph,
+				&entropy,
+				&logger,
+				&payer,
+				&[&first_hop],
+				amount_msat,
+				max_hops,
+			) {
+				path = Some(built);
+				break;
+			}
+		}
+		let path = path.expect("failed to build a random-walk probe on the real graph");
+		assert_eq!(path.final_value_msat(), amount_msat);
+		assert_eq!(path.hops.len(), max_hops as usize);
+		assert!(path.total_cltv_expiry_delta() <= DEFAULT_MAX_TOTAL_CLTV_EXPIRY_DELTA);
+		assert!(!path.hops.iter().any(|h| h.pubkey == payer));
+	}
+
+	#[test]
+	fn random_walk_rejects_amount_outside_first_hop_limit() {
+		let (secp_ctx, network_graph, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let entropy = ln_test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let mut ch = probe_first_hop_to_node1(&nodes);
+		ch.next_outbound_htlc_limit_msat = 1_000;
+		let err = build_random_walk_probe_path(
+			&network_graph,
+			&entropy,
+			logger,
+			&our_id,
+			&[&ch],
+			10_000,
+			2,
+		)
+		.unwrap_err();
+		assert!(err.contains("no usable first hops"), "{}", err);
+	}
+
+	#[test]
+	fn random_walk_unusable_first_hop_errors() {
+		let (secp_ctx, network_graph, _, _, logger) = build_graph();
+		let (_, our_id, _, nodes) = get_nodes(&secp_ctx);
+		let entropy = ln_test_utils::TestKeysInterface::new(&[42; 32], Network::Testnet);
+		let mut ch = probe_first_hop_to_node1(&nodes);
+		ch.is_usable = false;
+		let err = build_random_walk_probe_path(
+			&network_graph,
+			&entropy,
+			logger,
+			&our_id,
+			&[&ch],
+			10_000,
+			2,
+		)
+		.unwrap_err();
+		assert!(err.contains("no usable first hops"), "{}", err);
 	}
 
 	#[test]
@@ -7848,7 +8082,7 @@ mod tests {
 		let hops = [nodes[1], nodes[2], nodes[4], nodes[3]];
 		let route_params = RouteParameters::from_payment_params_and_value(payment_params, 100);
 		let route = build_route_from_hops_internal(&our_id, &hops, &route_params, &network_graph,
-			Arc::clone(&logger), &random_seed_bytes).unwrap();
+			Arc::clone(&logger), &random_seed_bytes, None).unwrap();
 		let route_hop_pubkeys = route.paths[0].hops.iter().map(|hop| hop.pubkey).collect::<Vec<_>>();
 		assert_eq!(hops.len(), route.paths[0].hops.len());
 		for (idx, hop_pubkey) in hops.iter().enumerate() {
