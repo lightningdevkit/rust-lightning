@@ -6094,7 +6094,13 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		(HolderCommitmentTransaction, Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>),
 		ChannelError,
 	> {
-		let funding_script = funding.get_funding_redeemscript();
+		// If our counterparty updated the channel fee in this commitment transaction, check that
+		// they can actually afford the new fee now.
+		if let Some((new_feerate_per_kw, FeeUpdateState::RemoteAnnounced)) = self.pending_update_fee
+		{
+			debug_assert!(!funding.is_outbound());
+			self.validate_update_fee(funding, fee_estimator, new_feerate_per_kw)?;
+		}
 
 		let commitment_data = self.build_commitment_transaction(
 			funding,
@@ -6104,43 +6110,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			false,
 			logger,
 		);
-		let commitment_txid = {
-			let trusted_tx = commitment_data.tx.trust();
-			let bitcoin_tx = trusted_tx.built_transaction();
-			if bitcoin_tx.transaction.output.is_empty() {
-				return Err(ChannelError::close(
-					"Commitment tx from peer has 0 outputs".to_owned(),
-				));
-			}
-
-			let sighash = bitcoin_tx.get_sighash_all(&funding_script, funding.get_value_satoshis());
-
-			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}",
-				log_bytes!(msg.signature.serialize_compact()[..]),
-				log_bytes!(funding.counterparty_funding_pubkey().serialize()),
-				encode::serialize_hex(&bitcoin_tx.transaction),
-				log_bytes!(sighash[..]), encode::serialize_hex(&funding_script),
-				&self.channel_id(),
-			);
-			if let Err(_) = self.secp_ctx.verify_ecdsa(
-				&sighash,
-				&msg.signature,
-				&funding.counterparty_funding_pubkey(),
-			) {
-				return Err(ChannelError::close(
-					"Invalid commitment tx signature from peer".to_owned(),
-				));
-			}
-			bitcoin_tx.txid
-		};
-
-		// If our counterparty updated the channel fee in this commitment transaction, check that
-		// they can actually afford the new fee now.
-		if let Some((new_feerate_per_kw, FeeUpdateState::RemoteAnnounced)) = self.pending_update_fee
-		{
-			debug_assert!(!funding.is_outbound());
-			self.validate_update_fee(funding, fee_estimator, new_feerate_per_kw)?;
-		}
 
 		if msg.htlc_signatures.len() != commitment_data.tx.nondust_htlcs().len() {
 			return Err(ChannelError::close(format!(
@@ -6150,24 +6119,71 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			)));
 		}
 
-		let holder_keys = commitment_data.tx.trust().keys();
-		for (htlc, counterparty_sig) in
-			commitment_data.tx.nondust_htlcs().iter().zip(msg.htlc_signatures.iter())
+		let holder_commitment_tx = HolderCommitmentTransaction::new(
+			commitment_data.tx,
+			msg.signature,
+			msg.htlc_signatures.clone(),
+			&funding.get_holder_pubkeys().funding_pubkey,
+			funding.counterparty_funding_pubkey(),
+		);
+
+		let channel_parameters = &funding.channel_transaction_parameters;
+		let secp_ctx = &self.secp_ctx;
+		let funding_script = channel_parameters.make_funding_redeemscript();
+		let channel_value_satoshis = channel_parameters.channel_value_satoshis;
+		let counterparty_funding_pubkey =
+			channel_parameters.counterparty_pubkeys().as_ref().unwrap().funding_pubkey;
+		let counterparty_selected_delay =
+			channel_parameters.counterparty_parameters.as_ref().unwrap().selected_contest_delay;
+		let channel_type = &channel_parameters.channel_type_features;
+		let commitment_txid = {
+			let trusted_tx = holder_commitment_tx.trust();
+			let bitcoin_tx = trusted_tx.built_transaction();
+			if bitcoin_tx.transaction.output.is_empty() {
+				return Err(ChannelError::close(
+					"Commitment tx from peer has 0 outputs".to_owned(),
+				));
+			}
+
+			let sighash = bitcoin_tx.get_sighash_all(&funding_script, channel_value_satoshis);
+
+			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}",
+				log_bytes!(holder_commitment_tx.counterparty_sig.serialize_compact()[..]),
+				log_bytes!(counterparty_funding_pubkey.serialize()),
+				bitcoin::consensus::encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(sighash[..]), bitcoin::consensus::encode::serialize_hex(&funding_script),
+			);
+			if let Err(_) = secp_ctx.verify_ecdsa(
+				&sighash,
+				&holder_commitment_tx.counterparty_sig,
+				&counterparty_funding_pubkey,
+			) {
+				return Err(ChannelError::close(
+					"Invalid commitment tx signature from peer".to_owned(),
+				));
+			}
+			bitcoin_tx.txid
+		};
+
+		let holder_keys = holder_commitment_tx.trust().keys();
+		for (htlc, counterparty_sig) in holder_commitment_tx
+			.nondust_htlcs()
+			.iter()
+			.zip(holder_commitment_tx.counterparty_htlc_sigs.iter())
 		{
 			assert!(htlc.transaction_output_index.is_some());
 			let htlc_tx = chan_utils::build_htlc_transaction(
 				&commitment_txid,
-				commitment_data.tx.negotiated_feerate_per_kw(),
-				funding.get_counterparty_selected_contest_delay().unwrap(),
+				holder_commitment_tx.negotiated_feerate_per_kw(),
+				counterparty_selected_delay,
 				&htlc,
-				funding.get_channel_type(),
+				channel_type,
 				&holder_keys.broadcaster_delayed_payment_key,
 				&holder_keys.revocation_key,
 			);
 
 			let htlc_redeemscript =
-				chan_utils::get_htlc_redeemscript(&htlc, funding.get_channel_type(), &holder_keys);
-			let channel_type = funding.get_channel_type();
+				chan_utils::get_htlc_redeemscript(&htlc, channel_type, &holder_keys);
 			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
 				|| channel_type.supports_anchor_zero_fee_commitments()
 			{
@@ -6185,15 +6201,14 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					)
 					.unwrap()[..]
 			);
-			log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {} in channel {}.",
+			log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
 				log_bytes!(counterparty_sig.serialize_compact()[..]),
 				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
-				encode::serialize_hex(&htlc_tx),
+				bitcoin::consensus::encode::serialize_hex(&htlc_tx),
 				log_bytes!(htlc_sighash[..]),
-				encode::serialize_hex(&htlc_redeemscript),
-				&self.channel_id(),
+				bitcoin::consensus::encode::serialize_hex(&htlc_redeemscript),
 			);
-			if let Err(_) = self.secp_ctx.verify_ecdsa(
+			if let Err(_) = secp_ctx.verify_ecdsa(
 				&htlc_sighash,
 				&counterparty_sig,
 				&holder_keys.countersignatory_htlc_key.to_public_key(),
@@ -6201,14 +6216,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
 			}
 		}
-
-		let holder_commitment_tx = HolderCommitmentTransaction::new(
-			commitment_data.tx,
-			msg.signature,
-			msg.htlc_signatures.clone(),
-			&funding.get_holder_pubkeys().funding_pubkey,
-			funding.counterparty_funding_pubkey(),
-		);
 
 		self.holder_signer
 			.validate_holder_commitment(
