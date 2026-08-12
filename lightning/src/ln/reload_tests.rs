@@ -1124,13 +1124,13 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 	assert!(reestablish_1_chan_ids.contains(&chan_id_b));
 	// Only nodes[1] was reloaded with stale monitor state. nodes[0] responds to the
 	// `channel_reestablish`s without touching its monitors. nodes[1] applies the replayed channel B
-	// preimage update, releases channel A's held RAA update, and frees channel A's held fulfill
-	// during startup processing.
+	// preimage update, releases one channel's held RAA update, and frees that channel's held
+	// fulfill during startup processing.
 	check_added_monitors(&nodes[0], 0);
 	check_added_monitors(&nodes[1], 3);
 
 	// The first message batch after reconnect contains channel updates from both nodes. nodes[1]
-	// also sends the channel A fulfill that startup processing released from the holding cell.
+	// also sends the one fulfill that startup processing released from the holding cell.
 	let restart_msgs_0 = nodes[0].node.get_and_clear_pending_msg_events();
 	let restart_msgs_1 = nodes[1].node.get_and_clear_pending_msg_events();
 	let mut restart_scids_0 = Vec::new();
@@ -1178,14 +1178,28 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 	assert_eq!(restart_scids_1.len(), 2);
 	assert!(restart_scids_1.contains(&scid_a));
 	assert!(restart_scids_1.contains(&scid_b));
-	assert_eq!(startup_fulfill_chan_ids, vec![chan_id_a]);
+	// Exactly one of the two channels has its fulfill freed during startup processing, with the
+	// other freed by the `PaymentClaimed` completion action below. Which of the two goes first is
+	// decided by the order we walk the per-peer `BTreeMap`s of blocked actions and in-flight
+	// updates, i.e. by the relative order of the two channels' IDs (which are derived from the
+	// funding txids), and not by which channel's monitor was up-to-date on reload. Thus, we figure
+	// out which channel we're dealing with here rather than assuming.
+	assert_eq!(startup_fulfill_chan_ids.len(), 1);
+	let startup_chan_id = startup_fulfill_chan_ids[0];
+	let (startup_scid, blocked_chan_id, blocked_scid) = if startup_chan_id == chan_id_a {
+		(scid_a, chan_id_b, scid_b)
+	} else {
+		assert_eq!(startup_chan_id, chan_id_b);
+		(scid_b, chan_id_a, scid_a)
+	};
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[0], 0);
 	check_added_monitors(&nodes[1], 0);
 
 	// Receiving the startup-released fulfill gives nodes[0] the payment preimage. That is enough to
-	// emit `PaymentSent`, even though channel B's path-level success still needs its own fulfill.
+	// emit `PaymentSent`, even though the other channel's path-level success still needs its own
+	// fulfill.
 	let startup_payment_events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(startup_payment_events.len(), 2);
 	let mut saw_startup_payment_sent = false;
@@ -1214,11 +1228,11 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 		}
 	}
 	assert!(saw_startup_payment_sent);
-	assert_eq!(startup_success_scids, vec![scid_a]);
+	assert_eq!(startup_success_scids, vec![startup_scid]);
 
 	// Handling the claim event runs the event-completion action that releases the remaining
-	// RAA-blocked monitor update. The startup unblock path already released channel A, so channel B
-	// is the only fulfill that should be emitted here.
+	// RAA-blocked monitor update. The startup unblock path already released one channel, so the
+	// other channel's fulfill is the only one that should be emitted here.
 	let claim_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(claim_events.len(), 1);
 	match &claim_events[0] {
@@ -1230,20 +1244,21 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 		_ => panic!("Unexpected event: {:?}", claim_events[0]),
 	}
 	// The `PaymentSent` event above releases the monitor update that nodes[0] held after the final
-	// channel A startup revocation.
+	// startup revocation on the channel which was freed during startup.
 	check_added_monitors(&nodes[0], 1);
-	// Handling `PaymentClaimed` releases channel B's held revocation update and then the fulfill
-	// that was waiting behind it.
+	// Handling `PaymentClaimed` releases the remaining channel's held revocation update and then the
+	// fulfill that was waiting behind it
 	check_added_monitors(&nodes[1], 2);
 
-	// Channel A's fulfill was already sent during startup. The `PaymentClaimed` completion action
-	// now frees channel B's held fulfill, and no other HTLC update should be bundled with it.
+	// The first channel's fulfill was already sent during startup. The `PaymentClaimed` completion
+	// action now frees the remaining held fulfill, and no other HTLC update should be bundled with
+	// it.
 	let fulfill_msgs = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(fulfill_msgs.len(), 1);
 	match &fulfill_msgs[0] {
 		MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
 			assert_eq!(*node_id, node_0_id);
-			assert_eq!(*channel_id, chan_id_b);
+			assert_eq!(*channel_id, blocked_chan_id);
 			assert_eq!(updates.update_fulfill_htlcs.len(), 1);
 			assert!(updates.update_add_htlcs.is_empty());
 			assert!(updates.update_fail_htlcs.is_empty());
@@ -1252,8 +1267,9 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 			for fulfill in &updates.update_fulfill_htlcs {
 				nodes[0].node.handle_update_fulfill_htlc(node_1_id, fulfill.clone());
 			}
-			// Complete the same commitment handshake for channel B. Here nodes[0]'s final monitor
-			// update is persisted immediately because `PaymentSent` already ran for channel A.
+			// Complete the same commitment handshake for the channel whose fulfill remained held
+			// after startup. Here nodes[0]'s final monitor update is persisted immediately because
+			// `PaymentSent` already ran for the channel freed during startup.
 			do_commitment_signed_dance(
 				&nodes[0], &nodes[1], &updates.commitment_signed, false, false,
 			);
@@ -1270,7 +1286,7 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 		Event::PaymentPathSuccessful { payment_hash: Some(path_hash), path, .. } => {
 			assert_eq!(*path_hash, payment_hash);
 			assert_eq!(path.hops.len(), 1);
-			assert_eq!(path.hops[0].short_channel_id, scid_b);
+			assert_eq!(path.hops[0].short_channel_id, blocked_scid);
 		},
 		_ => panic!("Unexpected final payment event: {:?}", final_payment_events[0]),
 	}

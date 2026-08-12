@@ -776,7 +776,10 @@ fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessag
 	// disconnect their counterparty if they're expecting a timely response.
 	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
 		let is_quiescent_msg = msg.data.contains("already sent splice_locked, cannot RBF")
-			|| msg.data.contains("contribution no longer valid at quiescence");
+			|| msg.data.contains(
+				"Waiting for splice to lock before potentially proceeding with queued contribution",
+			) || msg.data.contains("contribution no longer valid at quiescence")
+			|| msg.data.contains("Quiescence no longer needed");
 		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
 		{
 			panic!("Unexpected disconnect case: {}", msg.data);

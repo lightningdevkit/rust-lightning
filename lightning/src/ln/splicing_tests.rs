@@ -193,6 +193,28 @@ fn tx_abort_data(msg: &msgs::TxAbort) -> String {
 	String::from_utf8(msg.data.clone()).expect("tx_abort data should be valid UTF-8")
 }
 
+#[cfg(test)]
+fn assert_no_queued_splice<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>, expected_channel_id: &ChannelId) {
+	let details = node
+		.node
+		.list_channels()
+		.iter()
+		.find(|channel| channel.channel_id == *expected_channel_id)
+		.unwrap()
+		.splice_details
+		.clone();
+	let Some(details) = details else {
+		return;
+	};
+	assert!(
+		details.candidates.iter().all(|candidate| !matches!(
+			candidate.status,
+			SpliceCandidateStatus::WaitingOnQuiescence | SpliceCandidateStatus::WaitingOnLock
+		)),
+		"queued splice remains: {details:?}",
+	);
+}
+
 pub fn negotiate_splice_tx<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	funding_contribution: FundingContribution,
@@ -798,9 +820,45 @@ pub fn lock_splice_after_blocks<'a, 'b, 'c, 'd>(
 	lock_splice(node_a, node_b, &splice_locked_for_node_b, false, &[])
 }
 
+#[cfg(test)]
+fn lock_splice_after_blocks_expecting_failed_rbf<'a, 'b, 'c, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>, num_blocks: u32,
+	expected_failed_rbf: [Option<&FundingContribution>; 2],
+) -> SpliceLockedResult {
+	connect_blocks(node_a, num_blocks);
+	connect_blocks(node_b, num_blocks);
+
+	let node_id_b = node_b.node.get_our_node_id();
+	let splice_locked_for_node_b =
+		get_event_msg!(node_a, MessageSendEvent::SendSpliceLocked, node_id_b);
+	lock_splice_with_expected_failed_rbf(
+		node_a,
+		node_b,
+		&splice_locked_for_node_b,
+		false,
+		&[],
+		expected_failed_rbf,
+	)
+}
+
 pub fn lock_splice<'a, 'b, 'c, 'd>(
 	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
 	splice_locked_for_node_b: &msgs::SpliceLocked, is_0conf: bool, expected_discard_txids: &[Txid],
+) -> SpliceLockedResult {
+	lock_splice_with_expected_failed_rbf(
+		node_a,
+		node_b,
+		splice_locked_for_node_b,
+		is_0conf,
+		expected_discard_txids,
+		[None, None],
+	)
+}
+
+fn lock_splice_with_expected_failed_rbf<'a, 'b, 'c, 'd>(
+	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
+	splice_locked_for_node_b: &msgs::SpliceLocked, is_0conf: bool, expected_discard_txids: &[Txid],
+	expected_failed_rbf: [Option<&FundingContribution>; 2],
 ) -> SpliceLockedResult {
 	let prev_funding_txid = node_a
 		.chain_monitor
@@ -815,13 +873,14 @@ pub fn lock_splice<'a, 'b, 'c, 'd>(
 		is_0conf,
 		expected_discard_txids,
 		prev_funding_txid,
+		expected_failed_rbf,
 	)
 }
 
 fn complete_splice_locked_exchange<'a, 'b, 'c, 'd>(
 	node_a: &'a Node<'b, 'c, 'd>, node_b: &'a Node<'b, 'c, 'd>,
 	splice_locked_for_node_b: &msgs::SpliceLocked, is_0conf: bool, expected_discard_txids: &[Txid],
-	prev_funding_txid: Txid,
+	prev_funding_txid: Txid, expected_failed_rbf: [Option<&FundingContribution>; 2],
 ) -> SpliceLockedResult {
 	let node_id_a = node_a.node.get_our_node_id();
 	let node_id_b = node_b.node.get_our_node_id();
@@ -859,6 +918,7 @@ fn complete_splice_locked_exchange<'a, 'b, 'c, 'd>(
 		assert!(!events.is_empty(), "Expected at least ChannelReady, got {events:?}");
 		assert!(matches!(events[0], Event::ChannelReady { .. }));
 		let discarded = if idx == 0 { &mut node_a_discarded } else { &mut node_b_discarded };
+		let mut saw_failed_rbf = false;
 		for event in &events[1..] {
 			match event {
 				Event::DiscardFunding {
@@ -867,9 +927,26 @@ fn complete_splice_locked_exchange<'a, 'b, 'c, 'd>(
 				} => {
 					discarded.push((inputs.clone(), outputs.clone()));
 				},
+				Event::SpliceNegotiationFailed {
+					reason,
+					contribution: actual_contribution,
+					..
+				} => {
+					let expected_contribution =
+						expected_failed_rbf[idx].expect("Unexpected SpliceNegotiationFailed event");
+					assert_eq!(*reason, NegotiationFailureReason::CannotInitiateRbf);
+					assert_eq!(actual_contribution.as_ref(), Some(expected_contribution));
+					assert!(!saw_failed_rbf, "Duplicate SpliceNegotiationFailed event");
+					saw_failed_rbf = true;
+				},
 				other => panic!("Expected DiscardFunding with Contribution, got {:?}", other),
 			}
 		}
+		assert_eq!(
+			saw_failed_rbf,
+			expected_failed_rbf[idx].is_some(),
+			"Missing SpliceNegotiationFailed event"
+		);
 		check_added_monitors(node, 1);
 	}
 
@@ -2869,6 +2946,7 @@ fn test_reestablish_sends_tx_signatures_before_splice_locked() {
 		false,
 		&[],
 		prev_funding_txid,
+		[None, None],
 	);
 
 	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
@@ -7296,13 +7374,14 @@ fn test_splice_rbf_after_splice_locked() {
 }
 
 #[test]
-fn test_splice_rbf_stfu_after_splice_locked() {
-	// Test that we don't send tx_init_rbf when we've already sent splice_locked.
+fn test_queued_rbf_survives_stfu_response_after_splice_locked() {
+	// Test that we don't send tx_init_rbf when we've already sent splice_locked, while preserving a
+	// contribution that can proceed as a fresh splice after the pending splice promotes.
 	//
 	// Scenario: node 0 initiates an RBF and sends STFU, but before receiving the counterparty's
 	// STFU response, it mines enough blocks to send splice_locked (setting sent_funding_txid).
-	// When node 1's STFU arrives, the stfu() handler should detect that RBF is no longer valid
-	// and return WarnAndDisconnect instead of sending tx_init_rbf.
+	// When node 1's STFU arrives, the stfu() handler should retain the queued contribution and
+	// disconnect to reset quiescence rather than sending tx_init_rbf.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -7326,18 +7405,17 @@ fn test_splice_rbf_stfu_after_splice_locked() {
 	mine_transaction(&nodes[0], &splice_tx);
 	mine_transaction(&nodes[1], &splice_tx);
 
-	// Provide more UTXOs for the RBF attempt.
-	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	// Provide a fresh input for the RBF attempt.
+	let rbf_reserves = provide_utxo_reserves(&nodes, 1, added_value * 2);
 
-	// Initiate RBF from node 0 with fresh inputs so the RBF round has a unique input that
-	// survives filtering when the failure cleanup runs.
+	// Use only the fresh input so the contribution does not overlap the pending splice and can be
+	// retried after it promotes.
 	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let input = ConfirmedUtxo::new_p2wpkh(rbf_reserves, 0).unwrap();
 	let funding_contribution = funding_template
 		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
-		.with_coin_selection_source_sync(&wallet)
-		.add_value(added_value)
+		.add_inputs(vec![input])
 		.unwrap()
 		.build()
 		.unwrap();
@@ -7357,52 +7435,210 @@ fn test_splice_rbf_stfu_after_splice_locked() {
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
 	let _splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
 
-	// Now deliver node 1's STFU to node 0. The stfu() handler should detect that RBF is no
-	// longer valid (we already sent splice_locked) and return WarnAndDisconnect.
+	// Now deliver node 1's STFU to node 0. The stfu() handler should detect that RBF is no longer
+	// valid, retain the contribution, and return WarnAndDisconnect to reset quiescence.
 	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
-	match &msg_events[0] {
-		MessageSendEvent::HandleError { action, .. } => {
-			assert_eq!(
-				*action,
-				msgs::ErrorAction::DisconnectPeerWithWarning {
-					msg: msgs::WarningMessage {
-						channel_id,
-						data: format!(
-							"Channel {} already sent splice_locked, cannot RBF",
-							channel_id,
-						),
-					},
-				}
-			);
-		},
-		_ => panic!("Expected HandleError, got {:?}", msg_events[0]),
-	}
-
-	// Node 0 should emit DiscardFunding + SpliceNegotiationFailed for the RBF contribution.
-	// The change output is filtered (same script_pubkey as the first splice's change output),
-	// but the input survives because it's a different UTXO from the first splice.
-	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 2, "{events:?}");
-	match &events[0] {
-		Event::DiscardFunding {
-			funding_info: FundingInfo::Contribution { inputs, outputs },
+	assert!(matches!(
+		msg_events[0],
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
 			..
-		} => {
-			assert!(!inputs.is_empty());
-			assert!(outputs.is_empty());
-		},
-		other => panic!("Expected DiscardFunding, got {:?}", other),
-	}
-	match &events[1] {
-		Event::SpliceNegotiationFailed { channel_id: cid, reason, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::CannotInitiateRbf);
-		},
-		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
-	}
+		}
+	));
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// Applying the requested disconnect resets quiescence without failing the contribution. The
+	// promotion tests cover the two subsequent outcomes: overlapping contributions are failed,
+	// while non-overlapping contributions begin a fresh splice.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	let details = nodes[0]
+		.node
+		.list_channels()
+		.iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap()
+		.splice_details
+		.clone()
+		.unwrap();
+	assert_eq!(details.candidates.last().unwrap().contribution, Some(funding_contribution));
+}
+
+#[test]
+fn test_queued_rbf_fails_if_pending_splice_promotes_before_stfu_response() {
+	// If a pending splice promotes after we queue an RBF but before quiescence resolves, the queued
+	// contribution must not become a fresh splice. A contribution carrying forward the prior
+	// round's inputs would otherwise double-spend the newly promoted funding transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete a contributory splice from node 0, leaving it pending.
+	let prior_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, prior_contribution.clone());
+
+	// Queue an RBF that carries forward the prior contribution and adds one unique output. Hold the
+	// resulting stfu so the pending splice can promote before quiescence completes.
+	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let contribution = funding_template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_outputs(vec![output])
+		.build()
+		.unwrap();
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Promote the pending splice while node 0 is still waiting for the counterparty's stfu.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	let locked = lock_splice_after_blocks_expecting_failed_rbf(
+		&nodes[0],
+		&nodes[1],
+		ANTI_REORG_DELAY - 1,
+		[Some(&contribution), None],
+	);
+	assert!(locked.stfu.is_none());
+	assert_eq!(locked.node_a_discarded, vec![(vec![], vec![script_pubkey])]);
+	assert!(locked.node_b_discarded.is_empty());
+
+	// Promotion fails and removes the queued RBF immediately. The promoted input and change output
+	// remain committed, so only the newly added output is returned in DiscardFunding.
+	assert_no_queued_splice(&nodes[0], &channel_id);
+}
+
+#[test]
+fn test_queued_rbf_from_replaced_round_survives_splice_promotion() {
+	// When an RBF round promotes, contributions from every replaced round are released. A queued
+	// RBF carrying a replaced round's contribution can therefore proceed as a fresh splice as long
+	// as it does not overlap the promoted transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let input_value = Amount::from_sat(100_000);
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+
+	// Round 0 uses a manually selected input and leaves the signed splice pending.
+	let round_0_reserves = provide_utxo_reserves(&nodes, 1, input_value);
+	let round_0_input = ConfirmedUtxo::new_p2wpkh(round_0_reserves, 0).unwrap();
+	let round_0_outpoint = round_0_input.outpoint();
+	let round_0_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let round_0_contribution = round_0_template
+		.without_prior_contribution(floor_feerate, FeeRate::MAX)
+		.add_inputs(vec![round_0_input])
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, round_0_contribution.clone(), None)
+		.unwrap();
+	let (round_0_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, round_0_contribution);
+
+	// Save a contribution carrying round 0 forward, but negotiate round 1 with a distinct input.
+	// The saved contribution will be queued only after round 1 has completed.
+	let queued_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let round_1_feerate = queued_template.min_rbf_feerate().unwrap();
+	let queued_contribution =
+		queued_template.with_prior_contribution(round_1_feerate, FeeRate::MAX).build().unwrap();
+	assert_eq!(queued_contribution.inputs()[0].outpoint(), round_0_outpoint);
+
+	nodes[0].wallet_source.clear_utxos();
+	let round_1_reserves = provide_utxo_reserves(&nodes, 1, input_value);
+	let round_1_input = ConfirmedUtxo::new_p2wpkh(round_1_reserves, 0).unwrap();
+	let round_1_outpoint = round_1_input.outpoint();
+	assert_ne!(round_0_outpoint, round_1_outpoint);
+	let round_1_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let round_1_contribution = round_1_template
+		.without_prior_contribution(round_1_feerate, FeeRate::MAX)
+		.add_inputs(vec![round_1_input])
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, round_1_contribution.clone(), None)
+		.unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		round_1_contribution,
+		new_funding_script,
+	);
+	let (round_1_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(round_0_tx.compute_txid()),
+	);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// Queue the saved round-0 contribution as the next RBF and hold its stfu while round 1 locks.
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, queued_contribution, None).unwrap();
+	let queued_stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	assert!(queued_stfu.initiator);
+	let details = nodes[0]
+		.node
+		.list_channels()
+		.iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap()
+		.splice_details
+		.clone()
+		.unwrap();
+	let queued_contribution = details.candidates.last().unwrap().contribution.clone().unwrap();
+	assert!(queued_contribution.inputs().iter().any(|input| input.outpoint() == round_0_outpoint));
+	assert!(!queued_contribution.inputs().iter().any(|input| input.outpoint() == round_1_outpoint));
+
+	// Round 0's input remains committed to the surviving queue, so promotion must neither discard
+	// it nor fail the queue.
+	let locked = lock_rbf_splice_after_blocks(
+		&nodes[0],
+		&nodes[1],
+		&round_1_tx,
+		ANTI_REORG_DELAY - 1,
+		&[round_0_tx.compute_txid()],
+	);
+	assert!(locked.stfu.is_none());
+	assert!(locked.node_a_discarded.is_empty());
+	assert!(locked.node_b_discarded.is_empty());
+
+	// Completing the already-started quiescence handshake now consumes the queue as a fresh splice.
+	nodes[1].node.handle_stfu(node_id_0, &queued_stfu);
+	let stfu_ack = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	assert!(!stfu_ack.initiator);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_ack);
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	assert_eq!(splice_init.channel_id, channel_id);
 }
 
 #[test]
@@ -7944,6 +8180,141 @@ fn test_splice_rbf_tiebreak_feerate_too_high_rejected() {
 		},
 		_ => panic!("Expected SendStfu, got {:?}", msg_events[1]),
 	};
+}
+
+#[test]
+fn test_splice_rbf_tiebreak_feerate_too_high_preserves_prior_contributor() {
+	// If the losing side already contributed to the pending splice, its queued RBF overlaps that
+	// splice by design. Rejecting the winner's RBF leaves the prior candidate intact, so the loser
+	// must preserve its contribution and retry it as an RBF rather than fail it.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Node 1 contributes to a pending splice, then queues an RBF carrying that contribution
+	// forward. The queued RBF therefore overlaps the pending candidate by design.
+	let node_1_max_feerate = FeeRate::from_sat_per_kwu(3_000);
+	let initial_contribution = do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+	let (_first_splice_tx, _new_funding_script) =
+		splice_channel(&nodes[1], &nodes[0], channel_id, initial_contribution.clone());
+
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let rbf_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let expected_rbf_feerate = rbf_template.min_rbf_feerate().unwrap();
+	let node_1_contribution =
+		rbf_template.rbf_prior_contribution_sync(None, node_1_max_feerate, &wallet_1).unwrap();
+	assert!(node_1_contribution.inputs().iter().any(|input| {
+		initial_contribution.inputs().iter().any(|prior| prior.outpoint() == input.outpoint())
+	}));
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_contribution.clone(), None)
+		.unwrap();
+
+	let details = nodes[1]
+		.node
+		.list_channels()
+		.iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap()
+		.splice_details
+		.clone()
+		.unwrap();
+	let queued_contribution = details.candidates.last().unwrap();
+	assert!(matches!(queued_contribution.status, SpliceCandidateStatus::WaitingOnQuiescence));
+	assert_eq!(queued_contribution.contribution.as_ref(), Some(&node_1_contribution));
+
+	// Node 0 concurrently proposes an RBF whose feerate exceeds node 1's configured maximum.
+	let high_feerate = FeeRate::from_sat_per_kwu(100_000);
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_contribution = nodes[0]
+		.node
+		.splice_channel(&channel_id, &node_id_1)
+		.unwrap()
+		.splice_in_sync(added_value, high_feerate, FeeRate::MAX, &wallet_0)
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_contribution.clone(), None)
+		.unwrap();
+
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	// Node 0 wins the quiescence tie-break, making node 1 adjust its queued contribution as the
+	// acceptor to node 0's unaffordable feerate.
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+	let tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+	assert_eq!(tx_init_rbf.feerate_sat_per_1000_weight, high_feerate.to_sat_per_kwu() as u32);
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	// The counterparty's RBF is rejected before it changes the pending splice. Node 1 retains its
+	// own RBF contribution and immediately re-initiates quiescence to retry it.
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let MessageSendEvent::SendTxAbort { node_id, msg: tx_abort } = &msg_events[0] else {
+		panic!("Expected SendTxAbort, got {:?}", msg_events[0]);
+	};
+	assert_eq!(*node_id, node_id_0);
+	assert_eq!(tx_abort.channel_id, channel_id);
+	let MessageSendEvent::SendStfu { node_id, msg: retry_stfu } = &msg_events[1] else {
+		panic!("Expected SendStfu, got {:?}", msg_events[1]);
+	};
+	assert_eq!(*node_id, node_id_0);
+	assert!(retry_stfu.initiator);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	let details = nodes[1]
+		.node
+		.list_channels()
+		.iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap()
+		.splice_details
+		.clone()
+		.unwrap();
+	let queued_contribution = details.candidates.last().unwrap();
+	assert_eq!(queued_contribution.status, SpliceCandidateStatus::WaitingOnQuiescence);
+	assert_eq!(queued_contribution.contribution.as_ref(), Some(&node_1_contribution));
+
+	// Process the abort first so node 0 abandons its rejected RBF, then complete node 1's new
+	// quiescence handshake and verify that the preserved contribution initiates another RBF.
+	nodes[0].node.handle_tx_abort(node_id_1, tx_abort);
+	let _ = expect_failed_rbf_events(
+		&nodes[0],
+		&channel_id,
+		&node_0_contribution,
+		NegotiationFailureReason::CounterpartyAborted {
+			msg: UntrustedString("The initiator's feerate exceeds our maximum".to_owned()),
+		},
+	);
+	let tx_abort_ack = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort_ack);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].node.handle_stfu(node_id_1, retry_stfu);
+	let retry_stfu_ack = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	assert!(!retry_stfu_ack.initiator);
+	nodes[1].node.handle_stfu(node_id_0, &retry_stfu_ack);
+	let retried_tx_init_rbf = get_event_msg!(nodes[1], MessageSendEvent::SendTxInitRbf, node_id_0);
+	assert_eq!(
+		retried_tx_init_rbf.feerate_sat_per_1000_weight,
+		expected_rbf_feerate.to_sat_per_kwu() as u32,
+	);
 }
 
 #[test]
@@ -9206,6 +9577,116 @@ fn test_funding_contributed_rbf_adjustment_insufficient_budget() {
 }
 
 #[test]
+fn test_discarded_rbf_reports_feerate_too_low() {
+	// If we previously contributed and a stale contribution can no longer be adjusted to the
+	// required RBF feerate, it must be discarded with the contribution-specific failure reason.
+	// Multiple failures queued before events are handled must each preserve the ordering between
+	// releasing the contribution and reporting its failure.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Complete an initial splice contribution, leaving it pending.
+	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+
+	// Build, but do not yet submit, a contribution capped at the current minimum RBF feerate. Its
+	// unique splice-out lets us verify that only the new portion is discarded.
+	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let stale_feerate = funding_template.min_rbf_feerate().unwrap();
+	let stale_contribution = funding_template
+		.with_prior_contribution(stale_feerate, stale_feerate)
+		.add_outputs(vec![output])
+		.build()
+		.unwrap();
+
+	// Complete a higher-fee RBF, making the saved contribution's feerate insufficient.
+	let high_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 * 4);
+	let rbf_contribution =
+		do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, high_feerate);
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		rbf_contribution,
+		new_funding_script,
+	);
+	let (_rbf_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).replacing(splice_tx.compute_txid()),
+	);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	for _ in 0..2 {
+		assert_eq!(
+			nodes[0].node.funding_contributed(
+				&channel_id,
+				&node_id_1,
+				stale_contribution.clone(),
+				None,
+			),
+			Err(APIError::APIMisuseError {
+				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			})
+		);
+	}
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 4, "{events:?}");
+	for pair in events.chunks_exact(2) {
+		let [Event::DiscardFunding {
+			channel_id: discarded_channel_id,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		}, Event::SpliceNegotiationFailed {
+			channel_id: failed_channel_id,
+			reason,
+			contribution,
+			..
+		}] = pair
+		else {
+			panic!("Unexpected splice failure events: {pair:?}");
+		};
+		assert_eq!(*discarded_channel_id, channel_id);
+		assert!(inputs.is_empty());
+		assert_eq!(outputs, std::slice::from_ref(&script_pubkey));
+		assert_eq!(*failed_channel_id, channel_id);
+		assert_eq!(*reason, NegotiationFailureReason::FeeRateTooLow);
+		assert_eq!(contribution.as_ref(), Some(&stale_contribution));
+	}
+	assert_no_queued_splice(&nodes[0], &channel_id);
+
+	let details = nodes[0]
+		.node
+		.list_channels()
+		.iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap()
+		.splice_details
+		.clone()
+		.unwrap();
+	assert_eq!(details.candidates.len(), 2);
+	assert!(details
+		.candidates
+		.iter()
+		.all(|candidate| matches!(candidate.status, SpliceCandidateStatus::Negotiated { .. })));
+}
+
+#[test]
 fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
 	// Test that rbf_prior_contribution_sync re-runs coin selection when the prior
 	// contribution's max_feerate is too low to accommodate the minimum RBF feerate.
@@ -9362,9 +9843,17 @@ fn test_rbf_sync_returns_err_when_max_feerate_below_min_rbf() {
 
 #[test]
 fn test_splice_revalidation_at_quiescence() {
+	do_test_splice_revalidation_at_quiescence(false);
+	do_test_splice_revalidation_at_quiescence(true);
+}
+
+#[cfg(test)]
+fn do_test_splice_revalidation_at_quiescence(pending_splice_locks: bool) {
 	// When an outbound HTLC is committed between funding_contributed and quiescence, the
 	// holder's balance decreases. If the splice-out was marginal at funding_contributed time,
-	// the re-validation at quiescence should fail and emit SpliceNegotiationFailed + DiscardFunding.
+	// the re-validation at quiescence should fail and emit SpliceNegotiationFailed + DiscardFunding
+	// when it would proceed immediately. If a pending splice locks first, the queued contribution
+	// should instead remain pending and be re-validated once it can proceed as a fresh splice.
 	//
 	// Flow:
 	// 1. Send payment #1 (update_add + CS) → node 0 awaits RAA
@@ -9373,7 +9862,8 @@ fn test_splice_revalidation_at_quiescence() {
 	// 4. Send payment #2 (update_add + CS) → balance reduced
 	// 5. Process node 1's CS → node 0 sends RAA, stfu delayed (payment #2 pending)
 	// 6. Complete payment #2's exchange → stfu fires
-	// 7. stfu exchange → quiescence → re-validation fails
+	// 7. Optionally lock a pending splice, then exchange stfu
+	// 8. Either re-validation fails immediately or is deferred until the queued splice can proceed
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
@@ -9388,6 +9878,15 @@ fn test_splice_revalidation_at_quiescence() {
 	let initial_channel_value_sat = 100_000;
 	let (_, _, channel_id, _) =
 		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let pending_splice_tx = if pending_splice_locks {
+		let added_value = Amount::from_sat(50_000);
+		provide_utxo_reserves(&nodes, 1, added_value * 2);
+		let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+		Some(splice_channel(&nodes[0], &nodes[1], channel_id, contribution).0)
+	} else {
+		None
+	};
 
 	let _ = provide_anchor_reserves(&nodes);
 
@@ -9411,12 +9910,21 @@ fn test_splice_revalidation_at_quiescence() {
 	// includes payment #1. stfu is delayed — awaiting RAA.
 	let outputs = vec![TxOut {
 		value: Amount::from_sat(70_000),
-		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
 	}];
 
-	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
+	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
+	let contribution = if pending_splice_locks {
+		funding_template
+			.without_prior_contribution(feerate, FeeRate::MAX)
+			.add_outputs(outputs)
+			.build()
+			.unwrap()
+	} else {
+		funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap()
+	};
 
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty(), "stfu should be delayed");
@@ -9481,7 +9989,17 @@ fn test_splice_revalidation_at_quiescence() {
 	nodes[1].node.handle_revoke_and_ack(node_id_0, &raa_0b);
 	check_added_monitors(&nodes[1], 1);
 
-	// Step 7: stfu exchange → quiescence → re-validation fails → disconnect.
+	// If a prior splice becomes locked while the stfu response is delayed, the queued contribution
+	// cannot proceed as an RBF at this quiescence and must remain queued without being re-validated.
+	if let Some(splice_tx) = pending_splice_tx {
+		mine_transaction(&nodes[0], &splice_tx);
+		mine_transaction(&nodes[1], &splice_tx);
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+		let _ = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	}
+
+	// Complete the stfu exchange after the holder's balance has fallen below the contribution's
+	// requirements.
 	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
 	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
 	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
@@ -9492,12 +10010,31 @@ fn test_splice_revalidation_at_quiescence() {
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
 	assert!(matches!(msg_events[0], MessageSendEvent::HandleError { .. }));
 
-	expect_splice_failed_events(
-		&nodes[0],
-		&channel_id,
-		contribution,
-		NegotiationFailureReason::ContributionInvalid,
-	);
+	if pending_splice_locks {
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		let details = nodes[0]
+			.node
+			.list_channels()
+			.iter()
+			.find(|channel| channel.channel_id == channel_id)
+			.unwrap()
+			.splice_details
+			.clone()
+			.unwrap();
+		let queued = details.candidates.last().unwrap();
+		assert_eq!(queued.status, SpliceCandidateStatus::WaitingOnLock);
+		assert_eq!(queued.contribution, Some(contribution));
+	} else {
+		expect_splice_failed_events(
+			&nodes[0],
+			&channel_id,
+			contribution,
+			NegotiationFailureReason::ContributionInvalid,
+		);
+	}
 }
 
 #[test]
@@ -9733,20 +10270,30 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 		.unwrap()
 		.build()
 		.unwrap();
-	let result = nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None);
-	assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
+	for _ in 0..2 {
+		let result =
+			nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None);
+		assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
+	}
 
-	// SpliceNegotiationFailed is emitted. DiscardFunding is not emitted because all inputs/outputs
-	// are filtered out (same UTXOs reused for RBF, still committed to the prior splice tx).
+	// Each attempt emits SpliceNegotiationFailed without DiscardFunding because all inputs and
+	// outputs are filtered out (the same UTXOs remain committed to the prior splice transaction).
 	let events = nodes[0].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 1, "{events:?}");
-	match &events[0] {
-		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::FeeRateTooLow);
-			assert!(contribution.is_some());
-		},
-		other => panic!("Expected SpliceNegotiationFailed, got {:?}", other),
+	assert_eq!(events.len(), 2, "{events:?}");
+	for event in events {
+		match event {
+			Event::SpliceNegotiationFailed {
+				channel_id: cid,
+				reason,
+				contribution: failed_contribution,
+				..
+			} => {
+				assert_eq!(cid, channel_id);
+				assert_eq!(reason, NegotiationFailureReason::FeeRateTooLow);
+				assert_eq!(failed_contribution, Some(contribution.clone()));
+			},
+			other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+		}
 	}
 }
 
@@ -11489,10 +12036,10 @@ fn test_channel_details_zero_conf_splice() {
 }
 
 #[test]
-fn test_channel_details_waiting_on_lock_zero_conf() {
-	// On a zero-conf channel a committed contribution can never RBF the pending candidate (RBF is
-	// incompatible with zero-conf), so it is reported as `WaitingOnLock` — waiting for the candidate
-	// to lock before it can be spliced.
+fn test_splice_rbf_does_not_queue_overlapping_contribution_zero_conf() {
+	// On a zero-conf channel a contribution can never RBF the pending candidate. Once we have
+	// contributed to that candidate, a further contribution which reuses the pending funding must
+	// fail immediately rather than be queued for a fresh splice.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
@@ -11511,7 +12058,17 @@ fn test_channel_details_waiting_on_lock_zero_conf() {
 
 	// Complete a first splice; on a zero-conf channel node 0 sends `splice_locked` at signing, but the
 	// splice stays pending until the counterparty's `splice_locked` arrives.
-	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let overlapping_output = TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[1].wallet_source.get_change_script().unwrap(),
+	};
+	let contribution = do_initiate_splice_in_and_out(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		added_value,
+		vec![overlapping_output.clone()],
+	);
 	let new_funding_script = complete_splice_handshake(&nodes[0], &nodes[1]);
 	complete_interactive_funding_negotiation(
 		&nodes[0],
@@ -11530,10 +12087,38 @@ fn test_channel_details_waiting_on_lock_zero_conf() {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	nodes[0].node.get_and_clear_pending_msg_events();
 
-	// Commit a further contribution; it cannot RBF the pending candidate, so no `stfu` is sent and it
-	// is reported as awaiting the lock.
-	let queued = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	// Reuse an output from the prior contribution and add a unique splice-out destination so we can
+	// verify that only the new output is immediately discarded while the overlapping output remains
+	// committed to the pending candidate.
+	let script_pubkey = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros());
+	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let contribution = nodes[0]
+		.node
+		.splice_channel(&channel_id, &node_id_1)
+		.unwrap()
+		.without_prior_contribution(feerate, FeeRate::MAX)
+		.add_outputs(vec![overlapping_output, output])
+		.build()
+		.unwrap();
+	assert_eq!(
+		nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None,),
+		Err(APIError::APIMisuseError {
+			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		})
+	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let (inputs, outputs) = expect_failed_rbf_events(
+		&nodes[0],
+		&channel_id,
+		&contribution,
+		NegotiationFailureReason::CannotInitiateRbf,
+	);
+	assert!(inputs.is_empty());
+	assert_eq!(outputs, vec![script_pubkey]);
+	assert_no_queued_splice(&nodes[0], &channel_id);
+
+	// No queued candidate remains after the failure.
 	let details = nodes[0]
 		.node
 		.list_channels()
@@ -11543,9 +12128,7 @@ fn test_channel_details_waiting_on_lock_zero_conf() {
 		.splice_details
 		.clone()
 		.unwrap();
-	assert_eq!(details.candidates.len(), 2);
-	assert_eq!(details.candidates[1].status, SpliceCandidateStatus::WaitingOnLock);
-	assert_eq!(details.candidates[1].contribution, Some(queued));
+	assert_eq!(details.candidates.len(), 1);
 
 	// This test does not lock the splice in; drain the un-exchanged `splice_locked` messages so the
 	// nodes tear down cleanly.
@@ -11616,6 +12199,111 @@ fn test_channel_details_received_splice_locked() {
 	assert_eq!(details.candidates.len(), 2);
 	assert_eq!(details.candidates[1].status, SpliceCandidateStatus::WaitingOnLock);
 	assert_eq!(details.candidates[1].contribution, Some(queued));
+}
+
+#[test]
+fn test_queued_rbf_fails_when_chain_event_promotes_splice() {
+	// If the counterparty locks a pending splice before we confirm it, later confirmation promotes
+	// the splice through the chain-event path. An overlapping queued RBF must be failed there.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let prior_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, prior_contribution);
+
+	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let contribution = funding_template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_outputs(vec![output])
+		.build()
+		.unwrap();
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// Only the counterparty locks the pending candidate, leaving node 0 in the pre-promotion window
+	// with an RBF contribution that can no longer negotiate or safely become a fresh splice.
+	let prev_funding_txid = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| monitor.get_funding_txo().txid)
+		.unwrap();
+	mine_transaction(&nodes[1], &splice_tx);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	let splice_locked = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_0);
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked);
+
+	// Confirming the candidate locally now promotes it without another inbound message.
+	mine_transaction(&nodes[0], &splice_tx);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3, "{events:?}");
+	assert!(matches!(events[0], Event::ChannelReady { .. }));
+	match &events[1] {
+		Event::DiscardFunding {
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+			..
+		} => {
+			assert!(inputs.is_empty());
+			assert_eq!(outputs.as_slice(), std::slice::from_ref(&script_pubkey));
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+	match &events[2] {
+		Event::SpliceNegotiationFailed { contribution: failed_contribution, reason, .. } => {
+			assert_eq!(failed_contribution.as_ref(), Some(&contribution));
+			assert_eq!(*reason, NegotiationFailureReason::CannotInitiateRbf);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+	assert_no_queued_splice(&nodes[0], &channel_id);
+	check_added_monitors(&nodes[0], 1);
+
+	// Finish the locking exchange. Node 0 produced both messages while promoting from the chain
+	// event; delivering its splice_locked lets node 1 promote through the inbound-message path.
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked = match msg_events.remove(0) {
+		MessageSendEvent::SendSpliceLocked { msg, .. } => msg,
+		other => panic!("Expected SendSpliceLocked, got {other:?}"),
+	};
+	let announcement_sigs_0 = match msg_events.remove(0) {
+		MessageSendEvent::SendAnnouncementSignatures { msg, .. } => msg,
+		other => panic!("Expected SendAnnouncementSignatures, got {other:?}"),
+	};
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	assert!(matches!(events[0], Event::ChannelReady { .. }));
+	check_added_monitors(&nodes[1], 1);
+
+	let announcement_sigs_1 =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_id_0);
+	nodes[1].node.handle_announcement_signatures(node_id_0, &announcement_sigs_0);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_1);
+
+	for node in [&nodes[0], &nodes[1]] {
+		let msg_events = node.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+		assert!(matches!(msg_events[0], MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+		node.chain_source.remove_watched_by_txid(prev_funding_txid);
+	}
 }
 
 #[test]
@@ -11745,11 +12433,10 @@ fn test_channel_details_received_splice_locked_diverges_from_confirmed() {
 }
 
 #[test]
-fn test_channel_details_acceptor_contribution_with_queued_rbf() {
-	// An acceptor that contributes to the counterparty's round (its committed contribution merging
-	// into that round via the quiescence tie-break) can also queue a further contribution for a
-	// future RBF. Both surface together as candidates: the in-flight counterparty round carries our
-	// part of it, alongside a separate candidate for the contribution we queued for the next round.
+fn test_acceptor_contribution_rejects_queued_rbf() {
+	// An acceptor's contribution can merge into the counterparty's round via the quiescence
+	// tie-break. Once that happens, a further contribution cannot be queued behind the in-flight
+	// round because it may overlap with the contribution already being negotiated.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -11784,7 +12471,10 @@ fn test_channel_details_acceptor_contribution_with_queued_rbf() {
 		.unwrap()
 		.splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_1)
 		.unwrap();
-	nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution_1, None).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, contribution_1.clone(), None)
+		.unwrap();
 
 	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
 	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
@@ -11799,15 +12489,34 @@ fn test_channel_details_acceptor_contribution_with_queued_rbf() {
 		"the acceptor should contribute to the counterparty's round",
 	);
 
-	// Node 1 queues a further contribution for a future RBF while node 0's round is still in flight.
+	// Node 1 attempts a further contribution while node 0's round is still in flight. The unique
+	// inputs are discarded immediately, while the prior input and change output remain committed.
 	let rbf_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
 	let rbf_feerate = rbf_template.min_rbf_feerate().unwrap();
-	let queued = rbf_template
+	let contribution = rbf_template
 		.splice_in_sync(Amount::from_sat(25_000), rbf_feerate, FeeRate::MAX, &wallet_1)
 		.unwrap();
-	nodes[1].node.funding_contributed(&channel_id, &node_id_0, queued.clone(), None).unwrap();
+	assert_eq!(
+		nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution.clone(), None,),
+		Err(APIError::APIMisuseError {
+			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		})
+	);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	let (inputs, outputs) = expect_failed_rbf_events(
+		&nodes[1],
+		&channel_id,
+		&contribution,
+		NegotiationFailureReason::CannotInitiateRbf,
+	);
+	assert!(!inputs.is_empty());
+	for input in inputs {
+		assert!(!contribution_1.inputs().iter().any(|prior| prior.outpoint() == input));
+	}
+	assert!(outputs.is_empty());
+	assert_no_queued_splice(&nodes[1], &channel_id);
 
-	// Node 1's view: it contributed to node 0's (counterparty) round AND has its own RBF queued.
+	// Node 1's view only contains its contribution to node 0's in-flight round.
 	let details = nodes[1]
 		.node
 		.list_channels()
@@ -11817,23 +12526,20 @@ fn test_channel_details_acceptor_contribution_with_queued_rbf() {
 		.splice_details
 		.clone()
 		.unwrap();
-	assert_eq!(details.candidates.len(), 2);
-	// Our part of node 0's in-flight round, which we did not initiate.
+	assert_eq!(details.candidates.len(), 1);
 	assert!(matches!(
 		details.candidates[0].status,
 		SpliceCandidateStatus::ConstructingTransaction { is_initiator: false, .. }
 	));
 	assert!(details.candidates[0].contribution.is_some());
-	// Our further contribution, queued to RBF that round once it completes.
-	assert_eq!(details.candidates[1].status, SpliceCandidateStatus::WaitingOnQuiescence);
-	assert_eq!(details.candidates[1].contribution, Some(queued));
 }
 
 #[test]
 fn test_channel_details_acceptor_contribution_reaches_signing() {
 	// An acceptor that contributes to a counterparty-initiated round is reported with
 	// `is_initiator: false` and its own contribution present, through the awaiting-signatures stage
-	// and into the negotiated candidate.
+	// and into the negotiated candidate. Once negotiated, its contribution is preferred over the
+	// full funding transaction when identifying funding components committed by the acceptor.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -11871,6 +12577,15 @@ fn test_channel_details_acceptor_contribution_reaches_signing() {
 		.unwrap()
 		.splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_1)
 		.unwrap();
+	let counterparty_output_script = contribution_0.change_output().unwrap().script_pubkey.clone();
+	let queued_output_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros());
+	assert_ne!(counterparty_output_script, queued_output_script);
+	assert!(!contribution_1
+		.contributed_outputs()
+		.any(|output| output == counterparty_output_script.as_script()));
+	assert!(!contribution_1
+		.contributed_outputs()
+		.any(|output| output == queued_output_script.as_script()));
 	nodes[1]
 		.node
 		.funding_contributed(&channel_id, &node_id_0, contribution_1.clone(), None)
@@ -11938,14 +12653,78 @@ fn test_channel_details_acceptor_contribution_reaches_signing() {
 	assert_eq!(details.candidates.len(), 1);
 	assert!(matches!(details.candidates[0].status, SpliceCandidateStatus::Negotiated { .. }));
 	assert!(details.candidates[0].contribution.is_some());
+
+	// Queue an RBF contribution, then submit another contribution whose output script matches only
+	// the counterparty's prior contribution. The full funding transaction contains that script,
+	// but the acceptor has no funds committed to it, so it must be returned in DiscardFunding.
+	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	nodes[1].wallet_source.clear_utxos();
+	provide_utxo_reserves(&nodes, 1, added_value);
+	let queued_contribution = funding_template
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet_1)
+		.add_value(Amount::from_sat(10_000))
+		.unwrap()
+		.add_outputs(vec![TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: queued_output_script,
+		}])
+		.build()
+		.unwrap();
+	nodes[1].wallet_source.clear_utxos();
+	provide_utxo_reserves(&nodes, 1, added_value);
+	let colliding_contribution = nodes[1]
+		.node
+		.splice_channel(&channel_id, &node_id_0)
+		.unwrap()
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet_1)
+		.add_value(Amount::from_sat(10_000))
+		.unwrap()
+		.add_outputs(vec![TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: counterparty_output_script.clone(),
+		}])
+		.build()
+		.unwrap();
+
+	nodes[1].node.funding_contributed(&channel_id, &node_id_0, queued_contribution, None).unwrap();
+	let _ = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+
+	assert_eq!(
+		nodes[1].node.funding_contributed(
+			&channel_id,
+			&node_id_0,
+			colliding_contribution.clone(),
+			None,
+		),
+		Err(APIError::APIMisuseError {
+			err: format!("Channel {} already has a pending funding contribution", channel_id),
+		})
+	);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	let expected_inputs: Vec<_> = colliding_contribution.contributed_inputs().collect();
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::DiscardFunding {
+			channel_id: discarded_channel_id,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(*discarded_channel_id, channel_id);
+			assert_eq!(*inputs, expected_inputs);
+			assert_eq!(*outputs, vec![counterparty_output_script]);
+		},
+		_ => panic!("Expected DiscardFunding for a contribution"),
+	}
 }
 
 #[test]
-fn test_channel_details_waiting_on_lock_below_rbf_feerate() {
-	// A committed contribution whose feerate is below the RBF minimum of the round currently in
-	// flight cannot replace it, so it is reported as `WaitingOnLock`. This exercises the feerate
-	// branch of the classification (the zero-conf and locking checks do not apply here) and produces
-	// the full negotiated -> in-flight -> queued three-candidate ordering.
+fn test_splice_rbf_does_not_queue_prior_contribution_during_negotiation() {
+	// A contribution cannot immediately RBF a round that is currently being negotiated. If a prior
+	// round already contains one of our contributions, fail the new contribution rather than queue
+	// it, filtering the prior pieces from the resulting DiscardFunding event.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -11962,8 +12741,9 @@ fn test_channel_details_waiting_on_lock_below_rbf_feerate() {
 
 	// Complete a first splice at the floor feerate, leaving a negotiated candidate.
 	provide_utxo_reserves(&nodes, 1, added_value * 2);
-	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
-	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+	let prior_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, prior_contribution.clone());
 
 	// The counterparty (node 1) initiates an RBF at a much higher feerate; we drive it in flight on
 	// node 0 (node 1 wins quiescence, as node 0 has nothing of its own queued yet).
@@ -11990,11 +12770,41 @@ fn test_channel_details_waiting_on_lock_below_rbf_feerate() {
 	nodes[0].node.handle_tx_init_rbf(node_id_1, &tx_init_rbf);
 	let _tx_ack_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxAckRbf, node_id_1);
 
-	// Node 0 commits its own contribution at the floor RBF feerate. That is enough to replace the
-	// original candidate, but not the higher-feerate round now in flight, so it waits for the lock.
-	provide_utxo_reserves(&nodes, 1, added_value * 2);
-	let queued = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	// Node 0 amends its prior contribution with an additional splice-in and a unique splice-out
+	// while the counterparty's RBF is in flight. The prior inputs and change output remain
+	// committed, while the newly selected input and output are safe to discard immediately.
+	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let feerate = funding_template.min_rbf_feerate().unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution = funding_template
+		.with_prior_contribution(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(added_value)
+		.unwrap()
+		.add_outputs(vec![output])
+		.build()
+		.unwrap();
+	assert_eq!(
+		nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None,),
+		Err(APIError::APIMisuseError {
+			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		})
+	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let (inputs, outputs) = expect_failed_rbf_events(
+		&nodes[0],
+		&channel_id,
+		&contribution,
+		NegotiationFailureReason::CannotInitiateRbf,
+	);
+	assert!(!inputs.is_empty());
+	for input in inputs {
+		assert!(!prior_contribution.inputs().iter().any(|prior| prior.outpoint() == input));
+	}
+	assert_eq!(outputs, vec![script_pubkey]);
+	assert_no_queued_splice(&nodes[0], &channel_id);
 
 	let details = nodes[0]
 		.node
@@ -12005,17 +12815,14 @@ fn test_channel_details_waiting_on_lock_below_rbf_feerate() {
 		.splice_details
 		.clone()
 		.unwrap();
-	// Negotiated original, the counterparty's in-flight higher-feerate RBF, then our queued
-	// contribution awaiting the lock.
-	assert_eq!(details.candidates.len(), 3);
+	// Only the negotiated original and the counterparty's in-flight RBF remain.
+	assert_eq!(details.candidates.len(), 2);
 	assert!(matches!(details.candidates[0].status, SpliceCandidateStatus::Negotiated { .. }));
 	assert_eq!(candidate_txid(&details.candidates[0]), splice_tx.compute_txid());
 	assert!(matches!(
 		details.candidates[1].status,
 		SpliceCandidateStatus::ConstructingTransaction { is_initiator: false, .. }
 	));
-	assert_eq!(details.candidates[2].status, SpliceCandidateStatus::WaitingOnLock);
-	assert_eq!(details.candidates[2].contribution, Some(queued));
 
 	// This test leaves an RBF round in flight; drain the un-exchanged messages for a clean teardown.
 	nodes[0].node.get_and_clear_pending_msg_events();
