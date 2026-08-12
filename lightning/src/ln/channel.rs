@@ -12301,32 +12301,21 @@ where
 
 		log_info!(logger, "Promoting splice funding txid {}", splice_txid);
 
-		let (discarded_funding, splice_funding_failed) = {
-			// Scope `funding` to avoid unintentionally using it later since it is swapped below.
-			let funding = pending_splice
+		let queued_splice_failed = {
+			let promoted_candidate_idx = pending_splice
 				.negotiated_candidates
-				.iter_mut()
-				.map(|candidate| &mut candidate.funding)
-				.find(|funding| funding.get_funding_txid() == Some(splice_txid))
+				.iter()
+				.position(|candidate| candidate.funding.get_funding_txid() == Some(splice_txid))
 				.unwrap();
 
-			if let Some(scid) = self.funding.short_channel_id {
-				self.context.historical_scids.push(scid);
-			}
-
-			core::mem::swap(&mut self.funding, funding);
-
-			let promoted_tx = self
-				.funding
-				.funding_transaction
-				.as_ref()
-				.expect("Promoted splice funding should have a funding transaction");
-
-			// Replaced candidates cease to be committed at promotion, so they cannot prevent a
-			// queued contribution from proceeding as a fresh splice. Only the promoted transaction
-			// can.
-			let queued_contribution_cannot_be_fresh_splice = match self.quiescent_action.as_ref() {
+			let is_queued_contribution_conflicting = match self.quiescent_action.as_ref() {
 				Some(QuiescentAction::Splice { contribution, .. }) => {
+					let promoted_tx = pending_splice.negotiated_candidates[promoted_candidate_idx]
+						.funding
+						.funding_transaction
+						.as_ref()
+						.expect("Promoted splice funding should have a funding transaction");
+
 					contribution.contributed_inputs().any(|input| {
 						promoted_tx.input.iter().any(|promoted| input == promoted.previous_output)
 					}) || contribution.contributed_outputs().any(|output| {
@@ -12338,47 +12327,63 @@ where
 				},
 				_ => false,
 			};
-			let queued_rbf_contribution = if queued_contribution_cannot_be_fresh_splice {
-				match self.quiescent_action.take() {
-					Some(QuiescentAction::Splice { contribution, .. }) => Some(contribution),
-					_ => unreachable!(),
-				}
+			let queued_splice_failed = if is_queued_contribution_conflicting {
+				#[allow(irrefutable_let_patterns)]
+				let QuiescentAction::Splice { contribution, .. } = self
+					.quiescent_action
+					.take()
+					.expect("We just checked a conflicting queued contribution exists above")
+				else {
+					unreachable!()
+				};
+				Some(pending_splice.funding_components().splice_funding_failed(contribution))
 			} else {
 				None
 			};
-			let splice_funding_failed = queued_rbf_contribution.map(|contribution| {
-				pending_splice.funding_components().splice_funding_failed(contribution)
-			});
-			// A surviving queue remains committed after promotion, so its components must not be
-			// released when the replaced candidates are discarded.
-			let surviving_queued_contribution = match self.quiescent_action.as_ref() {
+
+			if let Some(scid) = self.funding.short_channel_id {
+				self.context.historical_scids.push(scid);
+			}
+			let mut promoted_candidate =
+				pending_splice.negotiated_candidates.swap_remove(promoted_candidate_idx);
+			core::mem::swap(&mut self.funding, &mut promoted_candidate.funding);
+
+			queued_splice_failed
+		};
+
+		let discarded_funding = {
+			let promoted_tx = self
+				.funding
+				.funding_transaction
+				.as_ref()
+				.expect("Promoted splice funding should have a funding transaction");
+			let queued_contribution = match self.quiescent_action.as_ref() {
 				Some(QuiescentAction::Splice { contribution, .. }) => Some(contribution),
 				_ => None,
 			};
 
 			let candidates = core::mem::take(&mut pending_splice.negotiated_candidates);
-			let negotiation_contribution = pending_splice.negotiation_contribution.take();
-			let discarded_funding = candidates
+			let pending_negotiation_contribution = pending_splice.negotiation_contribution.take();
+			candidates
 				.into_iter()
 				.filter_map(|candidate| candidate.contribution)
-				.chain(negotiation_contribution)
+				.chain(pending_negotiation_contribution)
 				.filter_map(|contribution| {
 					contribution.into_unique_contributions(
 						promoted_tx.input.iter().map(|i| i.previous_output).chain(
-							surviving_queued_contribution
+							queued_contribution
 								.into_iter()
 								.flat_map(|contribution| contribution.contributed_inputs()),
 						),
 						promoted_tx.output.iter().map(|o| o.script_pubkey.as_script()).chain(
-							surviving_queued_contribution
+							queued_contribution
 								.into_iter()
 								.flat_map(|contribution| contribution.contributed_outputs()),
 						),
 					)
 				})
 				.map(|(inputs, outputs)| FundingInfo::Contribution { inputs, outputs })
-				.collect::<Vec<_>>();
-			(discarded_funding, splice_funding_failed)
+				.collect::<Vec<_>>()
 		};
 
 		self.context.interactive_tx_signing_session = None;
@@ -12418,7 +12423,7 @@ where
 			monitor_update,
 			announcement_sigs,
 			discarded_funding,
-			splice_funding_failed,
+			splice_funding_failed: queued_splice_failed,
 		})
 	}
 
