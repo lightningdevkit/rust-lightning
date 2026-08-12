@@ -5441,7 +5441,7 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 			action: msgs::ErrorAction::SendErrorMessage { ref msg },
 			..
 		} => {
-			assert!(msg.data.contains("Invalid commitment tx signature from peer"));
+			assert_eq!(msg.data, "Failed to validate our commitment");
 		},
 		_ => panic!("Expected HandleError with SendErrorMessage, got {:?}", msg_events[1]),
 	}
@@ -5452,7 +5452,7 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 		_ => panic!("Expected BroadcastChannelUpdate, got {:?}", msg_events[2]),
 	}
 
-	let err = "Invalid commitment tx signature from peer".to_owned();
+	let err = "Failed to validate our commitment".to_owned();
 	let reason = ClosureReason::ProcessingError { err };
 	check_closed_events(
 		&nodes[0],

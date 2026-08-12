@@ -24,7 +24,7 @@ use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::constants::PUBLIC_KEY_SIZE;
 use bitcoin::secp256k1::{ecdsa::Signature, Secp256k1};
 use bitcoin::secp256k1::{PublicKey, SecretKey};
-use bitcoin::{secp256k1, sighash, FeeRate, Sequence, TxIn};
+use bitcoin::{secp256k1, FeeRate, Sequence, TxIn};
 
 use crate::blinded_path::message::BlindedMessagePath;
 use crate::chain::chaininterface::{
@@ -6126,96 +6126,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			&funding.get_holder_pubkeys().funding_pubkey,
 			funding.counterparty_funding_pubkey(),
 		);
-
-		let channel_parameters = &funding.channel_transaction_parameters;
-		let secp_ctx = &self.secp_ctx;
-		let funding_script = channel_parameters.make_funding_redeemscript();
-		let channel_value_satoshis = channel_parameters.channel_value_satoshis;
-		let counterparty_funding_pubkey =
-			channel_parameters.counterparty_pubkeys().as_ref().unwrap().funding_pubkey;
-		let counterparty_selected_delay =
-			channel_parameters.counterparty_parameters.as_ref().unwrap().selected_contest_delay;
-		let channel_type = &channel_parameters.channel_type_features;
-		let commitment_txid = {
-			let trusted_tx = holder_commitment_tx.trust();
-			let bitcoin_tx = trusted_tx.built_transaction();
-			if bitcoin_tx.transaction.output.is_empty() {
-				return Err(ChannelError::close(
-					"Commitment tx from peer has 0 outputs".to_owned(),
-				));
-			}
-
-			let sighash = bitcoin_tx.get_sighash_all(&funding_script, channel_value_satoshis);
-
-			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}",
-				log_bytes!(holder_commitment_tx.counterparty_sig.serialize_compact()[..]),
-				log_bytes!(counterparty_funding_pubkey.serialize()),
-				bitcoin::consensus::encode::serialize_hex(&bitcoin_tx.transaction),
-				log_bytes!(sighash[..]), bitcoin::consensus::encode::serialize_hex(&funding_script),
-			);
-			if let Err(_) = secp_ctx.verify_ecdsa(
-				&sighash,
-				&holder_commitment_tx.counterparty_sig,
-				&counterparty_funding_pubkey,
-			) {
-				return Err(ChannelError::close(
-					"Invalid commitment tx signature from peer".to_owned(),
-				));
-			}
-			bitcoin_tx.txid
-		};
-
-		let holder_keys = holder_commitment_tx.trust().keys();
-		for (htlc, counterparty_sig) in holder_commitment_tx
-			.nondust_htlcs()
-			.iter()
-			.zip(holder_commitment_tx.counterparty_htlc_sigs.iter())
-		{
-			assert!(htlc.transaction_output_index.is_some());
-			let htlc_tx = chan_utils::build_htlc_transaction(
-				&commitment_txid,
-				holder_commitment_tx.negotiated_feerate_per_kw(),
-				counterparty_selected_delay,
-				&htlc,
-				channel_type,
-				&holder_keys.broadcaster_delayed_payment_key,
-				&holder_keys.revocation_key,
-			);
-
-			let htlc_redeemscript =
-				chan_utils::get_htlc_redeemscript(&htlc, channel_type, &holder_keys);
-			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
-				|| channel_type.supports_anchor_zero_fee_commitments()
-			{
-				EcdsaSighashType::SinglePlusAnyoneCanPay
-			} else {
-				EcdsaSighashType::All
-			};
-			let htlc_sighash = hash_to_message!(
-				&sighash::SighashCache::new(&htlc_tx)
-					.p2wsh_signature_hash(
-						0,
-						&htlc_redeemscript,
-						htlc.to_bitcoin_amount(),
-						htlc_sighashtype
-					)
-					.unwrap()[..]
-			);
-			log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
-				log_bytes!(counterparty_sig.serialize_compact()[..]),
-				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
-				bitcoin::consensus::encode::serialize_hex(&htlc_tx),
-				log_bytes!(htlc_sighash[..]),
-				bitcoin::consensus::encode::serialize_hex(&htlc_redeemscript),
-			);
-			if let Err(_) = secp_ctx.verify_ecdsa(
-				&htlc_sighash,
-				&counterparty_sig,
-				&holder_keys.countersignatory_htlc_key.to_public_key(),
-			) {
-				return Err(ChannelError::close("Invalid HTLC tx signature from peer".to_owned()));
-			}
-		}
 
 		self.holder_signer
 			.validate_holder_commitment(

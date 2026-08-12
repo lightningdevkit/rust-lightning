@@ -1306,7 +1306,6 @@ pub struct InMemorySigner<L: Logger> {
 	/// A source of random bytes.
 	entropy_source: RandomBytes,
 	/// A logger.
-	#[allow(dead_code)]
 	logger: L,
 }
 
@@ -1574,10 +1573,102 @@ impl<L: Logger> ChannelSigner for InMemorySigner<L> {
 	}
 
 	fn validate_holder_commitment(
-		&self, _channel_parameters: &ChannelTransactionParameters,
-		_holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>,
-		_secp_ctx: &Secp256k1<secp256k1::All>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_commitment_tx: &HolderCommitmentTransaction,
+		_outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()> {
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_pubkey = funding_key.public_key(secp_ctx);
+		let counterparty_funding_pubkey =
+			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+		let funding_script =
+			make_funding_redeemscript(&funding_pubkey, &counterparty_funding_pubkey);
+		let channel_value_satoshis = channel_parameters.channel_value_satoshis;
+		let counterparty_selected_delay = channel_parameters
+			.counterparty_parameters
+			.as_ref()
+			.expect(MISSING_PARAMS_ERR)
+			.selected_contest_delay;
+		let channel_type = &channel_parameters.channel_type_features;
+		let commitment_txid = {
+			let trusted_tx = holder_commitment_tx.trust();
+			let bitcoin_tx = trusted_tx.built_transaction();
+			if bitcoin_tx.transaction.output.is_empty() {
+				log_error!(self.logger, "Commitment tx from peer has 0 outputs");
+				return Err(());
+			}
+
+			let sighash = bitcoin_tx.get_sighash_all(&funding_script, channel_value_satoshis);
+
+			log_trace!(self.logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
+				log_bytes!(holder_commitment_tx.counterparty_sig.serialize_compact()[..]),
+				log_bytes!(counterparty_funding_pubkey.serialize()),
+				bitcoin::consensus::encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(sighash[..]), bitcoin::consensus::encode::serialize_hex(&funding_script),
+			);
+			if let Err(_) = secp_ctx.verify_ecdsa(
+				&sighash,
+				&holder_commitment_tx.counterparty_sig,
+				&counterparty_funding_pubkey,
+			) {
+				log_error!(self.logger, "Invalid commitment tx signature from peer");
+				return Err(());
+			}
+			bitcoin_tx.txid
+		};
+
+		let holder_keys = holder_commitment_tx.trust().keys();
+		for (htlc, counterparty_sig) in holder_commitment_tx
+			.nondust_htlcs()
+			.iter()
+			.zip(holder_commitment_tx.counterparty_htlc_sigs.iter())
+		{
+			assert!(htlc.transaction_output_index.is_some());
+			let htlc_tx = chan_utils::build_htlc_transaction(
+				&commitment_txid,
+				holder_commitment_tx.negotiated_feerate_per_kw(),
+				counterparty_selected_delay,
+				&htlc,
+				channel_type,
+				&holder_keys.broadcaster_delayed_payment_key,
+				&holder_keys.revocation_key,
+			);
+
+			let htlc_redeemscript =
+				chan_utils::get_htlc_redeemscript(&htlc, channel_type, &holder_keys);
+			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
+				|| channel_type.supports_anchor_zero_fee_commitments()
+			{
+				EcdsaSighashType::SinglePlusAnyoneCanPay
+			} else {
+				EcdsaSighashType::All
+			};
+			let htlc_sighash = hash_to_message!(
+				&sighash::SighashCache::new(&htlc_tx)
+					.p2wsh_signature_hash(
+						0,
+						&htlc_redeemscript,
+						htlc.to_bitcoin_amount(),
+						htlc_sighashtype
+					)
+					.unwrap()[..]
+			);
+			log_trace!(self.logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
+				log_bytes!(counterparty_sig.serialize_compact()[..]),
+				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
+				bitcoin::consensus::encode::serialize_hex(&htlc_tx),
+				log_bytes!(htlc_sighash[..]),
+				bitcoin::consensus::encode::serialize_hex(&htlc_redeemscript),
+			);
+			if let Err(_) = secp_ctx.verify_ecdsa(
+				&htlc_sighash,
+				&counterparty_sig,
+				&holder_keys.countersignatory_htlc_key.to_public_key(),
+			) {
+				log_error!(self.logger, "Invalid HTLC tx signature from peer");
+				return Err(());
+			}
+		}
 		Ok(())
 	}
 
