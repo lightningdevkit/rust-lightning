@@ -3181,11 +3181,12 @@ enum NotifyOption {
 }
 
 /// Whenever we release the `ChannelManager`'s `total_consistency_lock`, from read mode, it is
-/// desirable to notify any listeners on `await_persistable_update_timeout`/
-/// `await_persistable_update` when new updates are available for persistence. Therefore, this
-/// struct is responsible for locking the total consistency lock and, upon going out of scope,
-/// sending the aforementioned notification (since the lock being released indicates that the
-/// updates are ready for persistence).
+/// desirable to notify any listeners on the `Future` returned by
+/// `ChannelManager::get_event_or_persistence_needed_future` when new updates are available for
+/// persistence or new events are available for handling. Therefore, this struct is responsible for
+/// locking the total consistency lock and, upon going out of scope, sending the aforementioned
+/// notification (since the lock being released indicates that the updates are ready for
+/// persistence).
 ///
 /// We allow callers to either always notify by constructing with `notify_on_drop` or choose to
 /// notify or not based on whether relevant changes have been made, providing a closure to
