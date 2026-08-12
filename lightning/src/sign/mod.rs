@@ -787,6 +787,11 @@ pub trait ChannelSigner {
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
 	///
+	/// Before using `channel_parameters` for validation, implementations of a validating
+	/// signer must verify that it matches the trusted channel state they maintain, including the
+	/// funding keys, value, and outpoint. A validating signer must not trust parameters supplied
+	/// by an untrusted caller.
+	///
 	/// The preimages of outbound HTLCs that were fulfilled since the last commitment are provided.
 	/// A validating signer should ensure that an HTLC output is removed only when the matching
 	/// preimage is provided, or when the value to holder is restored.
@@ -798,8 +803,9 @@ pub trait ChannelSigner {
 	/// closed. If you wish to make this operation asynchronous, you should instead return `Ok(())`
 	/// and pause future signing operations until this validation completes.
 	fn validate_holder_commitment(
-		&self, holder_tx: &HolderCommitmentTransaction,
-		outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()>;
 
 	/// Validate the counterparty's revocation.
@@ -1568,8 +1574,9 @@ impl<L: Logger> ChannelSigner for InMemorySigner<L> {
 	}
 
 	fn validate_holder_commitment(
-		&self, _holder_tx: &HolderCommitmentTransaction,
-		_outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, _channel_parameters: &ChannelTransactionParameters,
+		_holder_tx: &HolderCommitmentTransaction, _outbound_htlc_preimages: Vec<PaymentPreimage>,
+		_secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()> {
 		Ok(())
 	}

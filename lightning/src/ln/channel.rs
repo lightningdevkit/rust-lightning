@@ -4033,7 +4033,12 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 
 		if context
 			.holder_signer
-			.validate_holder_commitment(&holder_commitment_tx, Vec::new())
+			.validate_holder_commitment(
+				&self.funding().channel_transaction_parameters,
+				&holder_commitment_tx,
+				Vec::new(),
+				&context.secp_ctx,
+			)
 			.is_err()
 		{
 			// TODO(dual_funding): Update for V2 established channels.
@@ -6207,8 +6212,10 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		self.holder_signer
 			.validate_holder_commitment(
+				&funding.channel_transaction_parameters,
 				&holder_commitment_tx,
 				commitment_data.outbound_htlc_preimages,
+				&self.secp_ctx,
 			)
 			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
 
