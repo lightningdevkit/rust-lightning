@@ -31,7 +31,7 @@ use crate::ln::chan_utils::{
 };
 use crate::ln::channel::{
 	get_holder_selected_channel_reserve_satoshis, Channel, DISCONNECT_PEER_AWAITING_RESPONSE_TICKS,
-	MIN_CHAN_DUST_LIMIT_SATOSHIS, UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
+	UNFUNDED_CHANNEL_AGE_LIMIT_TICKS,
 };
 use crate::ln::channelmanager::{
 	PaymentId, RAACommitmentOrder, BREAKDOWN_TIMEOUT, DISABLE_GOSSIP_TICKS, ENABLE_GOSSIP_TICKS,
@@ -9089,6 +9089,7 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	const DEFAULT_FEERATE: u32 = 253;
 	const HIGH_FEERATE: u32 = 275;
 	const EXCESS_FEERATE: u32 = HIGH_FEERATE - DEFAULT_FEERATE;
+	const DUST_EXPOSURE_MULTIPLIER: u64 = 10_000;
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	{
 		// Set the feerate of the channel funder above the `dust_exposure_limiting_feerate` of
@@ -9102,7 +9103,8 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 
 	let mut config = test_legacy_channel_config();
 	// Set the dust limit to the default value
-	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(10_000);
+	config.channel_config.max_dust_htlc_exposure =
+		MaxDustHTLCExposure::FeeRateMultiplier(DUST_EXPOSURE_MULTIPLIER);
 	// Make sure the HTLC limits don't get in the way
 	let chan_ty = ChannelTypeFeatures::only_static_remote_key();
 	config.channel_handshake_limits.min_max_accepted_htlcs = chan_utils::max_htlcs(&chan_ty);
@@ -9229,8 +9231,15 @@ pub fn test_nondust_htlc_excess_fees_are_dust() {
 	let id = PaymentId(payment_hash_0_1.0);
 	let res = nodes[0].node.send_payment_with_route(route_0_1, payment_hash_0_1, onion, id);
 	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { .. }, {});
+	let channel_details = &nodes[0].node.list_channels()[0];
+	// A fee-rate-multiplier limit is the limiting feerate multiplied by the configured value.
+	let max_dust_exposure_msat = DEFAULT_FEERATE as u64 * DUST_EXPOSURE_MULTIPLIER;
+	let remaining_dust_exposure_msat = max_dust_exposure_msat
+		- channel_details.current_dust_exposure_msat.expect("dust exposure should be available");
+	assert_eq!(remaining_dust_exposure_msat, 16_000);
+	assert_eq!(channel_details.next_outbound_htlc_limit_msat, remaining_dust_exposure_msat);
 	nodes[0].logger.assert_log("lightning::ln::outbound_payment",
-		format!("Failed to send along path due to error: Channel unavailable: Cannot send more than our next-HTLC maximum - {} msat", 2325000), 1);
+		format!("Failed to send along path due to error: Channel unavailable: Cannot send more than our next-HTLC maximum - {} msat", remaining_dust_exposure_msat), 1);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
@@ -9336,13 +9345,6 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	let node_b_id = nodes[1].node.get_our_node_id();
 
 	let chan_id = create_chan_between_nodes_with_value(&nodes[0], &nodes[1], 100_000, 50_000_000).3;
-
-	let node_1_dust_buffer_feerate = {
-		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
-		let chan_lock = per_peer_state.get(&node_a_id).unwrap().lock().unwrap();
-		let chan = chan_lock.channel_by_id.get(&chan_id).unwrap();
-		chan.context().get_dust_buffer_feerate(None) as u64
-	};
 
 	// Skip the router complaint when node 1 will attempt to pay node 0
 	let (route_1_0, payment_hash_1_0, _, payment_secret_1_0) =
@@ -9451,15 +9453,16 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 	let res = nodes[1].node.send_payment_with_route(route_1_0, payment_hash_1_0, onion, id);
 	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
 
-	let (htlc_success_tx_fee_sat, _) =
-		second_stage_tx_fees_sat(&features, node_1_dust_buffer_feerate as u32);
-	let dust_limit = if features == ChannelTypeFeatures::only_static_remote_key() {
-		MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000 + htlc_success_tx_fee_sat * 1000
-	} else {
-		MIN_CHAN_DUST_LIMIT_SATOSHIS * 1000
-	};
+	let current_dust_exposure_msat = BASE_DUST_EXPOSURE_MSAT
+		+ EXCESS_FEERATE * commitment_tx_base_weight(&features) / 1000 * 1000;
+	let max_dust_exposure_msat = expected_dust_exposure_msat - 1;
+	let remaining_dust_exposure_msat = max_dust_exposure_msat - current_dust_exposure_msat;
+	assert_eq!(
+		nodes[1].node.list_channels()[0].next_outbound_htlc_limit_msat,
+		remaining_dust_exposure_msat
+	);
 	nodes[1].logger.assert_log("lightning::ln::outbound_payment",
-		format!("Failed to send along path due to error: Channel unavailable: Cannot send more than our next-HTLC maximum - {} msat", dust_limit), 1);
+		format!("Failed to send along path due to error: Channel unavailable: Cannot send more than our next-HTLC maximum - {} msat", remaining_dust_exposure_msat), 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	assert_eq!(nodes[0].node.list_channels().len(), 1);
