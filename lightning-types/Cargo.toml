@@ -1,6 +1,6 @@
 [package]
 name = "lightning-types"
-version = "0.4.0-beta1"
+version = "0.4.0-rc1"
 authors = ["Matt Corallo"]
 license = "MIT OR Apache-2.0"
 repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning/"
