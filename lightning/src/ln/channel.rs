@@ -84,7 +84,7 @@ use crate::util::config::{
 	MaxDustHTLCExposure, UserConfig,
 };
 use crate::util::errors::APIError;
-use crate::util::logger::{Level as LoggerLevel, Logger, Record, WithContext};
+use crate::util::logger::{Logger, Record, WithContext};
 use crate::util::scid_utils::{block_from_scid, scid_from_parts};
 use crate::util::ser::{Iterable, Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::wallet_utils::{ConfirmedUtxo, Input};
@@ -15262,20 +15262,24 @@ where
 			return None;
 		}
 
-		let logger_level = if is_retry { LoggerLevel::Trace } else { LoggerLevel::Debug };
+		// We retry sending `stfu` every time pending messages are polled, so only log why we're
+		// unable to on the first attempt, lest we spam the log.
 		if !self.context.is_live() {
-			log_given_level!(logger, logger_level, "Waiting for peer reconnection to send stfu");
+			if !is_retry {
+				log_debug!(logger, "Waiting for peer reconnection to send stfu");
+			}
 			return None;
 		}
 
 		if self.context.is_waiting_on_peer_pending_channel_update()
 			|| self.context.is_monitor_or_signer_pending_channel_update()
 		{
-			log_given_level!(
-				logger,
-				logger_level,
-				"Waiting for state machine pending changes to complete before sending stfu"
-			);
+			if !is_retry {
+				log_debug!(
+					logger,
+					"Waiting for state machine pending changes to complete before sending stfu"
+				);
+			}
 			return None;
 		}
 
@@ -15290,11 +15294,12 @@ where
 			if let QuiescentAction::Splice { contribution, .. } = action {
 				if self.pending_splice.is_some() {
 					if !self.queued_contribution_can_rbf(contribution) {
-						log_given_level!(
-							logger,
-							logger_level,
-							"Waiting for splice to lock before potentially proceeding with queued contribution"
-						);
+						if !is_retry {
+							log_debug!(
+								logger,
+								"Waiting for splice to lock before potentially proceeding with queued contribution"
+							);
+						}
 						return None;
 					}
 				}
