@@ -9,46 +9,23 @@
 
 //! Verification of BOLT 12 payer proofs.
 //!
-//! A payer proof lets whoever paid a BOLT 12 invoice prove they did so to a third party, while
-//! disclosing only the invoice fields they choose. This crate is the verifier's half of that
-//! exchange: one call in, one struct of plain values out.
+//! * Verify a bech32 proof with [`verify`] (`lnp1...`) or [`verify_bytes`]
+//! * Inspect the result with [`VerifiedPayerProof`]
+//! * Check an offer's recipient with [`VerifiedPayerProof::pays_offers_recipient`]
 //!
+//! A successful verify does not mean they paid the invoice you have in mind. Anyone can issue an
+//! invoice to themselves, pay it, and hand out a proof that verifies.
+//!
+//! ```ignore
+//! use lightning_payer_proof::{verify, Offer};
+//!
+//! let encoded = "lnp1...";
+//! let offer = "lno1...";
+//!
+//! let proof = verify(encoded).unwrap();
+//! let offer: Offer = offer.parse().unwrap();
+//! assert!(proof.pays_offers_recipient(&offer));
 //! ```
-//! # fn example(encoded: &str) {
-//! match lightning_payer_proof::verify(encoded) {
-//! 	Ok(proof) => {
-//! 		println!("paid invoice {}", proof.payment_hash());
-//! 		if let Some(amount) = proof.invoice_amount_msats() {
-//! 			println!("for {} msats", amount);
-//! 		}
-//! 	},
-//! 	Err(e) => println!("rejected: {:?}", e),
-//! }
-//! # }
-//! ```
-//!
-//! # What verification does and does not tell you
-//!
-//! A successful [`verify`] proves three things about the proof itself: the payment preimage hashes
-//! to the payment hash it claims, the issuer signed an invoice containing the disclosed fields, and
-//! the payer signed this proof. It does **not** tell you which payment the proof is about.
-//!
-//! Producing a proof takes the payment preimage, so a proof that verifies really does mean someone
-//! paid the invoice it covers. What it does not mean is that they paid the invoice you have in
-//! mind: anyone can issue an invoice to themselves, pay it, and hand out a proof that verifies.
-//! Before acting on one, compare [`VerifiedPayerProof::payment_hash`] against the payment you are
-//! asking about, and [`VerifiedPayerProof::issuer_signing_pubkey`] against the key you expect that
-//! invoice to have been issued under. That key is your own when you issued the invoice, and the
-//! recipient named by the offer when you are checking a payment someone else was paid.
-//!
-//! Everything else the proof carries is only as trustworthy as those checks make it. In particular
-//! [`VerifiedPayerProof::proof_note`] is written by the payer and covered only by the payer's own
-//! signature: the issuer never saw it, so an order number found there attests to nothing on its
-//! own.
-//!
-//! Fields the payer chose not to disclose come back as `None`. A missing field is not an error, so
-//! decide for yourself whether a proof that withholds, say, the amount is good enough for your
-//! purposes.
 
 #![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
 #![deny(missing_docs)]
@@ -88,8 +65,6 @@ pub use lightning::types::string::UntrustedString;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VerifyError {
 	/// The string is not a bech32-encoded payer proof, or carries a prefix other than `lnp`.
-	///
-	/// Usually a truncated copy-paste or a different BOLT 12 object, such as an `lno` offer.
 	InvalidBech32,
 	/// The bytes decoded as bech32 but are not a well-formed payer proof TLV stream.
 	///
@@ -137,25 +112,18 @@ impl From<Bolt12ParseError> for VerifyError {
 ///
 /// Uppercase input, and the `+` continuation from BOLT 12 allowing long strings to be split across
 /// lines, are both accepted.
-///
-/// See the [crate-level documentation] for what a successful return does and does not prove.
-///
-/// [crate-level documentation]: crate
 pub fn verify(proof: &str) -> Result<VerifiedPayerProof, VerifyError> {
 	proof.parse::<PayerProof>().map(VerifiedPayerProof).map_err(VerifyError::from)
 }
 
 /// Verifies a payer proof in its raw TLV stream form, skipping the bech32 layer.
-///
-/// Use this when the proof arrived over a binary transport, such as a QR code payload or a
-/// database column, rather than as text.
 pub fn verify_bytes(proof: &[u8]) -> Result<VerifiedPayerProof, VerifyError> {
 	PayerProof::try_from(proof.to_vec()).map(VerifiedPayerProof).map_err(VerifyError::from)
 }
 
 /// A payer proof that passed every check in [`verify`].
 ///
-/// Accessors return owned, plain values. Fields the payer withheld return `None`.
+/// Fields the payer withheld return `None`.
 #[derive(Clone, Debug)]
 pub struct VerifiedPayerProof(PayerProof);
 
@@ -173,15 +141,11 @@ impl VerifiedPayerProof {
 	}
 
 	/// The key the payer signed this proof with.
-	///
-	/// Two proofs carrying the same key were produced by the same payer.
 	pub fn payer_signing_pubkey(&self) -> PublicKey {
 		self.0.payer_signing_pubkey()
 	}
 
 	/// The key the invoice was signed with, identifying who issued it.
-	///
-	/// Compare this against the node you expected to issue the invoice.
 	pub fn issuer_signing_pubkey(&self) -> PublicKey {
 		self.0.issuer_signing_pubkey()
 	}
@@ -212,18 +176,11 @@ impl VerifiedPayerProof {
 	}
 
 	/// A note the payer attached when building the proof, if any.
-	///
-	/// Written by the payer and covered by the payer's signature but by nothing the issuer signed.
-	/// It says what the payer wants it to say, such as an order number.
 	pub fn proof_note(&self) -> Option<UntrustedString> {
 		self.0.proof_note().map(|text| UntrustedString(text.0.to_string()))
 	}
 
 	/// The merkle root of the invoice the issuer signed.
-	///
-	/// This identifies the invoice exactly. A verifier still holding the invoice they issued can
-	/// compare its merkle root against this and learn that the proof is for that invoice and no
-	/// other, without relying on their own records mapping a payment hash back to an invoice.
 	pub fn merkle_root(&self) -> [u8; 32] {
 		self.0.merkle_root().to_byte_array()
 	}
@@ -269,19 +226,12 @@ impl VerifiedPayerProof {
 	}
 
 	/// Whether the invoice this proof covers was issued by the recipient of the offer encoded as
-	/// `offer`, the `lno1...` string the issuer published.
-	///
-	/// Returns `false` if `offer` is not a valid offer at all, which is the same answer a valid
-	/// offer from another recipient would get. Parse it yourself with [`Offer`] if you need to
-	/// tell those apart.
+	/// `offer` (`lno1...`).
 	pub fn pays_offers_recipient_str(&self, offer: &str) -> bool {
 		offer.parse::<Offer>().map(|offer| self.pays_offers_recipient(&offer)).unwrap_or(false)
 	}
 
 	/// The underlying [`PayerProof`], for callers who want to work with LDK's own type.
-	///
-	/// This is not exported to bindings users as it returns a reference; the accessors above cover
-	/// everything it carries.
 	pub fn inner(&self) -> &PayerProof {
 		&self.0
 	}

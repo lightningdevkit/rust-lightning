@@ -1,7 +1,0 @@
-# API Updates
- * `lightning-payer-proof::VerifiedPayerProof` gained `pays_offers_recipient` (and a
-   `pays_offers_recipient_str` taking the `lno1...` form) answering whether the invoice a proof
-   covers was issued by a given `Offer`'s recipient. The check is inlined against LDK 0.3's
-   existing `Offer` accessors rather than added to `lightning`, so this crate can ship against
-   0.3. It identifies the recipient rather than the offer, so two offers from the same recipient
-   are indistinguishable to it.

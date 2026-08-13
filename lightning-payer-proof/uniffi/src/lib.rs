@@ -7,17 +7,7 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! UniFFI bindings for [`lightning_payer_proof`].
-//!
-//! The same calls the Rust crate offers: `verify` and `verify_bytes` to check a proof, returning a
-//! flat record of plain values rather than a struct with accessors, and `pays_offers_recipient` to
-//! ask whether one was paid to a given offer's recipient. See the [Rust crate's documentation] for
-//! what a successful return does and does not prove; it applies unchanged here.
-//!
-//! Keys, hashes and signatures come back as byte arrays in their usual wire encodings: 33 bytes
-//! for a compressed public key, 32 for a hash or preimage, 64 for a BIP 340 signature.
-//!
-//! [Rust crate's documentation]: lightning_payer_proof
+//! UniFFI-compatible payer proof verification wrappers.
 
 // Note this crate cannot `forbid(unsafe_code)` the way `lightning-payer-proof` does: the
 // scaffolding uniffi generates from `interface.udl` is the FFI entry point and exports
@@ -60,9 +50,15 @@ impl From<lightning_payer_proof::VerifyError> for VerifyError {
 	}
 }
 
-/// A payer proof that passed every check in [`verify`], flattened into owned plain values.
+/// A payer proof that passed every check in [`verify`].
 ///
-/// Fields the payer withheld are `None`. A missing field is not an error.
+/// This proves the preimage hashes to the payment hash, the issuer signed the disclosed fields,
+/// and the payer signed this proof. It does not prove they paid the invoice you have in mind.
+/// Anyone can issue an invoice to themselves, pay it, and hand out a proof that verifies. Check
+/// the proof against the offer with [`pays_offers_recipient`].
+///
+/// Keys, hashes and signatures are wire-encoded (33-byte compressed pubkeys, 32-byte hashes or
+/// preimages, 64-byte BIP 340 signatures). Withheld fields are `None`.
 #[derive(Clone, Debug)]
 pub struct VerifiedPayerProof {
 	/// The payment hash this proof settles, 32 bytes.
@@ -86,9 +82,6 @@ pub struct VerifiedPayerProof {
 	/// A human-readable label chosen by whoever built the offer, not an identity.
 	pub offer_issuer: Option<String>,
 	/// A note the payer attached when building the proof, if any.
-	///
-	/// Covered by the payer's signature but by nothing the issuer signed, so it says what the
-	/// payer wants it to say.
 	pub proof_note: Option<String>,
 	/// The merkle root of the invoice the issuer signed, 32 bytes.
 	pub merkle_root: Vec<u8>,
@@ -123,28 +116,21 @@ impl From<lightning_payer_proof::VerifiedPayerProof> for VerifiedPayerProof {
 	}
 }
 
-/// Verifies a bech32-encoded payer proof, the `lnp1...` string a payer hands over.
+/// Verifies a bech32-encoded (`lnp1...`) payer proof.
 ///
-/// Uppercase input, and the `+` continuation from BOLT 12 allowing long strings to be split across
-/// lines, are both accepted.
+/// Uppercase and BOLT 12 `+` line-splitting are accepted.
 pub fn verify(proof: String) -> Result<VerifiedPayerProof, VerifyError> {
 	lightning_payer_proof::verify(&proof).map(Into::into).map_err(Into::into)
 }
 
-/// Verifies a payer proof in its raw TLV stream form, skipping the bech32 layer.
-///
-/// Use this when the proof arrived over a binary transport, such as a QR code payload or a
-/// database column, rather than as text.
+/// Verifies a payer proof from its raw TLV bytes, skipping bech32.
 pub fn verify_bytes(proof: Vec<u8>) -> Result<VerifiedPayerProof, VerifyError> {
 	lightning_payer_proof::verify_bytes(&proof).map(Into::into).map_err(Into::into)
 }
 
-/// Whether the invoice this already-verified `proof` covers was issued by the recipient of
-/// `offer`, the `lno1...` string the issuer published.
+/// Whether this already-verified `proof` was issued by the recipient of `offer` (`lno1...`).
 ///
-/// Takes a [`VerifiedPayerProof`] so verification stays a separate call. A `true` says the
-/// invoice came from whoever `offer` names as its recipient, not that this particular offer was
-/// paid. A garbage offer, or a record whose `encoded` no longer verifies, is `false`.
+/// A `true` identifies the recipient, not the offer. A garbage offer is `false`.
 pub fn pays_offers_recipient(proof: VerifiedPayerProof, offer: String) -> bool {
 	lightning_payer_proof::verify_bytes(&proof.encoded)
 		.map(|proof| proof.pays_offers_recipient_str(&offer))
@@ -224,9 +210,6 @@ mod tests {
 		let mut corrupted = decode_hex(FULL_PROOF_HEX);
 		let last = corrupted.len() - 1;
 		corrupted[last] ^= 0x01;
-		// LDK 0.3 reports every failed cryptographic check as an undifferentiated decode
-		// failure. Named variants become reachable once this crate is built against a
-		// `lightning` that distinguishes them.
 		assert_eq!(verify_bytes(corrupted).unwrap_err(), VerifyError::MalformedProof);
 	}
 
