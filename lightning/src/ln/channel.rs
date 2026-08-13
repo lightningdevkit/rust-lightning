@@ -4015,6 +4015,10 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 		);
 
 		if context.holder_signer.validate_holder_commitment(&holder_commitment_tx, Vec::new()).is_err() {
+			// TODO(dual_funding): Update for V2 established channels.
+			if !self.funding().is_outbound() {
+				self.funding_mut().channel_transaction_parameters.funding_outpoint = None;
+			}
 			return Err(ChannelError::close("Failed to validate our commitment".to_owned()));
 		}
 
@@ -4038,6 +4042,10 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 			// We cannot send accept_channel/open_channel before this has occurred, so if we
 			// err here by the time we receive funding_created/funding_signed, something has gone wrong.
 			debug_assert!(false, "We should be ready to advance our commitment point by the time we receive {}", self.received_msg());
+			// TODO(dual_funding): Update for V2 established channels.
+			if !self.funding().is_outbound() {
+				self.funding_mut().channel_transaction_parameters.funding_outpoint = None;
+			}
 			return Err(ChannelError::close("Failed to advance holder commitment point".to_owned()));
 		}
 
