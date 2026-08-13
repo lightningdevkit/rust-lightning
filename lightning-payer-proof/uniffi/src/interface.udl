@@ -28,4 +28,6 @@ namespace lightning_payer_proof {
 
 	[Throws=VerifyError]
 	VerifiedPayerProof verify_bytes(bytes proof);
+
+	boolean pays_offers_recipient(VerifiedPayerProof proof, string offer);
 };

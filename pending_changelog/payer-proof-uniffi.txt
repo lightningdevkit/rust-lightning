@@ -1,4 +1,6 @@
 # API Updates
- * A new `lightning-payer-proof-uniffi` crate exposes `lightning-payer-proof`'s two verification
-   calls to the languages uniffi targets, returning a flat record of owned plain values. It is its
-   own workspace, as `uniffi` depends on a tree well above LDK's MSRV.
+ * A new `lightning-payer-proof-uniffi` crate exposes `lightning-payer-proof`'s verification
+   calls and `pays_offers_recipient` to the languages uniffi targets, returning a flat record of
+   owned plain values. `pays_offers_recipient` takes a verified proof and returns a `bool`, so a
+   caller cannot treat a failed verification as a successful recipient check. It is its own
+   workspace, as `uniffi` depends on a tree well above LDK's MSRV.

@@ -9,8 +9,9 @@
 
 //! UniFFI bindings for [`lightning_payer_proof`].
 //!
-//! The same two calls the Rust crate offers, `verify` and `verify_bytes`, returning a flat record
-//! of plain values rather than a struct with accessors. See the [Rust crate's documentation] for
+//! The same calls the Rust crate offers: `verify` and `verify_bytes` to check a proof, returning a
+//! flat record of plain values rather than a struct with accessors, and `pays_offers_recipient` to
+//! ask whether one was paid to a given offer's recipient. See the [Rust crate's documentation] for
 //! what a successful return does and does not prove; it applies unchanged here.
 //!
 //! Keys, hashes and signatures come back as byte arrays in their usual wire encodings: 33 bytes
@@ -138,6 +139,18 @@ pub fn verify_bytes(proof: Vec<u8>) -> Result<VerifiedPayerProof, VerifyError> {
 	lightning_payer_proof::verify_bytes(&proof).map(Into::into).map_err(Into::into)
 }
 
+/// Whether the invoice this already-verified `proof` covers was issued by the recipient of
+/// `offer`, the `lno1...` string the issuer published.
+///
+/// Takes a [`VerifiedPayerProof`] so verification stays a separate call. A `true` says the
+/// invoice came from whoever `offer` names as its recipient, not that this particular offer was
+/// paid. A garbage offer, or a record whose `encoded` no longer verifies, is `false`.
+pub fn pays_offers_recipient(proof: VerifiedPayerProof, offer: String) -> bool {
+	lightning_payer_proof::verify_bytes(&proof.encoded)
+		.map(|proof| proof.pays_offers_recipient_str(&offer))
+		.unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -149,6 +162,12 @@ mod tests {
 
 	/// The same invoice with none of the optional fields disclosed and no note.
 	const MINIMAL_PROOF_HEX: &str = include_str!("../../test_vectors/minimal_proof.hex");
+
+	/// An offer, a proof over an invoice built from it, and a second offer that differs only in
+	/// issuer id.
+	const OFFER_HEX: &str = include_str!("../../test_vectors/offer.hex");
+	const OFFER_PROOF_HEX: &str = include_str!("../../test_vectors/offer_proof.hex");
+	const OTHER_OFFER_HEX: &str = include_str!("../../test_vectors/other_offer.hex");
 
 	fn decode_hex(hex: &str) -> Vec<u8> {
 		let hex = hex.trim();
@@ -205,6 +224,22 @@ mod tests {
 		let mut corrupted = decode_hex(FULL_PROOF_HEX);
 		let last = corrupted.len() - 1;
 		corrupted[last] ^= 0x01;
-		assert_eq!(verify_bytes(corrupted).unwrap_err(), VerifyError::InvalidProofSignature);
+		// LDK 0.3 reports every failed cryptographic check as an undifferentiated decode
+		// failure. Named variants become reachable once this crate is built against a
+		// `lightning` that distinguishes them.
+		assert_eq!(verify_bytes(corrupted).unwrap_err(), VerifyError::MalformedProof);
+	}
+
+	fn offer_bech32(hex: &str) -> String {
+		let bytes = decode_hex(hex);
+		lightning_payer_proof::Offer::try_from(bytes).expect("offer vector must parse").to_string()
+	}
+
+	#[test]
+	fn checks_the_recipient_of_a_verified_proof() {
+		let proof = verify_bytes(decode_hex(OFFER_PROOF_HEX)).unwrap();
+		assert!(pays_offers_recipient(proof.clone(), offer_bech32(OFFER_HEX)));
+		assert!(!pays_offers_recipient(proof.clone(), offer_bech32(OTHER_OFFER_HEX)));
+		assert!(!pays_offers_recipient(proof, "not an offer".to_string()));
 	}
 }

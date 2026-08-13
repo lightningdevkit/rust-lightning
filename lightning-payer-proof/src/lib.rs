@@ -71,6 +71,7 @@ use lightning::offers::parse::Bolt12ParseError;
 use lightning::offers::payer_proof::PayerProof;
 
 pub use lightning::bitcoin::secp256k1::PublicKey;
+pub use lightning::offers::offer::Offer;
 pub use lightning::offers::payer_proof::PayerProof as UnderlyingPayerProof;
 pub use lightning::types::payment::{PaymentHash, PaymentPreimage};
 pub use lightning::types::string::UntrustedString;
@@ -247,6 +248,36 @@ impl VerifiedPayerProof {
 		self.0.bytes().to_vec()
 	}
 
+	/// Whether the invoice this proof covers was issued by `offer`'s recipient.
+	///
+	/// Inlined here so this crate can answer the question against LDK 0.3, which has the
+	/// accessors but not `PayerProof::pays_offers_recipient`.
+	///
+	/// This identifies the recipient, not the offer: two offers published by the same recipient
+	/// are indistinguishable here, so a `true` answers "this was paid to whoever `offer` names"
+	/// rather than "this paid `offer`".
+	pub fn pays_offers_recipient(&self, offer: &Offer) -> bool {
+		let invoice_key = self.0.issuer_signing_pubkey();
+		if let Some(issuer_id) = offer.issuer_signing_pubkey() {
+			return invoice_key == issuer_id;
+		}
+		offer
+			.paths()
+			.iter()
+			.filter_map(|path| path.blinded_hops().last())
+			.any(|last_hop| invoice_key == last_hop.blinded_node_id)
+	}
+
+	/// Whether the invoice this proof covers was issued by the recipient of the offer encoded as
+	/// `offer`, the `lno1...` string the issuer published.
+	///
+	/// Returns `false` if `offer` is not a valid offer at all, which is the same answer a valid
+	/// offer from another recipient would get. Parse it yourself with [`Offer`] if you need to
+	/// tell those apart.
+	pub fn pays_offers_recipient_str(&self, offer: &str) -> bool {
+		offer.parse::<Offer>().map(|offer| self.pays_offers_recipient(&offer)).unwrap_or(false)
+	}
+
 	/// The underlying [`PayerProof`], for callers who want to work with LDK's own type.
 	///
 	/// This is not exported to bindings users as it returns a reference; the accessors above cover
@@ -268,6 +299,12 @@ mod tests {
 	/// A valid payer proof over the same invoice disclosing none of the optional fields and
 	/// carrying no note, so every `Option` accessor returns `None`.
 	const MINIMAL_PROOF_HEX: &str = include_str!("../test_vectors/minimal_proof.hex");
+
+	/// An offer, a proof over an invoice built from it, and a second offer that differs only in
+	/// issuer id, so a recipient check against it must fail.
+	const OFFER_HEX: &str = include_str!("../test_vectors/offer.hex");
+	const OFFER_PROOF_HEX: &str = include_str!("../test_vectors/offer_proof.hex");
+	const OTHER_OFFER_HEX: &str = include_str!("../test_vectors/other_offer.hex");
 
 	/// Both vectors were produced by the `RefundBuilder` -> `prove_payer` -> `sign` path exercised
 	/// by the tests in `lightning::offers::payer_proof`, using that module's fixed test keys. They
@@ -474,6 +511,41 @@ mod tests {
 				tlv_type
 			);
 		}
+	}
+
+	fn test_offer() -> Offer {
+		let hex = OFFER_HEX.trim();
+		let bytes: Vec<u8> = (0..hex.len())
+			.step_by(2)
+			.map(|i| {
+				u8::from_str_radix(&hex[i..i + 2], 16).expect("offer vector must be valid hex")
+			})
+			.collect();
+		Offer::try_from(bytes).expect("offer vector must parse")
+	}
+
+	#[test]
+	fn checks_the_recipient_of_the_offer_it_was_built_from() {
+		let proof = verify_bytes(&decode_hex(OFFER_PROOF_HEX)).unwrap();
+		assert!(proof.pays_offers_recipient(&test_offer()));
+
+		let other_hex = OTHER_OFFER_HEX.trim();
+		let other_bytes: Vec<u8> = (0..other_hex.len())
+			.step_by(2)
+			.map(|i| {
+				u8::from_str_radix(&other_hex[i..i + 2], 16).expect("vector must be valid hex")
+			})
+			.collect();
+		let someone_else = Offer::try_from(other_bytes).expect("other offer must parse");
+		assert!(!proof.pays_offers_recipient(&someone_else));
+	}
+
+	#[test]
+	fn checks_the_recipient_of_an_offer_in_its_bech32_form() {
+		let proof = verify_bytes(&decode_hex(OFFER_PROOF_HEX)).unwrap();
+		assert!(proof.pays_offers_recipient_str(&test_offer().to_string()));
+		assert!(!proof.pays_offers_recipient_str("not an offer"));
+		assert!(!proof.pays_offers_recipient_str(""));
 	}
 
 	/// Every byte of the stream must be covered by something the proof commits to. Walk all of
