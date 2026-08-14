@@ -1806,7 +1806,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 			experimental_baz,
 		};
 
-		check_invoice_signing_pubkey(&fields.signing_pubkey, &offer_tlv_stream)?;
+		check_invoice_signing_pubkey(
+			&fields.signing_pubkey,
+			offer_tlv_stream.issuer_id.as_ref(),
+			offer_tlv_stream.paths.as_deref(),
+		)?;
 
 		if offer_tlv_stream.issuer_id.is_none() && offer_tlv_stream.paths.is_none() {
 			let refund = RefundContents::try_from((
@@ -1861,9 +1865,10 @@ pub(super) fn construct_payment_paths(
 }
 
 pub(super) fn check_invoice_signing_pubkey(
-	invoice_signing_pubkey: &PublicKey, offer_tlv_stream: &OfferTlvStream,
+	invoice_signing_pubkey: &PublicKey, issuer_id: Option<&PublicKey>,
+	paths: Option<&[BlindedMessagePath]>,
 ) -> Result<(), Bolt12SemanticError> {
-	match (&offer_tlv_stream.issuer_id, &offer_tlv_stream.paths) {
+	match (issuer_id, paths) {
 		(Some(issuer_signing_pubkey), _) => {
 			if invoice_signing_pubkey != issuer_signing_pubkey {
 				return Err(Bolt12SemanticError::InvalidSigningPubkey);
