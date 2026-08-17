@@ -18,6 +18,7 @@ use bitcoin::Txid;
 
 use core::convert::Infallible;
 use core::fmt;
+use core::fmt::Write as _;
 use core::future::Future;
 use core::mem;
 use core::ops::Deref;
@@ -40,6 +41,7 @@ use crate::sync::Mutex;
 use crate::util::async_poll::{
 	dummy_waker, MultiResultFuturePoller, ResultFuture, TwoFutureJoiner,
 };
+use crate::util::inline_vec::InlineStr;
 use crate::util::logger::Logger;
 use crate::util::native_async::{FutureSpawner, MaybeSend, MaybeSync};
 use crate::util::ser::{Readable, ReadableArgs, Writeable};
@@ -736,7 +738,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&monitor_name.to_string(),
+			monitor_name.to_key().as_str(),
 			monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -751,7 +753,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			&monitor_name.to_string(),
+			monitor_name.to_key().as_str(),
 			monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -760,7 +762,7 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 	}
 
 	fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		let monitor_key = monitor_name.to_string();
+		let monitor_key = monitor_name.to_key();
 		let monitor = match self.read(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -1532,7 +1534,7 @@ impl<
 		&'a self, monitor_name: MonitorName, monitor: &'a ChannelMonitor<ChannelSigner>,
 	) -> Pin<Box<dyn MaybeSendableFuture<Output = Result<(), io::Error>> + 'static>> {
 		// Determine the proper key for this monitor
-		let monitor_key = monitor_name.to_string();
+		let monitor_key = monitor_name.to_key();
 		// Serialize and write the new monitor
 		let mut monitor_bytes = Vec::with_capacity(
 			MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() + monitor.serialized_length(),
@@ -1571,7 +1573,7 @@ impl<
 				&& self.maximum_pending_updates != 0
 				&& update.update_id % self.maximum_pending_updates != 0;
 			if persist_update {
-				let monitor_key = monitor_name.to_string();
+				let monitor_key = monitor_name.to_key();
 				let update_name = UpdateName::from(update.update_id);
 				let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
 				// Note that this is NOT an async function, but rather calls the *sync* KVStore
@@ -1580,7 +1582,9 @@ impl<
 				// ordering is preserved.
 				let encoded = update.encode();
 				res_a = Some(async move {
-					self.kv_store.write(primary, &monitor_key, update_name.as_str(), encoded).await
+					self.kv_store
+						.write(primary, monitor_key.as_str(), update_name.as_str(), encoded)
+						.await
 				});
 			} else {
 				// We could write this update, but it meets criteria of our design that calls for a full monitor write.
@@ -1595,9 +1599,9 @@ impl<
 					let write_status = write_fut.await;
 					if let Ok(()) = write_status {
 						if latest_update_id == LEGACY_CLOSED_CHANNEL_UPDATE_ID {
-							let monitor_key = monitor_name.to_string();
+							let monitor_key = monitor_name.to_key();
 							self.cleanup_stale_updates_for_monitor_to(
-								&monitor_key,
+								monitor_key.as_str(),
 								latest_update_id,
 								true,
 							)
@@ -1637,29 +1641,31 @@ impl<
 	}
 
 	async fn archive_persisted_channel(&self, monitor_name: MonitorName) {
-		let monitor_key = monitor_name.to_string();
-		let monitor = match self.read_channel_monitor_with_updates(&monitor_key).await {
+		let monitor_key = monitor_name.to_key();
+		let monitor = match self.read_channel_monitor_with_updates(monitor_key.as_str()).await {
 			Ok((_best_block, monitor)) => monitor,
 			Err(_) => return,
 		};
 		let primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		match self.kv_store.write(primary, secondary, &monitor_key, monitor.encode()).await {
+		let key = monitor_key.as_str();
+		match self.kv_store.write(primary, secondary, key, monitor.encode()).await {
 			Ok(()) => {},
 			Err(_e) => return,
 		};
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		let _ = self.kv_store.remove(primary, secondary, &monitor_key, true).await;
+		let _ = self.kv_store.remove(primary, secondary, key, true).await;
 	}
 
 	// Cleans up monitor updates for given monitor in range `start..=end`.
 	async fn cleanup_in_range(&self, monitor_name: MonitorName, start: u64, end: u64) {
-		let monitor_key = monitor_name.to_string();
+		let monitor_key = monitor_name.to_key();
 		for update_id in start..=end {
 			let update_name = UpdateName::from(update_id);
 			let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
-			let res = self.kv_store.remove(primary, &monitor_key, update_name.as_str(), true).await;
+			let key = monitor_key.as_str();
+			let res = self.kv_store.remove(primary, key, update_name.as_str(), true).await;
 			if let Err(e) = res {
 				log_error!(
 					self.logger,
@@ -1725,6 +1731,13 @@ pub enum MonitorName {
 }
 
 impl MonitorName {
+	/// The maximum length of the storage key for a `MonitorName`, i.e., a hex-encoded transaction
+	/// ID, a separator, and the decimal digits of a `u16` output index.
+	///
+	/// Keys are built in a buffer of this size, and are used as `KVStore` keys, so this must fit
+	/// within the permitted key length.
+	const KEY_MAX_LEN: usize = 64 + 1 + 5;
+
 	/// Attempts to construct a `MonitorName` from a storage key returned by [`KVStoreSync::list`].
 	///
 	/// This is useful when you need to reconstruct the original data the key represents.
@@ -1750,7 +1763,23 @@ impl MonitorName {
 			Ok(MonitorName::V2Channel(ChannelId(bytes)))
 		}
 	}
+
+	/// Returns the storage key for this `MonitorName` without allocating.
+	///
+	/// The result matches the [`Display`] representation, but is written into a buffer which is
+	/// large enough to hold any key inline rather than onto the heap.
+	///
+	/// [`Display`]: core::fmt::Display
+	pub(crate) fn to_key(self) -> InlineStr<{ Self::KEY_MAX_LEN }> {
+		let mut key = InlineStr::new();
+		// Writing to an `InlineStr` cannot fail.
+		let _ = write!(&mut key, "{}", self);
+		debug_assert!(key.as_str().len() <= Self::KEY_MAX_LEN);
+		key
+	}
 }
+
+const _: () = assert!(MonitorName::KEY_MAX_LEN <= KVSTORE_NAMESPACE_KEY_MAX_LEN);
 
 impl core::fmt::Display for MonitorName {
 	fn fmt(&self, f: &mut core::fmt::Formatter) -> Result<(), core::fmt::Error> {
@@ -1799,9 +1828,16 @@ impl core::fmt::Display for MonitorName {
 /// let storage_key = format!("channel_monitor_updates/{}/{}", monitor_name, update_name.as_str());
 /// ```
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct UpdateName(pub u64, String);
+pub struct UpdateName(pub u64, InlineStr<{ UpdateName::MAX_LEN }>);
 
 impl UpdateName {
+	/// The maximum length of the string representation of an `UpdateName`, i.e., the number of
+	/// decimal digits in `u64::MAX`.
+	///
+	/// Names are built in a buffer of this size, and are used as `KVStore` keys, so this must fit
+	/// within the permitted key length.
+	const MAX_LEN: usize = 20;
+
 	/// Constructs an [`UpdateName`], after verifying that an update sequence ID
 	/// can be derived from the given `name`.
 	pub fn new(name: String) -> Result<Self, io::Error> {
@@ -1827,7 +1863,7 @@ impl UpdateName {
 	/// assert_eq!(update_name.as_str(), "42");
 	/// ```
 	pub fn as_str(&self) -> &str {
-		&self.1
+		self.1.as_str()
 	}
 }
 
@@ -1848,9 +1884,15 @@ impl From<u64> for UpdateName {
 	/// assert_eq!(update_name.as_str(), "42");
 	/// ```
 	fn from(value: u64) -> Self {
-		Self(value, value.to_string())
+		let mut name = InlineStr::new();
+		// Writing to an `InlineStr` cannot fail.
+		let _ = write!(&mut name, "{}", value);
+		debug_assert!(name.as_str().len() <= Self::MAX_LEN);
+		Self(value, name)
 	}
 }
+
+const _: () = assert!(UpdateName::MAX_LEN <= KVSTORE_NAMESPACE_KEY_MAX_LEN);
 
 #[cfg(test)]
 mod tests {
@@ -1894,7 +1936,9 @@ mod tests {
 			&monitor_name.to_string(),
 			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef_1"
 		);
+		assert_eq!(monitor_name.to_key().as_str(), monitor_name.to_string());
 
+		// The longest `MonitorName` there is, i.e., the one which fills its key buffer exactly.
 		let monitor_name = MonitorName::V1Channel(OutPoint {
 			txid: Txid::from_str(
 				"f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef",
@@ -1906,6 +1950,8 @@ mod tests {
 			&monitor_name.to_string(),
 			"f33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeeff33dbeef_65535"
 		);
+		assert_eq!(monitor_name.to_key().as_str(), monitor_name.to_string());
+		assert_eq!(monitor_name.to_key().as_str().len(), MonitorName::KEY_MAX_LEN);
 	}
 
 	#[test]
@@ -1920,6 +1966,12 @@ mod tests {
 			&monitor_name.to_string(),
 			"deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
 		);
+		assert_eq!(monitor_name.to_key().as_str(), monitor_name.to_string());
+	}
+
+	#[test]
+	fn update_name_fills_buffer_at_u64_max() {
+		assert_eq!(UpdateName::from(u64::MAX).as_str().len(), UpdateName::MAX_LEN);
 	}
 
 	#[test]

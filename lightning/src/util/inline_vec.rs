@@ -7,7 +7,8 @@
 // You may not use this file except in accordance with one or both of these
 // licenses.
 
-//! A buffer which stores short contents inline rather than on the heap. See [`InlineVec`].
+//! Buffers which store short contents inline rather than on the heap. See [`InlineVec`] and
+//! [`InlineStr`].
 
 use alloc::vec::Vec;
 use core::cmp;
@@ -181,9 +182,56 @@ impl<const N: usize> fmt::Debug for InlineVec<N> {
 	}
 }
 
+/// A string which holds up to `N` bytes inline, spilling onto the heap only if it grows beyond
+/// that.
+///
+/// Written to via its [`fmt::Write`] implementation, which, unlike the buffer's capacity, is not
+/// limited to `N` bytes.
+#[derive(Clone, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct InlineStr<const N: usize>(InlineVec<N>);
+
+impl<const N: usize> InlineStr<N> {
+	/// Constructs an empty [`InlineStr`]
+	pub fn new() -> Self {
+		Self(InlineVec::empty())
+	}
+
+	/// Fetches the contents of this [`InlineStr`] as a string.
+	pub fn as_str(&self) -> &str {
+		// Only whole `&str`s are ever appended, so the buffer always holds valid UTF-8.
+		match core::str::from_utf8(&self.0) {
+			Ok(s) => s,
+			Err(_) => {
+				debug_assert!(false, "An InlineStr should only ever contain valid UTF-8");
+				""
+			},
+		}
+	}
+}
+
+impl<const N: usize> fmt::Write for InlineStr<N> {
+	fn write_str(&mut self, s: &str) -> fmt::Result {
+		self.0.extend_from_slice(s.as_bytes());
+		Ok(())
+	}
+}
+
+impl<const N: usize> fmt::Display for InlineStr<N> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		fmt::Display::fmt(self.as_str(), f)
+	}
+}
+
+impl<const N: usize> fmt::Debug for InlineStr<N> {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		fmt::Debug::fmt(self.as_str(), f)
+	}
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use core::fmt::Write as _;
 
 	#[test]
 	fn inline_vec_spills_to_the_heap_when_appended_past_its_capacity() {
@@ -202,5 +250,20 @@ mod tests {
 		let mut short = InlineVec::<4>::from(alloc::vec![1, 2, 3, 4, 5]);
 		short.resize(2, 0);
 		assert_eq!(short, InlineVec::<4>::from(alloc::vec![1, 2]));
+	}
+
+	#[test]
+	fn inline_str_writes_are_infallible() {
+		let mut buf = InlineStr::<4>::new();
+		assert_eq!(buf.as_str(), "");
+
+		assert!(write!(&mut buf, "ab").is_ok());
+		assert!(write!(&mut buf, "cd").is_ok());
+		assert_eq!(buf.as_str(), "abcd");
+
+		// A write which does not fit inline moves the contents to the heap rather than failing or
+		// truncating, which would risk splitting a multi-byte character.
+		assert!(write!(&mut buf, "é").is_ok());
+		assert_eq!(buf.as_str(), "abcdé");
 	}
 }
