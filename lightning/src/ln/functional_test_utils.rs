@@ -1052,6 +1052,14 @@ pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 /// Get an specific event message from the pending events queue.
 #[macro_export]
 macro_rules! get_event_msg {
+	($node: expr, $event_type: path) => {{
+		let events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1, "{events:?}");
+		match events[0] {
+			$event_type { ref msg, .. } => (*msg).clone(),
+			_ => panic!("Unexpected event {:?}", events[0]),
+		}
+	}};
 	($node: expr, $event_type: path, $node_id: expr) => {{
 		let events = $node.node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1, "{events:?}");

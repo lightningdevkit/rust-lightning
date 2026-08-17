@@ -3561,6 +3561,13 @@ impl PendingFunding {
 	) -> Option<msgs::SpliceLocked> {
 		debug_assert!(confirmed_funding_index < self.negotiated_candidates.len());
 
+		// While quiescent, defer locking any candidate. We may be quiescent due to an ongoing
+		// splice RBF negotiation that is mid-signing. Once its `tx_signatures` is exchanged and
+		// quiescence terminates, our `splice_locked` is sent on a timer tick.
+		if context.channel_state.is_quiescent() {
+			return None;
+		}
+
 		let funding = &self.negotiated_candidates[confirmed_funding_index].funding;
 		if !context.check_funding_meets_minimum_depth(funding, height) {
 			return None;
@@ -9867,7 +9874,10 @@ where
 		);
 		debug_assert!(!self.context.is_waiting_on_peer_pending_channel_update());
 
-		if let Some(pending_splice) = self.pending_splice.as_mut() {
+		if self.pending_splice.is_some() {
+			self.exit_quiescence();
+
+			let pending_splice = self.pending_splice.as_mut().expect("We just checked it above");
 			if let Some(FundingNegotiation::AwaitingSignatures {
 				mut funding,
 				funding_feerate_sat_per_1000_weight,
@@ -9946,8 +9956,6 @@ where
 			} else {
 				debug_assert!(false);
 			}
-
-			self.exit_quiescence();
 		} else {
 			self.funding.funding_transaction = Some(funding_tx.clone());
 			self.context.channel_state =
@@ -10954,7 +10962,7 @@ where
 		// `maybe_promote_splice_funding` will emit correct post-splice sigs once
 		// `inferred_splice_locked` is processed.
 		let our_splice_txid =
-			self.pending_splice.as_ref().and_then(|ps| ps.sent_funding_txid);
+			self.pending_splice.as_ref().and_then(|pending| pending.sent_funding_txid);
 		let splice_promotion_pending = msg
 			.my_current_funding_locked
 			.as_ref()
@@ -12269,17 +12277,8 @@ where
 		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
 		block_height: u32, logger: &L,
 	) -> Option<SpliceFundingPromotion> {
-		debug_assert!(self.pending_splice.is_some());
-
-		let pending_splice = self.pending_splice.as_mut().unwrap();
-		let splice_txid = match pending_splice.sent_funding_txid {
-			Some(sent_funding_txid) => sent_funding_txid,
-			None => {
-				debug_assert!(false);
-				return None;
-			},
-		};
-
+		let pending_splice = self.pending_splice.as_mut()?;
+		let splice_txid = pending_splice.sent_funding_txid?;
 		if let Some(received_funding_txid) = pending_splice.received_funding_txid {
 			if splice_txid != received_funding_txid {
 				log_warn!(
@@ -12422,6 +12421,47 @@ where
 			discarded_funding,
 			splice_funding_failed: queued_splice_failed,
 		})
+	}
+
+	/// Generates a pending `splice_locked` once any funding negotiation has completed, along with
+	/// the resulting funding promotion if the counterparty's lock was already received.
+	pub fn timer_check_splice_locked<NS: NodeSigner, L: Logger>(
+		&mut self, node_signer: &NS, chain_hash: ChainHash, user_config: &UserConfig,
+		best_block_height: u32, logger: &L,
+	) -> Option<(msgs::SpliceLocked, Option<SpliceFundingPromotion>)> {
+		// We intentionally check this early even though `check_get_splice_locked` already does to
+		// prevent scanning splice candidates unnecessarily.
+		if self.context.channel_state.is_quiescent() {
+			return None;
+		}
+
+		let candidate_idx = {
+			let pending_splice = self.pending_splice.as_ref()?;
+			pending_splice.negotiated_candidates.iter().rposition(|candidate| {
+				self.context
+					.check_funding_meets_minimum_depth(&candidate.funding, best_block_height)
+			})?
+		};
+
+		let splice_locked = self.pending_splice.as_mut()?.check_get_splice_locked(
+			&self.context,
+			candidate_idx,
+			best_block_height,
+		)?;
+		log_info!(
+			logger,
+			"Sending splice_locked txid {} after completing funding negotiation",
+			splice_locked.splice_txid,
+		);
+
+		let splice_promotion = self.maybe_promote_splice_funding(
+			node_signer,
+			chain_hash,
+			user_config,
+			best_block_height,
+			logger,
+		);
+		Some((splice_locked, splice_promotion))
 	}
 
 	/// When a transaction is confirmed, we check whether it is or spends the funding transaction
@@ -13007,7 +13047,7 @@ where
 	fn maybe_get_my_current_funding_locked(&self) -> Option<msgs::FundingLocked> {
 		self.pending_splice
 			.as_ref()
-			.and_then(|pending_splice| pending_splice.sent_funding_txid)
+			.and_then(|pending| pending.sent_funding_txid)
 			.or_else(|| {
 				self.is_our_channel_ready().then(|| self.funding.get_funding_txid()).flatten()
 			})
@@ -13252,10 +13292,10 @@ where
 		}
 
 		if pending_splice.sent_funding_txid.is_some() {
-			return Err(format!(
-				"Channel {} already sent splice_locked, cannot RBF",
-				self.context.channel_id(),
-			));
+			return Err(
+				"A splice transaction already met the confirmations required to lock, cannot RBF"
+					.to_owned(),
+			);
 		}
 
 		if pending_splice.received_funding_txid.is_some() {
@@ -13972,7 +14012,8 @@ where
 
 		if pending_splice.sent_funding_txid.is_some() {
 			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
-				"Already sent splice_locked".into(),
+				"A splice transaction already met the confirmations required to lock, cannot RBF"
+					.into(),
 			)));
 		}
 
