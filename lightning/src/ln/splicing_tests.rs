@@ -7606,6 +7606,88 @@ fn test_queued_rbf_failure_excludes_promoted_output_from_discard_funding() {
 }
 
 #[test]
+fn test_queued_rbf_failure_excludes_promoted_output_for_original_fundee() {
+	// Same scenario as the test above, but the node with the queued RBF is the fundee of the
+	// original channel, whose pre-splice funding scope has no funding transaction. Filtering the
+	// queued failure must use the promoted candidate's transaction, not the pre-splice scope.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, original_funding_tx) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		initial_channel_value_sat,
+		50_000_000,
+	);
+
+	let splice_initiator = &nodes[0];
+	let splice_acceptor = &nodes[1];
+	let splice_initiator_id = splice_initiator.node.get_our_node_id();
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 1, added_value * 2);
+
+	let prior_contribution =
+		do_initiate_splice_in(splice_initiator, splice_acceptor, channel_id, added_value);
+	let promoted_output_script = prior_contribution.change_output().unwrap().script_pubkey.clone();
+	let (splice_tx, _) =
+		splice_channel(splice_initiator, splice_acceptor, channel_id, prior_contribution);
+	assert!(splice_tx.output.iter().any(|output| output.script_pubkey == promoted_output_script));
+	assert!(!original_funding_tx
+		.output
+		.iter()
+		.any(|output| output.script_pubkey == promoted_output_script));
+	let details = splice_acceptor
+		.node
+		.list_channels()
+		.into_iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap()
+		.splice_details
+		.unwrap();
+	assert_eq!(details.candidates.len(), 1);
+	assert_eq!(details.candidates[0].contribution, None);
+
+	// Queue an RBF containing one output which remains committed in the promoted transaction and
+	// one which is unique. Hold its stfu until the pending splice promotes.
+	let unique_output_script = ScriptBuf::new_p2wpkh(&WPubkeyHash::all_zeros());
+	assert!(!splice_tx.output.iter().any(|output| output.script_pubkey == unique_output_script));
+	let funding_template =
+		splice_acceptor.node.splice_channel(&channel_id, &splice_initiator_id).unwrap();
+	let rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let queued_contribution = funding_template
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_outputs(vec![
+			TxOut { value: Amount::from_sat(1_000), script_pubkey: promoted_output_script },
+			TxOut { value: Amount::from_sat(1_000), script_pubkey: unique_output_script.clone() },
+		])
+		.build()
+		.unwrap();
+	splice_acceptor
+		.node
+		.funding_contributed(&channel_id, &splice_initiator_id, queued_contribution.clone(), None)
+		.unwrap();
+	let _stfu = get_event_msg!(splice_acceptor, MessageSendEvent::SendStfu, splice_initiator_id);
+
+	mine_transaction(splice_initiator, &splice_tx);
+	mine_transaction(splice_acceptor, &splice_tx);
+	let locked = lock_splice_after_blocks_expecting_failed_rbf(
+		splice_initiator,
+		splice_acceptor,
+		ANTI_REORG_DELAY - 1,
+		[None, Some(&queued_contribution)],
+	);
+	assert!(locked.stfu.is_none());
+	assert!(locked.node_a_discarded.is_empty());
+	assert_eq!(locked.node_b_discarded, vec![(vec![], vec![unique_output_script])]);
+	assert_no_queued_splice(splice_acceptor, &channel_id);
+}
+
+#[test]
 fn test_queued_rbf_from_replaced_round_survives_splice_promotion() {
 	// When an RBF round promotes, contributions from every replaced round are released. A queued
 	// RBF carrying a replaced round's contribution can therefore proceed as a fresh splice as long
