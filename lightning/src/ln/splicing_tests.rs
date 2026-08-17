@@ -8665,6 +8665,338 @@ fn test_splice_rbf_after_counterparty_rbf_aborted() {
 	assert!(rbf_contribution.is_ok());
 }
 
+#[cfg(test)]
+fn do_test_splice_locked_deferred_during_rbf_signing(
+	reload: bool, async_monitor: bool, async_signer: bool, early_peer_splice_locked: bool,
+) {
+	// Tests that a confirmed splice candidate does not cause us to send `splice_locked` or promote
+	// while its replacement RBF round is awaiting signatures. Both peers first negotiate a splice
+	// and then negotiate an RBF replacement, leaving the replacement in `AwaitingSignatures` before
+	// the original candidate confirms. The test verifies that confirmation is recorded without
+	// emitting `splice_locked` or changing the active funding outpoint, then completes the RBF
+	// signing round through either an asynchronous monitor update or an asynchronous signer
+	// operation. In both cases, completing the signing round still leaves the confirmed candidate
+	// pending until a timer tick emits the deferred `splice_locked`.
+	//
+	// The monitor variant reloads and reconnects both nodes while the RBF signing round is pending,
+	// and delivers an early `splice_locked` from the peer to model implementations that do not defer
+	// the message during RBF signing. It verifies that this peer lock survives reload without causing
+	// an early promotion and that the timer later sends our lock and promotes the confirmed candidate
+	// atomically. The signer variant omits the early peer lock, exercises completion through
+	// `signer_unblocked`, and reconnects before the timer runs. It verifies that transport
+	// reconnection alone does not release the lock, then completes reestablishment and the reciprocal
+	// `splice_locked` exchange. Finally, both variants complete the announcement exchange and send a
+	// payment over the promoted channel.
+	assert_ne!(async_monitor, async_signer);
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.minimum_depth = 1;
+	let (persister_0, persister_1);
+	let (chain_monitor_0, chain_monitor_1);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let (node_0, node_1);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	let previous_funding_txid = get_monitor!(nodes[0], channel_id).get_funding_txo().txid;
+	// Keep the signer variant's later reconnect focused on the splice-lock exchange by ensuring the
+	// initial funding's announcement signatures have already been acknowledged.
+	if async_signer {
+		send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	}
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let first_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (first_splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, first_contribution);
+	let first_splice_txid = first_splice_tx.compute_txid();
+
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let rbf_contribution = do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, rbf_feerate);
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		rbf_contribution.clone(),
+		new_funding_script,
+	);
+
+	let event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+	let rbf_txid = if let Event::FundingTransactionReadyForSigning {
+		channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = event
+	{
+		let txid = unsigned_transaction.compute_txid();
+		let partially_signed_tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+		if async_signer {
+			nodes[0].disable_channel_signer_op(
+				&node_id_1,
+				&channel_id,
+				SignerOp::SignSpliceSharedInput,
+			);
+		}
+		nodes[0]
+			.node
+			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+			.unwrap();
+		txid
+	} else {
+		panic!("Unexpected event {event:?}");
+	};
+
+	let initiator_commitment_signed = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	let acceptor_commitment_signed = get_htlc_update_msgs(&nodes[1], &node_id_0);
+
+	// Both sides are already in `AwaitingSignatures` when the earlier candidate confirms, so the
+	// advanced RBF signing round remains intact.
+	mine_transaction(&nodes[0], &first_splice_tx);
+	mine_transaction(&nodes[1], &first_splice_tx);
+	for node in &nodes {
+		assert!(node.node.get_and_clear_pending_msg_events().is_empty());
+		assert!(node.node.get_and_clear_pending_events().is_empty());
+		let details = node.node.list_channels()[0].splice_details.clone().unwrap();
+		assert_eq!(details.candidates.len(), 2);
+		assert!(matches!(
+			details.candidates[1].status,
+			SpliceCandidateStatus::AwaitingSignatures { .. }
+		));
+		let confirmed = details.confirmed_candidate.unwrap();
+		assert_eq!(confirmed.txid, first_splice_txid);
+		assert!(!confirmed.splice_locked_sent);
+		assert_eq!(get_monitor!(node, channel_id).get_funding_txo().txid, previous_funding_txid);
+	}
+
+	if early_peer_splice_locked {
+		// Inject the early peer lock synthetically because the test peer follows the same deferral
+		// policy.
+		nodes[0].node.handle_splice_locked(
+			node_id_1,
+			&msgs::SpliceLocked { channel_id, splice_txid: first_splice_txid },
+		);
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors(&nodes[0], 0);
+	}
+
+	nodes[1].node.handle_commitment_signed_batch_test(
+		node_id_0,
+		&initiator_commitment_signed.commitment_signed,
+	);
+	check_added_monitors(&nodes[1], 1);
+	let acceptor_tx_signatures =
+		get_event_msg!(nodes[1], MessageSendEvent::SendTxSignatures, node_id_0);
+
+	let reloaded_persister_0;
+	if reload {
+		let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
+		reload_node!(
+			nodes[0],
+			&nodes[0].node.encode(),
+			&[&encoded_monitor_0],
+			persister_0,
+			chain_monitor_0,
+			node_0
+		);
+		let encoded_monitor_1 = get_monitor!(nodes[1], channel_id).encode();
+		reload_node!(
+			nodes[1],
+			&nodes[1].node.encode(),
+			&[&encoded_monitor_1],
+			persister_1,
+			chain_monitor_1,
+			node_1
+		);
+		reloaded_persister_0 = Some(&persister_0);
+	} else {
+		reloaded_persister_0 = None;
+	}
+	if async_monitor {
+		match reloaded_persister_0 {
+			Some(persister) => persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress),
+			None => {
+				chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress)
+			},
+		}
+	}
+
+	let details = nodes[0].node.list_channels()[0].splice_details.clone().unwrap();
+	assert_eq!(
+		details.received_splice_locked_txid,
+		early_peer_splice_locked.then_some(first_splice_txid),
+	);
+	assert!(!details.confirmed_candidate.unwrap().splice_locked_sent);
+	assert_eq!(get_monitor!(nodes[0], channel_id).get_funding_txo().txid, previous_funding_txid);
+
+	if reload {
+		let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+		reconnect_args.send_announcement_sigs = (true, true);
+		reconnect_args.send_interactive_tx_commit_sig = (true, false);
+		reconnect_args.send_interactive_tx_sigs = (true, false);
+		reconnect_nodes(reconnect_args);
+	} else {
+		nodes[0].node.handle_commitment_signed_batch_test(
+			node_id_1,
+			&acceptor_commitment_signed.commitment_signed,
+		);
+		nodes[0].node.handle_tx_signatures(node_id_1, &acceptor_tx_signatures);
+	}
+	check_added_monitors(&nodes[0], 1);
+
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	check_added_monitors(&nodes[0], 0);
+
+	if async_monitor {
+		nodes[0].chain_monitor.complete_sole_pending_chan_update(&channel_id);
+		match reloaded_persister_0 {
+			Some(persister) => persister.set_update_ret(ChannelMonitorUpdateStatus::Completed),
+			None => chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed),
+		}
+	} else {
+		nodes[0].enable_channel_signer_op(&node_id_1, &channel_id, SignerOp::SignSpliceSharedInput);
+		nodes[0].node.signer_unblocked(None);
+	}
+
+	let initiator_tx_signatures =
+		get_event_msg!(nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
+	check_added_monitors(&nodes[0], 0);
+	assert_eq!(get_monitor!(nodes[0], channel_id).get_funding_txo().txid, previous_funding_txid);
+
+	let _ = get_event!(nodes[0], Event::SpliceNegotiated);
+
+	// A timer tick, rather than signing completion, releases the deferred lock and handles any
+	// resulting promotion.
+	let early_initiator_splice_locked = if early_peer_splice_locked {
+		nodes[0].node.timer_tick_occurred();
+		let splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+		assert_eq!(splice_locked.splice_txid, first_splice_txid);
+		check_added_monitors(&nodes[0], 1);
+		let _ = get_event!(nodes[0], Event::ChannelReady);
+		assert_eq!(get_monitor!(nodes[0], channel_id).get_funding_txo().txid, first_splice_txid);
+		Some(splice_locked)
+	} else {
+		None
+	};
+
+	// The final signatures complete the RBF round on the counterparty, but its deferred lock also
+	// remains withheld until its timer runs.
+	nodes[1].node.handle_tx_signatures(node_id_0, &initiator_tx_signatures);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	check_added_monitors(&nodes[1], 0);
+	assert_eq!(get_monitor!(nodes[1], channel_id).get_funding_txo().txid, previous_funding_txid);
+
+	if let Some(initiator_splice_locked) = early_initiator_splice_locked {
+		// The initiator already promoted against the early peer lock. Deliver its real lock, then
+		// let the responder's timer send its own lock and promote in the same transition.
+		nodes[1].node.handle_splice_locked(node_id_0, &initiator_splice_locked);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors(&nodes[1], 0);
+
+		nodes[1].node.timer_tick_occurred();
+		let responder_splice_locked =
+			get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_0);
+		assert_eq!(responder_splice_locked.splice_txid, first_splice_txid);
+		check_added_monitors(&nodes[1], 1);
+		let _ = get_event!(nodes[1], Event::ChannelReady);
+		assert_eq!(get_monitor!(nodes[1], channel_id).get_funding_txo().txid, first_splice_txid);
+
+		// Handle the real duplicate of the synthetic early lock after the initiator has promoted.
+		nodes[0].node.handle_splice_locked(node_id_1, &responder_splice_locked);
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors(&nodes[0], 0);
+	} else {
+		// Reconnect, but leave both sides waiting for the counterparty's `channel_reestablish`.
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+		connect_nodes(&nodes[0], &nodes[1]);
+		let reestablish_0 =
+			get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, node_id_1);
+		let reestablish_1 =
+			get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, node_id_0);
+		assert_ne!(
+			reestablish_0.my_current_funding_locked.as_ref().map(|funding| funding.txid),
+			Some(first_splice_txid),
+		);
+
+		// A transport-level connection is not enough to send channel messages. The timer records the
+		// lock internally, but it remains withheld until the channel reestablishment handshake.
+		nodes[0].node.timer_tick_occurred();
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors(&nodes[0], 0);
+
+		nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0);
+		let _ = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_id_0);
+
+		nodes[0].node.handle_channel_reestablish(node_id_1, &reestablish_1);
+		let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+		let initiator_splice_locked = match msg_events.remove(0) {
+			MessageSendEvent::SendSpliceLocked { msg, .. } => msg,
+			event => panic!("Unexpected event {event:?}"),
+		};
+		assert_eq!(initiator_splice_locked.splice_txid, first_splice_txid);
+		assert!(matches!(msg_events[0], MessageSendEvent::SendChannelUpdate { .. }));
+
+		// The initiator's lock is released exactly once after reestablishment. The responder records
+		// it, then its timer sends the reciprocal lock and promotes atomically.
+		nodes[1].node.handle_splice_locked(node_id_0, &initiator_splice_locked);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors(&nodes[1], 0);
+
+		nodes[1].node.timer_tick_occurred();
+		let responder_splice_locked =
+			get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_0);
+		assert_eq!(responder_splice_locked.splice_txid, first_splice_txid);
+		check_added_monitors(&nodes[1], 1);
+		let _ = get_event!(nodes[1], Event::ChannelReady);
+		assert_eq!(get_monitor!(nodes[1], channel_id).get_funding_txo().txid, first_splice_txid);
+
+		nodes[0].node.handle_splice_locked(node_id_1, &responder_splice_locked);
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		let _ = get_event!(nodes[0], Event::ChannelReady);
+		check_added_monitors(&nodes[0], 1);
+		assert_eq!(get_monitor!(nodes[0], channel_id).get_funding_txo().txid, first_splice_txid);
+	}
+
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+	let announcement_sigs_0 =
+		get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, node_id_1);
+	let announcement_sigs_1 =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_id_0);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_1);
+	nodes[1].node.handle_announcement_signatures(node_id_0, &announcement_sigs_0);
+	for node in &nodes {
+		let _ = get_event_msg!(node, MessageSendEvent::BroadcastChannelAnnouncement);
+		assert!(node.node.get_and_clear_pending_events().is_empty());
+		node.chain_source.remove_watched_by_txid(previous_funding_txid);
+		node.chain_source.remove_watched_by_txid(rbf_txid);
+	}
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+}
+
+#[test]
+fn test_splice_locked_deferred_during_rbf_signing() {
+	do_test_splice_locked_deferred_during_rbf_signing(true, true, false, true);
+	do_test_splice_locked_deferred_during_rbf_signing(false, false, true, false);
+}
+
 #[test]
 fn test_splice_rbf_recontributes_feerate_too_high() {
 	// When the counterparty RBFs at a feerate too high for our prior contribution,
