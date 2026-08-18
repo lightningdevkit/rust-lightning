@@ -257,6 +257,7 @@ fn one_hop_blinded_path_with_custom_tlv() {
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 			payment_metadata: None,
+			invoice_request: None,
 		}),
 	};
 	let receive_auth_key = chanmon_cfgs[2].keys_manager.get_receive_auth_key();

@@ -672,17 +672,35 @@ fn creates_and_pays_for_refund_using_two_hop_blinded_path() {
 	let refund = david.node
 		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
 		.unwrap()
+		.quantity(2)
+		.payer_note("refund for order #12345".to_string())
 		.build().unwrap();
 	assert_eq!(refund.amount_msats(), 10_000_000);
 	assert_eq!(refund.absolute_expiry(), Some(absolute_expiry));
 	assert_ne!(refund.payer_signing_pubkey(), david_id);
+	assert_eq!(refund.quantity(), Some(2));
+	assert_eq!(refund.payer_note().map(|s| s.to_string()), Some("refund for order #12345".to_string()));
 	assert!(!refund.paths().is_empty());
 	for path in refund.paths() {
 		assert!(check_compact_path_introduction_node(&path, david, charlie_id));
 	}
 	expect_recent_payment!(david, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
+	// Verify `Refund::invoice_request_fields` reflects the refund's own payer data before it
+	// round-trips through the blinded payment path.
+	let invoice_request_fields = refund.invoice_request_fields();
+	assert_eq!(invoice_request_fields.payer_signing_pubkey, refund.payer_signing_pubkey());
+	assert_eq!(invoice_request_fields.quantity, Some(2));
+	assert_eq!(
+		invoice_request_fields.payer_note_truncated.as_ref().map(|s| s.0.as_str()),
+		Some("refund for order #12345")
+	);
+	assert_eq!(invoice_request_fields.human_readable_name, None);
+
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {
+		payment_metadata: None,
+		invoice_request: Some(invoice_request_fields),
+	});
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	connect_peers(alice, charlie);
@@ -963,7 +981,7 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	}
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: Some(refund.invoice_request_fields()) });
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -1069,7 +1087,7 @@ fn pays_for_refund_without_blinded_paths() {
 	assert!(refund.paths().is_empty());
 	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: Some(refund.invoice_request_fields()) });
 	let expected_invoice = alice.node.request_refund_payment(&refund).unwrap();
 
 	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
@@ -2306,7 +2324,7 @@ fn fails_paying_invoice_more_than_once() {
 	david.onion_messenger.handle_onion_message(charlie_id, &onion_message);
 
 	// David initiates paying the first invoice
-	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: Some(refund.invoice_request_fields()) });
 	let (invoice1, _) = extract_invoice(david, &onion_message);
 
 	route_bolt12_payment(david, &[charlie, bob, alice], &invoice1);

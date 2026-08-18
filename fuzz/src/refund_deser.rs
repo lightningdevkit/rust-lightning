@@ -69,8 +69,10 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 ) -> Result<UnsignedBolt12Invoice, Bolt12SemanticError> {
 	let entropy_source = Randomness {};
 	let receive_auth_key = ReceiveAuthKey([41; 32]);
-	let payment_context =
-		PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None });
+	let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {
+		payment_metadata: None,
+		invoice_request: Some(refund.invoice_request_fields()),
+	});
 	let payee_tlvs = ReceiveTlvs {
 		payment_secret: PaymentSecret([42; 32]),
 		payment_constraints: PaymentConstraints {

@@ -1120,7 +1120,7 @@ impl InvoiceRequestVerifiedFromOffer {
 /// This can still split a grapheme cluster, but that's probably fine.
 /// We'd otherwise have to pull in the `unicode-segmentation` crate and its big
 /// unicode tables to find the next smaller grapheme cluster boundary.
-fn string_truncate_safe(mut s: String, new_len: usize) -> String {
+pub(super) fn string_truncate_safe(mut s: String, new_len: usize) -> String {
 	// Finds the largest byte index `x` not exceeding byte index `index` where
 	// `s.is_char_boundary(x)` is true.
 	// TODO(phlip9): remove when `std::str::floor_char_boundary` stabilizes.
