@@ -1,0 +1,33 @@
+[Error]
+enum VerifyError {
+	"InvalidBech32",
+	"MalformedProof",
+	"IncompleteProof",
+};
+
+dictionary VerifiedPayerProof {
+	bytes payment_hash;
+	bytes payment_preimage;
+	bytes payer_signing_pubkey;
+	bytes issuer_signing_pubkey;
+	u64? invoice_amount_msats;
+	u64? invoice_created_at_secs;
+	string? offer_description;
+	string? offer_issuer;
+	string? proof_note;
+	bytes merkle_root;
+	bytes invoice_signature;
+	bytes proof_signature;
+	string bech32;
+	bytes encoded;
+};
+
+namespace lightning_payer_proof {
+	[Throws=VerifyError]
+	VerifiedPayerProof verify(string proof);
+
+	[Throws=VerifyError]
+	VerifiedPayerProof verify_bytes(bytes proof);
+
+	boolean pays_offers_recipient(VerifiedPayerProof proof, string offer);
+};

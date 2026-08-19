@@ -1,0 +1,38 @@
+# Its own workspace: `uniffi`'s MSRV is well above the rest of the tree's, so
+# this crate is built and tested on its own rather than as a workspace member.
+[workspace]
+
+[package]
+name = "lightning-payer-proof-uniffi"
+version = "0.1.0+git"
+authors = ["Vincenzo Palazzo <vincenzopalazzodev@gmail.com>", "Matt Corallo"]
+license = "MIT OR Apache-2.0"
+repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning"
+description = """
+UniFFI bindings for verification of BOLT 12 payer proofs.
+"""
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+lightning-payer-proof = { version = "0.1.0", path = "../" }
+uniffi = { version = "0.27", default-features = false, features = ["cli"] }
+
+[build-dependencies]
+uniffi = { version = "0.27", features = [ "build" ] }
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[lib]
+# uniffi's generated bindings look for `uniffi_<namespace>`, so name the
+# library to match rather than making every consumer rename it.
+name = "uniffi_lightning_payer_proof"
+# `lib` alongside `cdylib` so the wrappers can be unit tested; the `cdylib` is
+# what bindings consumers actually load.
+crate-type = ["lib", "cdylib"]
+
+[profile.release]
+lto = true
+codegen-units = 1

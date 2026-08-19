@@ -13,6 +13,8 @@ lightning-rapid-gossip-sync/res/full_graph.lngossip
 lightning-custom-message/target
 lightning-transaction-sync/target
 lightning-dns-resolver/target
+lightning-payer-proof/target
+lightning-payer-proof/uniffi/target
 ext-functional-test-demo/target
 no-std-check/target
 msrv-no-dev-deps-check/target

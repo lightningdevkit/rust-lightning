@@ -1,0 +1,28 @@
+[package]
+name = "lightning-payer-proof"
+version = "0.1.0+git"
+authors = ["Vincenzo Palazzo <vincenzopalazzodev@gmail.com>", "Matt Corallo"]
+license = "MIT OR Apache-2.0"
+documentation = "https://docs.rs/lightning-payer-proof/"
+repository = "https://git.rust-bitcoin.org/lightningdevkit/rust-lightning"
+readme = "../README.md"
+keywords = [ "lightning", "bitcoin", "bolt12", "payment" ]
+description = """
+Verification of BOLT 12 payer proofs.
+"""
+edition = "2021"
+rust-version = "1.75"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = ["std"]
+std = ["lightning/std"]
+
+[dependencies]
+lightning = { version = "0.3.0", path = "../lightning", default-features = false }
+
+[lints]
+workspace = true
