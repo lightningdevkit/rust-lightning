@@ -98,10 +98,13 @@
 use core::borrow::Borrow;
 use core::hash::{Hash, Hasher};
 use core::marker::PhantomData;
-use core::ops::{Deref, DerefMut};
 use core::{cmp, fmt};
 
 use alloc::vec::Vec;
+
+use crate::inline_vec::InlineVec;
+
+use self::sealed::MIN_FEATURES_ALLOCATION_BYTES;
 
 mod sealed {
 	use super::Features;
@@ -711,7 +714,8 @@ mod sealed {
 		requires_splicing
 	);
 	// By default, allocate enough bytes to cover up to Splice. Update this as new features are
-	// added which we expect to appear commonly across contexts.
+	// added which we expect to appear commonly across contexts, letting the flags held inline grow
+	// rather than allocating for them.
 	pub(super) const MIN_FEATURES_ALLOCATION_BYTES: usize = 63_usize.div_ceil(8);
 	define_feature!(
 		141, // The BOLTs PR used feature bit 40/41, so this staging bit was assigned +100
@@ -774,137 +778,12 @@ mod sealed {
 const ANY_REQUIRED_FEATURES_MASK: u8 = 0b01_01_01_01;
 const ANY_OPTIONAL_FEATURES_MASK: u8 = 0b10_10_10_10;
 
-// Vecs are always 3 pointers long, so `FeatureFlags` is never shorter than 24 bytes on 64-bit
-// platforms no matter what we do.
-//
-// Luckily, because `Vec` uses a `NonNull` pointer to its buffer, the two-variant enum is free
-// space-wise, but we only get the remaining 2 usizes in length available for our own stuff (as any
-// other value is interpreted as the `Heap` variant).
-//
-// Thus, as long as we never use more than 16 bytes (15 bytes for the data and one byte for the
-// length) for our Held variant `FeatureFlags` is the same length as a `Vec` in memory.
-const DIRECT_ALLOC_BYTES: usize = if sealed::MIN_FEATURES_ALLOCATION_BYTES > 8 * 2 - 1 {
-	sealed::MIN_FEATURES_ALLOCATION_BYTES
-} else {
-	8 * 2 - 1
-};
-const _ASSERT: () = assert!(DIRECT_ALLOC_BYTES <= u8::MAX as usize);
-
+/// The bytes of a set of feature flags, held inline unless there are more than
+/// `MIN_FEATURES_ALLOCATION_BYTES` of them.
 #[cfg(fuzzing)]
-#[derive(Clone, PartialEq, Eq)]
-pub enum FeatureFlags {
-	Held { bytes: [u8; DIRECT_ALLOC_BYTES], len: u8 },
-	Heap(Vec<u8>),
-}
-
+pub type FeatureFlags = InlineVec<MIN_FEATURES_ALLOCATION_BYTES>;
 #[cfg(not(fuzzing))]
-#[derive(Clone, PartialEq, Eq)]
-enum FeatureFlags {
-	Held { bytes: [u8; DIRECT_ALLOC_BYTES], len: u8 },
-	Heap(Vec<u8>),
-}
-
-impl FeatureFlags {
-	/// Constructs an empty [`FeatureFlags`]
-	pub fn empty() -> Self {
-		Self::Held { bytes: [0; DIRECT_ALLOC_BYTES], len: 0 }
-	}
-
-	/// Constructs a [`FeatureFlags`] from the given bytes
-	pub fn from(vec: Vec<u8>) -> Self {
-		if vec.len() <= DIRECT_ALLOC_BYTES {
-			let mut bytes = [0; DIRECT_ALLOC_BYTES];
-			bytes[..vec.len()].copy_from_slice(&vec);
-			Self::Held { bytes, len: vec.len() as u8 }
-		} else {
-			Self::Heap(vec)
-		}
-	}
-
-	/// Resizes a [`FeatureFlags`] to the given length, padding with `default` if required.
-	///
-	/// See [`Vec::resize`] for more info.
-	pub fn resize(&mut self, new_len: usize, default: u8) {
-		match self {
-			Self::Held { bytes, len } => {
-				let start_len = *len as usize;
-				if new_len <= DIRECT_ALLOC_BYTES {
-					bytes[start_len..].copy_from_slice(&[default; DIRECT_ALLOC_BYTES][start_len..]);
-					*len = new_len as u8;
-				} else {
-					let mut vec = Vec::new();
-					vec.resize(new_len, default);
-					vec[..start_len].copy_from_slice(&bytes[..start_len]);
-					*self = Self::Heap(vec);
-				}
-			},
-			Self::Heap(vec) => {
-				vec.resize(new_len, default);
-				if new_len <= DIRECT_ALLOC_BYTES {
-					let mut bytes = [0; DIRECT_ALLOC_BYTES];
-					bytes[..new_len].copy_from_slice(&vec[..new_len]);
-					*self = Self::Held { bytes, len: new_len as u8 };
-				}
-			},
-		}
-	}
-
-	/// Fetches the length of the [`FeatureFlags`], in bytes.
-	pub fn len(&self) -> usize {
-		self.deref().len()
-	}
-
-	/// Fetches an iterator over the bytes of this [`FeatureFlags`]
-	pub fn iter(
-		&self,
-	) -> impl Clone + ExactSizeIterator<Item = &u8> + DoubleEndedIterator<Item = &u8> {
-		let slice = self.deref();
-		slice.iter()
-	}
-
-	/// Fetches a mutable iterator over the bytes of this [`FeatureFlags`]
-	pub fn iter_mut(
-		&mut self,
-	) -> impl ExactSizeIterator<Item = &mut u8> + DoubleEndedIterator<Item = &mut u8> {
-		let slice = self.deref_mut();
-		slice.iter_mut()
-	}
-}
-
-impl Deref for FeatureFlags {
-	type Target = [u8];
-	fn deref(&self) -> &[u8] {
-		match self {
-			FeatureFlags::Held { bytes, len } => &bytes[..*len as usize],
-			FeatureFlags::Heap(vec) => &vec,
-		}
-	}
-}
-
-impl DerefMut for FeatureFlags {
-	fn deref_mut(&mut self) -> &mut [u8] {
-		match self {
-			FeatureFlags::Held { bytes, len } => &mut bytes[..*len as usize],
-			FeatureFlags::Heap(vec) => &mut vec[..],
-		}
-	}
-}
-
-impl PartialOrd for FeatureFlags {
-	fn partial_cmp(&self, other: &Self) -> Option<cmp::Ordering> {
-		Some(self.cmp(other))
-	}
-}
-impl Ord for FeatureFlags {
-	fn cmp(&self, other: &Self) -> cmp::Ordering {
-		self.deref().cmp(other.deref())
-	}
-}
-impl fmt::Debug for FeatureFlags {
-	fn fmt(&self, fmt: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-		self.deref().fmt(fmt)
-	}
-}
+type FeatureFlags = InlineVec<MIN_FEATURES_ALLOCATION_BYTES>;
 
 /// Tracks the set of features which a node implements, templated by the context in which it
 /// appears.
@@ -1570,20 +1449,20 @@ mod tests {
 		let mut flags = FeatureFlags::empty();
 		assert!(matches!(flags, FeatureFlags::Held { .. }));
 
-		flags.resize(DIRECT_ALLOC_BYTES, 42);
-		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES);
-		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		flags.resize(MIN_FEATURES_ALLOCATION_BYTES, 42);
+		assert_eq!(flags.len(), MIN_FEATURES_ALLOCATION_BYTES);
+		assert!(flags.iter().take(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 42));
 		assert!(matches!(flags, FeatureFlags::Held { .. }));
 
-		flags.resize(DIRECT_ALLOC_BYTES * 2, 43);
-		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES * 2);
-		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
-		assert!(flags.iter().skip(DIRECT_ALLOC_BYTES).all(|b| *b == 43));
+		flags.resize(MIN_FEATURES_ALLOCATION_BYTES * 2, 43);
+		assert_eq!(flags.len(), MIN_FEATURES_ALLOCATION_BYTES * 2);
+		assert!(flags.iter().take(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 42));
+		assert!(flags.iter().skip(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 43));
 		assert!(matches!(flags, FeatureFlags::Heap(_)));
 
-		flags.resize(DIRECT_ALLOC_BYTES, 0);
-		assert_eq!(flags.len(), DIRECT_ALLOC_BYTES);
-		assert!(flags.iter().take(DIRECT_ALLOC_BYTES).all(|b| *b == 42));
+		flags.resize(MIN_FEATURES_ALLOCATION_BYTES, 0);
+		assert_eq!(flags.len(), MIN_FEATURES_ALLOCATION_BYTES);
+		assert!(flags.iter().take(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 42));
 		assert!(matches!(flags, FeatureFlags::Held { .. }));
 	}
 }

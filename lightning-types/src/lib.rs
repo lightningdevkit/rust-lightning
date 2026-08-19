@@ -23,6 +23,9 @@
 extern crate alloc;
 extern crate core;
 
+#[allow(dead_code)] // This is a shared utility file, not all of it is used here
+mod inline_vec;
+
 pub mod features;
 pub mod payment;
 pub mod routing;
