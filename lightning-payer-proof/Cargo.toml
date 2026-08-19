@@ -14,12 +14,7 @@ edition = "2021"
 rust-version = "1.75"
 
 [package.metadata.docs.rs]
-all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
-[features]
-default = ["std"]
-std = ["lightning/std"]
 
 [dependencies]
 lightning = { version = "0.3.0", path = "../lightning", default-features = false }

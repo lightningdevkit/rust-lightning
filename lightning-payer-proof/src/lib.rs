@@ -27,7 +27,7 @@
 //! assert!(proof.pays_offers_recipient(&offer));
 //! ```
 
-#![cfg_attr(all(not(feature = "std"), not(test)), no_std)]
+#![cfg_attr(not(test), no_std)]
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![deny(rustdoc::private_intra_doc_links)]
@@ -85,9 +85,6 @@ impl core::fmt::Display for VerifyError {
 		f.write_str(message)
 	}
 }
-
-#[cfg(feature = "std")]
-impl std::error::Error for VerifyError {}
 
 impl From<Bolt12ParseError> for VerifyError {
 	fn from(error: Bolt12ParseError) -> Self {
