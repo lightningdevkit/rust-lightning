@@ -204,9 +204,6 @@ impl VerifiedPayerProof {
 
 	/// Whether the invoice this proof covers was issued by `offer`'s recipient.
 	///
-	/// Inlined here so this crate can answer the question against LDK 0.3, which has the
-	/// accessors but not `PayerProof::pays_offers_recipient`.
-	///
 	/// This identifies the recipient, not the offer: two offers published by the same recipient
 	/// are indistinguishable here, so a `true` answers "this was paid to whoever `offer` names"
 	/// rather than "this paid `offer`".
