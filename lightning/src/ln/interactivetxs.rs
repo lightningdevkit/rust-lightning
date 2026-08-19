@@ -1133,6 +1133,15 @@ impl NegotiationContext {
 			}
 		} else if let Some(prevtx) = &msg.prevtx {
 			let txid = prevtx.compute_txid();
+			let prev_outpoint = BitcoinOutPoint { txid, vout: msg.prevtx_out };
+			if self
+				.shared_funding_input
+				.as_ref()
+				.map(|input| input.input.previous_output == prev_outpoint)
+				.unwrap_or(false)
+			{
+				return Err(AbortReason::UnexpectedPrevTx);
+			}
 
 			if let Some(tx_out) = prevtx.output.get(msg.prevtx_out as usize) {
 				if !tx_out.script_pubkey.is_witness_program() {
@@ -1142,7 +1151,6 @@ impl NegotiationContext {
 					return Err(AbortReason::PrevTxOutInvalid);
 				}
 
-				let prev_outpoint = BitcoinOutPoint { txid, vout: msg.prevtx_out };
 				let txin = TxIn {
 					previous_output: prev_outpoint,
 					sequence: Sequence(msg.sequence),
@@ -2761,7 +2769,7 @@ mod tests {
 			input: Vec::new(),
 			output: vec![TxOut {
 				value: Amount::from_sat(60_000),
-				script_pubkey: ScriptBuf::new(),
+				script_pubkey: generate_funding_script_pubkey(),
 			}],
 			lock_time: AbsoluteLockTime::ZERO,
 			version: Version::TWO,
@@ -3252,6 +3260,23 @@ mod tests {
 			shared_output_b: generate_funding_txout(108_000, 0),
 			outputs_b: vec![],
 			expect_error: None,
+		});
+
+		// Provide the shared input as a single-party owned input by including `prevtx` and omitting
+		// `shared_input_txid`.
+		let shared_input_as_owned =
+			ConfirmedUtxo::new_p2wsh(prev_funding_tx_1.clone(), 0, Weight::from_wu(42)).unwrap();
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Provide a shared input as an owned input",
+			inputs_a: vec![shared_input_as_owned],
+			a_shared_input: None,
+			shared_output_a: generate_funding_txout(58_000, 58_000),
+			outputs_a: vec![],
+			inputs_b: vec![],
+			b_shared_input: Some(generate_shared_input(&prev_funding_tx_1, 0, 0)),
+			shared_output_b: generate_funding_txout(58_000, 0),
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::UnexpectedPrevTx, ErrorCulprit::NodeA)),
 		});
 
 		// Expect a shared input, but it's missing
