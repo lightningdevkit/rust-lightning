@@ -298,26 +298,22 @@ impl ConstructedTransaction {
 
 		let lock_time = context.tx_locktime;
 
-		let mut inputs: Vec<(TxIn, TxInMetadata)> =
-			context.inputs.into_values().map(|input| input.into_txin_and_metadata()).collect();
+		let mut inputs: Vec<InteractiveTxInput> = context.inputs.into_values().collect();
 		let mut outputs: Vec<(TxOut, TxOutMetadata)> =
 			context.outputs.into_values().map(|output| output.into_txout_and_metadata()).collect();
-		inputs.sort_unstable_by_key(|(_, input)| input.serial_id);
+		inputs.sort_unstable_by_key(|input| input.serial_id);
 		outputs.sort_unstable_by_key(|(_, output)| output.serial_id);
 
-		let (input, input_metadata): (Vec<TxIn>, Vec<TxInMetadata>) = inputs.into_iter().unzip();
+		// Take the shared input from how it was classified during the negotiation rather than by
+		// matching outpoints. An input exclusively owned by one party may name the same outpoint,
+		// in which case its entire value would have been attributed to that party.
+		let shared_input_index =
+			inputs.iter().position(|input| input.input.is_shared()).map(|index| index as u16);
+
+		let (input, input_metadata): (Vec<TxIn>, Vec<TxInMetadata>) =
+			inputs.into_iter().map(|input| input.into_txin_and_metadata()).unzip();
 		let (output, output_metadata): (Vec<TxOut>, Vec<TxOutMetadata>) =
 			outputs.into_iter().unzip();
-
-		let shared_input_index =
-			context.shared_funding_input.as_ref().and_then(|shared_funding_input| {
-				input
-					.iter()
-					.position(|txin| {
-						txin.previous_output == shared_funding_input.input.previous_output
-					})
-					.map(|position| position as u16)
-			});
 
 		let shared_output_index = output
 			.iter()
@@ -3283,6 +3279,25 @@ mod tests {
 			shared_output_a: generate_funding_txout(108_000, 108_000),
 			outputs_a: vec![],
 			inputs_b: vec![],
+			b_shared_input: Some(generate_shared_input(&prev_funding_tx_1, 0, 0)),
+			shared_output_b: generate_funding_txout(108_000, 0),
+			outputs_b: vec![],
+			expect_error: Some((AbortReason::MissingFundingInput, ErrorCulprit::NodeA)),
+		});
+
+		// Expect a shared input, but the only input naming its outpoint is our own owned input
+		do_test_interactive_tx_constructor(TestSession {
+			description: "Expect a shared input, got it as our own owned input",
+			inputs_a: generate_inputs(&[TestOutput::P2WPKH(110_000)]),
+			a_shared_input: None,
+			shared_output_a: generate_funding_txout(108_000, 108_000),
+			outputs_a: vec![],
+			inputs_b: vec![ConfirmedUtxo::new_p2wsh(
+				prev_funding_tx_1.clone(),
+				0,
+				Weight::from_wu(42),
+			)
+			.unwrap()],
 			b_shared_input: Some(generate_shared_input(&prev_funding_tx_1, 0, 0)),
 			shared_output_b: generate_funding_txout(108_000, 0),
 			outputs_b: vec![],
