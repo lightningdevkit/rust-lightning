@@ -18452,14 +18452,13 @@ impl<
 		// Since some FundingNegotiation variants are not persisted, any splice in such state must
 		// be failed upon reload. However, as the necessary information for the
 		// SpliceNegotiationFailed and DiscardFunding events is not persisted, the events need to
-		// be persisted even though they
-		// haven't been emitted yet. These are removed after the events are written.
-		let mut events = self.pending_events.lock().unwrap();
-		let event_count = events.len();
+		// be persisted even though they haven't been emitted yet. They are written alongside the
+		// pending events below but never added to them, as writing may fail.
+		let mut splice_failed_events: Vec<(Event, Option<EventCompletionAction>)> = Vec::new();
 		for peer_state in peer_states.iter() {
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
 				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
-					events.extend(
+					splice_failed_events.extend(
 						splice_negotiation_failed_events(
 							chan.context.channel_id(),
 							chan.context.get_counterparty_node_id(),
@@ -18472,6 +18471,7 @@ impl<
 				}
 			}
 		}
+		let events = self.pending_events.lock().unwrap();
 
 		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
 		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
@@ -18482,8 +18482,8 @@ impl<
 			// well save the space and not write any events here.
 			0u64.write(writer)?;
 		} else {
-			(events.len() as u64).write(writer)?;
-			for (event, _) in events.iter() {
+			((events.len() + splice_failed_events.len()) as u64).write(writer)?;
+			for (event, _) in events.iter().chain(splice_failed_events.iter()) {
 				event.write(writer)?;
 			}
 		}
@@ -18568,6 +18568,11 @@ impl<
 			}
 		}
 
+		let pending_events_writer = PendingEventsWriter {
+			pending_events: &*events,
+			splice_failed_events: &splice_failed_events,
+		};
+
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(2, pending_intercepted_htlcs, option),
@@ -18576,7 +18581,7 @@ impl<
 			(5, self.our_network_pubkey, required),
 			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, self.fake_scid_rand_bytes, required),
-			(8, if events_not_backwards_compatible { Some(&*events) } else { None }, option),
+			(8, if events_not_backwards_compatible { Some(&pending_events_writer) } else { None }, option),
 			(9, htlc_purposes, required_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, self.probing_cookie_secret, required),
@@ -18589,17 +18594,22 @@ impl<
 			(23, self.best_block.read().unwrap().previous_blocks, required),
 		});
 
-		// Remove the SpliceNegotiationFailed and DiscardFunding events added earlier.
-		events.truncate(event_count);
-
 		Ok(())
 	}
 }
 
-impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
+/// Writes the pending events of a [`ChannelManager`] chained with any events that are only
+/// generated at serialization time, as if they were a single sequence of events.
+struct PendingEventsWriter<'a> {
+	pending_events: &'a VecDeque<(Event, Option<EventCompletionAction>)>,
+	splice_failed_events: &'a [(Event, Option<EventCompletionAction>)],
+}
+
+impl Writeable for PendingEventsWriter<'_> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u64).write(w)?;
-		for (event, action) in self.iter() {
+		let Self { pending_events, splice_failed_events } = self;
+		((pending_events.len() + splice_failed_events.len()) as u64).write(w)?;
+		for (event, action) in pending_events.iter().chain(splice_failed_events.iter()) {
 			event.write(w)?;
 			action.write(w)?;
 			#[cfg(debug_assertions)]
