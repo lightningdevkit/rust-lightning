@@ -254,6 +254,28 @@ mod tests {
 	}
 
 	#[test]
+	fn inline_vec_moves_between_inline_and_heap_storage_when_resized() {
+		let mut vec = InlineVec::<4>::empty();
+		assert!(matches!(vec, InlineVec::Held { .. }));
+
+		vec.resize(4, 42);
+		assert_eq!(vec.len(), 4);
+		assert!(vec.iter().all(|b| *b == 42));
+		assert!(matches!(vec, InlineVec::Held { .. }));
+
+		vec.resize(8, 43);
+		assert_eq!(vec.len(), 8);
+		assert!(vec.iter().take(4).all(|b| *b == 42));
+		assert!(vec.iter().skip(4).all(|b| *b == 43));
+		assert!(matches!(vec, InlineVec::Heap(_)));
+
+		vec.resize(4, 0);
+		assert_eq!(vec.len(), 4);
+		assert!(vec.iter().all(|b| *b == 42));
+		assert!(matches!(vec, InlineVec::Held { .. }));
+	}
+
+	#[test]
 	fn inline_str_writes_are_infallible() {
 		let mut buf = InlineStr::<4>::new();
 		assert_eq!(buf.as_str(), "");
