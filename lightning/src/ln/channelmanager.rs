@@ -1030,6 +1030,7 @@ mod fuzzy_channelmanager {
 			events::HTLCLocator {
 				channel_id: self.channel_id,
 				amount_msat,
+				htlc_id: Some(self.htlc_id),
 				user_channel_id: self.user_channel_id,
 				node_id: self.counterparty_node_id,
 			}
@@ -10610,7 +10611,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: u64, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
-		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
+		next_channel_id: ChannelId, next_user_channel_id: Option<u128>, next_htlc_id: Option<u64>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
 	) {
 		let startup_replay =
@@ -10695,6 +10696,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							next_htlcs: vec![events::HTLCLocator {
 								channel_id: next_channel_id,
 								amount_msat: Some(forwarded_htlc_value_msat),
+								htlc_id: next_htlc_id,
 								user_channel_id: next_user_channel_id,
 								node_id: Some(next_channel_counterparty_node_id),
 							}],
@@ -10738,6 +10740,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									next_htlcs: vec![events::HTLCLocator {
 										channel_id: next_channel_id,
 										amount_msat: Some(forwarded_htlc_value_msat),
+										htlc_id: next_htlc_id,
 										user_channel_id: next_user_channel_id,
 										node_id: Some(next_channel_counterparty_node_id),
 									}],
@@ -13259,6 +13262,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
+			Some(msg.htlc_id),
 			msg.attribution_data,
 			send_timestamp,
 		);
@@ -14291,6 +14295,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
+								None,
 								None,
 								None,
 								None,
@@ -21368,6 +21373,7 @@ impl<
 				downstream_funding,
 				downstream_channel_id,
 				downstream_user_channel_id,
+				None,
 				None,
 				None,
 			);
