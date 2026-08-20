@@ -31,6 +31,8 @@ use core::ops::{Deref, DerefMut};
 #[derive(Clone, Eq)]
 pub enum InlineVec<const N: usize> {
 	/// Contents which fit inline, of which only the first `len` bytes are in use.
+	// TODO: Once `generic_const_exprs` is available, bound this on the low end at
+	// `size_of::<usize>() * 2 - 1` bytes, i.e. the space we get for free anyway.
 	Held { bytes: [u8; N], len: u8 },
 	/// Contents which did not fit inline and are thus held on the heap.
 	Heap(Vec<u8>),
