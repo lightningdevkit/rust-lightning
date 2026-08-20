@@ -1430,7 +1430,7 @@ mod tests {
 		use std::hash::{Hash, Hasher};
 
 		let mut zerod_features = InitFeatures::empty();
-		zerod_features.flags = FeatureFlags::Heap(vec![0]);
+		zerod_features.flags = FeatureFlags::from(vec![0]);
 		let empty_features = InitFeatures::empty();
 		assert!(empty_features.flags.is_empty());
 
@@ -1441,28 +1441,5 @@ mod tests {
 		let mut empty_hash = DefaultHasher::new();
 		empty_features.hash(&mut empty_hash);
 		assert_eq!(zerod_hash.finish(), empty_hash.finish());
-	}
-
-	#[test]
-	fn test_feature_flags_transitions() {
-		// Tests transitions from stack to heap and back in `FeatureFlags`
-		let mut flags = FeatureFlags::empty();
-		assert!(matches!(flags, FeatureFlags::Held { .. }));
-
-		flags.resize(MIN_FEATURES_ALLOCATION_BYTES, 42);
-		assert_eq!(flags.len(), MIN_FEATURES_ALLOCATION_BYTES);
-		assert!(flags.iter().take(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 42));
-		assert!(matches!(flags, FeatureFlags::Held { .. }));
-
-		flags.resize(MIN_FEATURES_ALLOCATION_BYTES * 2, 43);
-		assert_eq!(flags.len(), MIN_FEATURES_ALLOCATION_BYTES * 2);
-		assert!(flags.iter().take(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 42));
-		assert!(flags.iter().skip(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 43));
-		assert!(matches!(flags, FeatureFlags::Heap(_)));
-
-		flags.resize(MIN_FEATURES_ALLOCATION_BYTES, 0);
-		assert_eq!(flags.len(), MIN_FEATURES_ALLOCATION_BYTES);
-		assert!(flags.iter().take(MIN_FEATURES_ALLOCATION_BYTES).all(|b| *b == 42));
-		assert!(matches!(flags, FeatureFlags::Held { .. }));
 	}
 }

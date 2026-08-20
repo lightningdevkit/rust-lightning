@@ -31,6 +31,8 @@ use core::ops::{Deref, DerefMut};
 #[derive(Clone, Eq)]
 pub enum InlineVec<const N: usize> {
 	/// Contents which fit inline, of which only the first `len` bytes are in use.
+	// TODO: Once `generic_const_exprs` is available, bound this on the low end at
+	// `size_of::<usize>() * 2 - 1` bytes, i.e. the space we get for free anyway.
 	Held { bytes: [u8; N], len: u8 },
 	/// Contents which did not fit inline and are thus held on the heap.
 	Heap(Vec<u8>),
@@ -153,9 +155,6 @@ impl<const N: usize> DerefMut for InlineVec<N> {
 	}
 }
 
-// Note that the contents may be held inline or on the heap independently of their length (e.g.
-// after a `resize` down), and that the inline bytes past the length are not necessarily zeroed, so
-// the below must all consider the contents only.
 impl<const N: usize> PartialEq for InlineVec<N> {
 	fn eq(&self, other: &Self) -> bool {
 		self.deref() == other.deref()
@@ -245,11 +244,35 @@ mod tests {
 		assert!(matches!(vec, InlineVec::Heap(_)));
 		assert_eq!(&vec[..], &[1, 2, 3, 4, 5]);
 
-		// Contents held inline and on the heap compare by their contents alone.
 		assert_eq!(vec, InlineVec::<4>::from(alloc::vec![1, 2, 3, 4, 5]));
-		let mut short = InlineVec::<4>::from(alloc::vec![1, 2, 3, 4, 5]);
+
+		// The inline bytes past the length are not necessarily zeroed, but only the contents are
+		// ever compared.
+		let mut short = InlineVec::<4>::from(alloc::vec![1, 2, 3, 4]);
 		short.resize(2, 0);
 		assert_eq!(short, InlineVec::<4>::from(alloc::vec![1, 2]));
+	}
+
+	#[test]
+	fn inline_vec_moves_between_inline_and_heap_storage_when_resized() {
+		let mut vec = InlineVec::<4>::empty();
+		assert!(matches!(vec, InlineVec::Held { .. }));
+
+		vec.resize(4, 42);
+		assert_eq!(vec.len(), 4);
+		assert!(vec.iter().all(|b| *b == 42));
+		assert!(matches!(vec, InlineVec::Held { .. }));
+
+		vec.resize(8, 43);
+		assert_eq!(vec.len(), 8);
+		assert!(vec.iter().take(4).all(|b| *b == 42));
+		assert!(vec.iter().skip(4).all(|b| *b == 43));
+		assert!(matches!(vec, InlineVec::Heap(_)));
+
+		vec.resize(4, 0);
+		assert_eq!(vec.len(), 4);
+		assert!(vec.iter().all(|b| *b == 42));
+		assert!(matches!(vec, InlineVec::Held { .. }));
 	}
 
 	#[test]
