@@ -153,9 +153,6 @@ impl<const N: usize> DerefMut for InlineVec<N> {
 	}
 }
 
-// Note that the contents may be held inline or on the heap independently of their length (e.g.
-// after a `resize` down), and that the inline bytes past the length are not necessarily zeroed, so
-// the below must all consider the contents only.
 impl<const N: usize> PartialEq for InlineVec<N> {
 	fn eq(&self, other: &Self) -> bool {
 		self.deref() == other.deref()
@@ -245,9 +242,11 @@ mod tests {
 		assert!(matches!(vec, InlineVec::Heap(_)));
 		assert_eq!(&vec[..], &[1, 2, 3, 4, 5]);
 
-		// Contents held inline and on the heap compare by their contents alone.
 		assert_eq!(vec, InlineVec::<4>::from(alloc::vec![1, 2, 3, 4, 5]));
-		let mut short = InlineVec::<4>::from(alloc::vec![1, 2, 3, 4, 5]);
+
+		// The inline bytes past the length are not necessarily zeroed, but only the contents are
+		// ever compared.
+		let mut short = InlineVec::<4>::from(alloc::vec![1, 2, 3, 4]);
 		short.resize(2, 0);
 		assert_eq!(short, InlineVec::<4>::from(alloc::vec![1, 2]));
 	}
