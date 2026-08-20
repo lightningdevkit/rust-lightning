@@ -1884,8 +1884,8 @@ impl MonitorName {
 	/// The maximum length of the storage key for a `MonitorName`, i.e., a hex-encoded transaction
 	/// ID, a separator, and the decimal digits of a `u16` output index.
 	///
-	/// Keys are built in a buffer of this size, and are used as `KVStore` keys, so this must fit
-	/// within the permitted key length.
+	/// Keys are built in a buffer with this much space available inline, so a longer key would
+	/// simply spill onto the heap rather than fail to build.
 	const KEY_MAX_LEN: usize = 64 + 1 + 5;
 
 	/// Attempts to construct a `MonitorName` from a storage key returned by [`KVStoreSync::list`].
@@ -1984,8 +1984,8 @@ impl UpdateName {
 	/// The maximum length of the string representation of an `UpdateName`, i.e., the number of
 	/// decimal digits in `u64::MAX`.
 	///
-	/// Names are built in a buffer of this size, and are used as `KVStore` keys, so this must fit
-	/// within the permitted key length.
+	/// Names are built in a buffer with this much space available inline, so a longer name would
+	/// simply spill onto the heap rather than fail to build.
 	const MAX_LEN: usize = 20;
 
 	/// Constructs an [`UpdateName`], after verifying that an update sequence ID
