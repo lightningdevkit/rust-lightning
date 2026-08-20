@@ -1508,9 +1508,13 @@ pub fn test_htlc_on_chain_success() {
 			assert_eq!(total_fee_earned_msat, Some(1000));
 			assert_eq!(prev_htlcs[0].channel_id, chan_id);
 			assert_eq!(prev_htlcs[0].amount_msat, Some(3001000));
+			assert!(prev_htlcs[0].htlc_id.is_some());
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
 			assert_eq!(next_htlcs[0].amount_msat, Some(3000000));
+			// We learned the preimage from an on-chain HTLC-Success transaction, which doesn't
+			// tell us which HTLC ID the outbound HTLC had.
+			assert_eq!(next_htlcs[0].htlc_id, None);
 			assert_eq!(outbound_amount_forwarded_msat, 3000000);
 		},
 		_ => panic!(),
@@ -1527,9 +1531,13 @@ pub fn test_htlc_on_chain_success() {
 			assert_eq!(total_fee_earned_msat, Some(1000));
 			assert_eq!(prev_htlcs[0].channel_id, chan_id);
 			assert_eq!(prev_htlcs[0].amount_msat, Some(3001000));
+			assert!(prev_htlcs[0].htlc_id.is_some());
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
 			assert_eq!(next_htlcs[0].amount_msat, Some(3000000));
+			// We learned the preimage from an on-chain HTLC-Success transaction, which doesn't
+			// tell us which HTLC ID the outbound HTLC had.
+			assert_eq!(next_htlcs[0].htlc_id, None);
 			assert_eq!(outbound_amount_forwarded_msat, 3000000);
 		},
 		_ => panic!(),
@@ -4061,8 +4069,10 @@ pub fn test_onchain_to_onchain_claim() {
 		} => {
 			assert_eq!(total_fee_earned_msat, Some(1000));
 			assert_eq!(prev_htlcs[0].channel_id, chan_1.2);
+			assert!(prev_htlcs[0].htlc_id.is_some());
 			assert_eq!(claim_from_onchain_tx, true);
 			assert_eq!(next_htlcs[0].channel_id, chan_2.2);
+			assert_eq!(next_htlcs[0].htlc_id, None);
 			assert_eq!(outbound_amount_forwarded_msat, 3000000);
 		},
 		_ => panic!("Unexpected event"),

@@ -869,6 +869,13 @@ pub struct HTLCLocator {
 	/// The amount, in milli-satoshis, of the HTLC that was sent or received, if known.
 	pub amount_msat: Option<u64>,
 
+	/// The HTLC ID assigned by the channel `channel_id`.
+	///
+	/// This is always `Some` for HTLCs we received, but may be `None` for HTLCs we sent, e.g. if
+	/// the HTLC was resolved by an on-chain transaction. It will also be `None` for events
+	/// serialized by versions prior to 0.3.
+	pub htlc_id: Option<u64>,
+
 	/// The `user_channel_id` for `channel_id`.
 	///
 	/// This will be `None` if the payment was settled via an on-chain transaction. It will also
@@ -887,6 +894,7 @@ impl_writeable_tlv_based!(HTLCLocator, {
 	(3, user_channel_id, option),
 	(5, node_id, option),
 	(7, amount_msat, option),
+	(9, htlc_id, option),
 });
 
 /// An Event which you should probably take some action in response to.
@@ -2220,6 +2228,7 @@ impl Writeable for Event {
 				let empty_locator = HTLCLocator {
 					channel_id: ChannelId::new_zero(),
 					amount_msat: None,
+					htlc_id: None,
 					user_channel_id: None,
 					node_id: None,
 				};
@@ -2789,12 +2798,14 @@ impl MaybeReadable for Event {
 							channel_id: prev_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
 							amount_msat: total_fee_earned_msat
 								.map(|fee| outbound_amount_forwarded_msat + fee),
+							htlc_id: None,
 							user_channel_id: prev_user_channel_id_legacy,
 							node_id: prev_node_id_legacy,
 						}])),
 						(19, next_htlcs, (default_value, vec![HTLCLocator{
 							channel_id: next_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
 							amount_msat: Some(outbound_amount_forwarded_msat),
+							htlc_id: None,
 							user_channel_id: next_user_channel_id_legacy,
 							node_id: next_node_id_legacy,
 						}])),
@@ -3269,9 +3280,11 @@ mod tests {
 				assert_eq!(prev_htlcs.len(), 1);
 				assert_eq!(prev_htlcs[0].channel_id, prev_channel_id);
 				assert_eq!(prev_htlcs[0].amount_msat, None);
+				assert_eq!(prev_htlcs[0].htlc_id, None);
 				assert_eq!(next_htlcs.len(), 1);
 				assert_eq!(next_htlcs[0].channel_id, next_channel_id);
 				assert_eq!(next_htlcs[0].amount_msat, Some(3_000_000));
+				assert_eq!(next_htlcs[0].htlc_id, None);
 			},
 			_ => panic!("expected PaymentForwarded event"),
 		}
