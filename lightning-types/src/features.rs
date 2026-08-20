@@ -1430,7 +1430,7 @@ mod tests {
 		use std::hash::{Hash, Hasher};
 
 		let mut zerod_features = InitFeatures::empty();
-		zerod_features.flags = FeatureFlags::Heap(vec![0]);
+		zerod_features.flags = FeatureFlags::from(vec![0]);
 		let empty_features = InitFeatures::empty();
 		assert!(empty_features.flags.is_empty());
 
