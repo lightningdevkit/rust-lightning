@@ -51,7 +51,9 @@ use lightning::events::{self, EventsProvider};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
-use lightning::ln::channel_state::{ChannelDetails, InboundHTLCStateDetails, OutboundHTLCSource};
+use lightning::ln::channel_state::{
+	ChannelDetails, InboundHTLCStateDetails, OutboundHTLCSource, SpliceCandidateStatus,
+};
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
 	TrustedChannelFeatures,
@@ -1249,6 +1251,16 @@ impl<'a> HarnessNode<'a> {
 
 	fn manager_height(&self) -> u32 {
 		self.node.current_best_block().height
+	}
+
+	fn has_awaiting_signature_splice(&self) -> bool {
+		self.list_channels().iter().any(|channel| {
+			channel.splice_details.as_ref().map_or(false, |splice_details| {
+				splice_details.candidates.iter().any(|candidate| {
+					matches!(candidate.status, SpliceCandidateStatus::AwaitingSignatures { .. })
+				})
+			})
+		})
 	}
 
 	// Connects a block range to the ChannelManager, and to the ChainMonitor when
@@ -3861,6 +3873,14 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
+		if self.nodes[node_idx].deferred && self.nodes[node_idx].has_awaiting_signature_splice() {
+			// FIXME: We don't currently checkpoint our signing session prior to sending
+			// `commitment_signed`, so we may run into a case where we commit to a splice
+			// candidate and reload with an outdated manager prior to the signing session
+			// existing. If the counterparty commits to the splice back, and is expecting to
+			// resume, we'll end up aborting erroneously leading to a force close.
+			self.nodes[node_idx].checkpoint_manager_persistence();
+		}
 		if !self.nodes[node_idx].deferred {
 			self.nodes[node_idx].checkpoint_manager_persistence();
 		}
