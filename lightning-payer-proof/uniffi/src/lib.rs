@@ -80,8 +80,12 @@ pub struct VerifiedPayerProof {
 	/// The offer issuer, if disclosed.
 	///
 	/// A human-readable label chosen by whoever built the offer, not an identity.
+	///
+	/// Untrusted text; sanitize control characters before displaying.
 	pub offer_issuer: Option<String>,
 	/// A note the payer attached when building the proof, if any.
+	///
+	/// Untrusted text; sanitize control characters before displaying.
 	pub proof_note: Option<String>,
 	/// The merkle root of the invoice the issuer signed, 32 bytes.
 	pub merkle_root: Vec<u8>,
