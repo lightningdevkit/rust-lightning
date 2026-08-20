@@ -2477,6 +2477,47 @@ pub fn test_manual_funding_abandon() {
 }
 
 #[xtest(feature = "_externalize_tests")]
+pub fn test_invalid_funding_signed_signature() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let temporary_channel_id = exchange_open_accept_chan(&nodes[0], &nodes[1], 100_000, 0);
+	let (funding_temporary_channel_id, funding_tx, funding_outpoint) =
+		create_funding_transaction(&nodes[0], &node_b_id, 100_000, 42);
+	assert_eq!(temporary_channel_id, funding_temporary_channel_id);
+
+	nodes[0]
+		.node
+		.funding_transaction_generated(funding_temporary_channel_id, node_b_id, funding_tx)
+		.unwrap();
+	check_added_monitors(&nodes[0], 0);
+
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
+	nodes[1].node.handle_funding_created(node_a_id, &funding_created);
+	check_added_monitors(&nodes[1], 1);
+	let channel_id = expect_channel_pending_event(&nodes[1], &node_a_id);
+	assert_eq!(channel_id, ChannelId::v1_from_funding_outpoint(funding_outpoint));
+
+	let mut funding_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, node_a_id);
+	corrupt_signature(&mut funding_signed.signature);
+	nodes[0].node.handle_funding_signed(node_b_id, &funding_signed);
+
+	check_added_monitors(&nodes[0], 0);
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+	assert!(nodes[0].node.list_channels().is_empty());
+	let error_message = get_err_msg(&nodes[0], &node_b_id);
+	assert_eq!(error_message.data, "Failed to validate our commitment");
+	let reason =
+		ClosureReason::ProcessingError { err: "Failed to validate our commitment".to_owned() };
+	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(channel_id, true, reason)]);
+}
+
+#[xtest(feature = "_externalize_tests")]
 pub fn test_funding_signed_event() {
 	let mut cfg = UserConfig::default();
 	cfg.channel_handshake_config.minimum_depth = 1;

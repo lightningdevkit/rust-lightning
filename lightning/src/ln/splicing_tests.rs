@@ -43,7 +43,6 @@ use crate::util::wallet_utils::{
 use crate::sync::Arc;
 
 use bitcoin::hashes::Hash;
-use bitcoin::secp256k1::ecdsa::Signature;
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::transaction::Version;
 use bitcoin::SignedAmount;
@@ -5388,11 +5387,7 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 
 	// Invalidate the signature by modifying one byte. This will cause signature verification
 	// to fail when the buffered message is processed.
-	let original_sig = acceptor_commit_sig.commitment_signed[0].signature;
-	let mut sig_bytes = original_sig.serialize_compact();
-	sig_bytes[0] ^= 0x01; // Flip a bit to corrupt the signature
-	acceptor_commit_sig.commitment_signed[0].signature =
-		Signature::from_compact(&sig_bytes).unwrap();
+	corrupt_signature(&mut acceptor_commit_sig.commitment_signed[0].signature);
 
 	// Deliver the acceptor's invalid commitment_signed to the initiator BEFORE the initiator has
 	// called funding_transaction_signed. The message should be buffered, not processed.
@@ -5459,6 +5454,67 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 		&[ExpectedCloseEvent::from_id_reason(channel_id, false, reason)],
 	);
 	check_added_monitors(&nodes[0], 1);
+}
+
+#[test]
+fn test_splice_batched_invalid_holder_commitment_signatures() {
+	// While a splice is pending, updates contain commitments for both the original and candidate
+	// funding scopes. Check the commitment and HTLC signature on each scope independently.
+	for funding_scope in 0..2 {
+		do_test_splice_batched_invalid_holder_commitment_signature(funding_scope, false);
+		do_test_splice_batched_invalid_holder_commitment_signature(funding_scope, true);
+	}
+}
+
+#[cfg(test)]
+fn do_test_splice_batched_invalid_holder_commitment_signature(
+	funding_scope: usize, corrupt_htlc_signature: bool,
+) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let _ = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+
+	let payment_amount = 1_000_000;
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut update = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	assert_eq!(update.update_add_htlcs.len(), 1);
+	assert_eq!(update.commitment_signed.len(), 2);
+	assert!(update.commitment_signed.iter().all(|msg| msg.htlc_signatures.len() == 1));
+	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
+	if corrupt_htlc_signature {
+		corrupt_signature(&mut update.commitment_signed[funding_scope].htlc_signatures[0]);
+	} else {
+		corrupt_signature(&mut update.commitment_signed[funding_scope].signature);
+	}
+	nodes[1].node.handle_commitment_signed_batch_test(node_id_0, &update.commitment_signed);
+
+	check_added_monitors(&nodes[1], 1);
+	let error_messages = check_closed_broadcast(&nodes[1], 1, true);
+	assert_eq!(error_messages.len(), 1);
+	assert_eq!(error_messages[0].data, "Failed to validate our commitment");
+	let reason =
+		ClosureReason::ProcessingError { err: "Failed to validate our commitment".to_owned() };
+	check_closed_events(
+		&nodes[1],
+		&[ExpectedCloseEvent::from_id_reason(channel_id, false, reason)],
+	);
 }
 
 #[test]
