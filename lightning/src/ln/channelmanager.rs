@@ -62,7 +62,7 @@ use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
 	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	SpliceFundingPromotion, StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
 };
 use crate::ln::channel_state::{ChannelDetails, InboundHTLCReference, OutboundHTLCSource};
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -9313,6 +9313,7 @@ impl<
 	///    the channel.
 	///  * Expiring a channel's previous [`ChannelConfig`] if necessary to only allow forwarding HTLCs
 	///    with the current [`ChannelConfig`].
+	///  * Sending pending `splice_locked` messages after funding negotiations complete.
 	///  * Removing peers which have disconnected but and no longer have any channels.
 	///  * Force-closing and removing channels which have not completed establishment in a timely manner.
 	///  * Forgetting about stale outbound payments, either those that have already been fulfilled
@@ -9333,6 +9334,8 @@ impl<
 			let mut timed_out_mpp_htlcs = Vec::new();
 			let mut pending_peers_awaiting_removal = Vec::new();
 			let mut feerate_cache = new_hash_map();
+			let mut post_update_results = Vec::new();
+			let user_config = self.config.read().unwrap().clone();
 
 			{
 				let per_peer_state = self.per_peer_state.read().unwrap();
@@ -9344,6 +9347,47 @@ impl<
 					peer_state.channel_by_id.retain(|chan_id, chan| {
 						match chan.as_funded_mut() {
 							Some(funded_chan) => {
+								let channel_is_connected = funded_chan.context.is_connected();
+								let logger = WithChannelContext::from(
+									&self.logger,
+									&funded_chan.context,
+									None,
+								);
+								let best_block_height = self.best_block.read().unwrap().height;
+								let pending_splice_locked =
+									funded_chan.timer_check_splice_locked(
+										&self.node_signer,
+										self.chain_hash,
+										&user_config,
+										best_block_height,
+										&&logger,
+									);
+								if let Some((splice_locked, splice_promotion)) = pending_splice_locked
+								{
+									should_persist = NotifyOption::DoPersist;
+									if channel_is_connected {
+										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+											node_id: counterparty_node_id,
+											msg: splice_locked,
+										});
+									}
+									if let Some(splice_promotion) = splice_promotion {
+										if let Some(post_update_data) = self
+											.handle_splice_promotion_with_funded_channel(
+												&counterparty_node_id,
+												splice_promotion,
+												funded_chan,
+												&mut peer_state.in_flight_monitor_updates,
+												&mut peer_state.monitor_update_blocked_actions,
+												pending_msg_events,
+												channel_is_connected,
+											)
+										{
+											post_update_results.push(post_update_data);
+										}
+									}
+								}
+
 								let channel_type = funded_chan.funding.get_channel_type();
 								let new_feerate = feerate_cache.get(channel_type).copied().or_else(|| {
 									let feerate = selected_commitment_sat_per_1000_weight(&self.fee_estimator, &channel_type);
@@ -9478,6 +9522,10 @@ impl<
 						pending_peers_awaiting_removal.push(counterparty_node_id);
 					}
 				}
+			}
+
+			for post_update_data in post_update_results {
+				let _ = self.handle_post_monitor_update_chan_resume(post_update_data);
 			}
 
 			// When a peer disconnects but still has channels, the peer's `peer_state` entry in the
@@ -12830,7 +12878,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							msg: tx_abort_msg,
 						});
 					}
-
 					if let Some(splice_funding_failed) = splice_failed {
 						let pending_events = &mut self.pending_events.lock().unwrap();
 						pending_events.extend(
@@ -14185,69 +14232,86 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			self.best_block.read().unwrap().height,
 			&&logger,
 		)?;
-		let mut post_update_data = None;
-		if let Some(splice_promotion) = splice_promotion {
-			let splice_funding_failed = splice_promotion.splice_funding_failed;
-			{
-				let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
-				insert_short_channel_id!(short_to_chan_info, chan);
-			}
+		Ok(splice_promotion.and_then(|splice_promotion| {
+			self.handle_splice_promotion_with_funded_channel(
+				counterparty_node_id,
+				splice_promotion,
+				chan,
+				in_flight_monitor_updates,
+				monitor_update_blocked_actions,
+				pending_msg_events,
+				is_connected,
+			)
+		}))
+	}
 
-			{
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push_back((
-					events::Event::ChannelReady {
-						channel_id: chan.context.channel_id(),
-						user_channel_id: chan.context.get_user_id(),
-						counterparty_node_id: chan.context.get_counterparty_node_id(),
-						funding_txo: Some(splice_promotion.funding_txo.into_bitcoin_outpoint()),
-						channel_type: chan.funding.get_channel_type().clone(),
-					},
-					None,
-				));
-				splice_promotion.discarded_funding.into_iter().for_each(|funding_info| {
-					let event = Event::DiscardFunding {
-						channel_id: chan.context.channel_id(),
-						funding_info,
-					};
-					pending_events.push_back((event, None));
-				});
-			}
-
-			if let Some(splice_funding_failed) = splice_funding_failed {
-				self.handle_quiescent_error(
-					chan.context.channel_id(),
-					chan.context.get_counterparty_node_id(),
-					chan.context.get_user_id(),
-					QuiescentError::FailSplice(
-						splice_funding_failed,
-						events::NegotiationFailureReason::CannotInitiateRbf,
-					),
-				);
-			}
-
-			if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
-				log_trace!(logger, "Sending announcement_signatures",);
-				pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
-					node_id: counterparty_node_id.clone(),
-					msg: announcement_sigs,
-				});
-			}
-
-			if let Some(monitor_update) = splice_promotion.monitor_update {
-				post_update_data = self.handle_new_monitor_update(
-					in_flight_monitor_updates,
-					monitor_update_blocked_actions,
-					pending_msg_events,
-					is_connected,
-					chan,
-					splice_promotion.funding_txo,
-					monitor_update,
-				);
-			}
+	fn handle_splice_promotion_with_funded_channel(
+		&self, counterparty_node_id: &PublicKey, splice_promotion: SpliceFundingPromotion,
+		chan: &mut FundedChannel<SP>,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		monitor_update_blocked_actions: &mut BTreeMap<
+			ChannelId,
+			Vec<MonitorUpdateCompletionAction>,
+		>,
+		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
+	) -> Option<PostMonitorUpdateChanResume> {
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+		let splice_funding_failed = splice_promotion.splice_funding_failed;
+		{
+			let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+			insert_short_channel_id!(short_to_chan_info, chan);
 		}
 
-		Ok(post_update_data)
+		{
+			let mut pending_events = self.pending_events.lock().unwrap();
+			pending_events.push_back((
+				events::Event::ChannelReady {
+					channel_id: chan.context.channel_id(),
+					user_channel_id: chan.context.get_user_id(),
+					counterparty_node_id: chan.context.get_counterparty_node_id(),
+					funding_txo: Some(splice_promotion.funding_txo.into_bitcoin_outpoint()),
+					channel_type: chan.funding.get_channel_type().clone(),
+				},
+				None,
+			));
+			splice_promotion.discarded_funding.into_iter().for_each(|funding_info| {
+				let event =
+					Event::DiscardFunding { channel_id: chan.context.channel_id(), funding_info };
+				pending_events.push_back((event, None));
+			});
+		}
+
+		if let Some(splice_funding_failed) = splice_funding_failed {
+			self.handle_quiescent_error(
+				chan.context.channel_id(),
+				chan.context.get_counterparty_node_id(),
+				chan.context.get_user_id(),
+				QuiescentError::FailSplice(
+					splice_funding_failed,
+					events::NegotiationFailureReason::CannotInitiateRbf,
+				),
+			);
+		}
+
+		if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
+			log_trace!(logger, "Sending announcement_signatures",);
+			pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+				node_id: counterparty_node_id.clone(),
+				msg: announcement_sigs,
+			});
+		}
+
+		splice_promotion.monitor_update.and_then(|monitor_update| {
+			self.handle_new_monitor_update(
+				in_flight_monitor_updates,
+				monitor_update_blocked_actions,
+				pending_msg_events,
+				is_connected,
+				chan,
+				splice_promotion.funding_txo,
+				monitor_update,
+			)
+		})
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning the appropriate
