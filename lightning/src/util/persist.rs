@@ -1922,8 +1922,9 @@ impl MonitorName {
 	/// [`Display`]: core::fmt::Display
 	pub(crate) fn to_key(self) -> InlineStr<{ Self::KEY_MAX_LEN }> {
 		let mut key = InlineStr::new();
-		// Writing to an `InlineStr` cannot fail.
-		let _ = write!(&mut key, "{}", self);
+		// Writing to an `InlineStr` cannot fail, but if it somehow did we'd be storing a monitor
+		// under a truncated key, potentially losing funds, so make sure we never do so.
+		write!(&mut key, "{}", self).expect("Writing to an InlineStr cannot fail");
 		debug_assert!(key.as_str().len() <= Self::KEY_MAX_LEN);
 		key
 	}
@@ -2035,8 +2036,9 @@ impl From<u64> for UpdateName {
 	/// ```
 	fn from(value: u64) -> Self {
 		let mut name = InlineStr::new();
-		// Writing to an `InlineStr` cannot fail.
-		let _ = write!(&mut name, "{}", value);
+		// Writing to an `InlineStr` cannot fail, but if it somehow did we'd be storing a monitor
+		// update under a truncated name, potentially losing funds, so make sure we never do so.
+		write!(&mut name, "{}", value).expect("Writing to an InlineStr cannot fail");
 		debug_assert!(name.as_str().len() <= Self::MAX_LEN);
 		Self(value, name)
 	}
