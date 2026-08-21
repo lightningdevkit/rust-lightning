@@ -4110,6 +4110,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.funding.contributed_inputs(),
 					self.funding.contributed_outputs(),
 				) {
+					let outputs = outputs.into_iter().map(|output| output.script_pubkey).collect();
 					self.pending_events.push(Event::DiscardFunding {
 						channel_id: self.channel_id,
 						funding_info: FundingInfo::Contribution { inputs, outputs },
