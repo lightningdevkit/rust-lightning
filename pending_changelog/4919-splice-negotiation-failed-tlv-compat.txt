@@ -1,0 +1,6 @@
+# Backwards Compatibility (0.3)
+
+ * A pending `Event::SpliceFailed` written by 0.2 is read as `Event::SpliceNegotiationFailed` with
+   `reason` set to `NegotiationFailureReason::Unknown` and no `contribution` (#4919). Note that a
+   pending `Event::DiscardFunding` with `FundingInfo::Contribution` still prevents downgrade to
+   0.2.

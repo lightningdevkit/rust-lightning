@@ -2553,12 +2553,14 @@ impl Writeable for Event {
 				ref contribution,
 			} => {
 				52u8.write(writer)?;
+				// Types 3, 9, 11, and 13 were `channel_type`, `abandoned_funding_txo`,
+				// `contributed_inputs`, and `contributed_outputs` in 0.2 and must not be reused.
 				write_tlv_fields!(writer, {
 					(1, channel_id, required),
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
-					(11, reason, required),
-					(13, contribution, option),
+					(15, reason, required),
+					(17, contribution, option),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -3213,8 +3215,8 @@ impl MaybeReadable for Event {
 						(1, channel_id, required),
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
-						(11, reason, upgradable_option),
-						(13, contribution, option),
+						(15, reason, upgradable_option),
+						(17, contribution, option),
 					});
 
 					Ok(Some(Event::SpliceNegotiationFailed {
@@ -3288,6 +3290,124 @@ mod tests {
 			},
 			_ => panic!("expected PaymentForwarded event"),
 		}
+	}
+
+	#[test]
+	fn legacy_splice_failed_event_read() {
+		let expected_channel_id = ChannelId::from_bytes([2; 32]);
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap();
+		let expected_node_id = PublicKey::from_secret_key(&secp_ctx, &secret_key);
+
+		// A 0.2-serialized `SpliceFailed` event, which wrote `abandoned_funding_txo`,
+		// `contributed_inputs`, and `contributed_outputs` at types 9, 11, and 13.
+		let mut tlvs = vec![1, 32]; // channel_id
+		tlvs.extend_from_slice(&[2; 32]);
+		tlvs.extend_from_slice(&[5, 16]); // user_channel_id
+		tlvs.extend_from_slice(&786u128.to_be_bytes());
+		tlvs.extend_from_slice(&[7, 33]); // counterparty_node_id
+		tlvs.extend_from_slice(&expected_node_id.serialize());
+		tlvs.extend_from_slice(&[9, 36]); // abandoned_funding_txo
+		tlvs.extend_from_slice(&[3; 32]);
+		tlvs.extend_from_slice(&[0, 0, 0, 1]);
+		tlvs.extend_from_slice(&[11, 72]); // contributed_inputs: two outpoints
+		tlvs.extend_from_slice(&[4; 32]);
+		tlvs.extend_from_slice(&[0, 0, 0, 2]);
+		tlvs.extend_from_slice(&[5; 32]);
+		tlvs.extend_from_slice(&[0, 0, 0, 3]);
+		tlvs.extend_from_slice(&[13, 31]); // contributed_outputs: one 546-sat P2WPKH output
+		tlvs.extend_from_slice(&546u64.to_le_bytes());
+		tlvs.push(22); // script length
+		tlvs.extend_from_slice(&[0, 20]); // OP_0 OP_PUSHBYTES_20
+		tlvs.extend_from_slice(&[6; 20]);
+
+		let mut encoded_legacy_event = vec![52, tlvs.len() as u8];
+		encoded_legacy_event.extend_from_slice(&tlvs);
+
+		match Event::read(&mut &encoded_legacy_event[..]).unwrap().unwrap() {
+			Event::SpliceNegotiationFailed {
+				channel_id,
+				user_channel_id,
+				counterparty_node_id,
+				reason,
+				contribution,
+			} => {
+				assert_eq!(channel_id, expected_channel_id);
+				assert_eq!(user_channel_id, 786);
+				assert_eq!(counterparty_node_id, expected_node_id);
+				assert_eq!(reason, NegotiationFailureReason::Unknown);
+				assert_eq!(contribution, None);
+			},
+			_ => panic!("expected SpliceNegotiationFailed event"),
+		}
+	}
+
+	#[test]
+	fn splice_negotiation_failed_event_read_by_0_2() -> Result<(), msgs::DecodeError> {
+		let expected_channel_id = ChannelId::from_bytes([2; 32]);
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap();
+		let expected_node_id = PublicKey::from_secret_key(&secp_ctx, &secret_key);
+
+		let event = Event::SpliceNegotiationFailed {
+			channel_id: expected_channel_id,
+			user_channel_id: 786,
+			counterparty_node_id: expected_node_id,
+			reason: NegotiationFailureReason::PeerDisconnected,
+			contribution: None,
+		};
+		let encoded = event.encode();
+		let mut cursor = &encoded[..];
+		let event_type: u8 = Readable::read(&mut cursor)?;
+		assert_eq!(event_type, 52);
+
+		// Mirrors the 0.2 read for event type 52, which must not error on newly written events.
+		let reader = &mut cursor;
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, channel_id, required),
+			(3, channel_type, option),
+			(5, user_channel_id, required),
+			(7, counterparty_node_id, required),
+			(9, abandoned_funding_txo, option),
+			(11, contributed_inputs, optional_vec),
+			(13, contributed_outputs, optional_vec),
+		});
+		assert!(cursor.is_empty());
+
+		let channel_id: ChannelId = channel_id.0.unwrap();
+		assert_eq!(channel_id, expected_channel_id);
+		let channel_type: Option<ChannelTypeFeatures> = channel_type;
+		assert_eq!(channel_type, None);
+		let user_channel_id: u128 = user_channel_id.0.unwrap();
+		assert_eq!(user_channel_id, 786);
+		let counterparty_node_id: PublicKey = counterparty_node_id.0.unwrap();
+		assert_eq!(counterparty_node_id, expected_node_id);
+		let abandoned_funding_txo: Option<OutPoint> = abandoned_funding_txo;
+		assert_eq!(abandoned_funding_txo, None);
+		let contributed_inputs: Option<Vec<OutPoint>> = contributed_inputs;
+		assert!(contributed_inputs.unwrap().is_empty());
+		let contributed_outputs: Option<Vec<bitcoin::TxOut>> = contributed_outputs;
+		assert!(contributed_outputs.unwrap().is_empty());
+
+		Ok(())
+	}
+
+	#[test]
+	fn splice_negotiation_failed_event_round_trip() {
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap();
+		let event = Event::SpliceNegotiationFailed {
+			channel_id: ChannelId::from_bytes([2; 32]),
+			user_channel_id: 786,
+			counterparty_node_id: PublicKey::from_secret_key(&secp_ctx, &secret_key),
+			reason: NegotiationFailureReason::CounterpartyAborted {
+				msg: UntrustedString("hodl".to_owned()),
+			},
+			contribution: None,
+		};
+		let encoded = event.encode();
+		let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+		assert_eq!(event, decoded);
 	}
 }
 
