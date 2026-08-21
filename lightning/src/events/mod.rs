@@ -2316,18 +2316,28 @@ impl Writeable for Event {
 				});
 			},
 			&Event::DiscardFunding { ref channel_id, ref funding_info } => {
-				11u8.write(writer)?;
-
-				let transaction = if let FundingInfo::Tx { transaction } = funding_info {
-					Some(transaction)
+				if let FundingInfo::Contribution { .. } = funding_info {
+					// 0.2 requires a transaction or outpoint when reading event type 11, so write
+					// `FundingInfo::Contribution` under an odd event type it will ignore instead.
+					53u8.write(writer)?;
+					write_tlv_fields!(writer, {
+						(1, channel_id, required),
+						(3, funding_info, required),
+					})
 				} else {
-					None
-				};
-				write_tlv_fields!(writer, {
-					(0, channel_id, required),
-					(2, transaction, option),
-					(4, funding_info, required),
-				})
+					11u8.write(writer)?;
+
+					let transaction = if let FundingInfo::Tx { transaction } = funding_info {
+						Some(transaction)
+					} else {
+						None
+					};
+					write_tlv_fields!(writer, {
+						(0, channel_id, required),
+						(2, transaction, option),
+						(4, funding_info, required),
+					})
+				}
 			},
 			&Event::PaymentPathSuccessful {
 				ref payment_id,
@@ -3265,6 +3275,20 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			53u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, channel_id, required),
+						(3, funding_info, required),
+					});
+
+					Ok(Some(Event::DiscardFunding {
+						channel_id: channel_id.0.unwrap(),
+						funding_info: funding_info.0.unwrap(),
+					}))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -3441,6 +3465,44 @@ mod tests {
 			contribution: None,
 		};
 		let encoded = event.encode();
+		let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+		assert_eq!(event, decoded);
+	}
+
+	#[test]
+	fn discard_funding_event_type_depends_on_funding_info() {
+		let channel_id = ChannelId::from_bytes([2; 32]);
+
+		// `FundingInfo::Contribution` is written under an odd event type, which 0.2 skips as it
+		// cannot read the enum variant.
+		let event = Event::DiscardFunding {
+			channel_id,
+			funding_info: FundingInfo::Contribution {
+				inputs: vec![OutPoint {
+					txid: bitcoin::Txid::from_slice(&[9; 32]).unwrap(),
+					vout: 1,
+				}],
+				outputs: vec![ScriptBuf::new_p2wpkh(
+					&bitcoin::WPubkeyHash::from_slice(&[7; 20]).unwrap(),
+				)],
+			},
+		};
+		let encoded = event.encode();
+		assert_eq!(encoded[0], 53);
+		let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+		assert_eq!(event, decoded);
+
+		// Other variants remain under event type 11, which 0.2 can read.
+		let transaction = Transaction {
+			version: bitcoin::transaction::Version::TWO,
+			lock_time: bitcoin::absolute::LockTime::ZERO,
+			input: vec![],
+			output: vec![],
+		};
+		let event =
+			Event::DiscardFunding { channel_id, funding_info: FundingInfo::Tx { transaction } };
+		let encoded = event.encode();
+		assert_eq!(encoded[0], 11);
 		let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
 		assert_eq!(event, decoded);
 	}
