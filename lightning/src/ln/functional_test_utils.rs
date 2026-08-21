@@ -3306,7 +3306,16 @@ pub fn expect_failed_rbf_events<'a, 'b, 'c>(
 		Event::SpliceNegotiationFailed { channel_id, reason, contribution, .. } => {
 			assert_eq!(channel_id, expected_channel_id);
 			assert_eq!(*reason, expected_reason);
-			assert_eq!(contribution.as_ref(), Some(expected_contribution));
+			let contribution = contribution.as_ref().unwrap();
+			assert_eq!(contribution.contribution(), expected_contribution);
+			// The inputs and outputs released by the failure must match those discarded.
+			assert_eq!(contribution.contributed_inputs(), &discarded.0[..]);
+			let contributed_output_scripts = contribution
+				.contributed_outputs()
+				.iter()
+				.map(|output| output.script_pubkey.clone())
+				.collect::<Vec<_>>();
+			assert_eq!(contributed_output_scripts, discarded.1);
 		},
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}

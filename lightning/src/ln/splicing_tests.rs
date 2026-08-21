@@ -935,7 +935,10 @@ fn complete_splice_locked_exchange<'a, 'b, 'c, 'd>(
 					let expected_contribution =
 						expected_failed_rbf[idx].expect("Unexpected SpliceNegotiationFailed event");
 					assert_eq!(*reason, NegotiationFailureReason::CannotInitiateRbf);
-					assert_eq!(actual_contribution.as_ref(), Some(expected_contribution));
+					let actual_contribution = actual_contribution
+						.as_ref()
+						.map(|contribution| contribution.contribution());
+					assert_eq!(actual_contribution, Some(expected_contribution));
 					assert!(!saw_failed_rbf, "Duplicate SpliceNegotiationFailed event");
 					saw_failed_rbf = true;
 				},
@@ -10079,7 +10082,8 @@ fn test_discarded_rbf_reports_feerate_too_low() {
 		assert_eq!(outputs, std::slice::from_ref(&script_pubkey));
 		assert_eq!(*failed_channel_id, channel_id);
 		assert_eq!(*reason, NegotiationFailureReason::FeeRateTooLow);
-		assert_eq!(contribution.as_ref(), Some(&stale_contribution));
+		let contribution = contribution.as_ref().map(|contribution| contribution.contribution());
+		assert_eq!(contribution, Some(&stale_contribution));
 	}
 	assert_no_queued_splice(&nodes[0], &channel_id);
 
@@ -10703,6 +10707,8 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 			} => {
 				assert_eq!(cid, channel_id);
 				assert_eq!(reason, NegotiationFailureReason::FeeRateTooLow);
+				let failed_contribution =
+					failed_contribution.map(|contribution| contribution.into_contribution());
 				assert_eq!(failed_contribution, Some(contribution.clone()));
 			},
 			other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
@@ -12679,7 +12685,9 @@ fn test_queued_rbf_fails_when_chain_event_promotes_splice() {
 	}
 	match &events[2] {
 		Event::SpliceNegotiationFailed { contribution: failed_contribution, reason, .. } => {
-			assert_eq!(failed_contribution.as_ref(), Some(&contribution));
+			let failed_contribution =
+				failed_contribution.as_ref().map(|contribution| contribution.contribution());
+			assert_eq!(failed_contribution, Some(&contribution));
 			assert_eq!(*reason, NegotiationFailureReason::CannotInitiateRbf);
 		},
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),

@@ -38,7 +38,9 @@ use crate::chain::channelmonitor::{
 use crate::chain::package::verify_channel_type_features;
 use crate::chain::transaction::{OutPoint, TransactionData};
 use crate::chain::BlockLocator;
-use crate::events::{ClosureReason, FundingInfo, NegotiationFailureReason};
+use crate::events::{
+	ClosureReason, FailedSpliceContribution, FundingInfo, NegotiationFailureReason,
+};
 use crate::ln::chan_utils;
 use crate::ln::chan_utils::{
 	get_commitment_transaction_number_obscure_factor, max_htlcs, second_stage_tx_fees_sat,
@@ -3466,10 +3468,14 @@ impl PendingFunding {
 		existing_outputs: impl Iterator<Item = &'a bitcoin::Script>,
 	) -> Option<(Vec<bitcoin::OutPoint>, Vec<ScriptBuf>)> {
 		let funding_components = self.funding_components();
-		contribution.into_unique_contributions(
-			existing_inputs.chain(funding_components.inputs()),
-			existing_outputs.chain(funding_components.outputs()),
-		)
+		contribution
+			.into_unique_contributions(
+				existing_inputs.chain(funding_components.inputs()),
+				existing_outputs.chain(funding_components.outputs()),
+			)
+			.map(|(inputs, outputs)| {
+				(inputs, outputs.into_iter().map(|output| output.script_pubkey).collect())
+			})
 	}
 
 	/// Our most recent contribution across rounds, including any round still under negotiation.
@@ -7513,7 +7519,7 @@ pub struct SpliceFundingFailed {
 
 	/// Outputs contributed to the splice transaction. Excludes outputs already contributed
 	/// in prior rounds, which may be included in `contribution`.
-	contributed_outputs: Vec<ScriptBuf>,
+	contributed_outputs: Vec<TxOut>,
 
 	/// The funding contribution from the failed round.
 	contribution: FundingContribution,
@@ -7537,17 +7543,26 @@ impl SpliceFundingFailed {
 
 	/// Splits into the funding info for `DiscardFunding` (if there are inputs or outputs to
 	/// discard) and the contribution for `SpliceNegotiationFailed`.
-	pub(super) fn into_parts(self) -> (Option<FundingInfo>, FundingContribution) {
+	pub(super) fn into_parts(self) -> (Option<FundingInfo>, FailedSpliceContribution) {
 		let funding_info =
 			if !self.contributed_inputs.is_empty() || !self.contributed_outputs.is_empty() {
 				Some(FundingInfo::Contribution {
-					inputs: self.contributed_inputs,
-					outputs: self.contributed_outputs,
+					inputs: self.contributed_inputs.clone(),
+					outputs: self
+						.contributed_outputs
+						.iter()
+						.map(|output| output.script_pubkey.clone())
+						.collect(),
 				})
 			} else {
 				None
 			};
-		(funding_info, self.contribution)
+		let contribution = FailedSpliceContribution::new(
+			self.contributed_inputs,
+			self.contributed_outputs,
+			self.contribution,
+		);
+		(funding_info, contribution)
 	}
 }
 
@@ -12381,7 +12396,10 @@ where
 						),
 					)
 				})
-				.map(|(inputs, outputs)| FundingInfo::Contribution { inputs, outputs })
+				.map(|(inputs, outputs)| FundingInfo::Contribution {
+					inputs,
+					outputs: outputs.into_iter().map(|output| output.script_pubkey).collect(),
+				})
 				.collect::<Vec<_>>()
 		};
 
@@ -13371,10 +13389,17 @@ where
 						existing.contributed_inputs(),
 						existing.contributed_outputs(),
 					),
-					None => contribution.into_unique_contributions(
-						existing.contributed_inputs(),
-						existing.contributed_outputs(),
-					),
+					None => contribution
+						.into_unique_contributions(
+							existing.contributed_inputs(),
+							existing.contributed_outputs(),
+						)
+						.map(|(inputs, outputs)| {
+							(
+								inputs,
+								outputs.into_iter().map(|output| output.script_pubkey).collect(),
+							)
+						}),
 				};
 				return match unique_contributions {
 					None => Err(QuiescentError::DoNothing),
