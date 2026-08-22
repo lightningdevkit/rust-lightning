@@ -157,7 +157,7 @@ impl Writeable for ChannelMonitorUpdate {
 			update_step.write(w)?;
 		}
 		write_tlv_fields!(w, {
-			// 1 was previously used to store `counterparty_node_id`
+			(1, _counterparty_node_id, retired),
 			(3, self.channel_id, option),
 		});
 		Ok(())
@@ -177,7 +177,7 @@ impl Readable for ChannelMonitorUpdate {
 		}
 		let mut channel_id = None;
 		read_tlv_fields!(r, {
-			// 1 was previously used to store `counterparty_node_id`
+			(1, _counterparty_node_id, retired),
 			(3, channel_id, option),
 		});
 		Ok(Self { update_id, updates, channel_id })

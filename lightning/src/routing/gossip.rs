@@ -1579,7 +1579,7 @@ impl fmt::Display for NodeInfo {
 impl Writeable for NodeInfo {
 	fn write<W: crate::util::ser::Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
-			// Note that older versions of LDK wrote the lowest inbound fees here at type 0
+			(0, _lowest_inbound_channel_fees, retired),
 			(2, self.announcement_info, option),
 			(4, self.channels, required_vec),
 		});
@@ -1613,11 +1613,10 @@ impl Readable for NodeInfo {
 		// requires additional complexity and lookups during routing, it ends up being a
 		// performance loss. Thus, we simply ignore the old field here and no longer track it.
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
-			(0, _lowest_inbound_channel_fees, option),
+			(0, _lowest_inbound_channel_fees, retired),
 			(2, announcement_info_wrap, upgradable_option),
 			(4, channels, required_vec),
 		});
-		let _: Option<RoutingFees> = _lowest_inbound_channel_fees;
 		let announcement_info_wrap: Option<NodeAnnouncementInfoDeserWrapper> =
 			announcement_info_wrap;
 

@@ -2194,7 +2194,7 @@ impl Writeable for Event {
 					// Marked as legacy in version 0.2.0 for the same reason as
 					// `receiving_channel_id_legacy`; superseded by `receiving_channel_ids`.
 					(5, receiving_user_channel_id_legacy, option),
-					// Type 6 was `user_payment_id` on 0.0.103 and earlier
+					(6, _user_payment_id, retired), // Used in 0.0.103 and earlier
 					(7, claim_deadline, required),
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
@@ -2690,7 +2690,6 @@ impl MaybeReadable for Event {
 					let mut amount_msat = 0;
 					let mut counterparty_skimmed_fee_msat_opt = None;
 					let mut receiver_node_id = None;
-					let mut _user_payment_id = None::<u64>; // Used in 0.0.103 and earlier, no longer written in 0.0.116+.
 					let mut receiving_channel_id_legacy = None;
 					let mut claim_deadline = 0;
 					let mut receiving_user_channel_id_legacy = None;
@@ -2705,7 +2704,7 @@ impl MaybeReadable for Event {
 						(3, receiving_channel_id_legacy, option),
 						(4, amount_msat, required),
 						(5, receiving_user_channel_id_legacy, option),
-						(6, _user_payment_id, option),
+						(6, _user_payment_id, retired), // Used in 0.0.103 and earlier
 						(7, claim_deadline, required),
 						(8, payment_preimage, option),
 						(9, onion_fields, (option: ReadableArgs, amount_msat)),

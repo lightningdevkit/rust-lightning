@@ -1193,6 +1193,7 @@ impl_writeable_tlv_based!(ChannelTransactionParameters, self, {
 		option
 	),
 	(11, self.channel_type_features, required),
+	// 12 was `opt_non_zero_fee_anchors` in 0.0.113-115, never written as `Some`, so 0.2 reused it
 	(12, self.splice_parent_funding_txid, option),
 	(13, self.channel_value_satoshis, required),
 });
@@ -1218,6 +1219,7 @@ impl ReadableArgs<Option<u64>> for ChannelTransactionParameters {
 			(8, funding_outpoint, option),
 			(10, _legacy_deserialization_prevention_marker, option),
 			(11, channel_type_features, option),
+			// 12 was `opt_non_zero_fee_anchors` in 0.0.113-115, never written as `Some`, so 0.2 reused it
 			(12, splice_parent_funding_txid, option),
 			(13, channel_value_satoshis, option),
 		});
@@ -1660,6 +1662,7 @@ impl_writeable_tlv_based!(CommitmentTransaction, self, {
 		option
 	),
 	(15, self.channel_type_features, required),
+	(16, _opt_non_zero_fee_anchors, retired), // Used in 0.0.113 through 0.0.115
 });
 
 impl Readable for CommitmentTransaction {
@@ -1676,6 +1679,8 @@ impl Readable for CommitmentTransaction {
 			(12, nondust_htlcs, required_vec),
 			(14, _legacy_deserialization_prevention_marker, (option, explicit_type: ())),
 			(15, channel_type_features, option),
+			// 16 (`opt_non_zero_fee_anchors` in 0.0.113-115) is deliberately unlisted so that data
+			// containing it fails to read rather than losing its anchors semantics.
 		});
 
 		let mut additional_features = ChannelTypeFeatures::empty();
