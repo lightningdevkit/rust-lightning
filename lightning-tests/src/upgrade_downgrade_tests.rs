@@ -1066,10 +1066,20 @@ fn upgrade_single_splice_from_0_2() {
 
 #[test]
 fn upgrade_mid_splice_negotiation_from_0_2() {
+	do_upgrade_mid_splice_negotiation_from_0_2(false);
+}
+
+#[test]
+fn upgrade_mid_splice_negotiation_with_funding_from_0_2() {
+	do_upgrade_mid_splice_negotiation_from_0_2(true);
+}
+
+fn do_upgrade_mid_splice_negotiation_from_0_2(deliver_splice_ack: bool) {
 	// An incomplete splice negotiation does not persist, so a ChannelManager written by 0.2
 	// mid-negotiation embeds a synthesized `SpliceFailed` event carrying the contributed
 	// inputs/outputs at TLV types since reused for `reason` and `contribution`. Ensure current
-	// code can read it (see #4919).
+	// code can read it (see #4919). Once `splice_ack` has been handled, the negotiation has a
+	// funding, so the event also carries `channel_type` at type 3, which current code retired.
 	let (node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, chan_id_bytes);
 	{
 		let chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
@@ -1097,8 +1107,7 @@ fn upgrade_mid_splice_negotiation_from_0_2() {
 			.splice_channel(&channel_id, &node_id_1, contribution, FEERATE_FLOOR_0_2, None)
 			.unwrap();
 
-		// Stop the negotiation after `splice_ack`, leaving both nodes in a state that isn't
-		// persisted.
+		// Stop the negotiation mid-flight, leaving both nodes in a state that isn't persisted.
 		let stfu = get_event_msg_0_2!(nodes[0], MessageSendEvent_0_2::SendStfu, node_id_1);
 		nodes[1].node.handle_stfu(node_id_0, &stfu);
 		let stfu = get_event_msg_0_2!(nodes[1], MessageSendEvent_0_2::SendStfu, node_id_0);
@@ -1106,7 +1115,12 @@ fn upgrade_mid_splice_negotiation_from_0_2() {
 		let splice_init =
 			get_event_msg_0_2!(nodes[0], MessageSendEvent_0_2::SendSpliceInit, node_id_1);
 		nodes[1].node.handle_splice_init(node_id_0, &splice_init);
-		let _ = get_event_msg_0_2!(nodes[1], MessageSendEvent_0_2::SendSpliceAck, node_id_0);
+		let splice_ack =
+			get_event_msg_0_2!(nodes[1], MessageSendEvent_0_2::SendSpliceAck, node_id_0);
+		if deliver_splice_ack {
+			nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+			let _ = get_event_msg_0_2!(nodes[0], MessageSendEvent_0_2::SendTxAddInput, node_id_1);
+		}
 
 		node_0_ser = nodes[0].node.encode();
 		node_1_ser = nodes[1].node.encode();

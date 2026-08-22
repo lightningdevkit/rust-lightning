@@ -2647,8 +2647,7 @@ impl Writeable for Event {
 				52u8.write(writer)?;
 				// 0.2 wrote `contributed_inputs` and `contributed_outputs` at types 11 and 13, so
 				// write them for its benefit when downgrading. They are also read back to survive
-				// re-serialization. Types 3 and 9 were `channel_type` and `abandoned_funding_txo`
-				// in 0.2 and must not be reused.
+				// re-serialization.
 				let contributed_inputs = contribution
 					.as_ref()
 					.filter(|contribution| !contribution.contributed_inputs.is_empty())
@@ -2661,8 +2660,10 @@ impl Writeable for Event {
 					contribution.as_ref().map(|contribution| &contribution.contribution);
 				write_tlv_fields!(writer, {
 					(1, channel_id, required),
+					(3, _channel_type, retired), // `channel_type` in 0.2
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
+					(9, _abandoned_funding_txo, retired), // `abandoned_funding_txo` in 0.2
 					(11, contributed_inputs, option),
 					(13, contributed_outputs, option),
 					(15, reason, required),
@@ -3318,12 +3319,13 @@ impl MaybeReadable for Event {
 				let mut f = || {
 					// Types 11 and 13 were written by 0.2 with the same encoding. When type 17 is
 					// absent (an event written by 0.2), they are dropped along with the missing
-					// contribution. Types 3 and 9 were `channel_type` and `abandoned_funding_txo`
-					// in 0.2 and must not be reused.
+					// contribution.
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(1, channel_id, required),
+						(3, _channel_type, retired), // `channel_type` in 0.2
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
+						(9, _abandoned_funding_txo, retired), // `abandoned_funding_txo` in 0.2
 						(11, contributed_inputs, optional_vec),
 						(13, contributed_outputs, optional_vec),
 						(15, reason, upgradable_option),
