@@ -1026,11 +1026,11 @@ mod fuzzy_channelmanager {
 	}
 
 	impl HTLCPreviousHopData {
-		pub(super) fn htlc_locator(&self, amount_msat: Option<u64>) -> events::HTLCLocator {
-			events::HTLCLocator {
+		pub(super) fn htlc_locator(&self, amount_msat: Option<u64>) -> events::InboundHTLCLocator {
+			events::InboundHTLCLocator {
 				channel_id: self.channel_id,
-				amount_msat,
 				htlc_id: Some(self.htlc_id),
+				amount_msat,
 				user_channel_id: self.user_channel_id,
 				node_id: self.counterparty_node_id,
 			}
@@ -10659,7 +10659,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: u64, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
-		next_channel_id: ChannelId, next_user_channel_id: Option<u128>, next_htlc_id: Option<u64>,
+		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
 	) {
 		let startup_replay =
@@ -10741,10 +10741,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							prev_htlcs: vec![
 								event_prev_hop_data.htlc_locator(prev_htlc_amount_msat)
 							],
-							next_htlcs: vec![events::HTLCLocator {
+							next_htlcs: vec![events::OutboundHTLCLocator {
 								channel_id: next_channel_id,
 								amount_msat: Some(forwarded_htlc_value_msat),
-								htlc_id: next_htlc_id,
 								user_channel_id: next_user_channel_id,
 								node_id: Some(next_channel_counterparty_node_id),
 							}],
@@ -10785,10 +10784,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									// TODO: When trampoline payments are tracked in our
 									// pending_outbound_payments, we'll be able to provide all the
 									// outgoing htlcs for this forward.
-									next_htlcs: vec![events::HTLCLocator {
+									next_htlcs: vec![events::OutboundHTLCLocator {
 										channel_id: next_channel_id,
 										amount_msat: Some(forwarded_htlc_value_msat),
-										htlc_id: next_htlc_id,
 										user_channel_id: next_user_channel_id,
 										node_id: Some(next_channel_counterparty_node_id),
 									}],
@@ -13309,7 +13307,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
-			Some(msg.htlc_id),
 			msg.attribution_data,
 			send_timestamp,
 		);
@@ -14359,7 +14356,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
-								None,
 								None,
 								None,
 								None,
@@ -21437,7 +21433,6 @@ impl<
 				downstream_funding,
 				downstream_channel_id,
 				downstream_user_channel_id,
-				None,
 				None,
 				None,
 			);

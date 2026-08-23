@@ -1112,7 +1112,8 @@ impl_for_vec!(crate::routing::router::TrampolineHop);
 impl_for_vec_with_element_length_prefix!(crate::ln::msgs::UpdateAddHTLC);
 impl_writeable_for_vec_with_element_length_prefix!(&crate::ln::msgs::UpdateAddHTLC);
 impl_for_vec!(u32);
-impl_for_vec!(crate::events::HTLCLocator);
+impl_for_vec!(crate::events::InboundHTLCLocator);
+impl_for_vec!(crate::events::OutboundHTLCLocator);
 impl_for_vec!(crate::ln::types::ChannelId);
 
 impl Writeable for Vec<Witness> {
