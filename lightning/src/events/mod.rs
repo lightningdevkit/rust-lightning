@@ -860,21 +860,19 @@ pub enum InboundChannelFunds {
 	DualFunded,
 }
 
-/// Identifies the channel and peer committed to a HTLC, used for both incoming and outgoing HTLCs.
+/// Identifies the channel and specific HTLC for the inbound edge of a forwarded payment.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct HTLCLocator {
-	/// The channel that the HTLC was sent or received on.
+pub struct InboundHTLCLocator {
+	/// The channel that the HTLC was received on.
 	pub channel_id: ChannelId,
 
-	/// The amount, in milli-satoshis, of the HTLC that was sent or received, if known.
-	pub amount_msat: Option<u64>,
-
-	/// The HTLC ID assigned by the channel `channel_id`.
+	/// The HTLC ID within the channel `channel_id`.
 	///
-	/// This is always `Some` for HTLCs we received, but may be `None` for HTLCs we sent, e.g. if
-	/// the HTLC was resolved by an on-chain transaction. It will also be `None` for events
-	/// serialized by versions prior to 0.3.
+	/// This is only `None` for events serialized by versions prior to 0.3.
 	pub htlc_id: Option<u64>,
+
+	/// The amount, in milli-satoshis, of the HTLC that was received, if known.
+	pub amount_msat: Option<u64>,
 
 	/// The `user_channel_id` for `channel_id`.
 	///
@@ -882,19 +880,47 @@ pub struct HTLCLocator {
 	/// be `None` for events serialized by versions prior to 0.0.122.
 	pub user_channel_id: Option<u128>,
 
-	/// The public key identity of the node that the HTLC was sent to or received from.
+	/// The public key identity of the node that the HTLC was received from.
 	///
 	/// This is only `None` for HTLCs received prior to 0.1 or for events serialized by versions
 	/// prior to 0.1.
 	pub node_id: Option<PublicKey>,
 }
 
-impl_writeable_tlv_based!(HTLCLocator, {
+impl_writeable_tlv_based!(InboundHTLCLocator, {
 	(1, channel_id, required),
 	(3, user_channel_id, option),
 	(5, node_id, option),
 	(7, amount_msat, option),
 	(9, htlc_id, option),
+});
+
+/// Identifies the channel and HTLC for the outbound edge of a forwarded payment.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutboundHTLCLocator {
+	/// The channel that the HTLC was sent on.
+	pub channel_id: ChannelId,
+
+	/// The amount, in milli-satoshis, of the HTLC that was sent, if known.
+	pub amount_msat: Option<u64>,
+
+	/// The `user_channel_id` for `channel_id`.
+	///
+	/// This will be `None` if the payment was settled via an on-chain transaction. It will also
+	/// be `None` for events serialized by versions prior to 0.0.122.
+	pub user_channel_id: Option<u128>,
+
+	/// The public key identity of the node that the HTLC was sent to.
+	///
+	/// This is only `None` for events serialized by versions prior to 0.1.
+	pub node_id: Option<PublicKey>,
+}
+
+impl_writeable_tlv_based!(OutboundHTLCLocator, {
+	(1, channel_id, required),
+	(3, user_channel_id, option),
+	(5, node_id, option),
+	(7, amount_msat, option),
 });
 
 /// An Event which you should probably take some action in response to.
@@ -1498,11 +1524,11 @@ pub enum Event {
 		/// The set of HTLCs forwarded to our node that will be claimed by this forward. Contains a
 		/// single HTLC for source-routed payments, and may contain multiple HTLCs when we acted as
 		/// a trampoline router, responsible for pathfinding within the route.
-		prev_htlcs: Vec<HTLCLocator>,
+		prev_htlcs: Vec<InboundHTLCLocator>,
 		/// The set of HTLCs forwarded by our node that have been claimed by this forward. Contains
 		/// a single HTLC for regular source-routed payments, and may contain multiple HTLCs when
 		/// we acted as a trampoline router, responsible for pathfinding within the route.
-		next_htlcs: Vec<HTLCLocator>,
+		next_htlcs: Vec<OutboundHTLCLocator>,
 		/// The total fee, in milli-satoshis, which was earned as a result of the payment.
 		///
 		/// Note that if we force-closed the channel over which we forwarded an HTLC while the HTLC
@@ -2225,15 +2251,21 @@ impl Writeable for Event {
 					!next_htlcs.is_empty(),
 					"at least one next_htlc required for PaymentForwarded",
 				);
-				let empty_locator = HTLCLocator {
+				let empty_prev = InboundHTLCLocator {
 					channel_id: ChannelId::new_zero(),
-					amount_msat: None,
 					htlc_id: None,
+					amount_msat: None,
 					user_channel_id: None,
 					node_id: None,
 				};
-				let legacy_prev = prev_htlcs.first().unwrap_or(&empty_locator);
-				let legacy_next = next_htlcs.first().unwrap_or(&empty_locator);
+				let empty_next = OutboundHTLCLocator {
+					channel_id: ChannelId::new_zero(),
+					amount_msat: None,
+					user_channel_id: None,
+					node_id: None,
+				};
+				let legacy_prev = prev_htlcs.first().unwrap_or(&empty_prev);
+				let legacy_next = next_htlcs.first().unwrap_or(&empty_next);
 				write_tlv_fields!(writer, {
 					(0, total_fee_earned_msat, option),
 					(1, Some(legacy_prev.channel_id), option),
@@ -2794,18 +2826,17 @@ impl MaybeReadable for Event {
 						// We never expect prev/next_channel_id_legacy to be None because this field
 						// was only None for versions before 0.0.107 and we do not allow upgrades
 						// with pending forwards to 0.1 for any version 0.0.123 or earlier.
-						(17, prev_htlcs, (default_value, vec![HTLCLocator{
+						(17, prev_htlcs, (default_value, vec![InboundHTLCLocator{
 							channel_id: prev_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
+							htlc_id: None,
 							amount_msat: total_fee_earned_msat
 								.map(|fee| outbound_amount_forwarded_msat + fee),
-							htlc_id: None,
 							user_channel_id: prev_user_channel_id_legacy,
 							node_id: prev_node_id_legacy,
 						}])),
-						(19, next_htlcs, (default_value, vec![HTLCLocator{
+						(19, next_htlcs, (default_value, vec![OutboundHTLCLocator{
 							channel_id: next_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
 							amount_msat: Some(outbound_amount_forwarded_msat),
-							htlc_id: None,
 							user_channel_id: next_user_channel_id_legacy,
 							node_id: next_node_id_legacy,
 						}])),
@@ -3284,7 +3315,6 @@ mod tests {
 				assert_eq!(next_htlcs.len(), 1);
 				assert_eq!(next_htlcs[0].channel_id, next_channel_id);
 				assert_eq!(next_htlcs[0].amount_msat, Some(3_000_000));
-				assert_eq!(next_htlcs[0].htlc_id, None);
 			},
 			_ => panic!("expected PaymentForwarded event"),
 		}

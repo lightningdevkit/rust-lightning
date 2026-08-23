@@ -4212,12 +4212,6 @@ pub fn pass_claimed_payment_along_route_from_ev(
 				}
 				let mut events = $node.node.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
-				if let Event::PaymentForwarded { next_htlcs, .. } = &events[0] {
-					let fulfilled_htlc_id = next_msgs.as_ref().unwrap().0.htlc_id;
-					assert_eq!(next_htlcs[0].htlc_id, Some(fulfilled_htlc_id));
-				} else {
-					panic!("Unexpected event {:?}", events[0]);
-				}
 				let actual_fee = expect_payment_forwarded(
 					events.pop().unwrap(),
 					*$node,
