@@ -1517,6 +1517,11 @@ pub enum Event {
 	/// payments will produce an event that only provides information about the first htlc that was
 	/// received/dispatched.
 	///
+	/// A forward is uniquely identified by the set of [`InboundHTLCLocator::channel_id`] and
+	/// [`InboundHTLCLocator::htlc_id`] pairs in `prev_htlcs`. As duplicate events may be generated
+	/// for a single forward (see `total_fee_earned_msat` below), that set should be used as a
+	/// de-duplication key.
+	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
