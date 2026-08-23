@@ -47,59 +47,9 @@ GEN_FAKE_HASHES_TEST lsps_message
 GEN_FAKE_HASHES_TEST fs_store
 GEN_FAKE_HASHES_TEST gossip_discovery
 
-GEN_FAKE_HASHES_TEST msg_accept_channel msg_targets::
-GEN_FAKE_HASHES_TEST msg_announcement_signatures msg_targets::
-GEN_FAKE_HASHES_TEST msg_channel_reestablish msg_targets::
-GEN_FAKE_HASHES_TEST msg_closing_signed msg_targets::
-GEN_FAKE_HASHES_TEST msg_closing_complete msg_targets::
-GEN_FAKE_HASHES_TEST msg_closing_sig msg_targets::
-GEN_FAKE_HASHES_TEST msg_commitment_signed msg_targets::
-GEN_FAKE_HASHES_TEST msg_decoded_onion_error_packet msg_targets::
-GEN_FAKE_HASHES_TEST msg_funding_created msg_targets::
-GEN_FAKE_HASHES_TEST msg_channel_ready msg_targets::
-GEN_FAKE_HASHES_TEST msg_funding_signed msg_targets::
-GEN_FAKE_HASHES_TEST msg_init msg_targets::
-GEN_FAKE_HASHES_TEST msg_open_channel msg_targets::
-GEN_FAKE_HASHES_TEST msg_revoke_and_ack msg_targets::
-GEN_FAKE_HASHES_TEST msg_shutdown msg_targets::
-GEN_FAKE_HASHES_TEST msg_update_fail_htlc msg_targets::
-GEN_FAKE_HASHES_TEST msg_update_fail_malformed_htlc msg_targets::
-GEN_FAKE_HASHES_TEST msg_update_fee msg_targets::
-GEN_FAKE_HASHES_TEST msg_update_fulfill_htlc msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_channel_announcement msg_targets::
-GEN_FAKE_HASHES_TEST msg_node_announcement msg_targets::
-GEN_FAKE_HASHES_TEST msg_query_short_channel_ids msg_targets::
-GEN_FAKE_HASHES_TEST msg_reply_short_channel_ids_end msg_targets::
-GEN_FAKE_HASHES_TEST msg_query_channel_range msg_targets::
-GEN_FAKE_HASHES_TEST msg_reply_channel_range msg_targets::
-GEN_FAKE_HASHES_TEST msg_gossip_timestamp_filter msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_update_add_htlc msg_targets::
-GEN_FAKE_HASHES_TEST msg_error_message msg_targets::
-GEN_FAKE_HASHES_TEST msg_channel_update msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_ping msg_targets::
-GEN_FAKE_HASHES_TEST msg_pong msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_channel_details msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_open_channel_v2 msg_targets::
-GEN_FAKE_HASHES_TEST msg_accept_channel_v2 msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_add_input msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_add_output msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_remove_input msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_remove_output msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_complete msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_signatures msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_init_rbf msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_ack_rbf msg_targets::
-GEN_FAKE_HASHES_TEST msg_tx_abort msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_stfu msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_splice_init msg_targets::
-GEN_FAKE_HASHES_TEST msg_splice_ack msg_targets::
-GEN_FAKE_HASHES_TEST msg_splice_locked msg_targets::
-
-GEN_FAKE_HASHES_TEST msg_blinded_message_path msg_targets::
+# The message targets are listed in ../msg_targets/gen_target.sh, which writes a
+# module for each of them to ../msg_targets/mod.rs. Generate a binary for every
+# such module rather than repeating the list here.
+for msg_target in $(sed -n 's/^pub mod \(msg_[a-z0-9_]*\);$/\1/p' ../msg_targets/mod.rs); do
+	GEN_FAKE_HASHES_TEST "$msg_target" msg_targets::
+done

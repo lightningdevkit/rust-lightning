@@ -12,7 +12,8 @@ GEN_TEST() {
 	echo "mod utils;"
 } > mod.rs
 
-# Note when adding new targets here you should add a similar line in src/bin/gen_target.sh
+# Note when adding new targets here you should re-run src/bin/gen_target.sh as
+# well, as it generates a fuzz binary for each module listed in mod.rs.
 
 GEN_TEST lightning::ln::msgs::AcceptChannel test_msg_simple ""
 GEN_TEST lightning::ln::msgs::AnnouncementSignatures test_msg_simple ""
