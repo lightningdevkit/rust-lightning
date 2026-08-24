@@ -18970,15 +18970,20 @@ impl<
 
 		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 
-		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the
-		// SpliceNegotiationFailed and DiscardFunding events is not persisted, the events need to
-		// be persisted even though they haven't been emitted yet. They are written alongside the
-		// pending events below but never added to them, as writing may fail.
+		// Since some FundingNegotiation variants and contributions queued waiting on quiescence
+		// are not persisted, any splice in such state must be failed upon reload. However, as the
+		// necessary information for the SpliceNegotiationFailed and DiscardFunding events is not
+		// persisted, the events need to be persisted even though they haven't been emitted yet.
+		// They are written alongside the pending events below but never added to them, as writing
+		// may fail.
 		let mut splice_failed_events: Vec<(Event, Option<EventCompletionAction>)> = Vec::new();
 		for peer_state in peer_states.iter() {
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
-				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
+				let failed_splices = chan
+					.maybe_splice_funding_failed()
+					.into_iter()
+					.chain(chan.maybe_queued_splice_funding_failed());
+				for splice_funding_failed in failed_splices {
 					splice_failed_events.extend(
 						splice_negotiation_failed_events(
 							chan.context.channel_id(),
@@ -19912,6 +19917,11 @@ impl<
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
+					// Freshly-read channels never restore a queued splice contribution or a
+					// resettable funding negotiation, so force-closing here cannot surface a
+					// splice failure; events for unpersisted splice state were synthesized
+					// when the manager was written.
+					debug_assert!(shutdown_result.splice_funding_failed.is_none());
 					if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) =
 						shutdown_result.monitor_update
 					{
