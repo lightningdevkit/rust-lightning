@@ -1302,9 +1302,10 @@ pub(crate) struct ShutdownResult {
 	pub(crate) unbroadcasted_funding_tx: Option<Transaction>,
 	pub(crate) channel_funding_txo: Option<OutPoint>,
 	pub(crate) last_local_balance_msat: u64,
-	/// If a splice was in progress when the channel was shut down, this contains
-	/// the splice funding information for emitting a SpliceNegotiationFailed event.
-	pub(crate) splice_funding_failed: Option<SpliceFundingFailed>,
+	/// If any splices were in progress when the channel was shut down, this contains
+	/// the splice funding information for emitting SpliceNegotiationFailed events. Both an
+	/// active negotiation round and a contribution queued for a later round may fail at once.
+	pub(crate) splice_funding_failed: Vec<SpliceFundingFailed>,
 }
 
 /// The result of a peer disconnection.
@@ -6901,7 +6902,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			is_manual_broadcast: self.is_manual_broadcast,
 			channel_funding_txo: funding.get_funding_txo(),
 			last_local_balance_msat: funding.value_to_self_msat,
-			splice_funding_failed: None,
+			splice_funding_failed: Vec::new(),
 		}
 	}
 
@@ -7615,16 +7616,19 @@ where
 		}
 	}
 
-	fn maybe_fail_splice_negotiation(&mut self) -> Option<SpliceFundingFailed> {
-		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			if self.should_reset_pending_splice_state(true) {
-				self.reset_pending_splice_state()
-			} else {
-				self.abandon_quiescent_action()
-			}
+	fn maybe_fail_splice_negotiation(&mut self) -> Vec<SpliceFundingFailed> {
+		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
+			return Vec::new();
+		}
+		let negotiation_failed = if self.should_reset_pending_splice_state(true) {
+			self.reset_pending_splice_state()
 		} else {
 			None
-		}
+		};
+		// A contribution queued for a later round (e.g., behind a counterparty-initiated
+		// negotiation) fails independently of the active round and must also be reported.
+		let queued_failed = self.abandon_quiescent_action();
+		negotiation_failed.into_iter().chain(queued_failed).collect()
 	}
 
 	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
@@ -11755,7 +11759,7 @@ where
 			is_manual_broadcast: self.context.is_manual_broadcast,
 			channel_funding_txo: self.funding.get_funding_txo(),
 			last_local_balance_msat: self.funding.value_to_self_msat,
-			splice_funding_failed: None,
+			splice_funding_failed: Vec::new(),
 		}
 	}
 

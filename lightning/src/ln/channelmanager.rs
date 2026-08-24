@@ -4540,7 +4540,7 @@ impl<
 				None,
 			));
 
-			if let Some(splice_funding_failed) = shutdown_res.splice_funding_failed.take() {
+			for splice_funding_failed in shutdown_res.splice_funding_failed.drain(..) {
 				pending_events.extend(
 					splice_negotiation_failed_events(
 						shutdown_res.channel_id,
@@ -19460,7 +19460,7 @@ impl<
 					// resettable funding negotiation, so force-closing here cannot surface a
 					// splice failure; events for unpersisted splice state were synthesized
 					// when the manager was written.
-					debug_assert!(shutdown_result.splice_funding_failed.is_none());
+					debug_assert!(shutdown_result.splice_funding_failed.is_empty());
 					if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) =
 						shutdown_result.monitor_update
 					{
