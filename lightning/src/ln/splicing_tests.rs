@@ -5130,6 +5130,205 @@ fn fail_quiescent_action_on_channel_close() {
 }
 
 #[test]
+fn fail_queued_splice_during_counterparty_splice_on_channel_close() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let acceptor = &nodes[0];
+	let initiator = &nodes[1];
+
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+	let node_id_initiator = initiator.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let _initiator_contribution =
+		do_initiate_splice_in(initiator, acceptor, channel_id, added_value);
+
+	let stfu_initiator = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+	acceptor.node.handle_stfu(node_id_initiator, &stfu_initiator);
+	let stfu_acceptor = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+	initiator.node.handle_stfu(node_id_acceptor, &stfu_acceptor);
+
+	let splice_init = get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
+	acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+	let splice_ack = get_event_msg!(acceptor, MessageSendEvent::SendSpliceAck, node_id_initiator);
+	assert_eq!(splice_ack.funding_contribution_satoshis, 0);
+
+	// Queue our own contribution behind the counterparty's in-flight round.
+	let funding_template = acceptor.node.splice_channel(&channel_id, &node_id_initiator).unwrap();
+	let feerate = funding_template.min_rbf_feerate().unwrap();
+	let wallet = WalletSync::new(Arc::clone(&acceptor.wallet_source), acceptor.logger);
+	let queued_contribution = funding_template
+		.splice_in_sync(Amount::from_sat(25_000), feerate, FeeRate::MAX, &wallet)
+		.unwrap();
+	acceptor
+		.node
+		.funding_contributed(&channel_id, &node_id_initiator, queued_contribution.clone(), None)
+		.unwrap();
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Force-close while both the counterparty's active negotiation and our queued contribution
+	// are pending. The queued contribution's UTXOs must be released via failure events.
+	acceptor
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_id_initiator, "test".to_owned())
+		.unwrap();
+	handle_bump_events(acceptor, true, 0);
+
+	let events = acceptor.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3, "{events:?}");
+	assert!(matches!(events[0], Event::ChannelClosed { channel_id: cid, .. } if cid == channel_id));
+	let (expected_inputs, expected_outputs) =
+		queued_contribution.clone().into_contributed_inputs_and_outputs();
+	match &events[1] {
+		Event::DiscardFunding {
+			channel_id: cid,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*inputs, expected_inputs);
+			assert_eq!(*outputs, expected_outputs);
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+	match &events[2] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+			assert_eq!(contribution.as_ref().unwrap().contribution(), &queued_contribution);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+
+	check_closed_broadcast(acceptor, 1, true);
+	check_added_monitors(acceptor, 1);
+}
+
+#[test]
+fn fail_folded_and_queued_splice_contributions_on_channel_close() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	provide_utxo_reserves(&nodes, 2, Amount::ONE_BTC);
+
+	// Give the acceptor channel balance so it can afford a splice-out contribution later.
+	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+
+	// Both nodes commit contributions. The quiescence tie-break makes the funder the splice
+	// initiator, so the acceptor's contribution is folded into the counterparty-initiated round.
+	let _initiator_contribution =
+		initiate_splice_in(initiator, acceptor, channel_id, Amount::from_sat(50_000));
+	let acceptor_contribution =
+		initiate_splice_in(acceptor, initiator, channel_id, Amount::from_sat(25_000));
+
+	let stfu_initiator = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+	let stfu_acceptor = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+	acceptor.node.handle_stfu(node_id_initiator, &stfu_initiator);
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+	initiator.node.handle_stfu(node_id_acceptor, &stfu_acceptor);
+
+	let splice_init = get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
+	acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+	let splice_ack = get_event_msg!(acceptor, MessageSendEvent::SendSpliceAck, node_id_initiator);
+	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
+
+	// Queue a second contribution behind the active round. Use a splice-out to a distinct
+	// script so it does not overlap with the folded-in contribution's change output.
+	let funding_template = acceptor.node.splice_channel(&channel_id, &node_id_initiator).unwrap();
+	let feerate = funding_template.min_rbf_feerate().unwrap();
+	let script_pubkey = ScriptBuf::new_p2wsh(&WScriptHash::hash(&[42; 32]));
+	let outputs = vec![TxOut { value: Amount::from_sat(1_000), script_pubkey }];
+	let queued_contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
+	acceptor
+		.node
+		.funding_contributed(&channel_id, &node_id_initiator, queued_contribution.clone(), None)
+		.unwrap();
+	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+
+	// Force-close while the folded-in contribution is part of the active negotiation and the
+	// splice-out contribution is queued. Both must be released via failure events.
+	acceptor
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_id_initiator, "test".to_owned())
+		.unwrap();
+	handle_bump_events(acceptor, true, 0);
+
+	let events = acceptor.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 5, "{events:?}");
+	assert!(matches!(events[0], Event::ChannelClosed { channel_id: cid, .. } if cid == channel_id));
+
+	// The active round's contribution was feerate-adjusted when folded in, so compare its
+	// inputs and output scripts, which the adjustment leaves untouched.
+	let (folded_inputs, folded_outputs) =
+		acceptor_contribution.into_contributed_inputs_and_outputs();
+	match &events[1] {
+		Event::DiscardFunding {
+			channel_id: cid,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*inputs, folded_inputs);
+			assert_eq!(*outputs, folded_outputs);
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+	match &events[2] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+			assert_eq!(contribution.as_ref().unwrap().contributed_inputs(), &folded_inputs[..]);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+
+	let (queued_inputs, queued_outputs) =
+		queued_contribution.clone().into_contributed_inputs_and_outputs();
+	assert!(queued_inputs.is_empty());
+	match &events[3] {
+		Event::DiscardFunding {
+			channel_id: cid,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*inputs, queued_inputs);
+			assert_eq!(*outputs, queued_outputs);
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+	match &events[4] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+			assert_eq!(contribution.as_ref().unwrap().contribution(), &queued_contribution);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+
+	check_closed_broadcast(acceptor, 1, true);
+	check_added_monitors(acceptor, 1);
+}
+
+#[test]
 fn abandon_splice_quiescent_action_on_shutdown() {
 	do_abandon_splice_quiescent_action_on_shutdown(true, false);
 	do_abandon_splice_quiescent_action_on_shutdown(false, false);
