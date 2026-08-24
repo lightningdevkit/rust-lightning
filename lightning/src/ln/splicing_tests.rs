@@ -1354,6 +1354,189 @@ fn test_reload_resets_splice_negotiation_without_dropping_candidates() {
 }
 
 #[test]
+fn test_queued_splice_contribution_fails_on_reload() {
+	// A splice contribution committed via `funding_contributed` sits queued in the channel until
+	// quiescence is reached. Queued contributions are not persisted, so restarting the node before
+	// then must not silently drop them: the reloaded node should surface failure events so the
+	// user can reclaim the contributed UTXOs and retry.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_0, chain_monitor_0);
+	let node_0;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 1_000_000;
+	let push_msat = initial_channel_value_sat / 2 * 1000;
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		initial_channel_value_sat,
+		push_msat,
+	);
+
+	// Commit to a splice contribution while the peer is disconnected so it remains queued waiting
+	// on quiescence.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(initial_channel_value_sat / 4),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone()).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Restart node 0. The queued contribution should be failed, notifying the user that the
+	// contributed outputs can be reclaimed and the splice retried.
+	let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
+	reload_node!(
+		nodes[0],
+		nodes[0].node.encode(),
+		&[&encoded_monitor_0],
+		persister_0,
+		chain_monitor_0,
+		node_0
+	);
+	expect_splice_failed_events(
+		&nodes[0],
+		&channel_id,
+		funding_contribution,
+		NegotiationFailureReason::PeerDisconnected,
+	);
+
+	// Nothing should remain queued or pending on the channel.
+	let channels = nodes[0].node.list_channels();
+	let channel = channels.iter().find(|channel| channel.channel_id == channel_id).unwrap();
+	assert!(channel.splice_details.is_none());
+
+	// Reconnecting requires no quiescence handshake since nothing is queued anymore.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+
+	// The channel remains usable: retry the splice-out and complete it.
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+}
+
+#[test]
+fn test_queued_splice_contribution_fails_on_stale_reload() {
+	// If the reloaded ChannelManager is stale relative to the ChannelMonitor, the channel is
+	// force-closed during startup. The failure events for a contribution that was queued waiting
+	// on quiescence when the stale manager was serialized must still reach the user.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_0, chain_monitor_0);
+	let node_0;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 1_000_000;
+	let push_msat = initial_channel_value_sat / 2 * 1000;
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		initial_channel_value_sat,
+		push_msat,
+	);
+
+	// Route a payment to node 0 without claiming it: claiming it after the manager is serialized
+	// below advances the monitor, leaving the serialized manager stale.
+	let payment_amount = 100_000;
+	let (preimage, payment_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], payment_amount);
+
+	// Commit to a splice contribution while the peer is disconnected so it remains queued waiting
+	// on quiescence.
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	let splice_out_script = nodes[0].wallet_source.get_change_script().unwrap();
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(initial_channel_value_sat / 4),
+		script_pubkey: splice_out_script.clone(),
+	}];
+	let funding_contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	let encoded_node_0 = nodes[0].node.encode();
+
+	// Claiming the payment while disconnected persists the preimage to the monitor.
+	nodes[0].node.claim_funds(preimage);
+	expect_payment_claimed!(nodes[0], payment_hash, payment_amount);
+	check_added_monitors(&nodes[0], 1);
+
+	// Reload with the stale manager. The failure events synthesized when it was serialized should
+	// surface even though the channel is force-closed during startup.
+	let encoded_monitor_0 = get_monitor!(nodes[0], channel_id).encode();
+	reload_node!(
+		nodes[0],
+		encoded_node_0,
+		&[&encoded_monitor_0],
+		persister_0,
+		chain_monitor_0,
+		node_0
+	);
+
+	// The stale manager also replays the payment claim from the monitor's preimage, so a
+	// `PaymentClaimed` event is expected alongside the closure and splice failure events.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 4, "{events:?}");
+	match &events[0] {
+		Event::DiscardFunding { channel_id: id, funding_info } => {
+			assert_eq!(*id, channel_id);
+			assert_eq!(
+				*funding_info,
+				FundingInfo::Contribution { inputs: vec![], outputs: vec![splice_out_script] },
+			);
+		},
+		event => panic!("Unexpected event {event:?}"),
+	}
+	match &events[1] {
+		Event::SpliceNegotiationFailed { channel_id: id, contribution, reason, .. } => {
+			assert_eq!(*id, channel_id);
+			assert_eq!(
+				contribution.as_ref().map(|contribution| contribution.contribution()),
+				Some(&funding_contribution),
+			);
+			assert_eq!(*reason, NegotiationFailureReason::PeerDisconnected);
+		},
+		event => panic!("Unexpected event {event:?}"),
+	}
+	match &events[2] {
+		Event::ChannelClosed { channel_id: id, reason, .. } => {
+			assert_eq!(*id, channel_id);
+			assert_eq!(*reason, ClosureReason::OutdatedChannelManager);
+		},
+		event => panic!("Unexpected event {event:?}"),
+	}
+	match &events[3] {
+		Event::PaymentClaimed { payment_hash: hash, .. } => assert_eq!(*hash, payment_hash),
+		event => panic!("Unexpected event {event:?}"),
+	}
+	// Processing the events applies the regenerated force-close monitor update and the replayed
+	// claim's preimage update.
+	check_added_monitors(&nodes[0], 2);
+	assert!(nodes[0].node.list_channels().is_empty());
+}
+
+#[test]
 fn test_config_reject_inbound_splices() {
 	// Tests that nodes with `reject_inbound_splices` properly reject inbound splices but still
 	// allow outbound ones.

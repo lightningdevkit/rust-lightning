@@ -7838,6 +7838,13 @@ where
 		)
 	}
 
+	/// Returns a [`SpliceFundingFailed`] for a contribution still queued waiting on quiescence,
+	/// if any. Queued contributions are not persisted, so a reload drops them.
+	pub(super) fn maybe_queued_splice_funding_failed(&self) -> Option<SpliceFundingFailed> {
+		let contribution = self.queued_funding_contribution()?.clone();
+		Some(self.splice_funding_failed_for(contribution))
+	}
+
 	#[rustfmt::skip]
 	fn check_remote_fee<F: FeeEstimator, L: Logger>(
 		channel_type: &ChannelTypeFeatures, fee_estimator: &LowerBoundedFeeEstimator<F>,
