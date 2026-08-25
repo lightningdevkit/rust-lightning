@@ -14040,7 +14040,10 @@ where
 			})?;
 
 		if pending_splice.funding_negotiation.is_some() {
-			return Err(ChannelError::Abort(AbortReason::NegotiationInProgress));
+			return Err(ChannelError::WarnAndDisconnect(
+				"Received tx_init_rbf while a funding negotiation is already in progress"
+					.to_owned(),
+			));
 		}
 
 		if pending_splice.received_funding_txid.is_some() {
