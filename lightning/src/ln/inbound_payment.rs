@@ -21,7 +21,7 @@ use crate::offers::nonce::Nonce as LocalNonce;
 use crate::sign::EntropySource;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::errors::APIError;
-use crate::util::logger::Logger;
+use crate::util::logger::{DebugBytes, Logger};
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -37,7 +37,7 @@ const METHOD_TYPE_OFFSET: usize = 5;
 /// A set of keys that were HKDF-expanded. Returned by [`NodeSigner::get_expanded_key`].
 ///
 /// [`NodeSigner::get_expanded_key`]: crate::sign::NodeSigner::get_expanded_key
-#[derive(Hash, Copy, Clone, PartialEq, Eq, Debug)]
+#[derive(Hash, Copy, Clone, PartialEq, Eq)]
 pub struct ExpandedKey {
 	/// The key used to encrypt the bytes containing the payment info (i.e. the amount and
 	/// expiry, included for payment verification on decryption).
@@ -61,6 +61,20 @@ pub struct ExpandedKey {
 	pub(crate) phantom_node_blinded_path_key: [u8; 32],
 	/// The key used to encrypt payment metadata.
 	metadata_enc_key: [u8; 32],
+}
+
+impl core::fmt::Debug for ExpandedKey {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		// All the keys here are expanded from the same key material, so hashing one of them is
+		// just as good at telling two `ExpandedKey`s apart as hashing all of them.
+		let mut engine = Sha256::engine();
+		engine.input(b"LDK ExpandedKey Debug Fingerprint");
+		engine.input(&self.info_key);
+		let fingerprint = Sha256::from_engine(engine).to_byte_array();
+		f.debug_struct("ExpandedKey")
+			.field("fingerprint", &format_args!("{}", DebugBytes(&fingerprint[..8])))
+			.finish_non_exhaustive()
+	}
 }
 
 impl ExpandedKey {
@@ -578,4 +592,27 @@ fn derive_ldk_payment_preimage(
 		return Err(decoded_payment_preimage);
 	}
 	return Ok(PaymentPreimage(decoded_payment_preimage));
+}
+
+#[cfg(test)]
+mod tests {
+	use super::ExpandedKey;
+	use crate::util::logger::DebugBytes;
+
+	#[allow(unused_imports)]
+	use crate::prelude::*;
+
+	#[test]
+	fn expanded_key_debug_does_not_leak_keys() {
+		// The expanded key material must never make it into logs, so ensure the `Debug`
+		// implementation prints only a fingerprint and none of the derived keys.
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let debug_str = format!("{:?}", expanded_key);
+		assert_eq!(debug_str, "ExpandedKey { fingerprint: c02c464ea1b898e8, .. }");
+		assert!(!debug_str.contains(&format!("{}", DebugBytes(&expanded_key.info_key))));
+
+		// Distinct keys must get distinct fingerprints.
+		let other_key = ExpandedKey::new([43; 32]);
+		assert_ne!(debug_str, format!("{:?}", other_key));
+	}
 }
