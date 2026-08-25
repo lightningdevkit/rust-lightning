@@ -17,7 +17,7 @@ use lightning::blinded_path::payment::{
 use lightning::ln::channelmanager::MIN_FINAL_CLTV_EXPIRY_DELTA;
 use lightning::ln::inbound_payment::ExpandedKey;
 use lightning::offers::invoice::UnsignedBolt12Invoice;
-use lightning::offers::invoice_request::{InvoiceRequest, InvoiceRequestFields};
+use lightning::offers::invoice_request::{InvoiceRequest, PayerFields};
 use lightning::offers::offer::OfferId;
 use lightning::offers::parse::Bolt12SemanticError;
 use lightning::sign::{EntropySource, ReceiveAuthKey};
@@ -91,7 +91,7 @@ fn build_response<T: secp256k1::Signing + secp256k1::Verification>(
 			// Unicode character in two here, so try to fetch fields if we can validate.
 			ver.fields()
 		} else {
-			InvoiceRequestFields {
+			PayerFields {
 				payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 				quantity: invoice_request.quantity(),
 				payer_note_truncated: invoice_request

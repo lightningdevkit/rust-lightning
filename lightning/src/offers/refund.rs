@@ -90,8 +90,8 @@ use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice_request::{
 	string_truncate_safe, ExperimentalInvoiceRequestTlvStream,
-	ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestFields, InvoiceRequestTlvStream,
-	InvoiceRequestTlvStreamRef, PAYER_NOTE_LIMIT,
+	ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef,
+	PayerFields, PAYER_NOTE_LIMIT,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
@@ -557,7 +557,7 @@ impl Refund {
 		self.contents.payer_note()
 	}
 
-	/// Fetch the [`InvoiceRequestFields`] for this refund.
+	/// Fetch the [`PayerFields`] for this refund.
 	///
 	/// These are fields which we expect to be useful when receiving a payment for this refund,
 	/// and are intended to be included in the [`PaymentContext::Bolt12Refund`].
@@ -567,8 +567,8 @@ impl Refund {
 	///
 	/// [`PaymentContext::Bolt12Refund`]: crate::blinded_path::payment::PaymentContext::Bolt12Refund
 	/// [`Offer`]: crate::offers::offer::Offer
-	pub fn invoice_request_fields(&self) -> InvoiceRequestFields {
-		InvoiceRequestFields {
+	pub fn invoice_request_fields(&self) -> PayerFields {
+		PayerFields {
 			payer_signing_pubkey: self.contents.payer_signing_pubkey,
 			quantity: self.contents.quantity,
 			payer_note_truncated: self

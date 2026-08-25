@@ -22,7 +22,7 @@ use crate::io::Cursor;
 use crate::ln::channel_state::CounterpartyForwardingInfo;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use crate::offers::invoice_request::InvoiceRequestFields;
+use crate::offers::invoice_request::PayerFields;
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferId;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
@@ -613,7 +613,7 @@ pub struct Bolt12OfferContext {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub invoice_request: InvoiceRequestFields,
+	pub invoice_request: PayerFields,
 
 	/// Additional data about this payment which is not used in LDK and can be used for any
 	/// purpose.
@@ -707,7 +707,7 @@ pub struct Bolt12RefundContext {
 	///
 	/// [`Refund`]: crate::offers::refund::Refund
 	/// [`Offer`]: crate::offers::offer::Offer
-	pub invoice_request: Option<InvoiceRequestFields>,
+	pub invoice_request: Option<PayerFields>,
 }
 
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {

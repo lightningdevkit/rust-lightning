@@ -1037,14 +1037,14 @@ macro_rules! invoice_request_respond_with_derived_signing_pubkey_methods { (
 
 macro_rules! fields_accessor {
 	($self:ident, $inner:expr) => {
-		/// Fetch the [`InvoiceRequestFields`] for this verified invoice.
+		/// Fetch the [`PayerFields`] for this verified invoice.
 		///
 		/// These are fields which we expect to be useful when receiving a payment for this invoice
-		/// request, and include the returned [`InvoiceRequestFields`] in the
+		/// request, and include the returned [`PayerFields`] in the
 		/// [`PaymentContext::Bolt12Offer`].
 		///
 		/// [`PaymentContext::Bolt12Offer`]: crate::blinded_path::payment::PaymentContext::Bolt12Offer
-		pub fn fields(&$self) -> InvoiceRequestFields {
+		pub fn fields(&$self) -> PayerFields {
 			let InvoiceRequestContents {
 				payer_signing_pubkey,
 				inner: InvoiceRequestContentsWithoutPayerSigningPubkey {
@@ -1054,7 +1054,7 @@ macro_rules! fields_accessor {
 				},
 			} = &$inner;
 
-			InvoiceRequestFields {
+			PayerFields {
 				payer_signing_pubkey: *payer_signing_pubkey,
 				quantity: *quantity,
 				payer_note_truncated: payer_note
@@ -1488,11 +1488,18 @@ impl TryFrom<PartialInvoiceRequestTlvStream> for InvoiceRequestContents {
 	}
 }
 
-/// Fields sent in an [`InvoiceRequest`] message to include in [`PaymentContext::Bolt12Offer`].
+/// Payer-provided fields to include in a [`PaymentContext`], so a payment recipient can recover
+/// them without needing to separately persist them.
 ///
+/// These fields are sent in an [`InvoiceRequest`] message for [`PaymentContext::Bolt12Offer`], or
+/// are known upfront by a [`Refund`] issuer for [`PaymentContext::Bolt12Refund`].
+///
+/// [`PaymentContext`]: crate::blinded_path::payment::PaymentContext
 /// [`PaymentContext::Bolt12Offer`]: crate::blinded_path::payment::PaymentContext::Bolt12Offer
+/// [`PaymentContext::Bolt12Refund`]: crate::blinded_path::payment::PaymentContext::Bolt12Refund
+/// [`Refund`]: crate::offers::refund::Refund
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct InvoiceRequestFields {
+pub struct PayerFields {
 	/// A possibly transient pubkey used to sign the invoice request.
 	pub payer_signing_pubkey: PublicKey,
 
@@ -1507,15 +1514,15 @@ pub struct InvoiceRequestFields {
 	pub human_readable_name: Option<HumanReadableName>,
 }
 
-/// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
+/// The maximum number of characters included in [`PayerFields::payer_note_truncated`].
 #[cfg(not(fuzzing))]
 pub const PAYER_NOTE_LIMIT: usize = 512;
 
-/// The maximum number of characters included in [`InvoiceRequestFields::payer_note_truncated`].
+/// The maximum number of characters included in [`PayerFields::payer_note_truncated`].
 #[cfg(fuzzing)]
 pub const PAYER_NOTE_LIMIT: usize = 8;
 
-impl Writeable for InvoiceRequestFields {
+impl Writeable for PayerFields {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
 		write_tlv_fields!(writer, {
 			(0, self.payer_signing_pubkey, required),
@@ -1527,7 +1534,7 @@ impl Writeable for InvoiceRequestFields {
 	}
 }
 
-impl Readable for InvoiceRequestFields {
+impl Readable for PayerFields {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
 		_init_and_read_len_prefixed_tlv_fields!(reader, {
 			(0, payer_signing_pubkey, required),
@@ -1536,7 +1543,7 @@ impl Readable for InvoiceRequestFields {
 			(4, payer_note_truncated, (option, encoding: (String, WithoutLength))),
 		});
 
-		Ok(InvoiceRequestFields {
+		Ok(PayerFields {
 			payer_signing_pubkey: payer_signing_pubkey.0.unwrap(),
 			quantity,
 			payer_note_truncated: payer_note_truncated.map(|s| UntrustedString(s)),
@@ -1548,8 +1555,8 @@ impl Readable for InvoiceRequestFields {
 #[cfg(test)]
 mod tests {
 	use super::{
-		ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequest, InvoiceRequestFields,
-		InvoiceRequestTlvStreamRef, UnsignedInvoiceRequest, EXPERIMENTAL_INVOICE_REQUEST_TYPES,
+		ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequest, InvoiceRequestTlvStreamRef,
+		PayerFields, UnsignedInvoiceRequest, EXPERIMENTAL_INVOICE_REQUEST_TYPES,
 		INVOICE_REQUEST_TYPES, PAYER_NOTE_LIMIT, SIGNATURE_TAG,
 	};
 
@@ -3124,7 +3131,7 @@ mod tests {
 				assert_eq!(invoice_request.offer_id(), offer.id());
 				assert_eq!(
 					fields,
-					InvoiceRequestFields {
+					PayerFields {
 						payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
 						quantity: Some(1),
 						payer_note_truncated: Some(UntrustedString(expected_payer_note)),
@@ -3135,7 +3142,7 @@ mod tests {
 				let mut buffer = Vec::new();
 				fields.write(&mut buffer).unwrap();
 
-				let deserialized_fields: InvoiceRequestFields =
+				let deserialized_fields: PayerFields =
 					Readable::read(&mut buffer.as_slice()).unwrap();
 				assert_eq!(deserialized_fields, fields);
 			},
