@@ -6251,6 +6251,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				}
 			}
 
+			// HTLC outputs on a revoked counterparty commitment transaction don't come with an
+			// `HTLCSource` (we drop those when the commitment is revoked), so when one is spent we
+			// have to search the counterparty's non-revoked commitment transactions for an HTLC
+			// with a matching direction, payment hash and value to figure out which HTLC upstream
+			// the spend resolves.
+			//
+			// Note that if the channel had two HTLCs which share both a payment hash and a value,
+			// spends of either output will find the same first matching source here. Thus, if our
+			// counterparty claims both outputs with the preimage, we only propagate one
+			// fulfillment upstream and the second upstream HTLC is failed rather than claimed,
+			// even though each matching upstream HTLC is independently claimable once we have the
+			// preimage.
+			//
+			// Because the counterparty broadcasted a revoked commitment transaction we still
+			// expect to recover the channel's balance via the revocation path, so dropping one
+			// fulfillment doesn't leave us out of pocket, but it does give up an upstream claim we
+			// were entitled to. Doing better means resolving every matching source when the spend
+			// reveals a preimage and matching duplicate outputs to sources deterministically
+			// otherwise, which is more machinery than the lookup here can offer.
 			macro_rules! check_htlc_valid_counterparty {
 				($htlc_output: expr, $per_commitment_data: expr) => {
 						for &(ref pending_htlc, ref pending_source) in $per_commitment_data {
