@@ -5702,7 +5702,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 		if send_tx_abort.1 {
 			let tx_abort = chan_msgs.7.take().unwrap();
-			node_a.node.handle_tx_abort(node_b_id, &tx_abort);
+			node_b.node.handle_tx_abort(node_a_id, &tx_abort);
 		} else {
 			assert!(chan_msgs.7.is_none());
 		}
