@@ -1859,6 +1859,27 @@ where
 		}
 	}
 
+	fn interactive_tx_constructor_for_message(
+		&mut self, msg_name: &str,
+	) -> Result<&mut InteractiveTxConstructor, InteractiveTxMsgError> {
+		if matches!(
+			&self.phase,
+			ChannelPhase::Funded(chan) if !chan.context.channel_state.is_quiescent()
+		) {
+			return Err(InteractiveTxMsgError::new(
+				ChannelError::Ignore(format!("Ignoring unexpected {msg_name} while not quiescent")),
+				None,
+			));
+		}
+		match self.interactive_tx_constructor_mut() {
+			Some(interactive_tx_constructor) => Ok(interactive_tx_constructor),
+			None => Err(InteractiveTxMsgError::new(
+				ChannelError::WarnAndDisconnect(format!("Received unexpected {msg_name}")),
+				None,
+			)),
+		}
+	}
+
 	fn fail_interactive_tx_negotiation<L: Logger>(
 		&mut self, reason: AbortReason, logger: &L,
 	) -> InteractiveTxMsgError {
@@ -1888,82 +1909,42 @@ where
 	pub fn tx_add_input<L: Logger>(
 		&mut self, msg: &msgs::TxAddInput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_add_input(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_add_input")?
+			.handle_tx_add_input(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_add_output<L: Logger>(
 		&mut self, msg: &msgs::TxAddOutput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_add_output(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_add_output")?
+			.handle_tx_add_output(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_remove_input<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveInput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_remove_input(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_remove_input")?
+			.handle_tx_remove_input(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_remove_output<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveOutput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_remove_output(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_remove_output")?
+			.handle_tx_remove_output(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_complete<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxComplete, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<TxCompleteResult, InteractiveTxMsgError> {
-		let tx_complete_action = match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_complete(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?,
-			None => {
-				let err = "Received unexpected interactive transaction negotiation message";
-				return Err(InteractiveTxMsgError::new(
-					ChannelError::WarnAndDisconnect(err.to_owned()),
-					None,
-				));
-			},
-		};
+		let tx_complete_action = self
+			.interactive_tx_constructor_for_message("tx_complete")?
+			.handle_tx_complete(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?;
 
 		let (interactive_tx_msg_send, negotiation_complete) = match tx_complete_action {
 			HandleTxCompleteValue::SendTxMessage(interactive_tx_msg_send) => {
@@ -8968,19 +8949,23 @@ where
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		self.commitment_signed_check_state()?;
 
-		if !self.negotiated_candidates().is_empty() {
-			return Err(ChannelError::close(
-				"Got a single commitment_signed message when expecting a batch".to_owned(),
-			));
-		}
 		if let Some(funding_txid) = msg.funding_txid {
-			let locked_funding_txid =
-				self.funding.get_funding_txid().expect("funded channel must have known txid");
-			if funding_txid != locked_funding_txid {
+			// We may have aborted a pending funding negotiation while the counterparty's initial
+			// `commitment_signed` was in flight.
+			let is_known_funding = core::iter::once(&self.funding)
+				.chain(self.pending_funding())
+				.any(|funding| funding.get_funding_txid() == Some(funding_txid));
+			if !is_known_funding {
 				return Err(ChannelError::Ignore(format!(
 					"Ignoring commitment_signed for stale funding txid {funding_txid}"
 				)));
 			}
+		}
+
+		if !self.negotiated_candidates().is_empty() {
+			return Err(ChannelError::close(
+				"Got a single commitment_signed message when expecting a batch".to_owned(),
+			));
 		}
 
 		let transaction_number = self.holder_commitment_point.next_transaction_number();
