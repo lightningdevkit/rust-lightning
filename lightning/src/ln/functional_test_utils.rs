@@ -5351,6 +5351,15 @@ macro_rules! handle_chan_reestablish_msgs {
 			assert!(!had_channel_update);
 		}
 
+		if stfu.is_none() {
+			if let Some(&MessageSendEvent::SendStfu { ref node_id, ref msg }) = msg_events.get(idx)
+			{
+				idx += 1;
+				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				stfu = Some(msg.clone());
+			}
+		}
+
 		assert_eq!(msg_events.len(), idx, "{msg_events:?}");
 
 		(

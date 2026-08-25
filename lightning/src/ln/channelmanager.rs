@@ -5044,10 +5044,12 @@ impl<
 	/// # Return Value
 	///
 	/// Returns a [`FundingTemplate`] which should be used to obtain a [`FundingContribution`]
-	/// to pass to [`ChannelManager::funding_contributed`]. If a splice has been negotiated but
-	/// not yet locked, it can be replaced with a higher feerate transaction to speed up
-	/// confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
-	/// a fresh contribution or reusing a prior one for RBF.
+	/// to pass to [`ChannelManager::funding_contributed`]. If an unconfirmed splice has been
+	/// negotiated but not yet locked, it can be replaced with a higher feerate transaction to speed
+	/// up confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
+	/// a fresh contribution or reusing a prior one for RBF. Once a candidate confirms it can no
+	/// longer be replaced, and the returned template instead builds a fresh splice to be queued
+	/// behind it.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,

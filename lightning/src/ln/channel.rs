@@ -3332,6 +3332,12 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
+	fn has_confirmed_candidate(&self) -> bool {
+		self.negotiated_candidates
+			.iter()
+			.any(|candidate| candidate.funding.funding_tx_confirmation_height != 0)
+	}
+
 	/// Whether our contributions form a suffix of the negotiated candidates: once a round includes
 	/// our contribution, every later round carries it forward (so the splice intention is never
 	/// lost).
@@ -13172,6 +13178,15 @@ where
 		let (min_rbf_feerate, prior_contribution) = if self.is_rbf_compatible().is_err() {
 			// Channel can never RBF (e.g., zero-conf).
 			(None, None)
+		} else if self.pending_splice.as_ref().is_some_and(|pending_splice| {
+			pending_splice.has_confirmed_candidate()
+				|| pending_splice.received_funding_txid.is_some()
+		}) {
+			// The pending candidate can no longer be replaced. Return a fresh template so
+			// that any non-overlapping contribution waits for it to lock instead of being
+			// presented as an RBF attempt. Submission separately rejects stale RBF templates
+			// built before confirmation or receipt of `splice_locked`.
+			(None, None)
 		} else if let Some(pending_splice) = self.pending_splice.as_ref() {
 			// A splice is pending — either a completed negotiation that hasn't locked yet
 			// or an in-progress negotiation. In either case, the user's splice will need
@@ -13238,7 +13253,7 @@ where
 		if self.is_rbf_compatible().is_err() {
 			return false;
 		}
-		if pending_splice.sent_funding_txid.is_some()
+		if pending_splice.has_confirmed_candidate()
 			|| pending_splice.received_funding_txid.is_some()
 		{
 			return false;
@@ -13277,10 +13292,9 @@ where
 			));
 		}
 
-		if pending_splice.sent_funding_txid.is_some() {
+		if pending_splice.has_confirmed_candidate() {
 			return Err(
-				"A splice transaction already met the confirmations required to lock, cannot RBF"
-					.to_owned(),
+				"A negotiated splice transaction has already confirmed, cannot RBF".to_owned()
 			);
 		}
 
@@ -13999,10 +14013,9 @@ where
 			)));
 		}
 
-		if pending_splice.sent_funding_txid.is_some() {
+		if pending_splice.has_confirmed_candidate() {
 			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
-				"A splice transaction already met the confirmations required to lock, cannot RBF"
-					.into(),
+				"A negotiated splice transaction has already confirmed".into(),
 			)));
 		}
 
