@@ -196,9 +196,9 @@ impl core::fmt::Display for FundingContributionError {
 ///
 /// # Building a Contribution
 ///
-/// For a fresh splice (no pending splice to replace), either use the convenience methods
-/// [`FundingTemplate::splice_in_sync`] and [`FundingTemplate::splice_out`] or start with
-/// [`FundingTemplate::without_prior_contribution`] to compose a request manually.
+/// For a fresh splice (including one queued behind a confirmed candidate), either use the
+/// convenience methods [`FundingTemplate::splice_in_sync`] and [`FundingTemplate::splice_out`] or
+/// start with [`FundingTemplate::without_prior_contribution`] to compose a request manually.
 ///
 /// The builder API supports adding value, adding withdrawal outputs, or both. Attach a wallet
 /// when the request may need new wallet inputs; pure splice-out requests can be built without one
@@ -206,7 +206,7 @@ impl core::fmt::Display for FundingContributionError {
 ///
 /// # Replace By Fee (RBF)
 ///
-/// When a pending splice exists that hasn't been locked yet, use
+/// When an unconfirmed pending splice exists that hasn't been locked yet, use
 /// [`FundingTemplate::rbf_prior_contribution_sync`] (or
 /// [`FundingTemplate::rbf_prior_contribution`] for async) to retry the stored prior contribution
 /// at an RBF-compatible feerate. To amend that prior request before building, start from
@@ -227,8 +227,8 @@ pub struct FundingTemplate {
 	shared_input: Option<Input>,
 
 	/// The minimum RBF feerate (the greater of previous feerate + 25 sat/kwu and the spec's
-	/// 25/24 rule), if this template is for an RBF attempt. `None` for fresh splices with no
-	/// pending splice candidates.
+	/// 25/24 rule), if this template is for an RBF attempt. `None` for fresh splices, including
+	/// those queued behind a confirmed candidate.
 	min_rbf_feerate: Option<FeeRate>,
 
 	/// The user's prior contribution from a previous splice negotiation on this channel.
