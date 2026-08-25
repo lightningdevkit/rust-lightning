@@ -62,7 +62,8 @@ use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
 	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	SpliceFundingPromotion, StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	SpliceFundingPromotion, SpliceRbfAbort, StfuResponse, UpdateFulfillCommitFetch,
+	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -16303,7 +16304,7 @@ impl<
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
 		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None))
-			.map(|(a, b)| (a, Vec::new(), b)));
+			.map(|(a, b, c)| (a, Vec::new(), b, c)));
 
 		let last_best_block_height = self.best_block.read().unwrap().height;
 		if height < last_best_block_height {
@@ -16431,7 +16432,7 @@ impl<
 			);
 		self.do_chain_event(None, |channel| {
 			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None))
+			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None, None))
 		});
 	}
 }
@@ -16470,6 +16471,7 @@ impl<
 				Option<FundingConfirmedMessage>,
 				Vec<(HTLCSource, PaymentHash)>,
 				Option<msgs::AnnouncementSignatures>,
+				Option<SpliceRbfAbort>,
 			),
 			ClosureReason,
 		>,
@@ -16483,6 +16485,7 @@ impl<
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
 		let mut to_process_monitor_update_actions = Vec::new();
+		let mut needs_holding_cell_release = false;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
@@ -16496,7 +16499,7 @@ impl<
 						None => true,
 						Some(funded_channel) => {
 							let res = f(funded_channel);
-							if let Ok((funding_confirmed_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+							if let Ok((funding_confirmed_opt, mut timed_out_pending_htlcs, announcement_sigs, splice_rbf_abort)) = res {
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 									let reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
 									let data = self.get_htlc_inbound_temp_fail_data(reason);
@@ -16504,6 +16507,28 @@ impl<
 									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(reason, data), failure_type));
 								}
 								let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
+								if let Some(SpliceRbfAbort { tx_abort, splice_funding_failed }) = splice_rbf_abort {
+									let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
+									let channel_id = funded_channel.context.channel_id();
+									if peer_state.is_connected {
+										pending_msg_events.push(MessageSendEvent::SendTxAbort {
+											node_id: counterparty_node_id,
+											msg: tx_abort,
+										});
+									}
+									if let Some(splice_funding_failed) = splice_funding_failed {
+										self.handle_quiescent_error(
+											channel_id,
+											counterparty_node_id,
+											funded_channel.context.get_user_id(),
+											QuiescentError::FailSplice(
+												splice_funding_failed,
+												events::NegotiationFailureReason::CannotInitiateRbf,
+											),
+										);
+									}
+									needs_holding_cell_release = true;
+								}
 								match funding_confirmed_opt {
 									Some(FundingConfirmedMessage::Establishment(channel_ready)) => {
 										self.send_channel_ready(pending_msg_events, funded_channel, channel_ready);
@@ -16672,6 +16697,9 @@ impl<
 
 		for (counterparty_node_id, channel_id) in to_process_monitor_update_actions {
 			let _ = self.channel_monitor_updated(&channel_id, None, &counterparty_node_id);
+		}
+		if needs_holding_cell_release {
+			self.check_free_holding_cells();
 		}
 
 		if let Some(height) = height_opt {
