@@ -5487,7 +5487,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		let txn_matched = self.filter_block(txdata);
 
 		if !self.funding_seen_onchain {
-			for &(_, tx) in txdata.iter() {
+			for tx in txn_matched.iter() {
 				let txid = tx.compute_txid();
 				if txid == self.funding.funding_txid() ||
 					self.pending_funding.iter().any(|f| f.funding_txid() == txid)
@@ -6084,12 +6084,29 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	#[rustfmt::skip]
 	fn filter_block<'a>(&self, txdata: &TransactionData<'a>) -> Vec<&'a Transaction> {
 		let mut matched_txn = new_hash_set();
+		let funding_outputs: Vec<_> = self
+			.pending_funding
+			.iter()
+			.chain(Some(&self.funding))
+			.map(|f| (
+				f.funding_outpoint().index,
+				f.channel_parameters.make_funding_redeemscript().to_p2wsh(),
+			))
+			.collect();
 		txdata.iter().filter(|&&(_, tx)| {
 			let mut matches = self.spends_watched_output(tx);
 			for input in tx.input.iter() {
 				if matches { break; }
 				if matched_txn.contains(&input.previous_output.txid) {
 					matches = true;
+				}
+			}
+			for (output_idx, spk) in funding_outputs.iter() {
+				if matches { break; }
+				if let Some(output) = tx.output.get(*output_idx as usize) {
+					if *spk == output.script_pubkey {
+						matches = true;
+					}
 				}
 			}
 			if matches {
