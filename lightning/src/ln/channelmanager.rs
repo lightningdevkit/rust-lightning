@@ -10847,6 +10847,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
 		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
+		from_monitor_event: bool,
 	) {
 		let startup_replay =
 			!self.background_events_processed_since_startup.load(Ordering::Acquire);
@@ -10881,6 +10882,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					Some(payment_preimage.into()),
 					payment_id,
 				);
+				let best_block_height = self.best_block.read().unwrap().height;
 				self.pending_outbound_payments.claim_htlc(
 					payment_id,
 					payment_preimage,
@@ -10888,6 +10890,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					session_priv,
 					path,
 					from_onchain,
+					from_monitor_event,
+					best_block_height,
 					&mut ev_completion_action,
 					&self.pending_events,
 					&logger,
@@ -13498,6 +13502,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			Some(next_user_channel_id),
 			msg.attribution_data,
 			send_timestamp,
+			false,
 		);
 
 		Ok(())
@@ -14549,6 +14554,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								None,
 								None,
 								None,
+								true,
 							);
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
@@ -20858,6 +20864,8 @@ impl<
 										session_priv,
 										path,
 										true,
+										false,
+										best_block.height,
 										&mut compl_action,
 										&pending_events,
 										&logger,
@@ -21672,6 +21680,7 @@ impl<
 				downstream_user_channel_id,
 				None,
 				None,
+				false,
 			);
 		}
 
@@ -21842,6 +21851,7 @@ mod tests {
 			None,
 			Some(downstream_attribution),
 			None,
+			false,
 		);
 		check_added_monitors(&nodes[1], 1);
 
