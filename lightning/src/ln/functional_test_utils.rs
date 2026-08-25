@@ -11,7 +11,7 @@
 //! nodes for functional tests.
 
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, DummyTlvs, ForwardNode, ReceiveTlvs, TrampolineForwardTlvs,
+	BlindedPaymentPath, DummyTlvs, ForwardNode, PaymentContext, ReceiveTlvs, TrampolineForwardTlvs,
 };
 use crate::chain::channelmonitor::{ChannelMonitor, HTLC_FAIL_BACK_BUFFER};
 use crate::chain::transaction::OutPoint;
@@ -3989,6 +3989,11 @@ pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	// calculate their fee based on the inbound amount from their upstream peer, causing a difference
 	// in rounding.
 	pub allow_1_msat_fee_overpay: bool,
+	/// If set, the [`PaymentContext`] carried by the recipient's [`Event::PaymentClaimed`] is
+	/// asserted to match.
+	///
+	/// [`Event::PaymentClaimed`]: crate::events::Event::PaymentClaimed
+	pub expected_payment_context: Option<PaymentContext>,
 }
 
 impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
@@ -4006,6 +4011,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 			payment_preimage,
 			allow_1_msat_fee_overpay: false,
 			custom_tlvs: vec![],
+			expected_payment_context: None,
 		}
 	}
 	pub fn skip_last(mut self, skip_last: bool) -> Self {
@@ -4030,6 +4036,10 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	}
 	pub fn with_custom_tlvs(mut self, custom_tlvs: Vec<(u64, Vec<u8>)>) -> Self {
 		self.custom_tlvs = custom_tlvs;
+		self
+	}
+	pub fn with_expected_payment_context(mut self, payment_context: PaymentContext) -> Self {
+		self.expected_payment_context = Some(payment_context);
 		self
 	}
 }
@@ -4066,6 +4076,23 @@ macro_rules! single_fulfill_commit_from_ev {
 pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 	let claim_event = args.expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1, "{claim_event:?}");
+	if let Some(expected_context) = args.expected_payment_context.as_ref() {
+		match &claim_event[0] {
+			Event::PaymentClaimed { purpose, .. } => {
+				let context = match purpose {
+					PaymentPurpose::Bolt12OfferPayment { payment_context, .. } => {
+						PaymentContext::Bolt12Offer(payment_context.clone())
+					},
+					PaymentPurpose::Bolt12RefundPayment { payment_context, .. } => {
+						PaymentContext::Bolt12Refund(payment_context.clone())
+					},
+					_ => panic!("Unexpected payment purpose: {:?}", purpose),
+				};
+				assert_eq!(&context, expected_context);
+			},
+			_ => panic!("Expected Event::PaymentClaimed"),
+		}
+	}
 	#[allow(unused)]
 	let mut fwd_amt_msat = 0;
 	match claim_event[0] {

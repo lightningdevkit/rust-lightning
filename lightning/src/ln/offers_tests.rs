@@ -215,7 +215,8 @@ fn claim_bolt12_payment_with_extra_fees<'a, 'b, 'c>(
 		node,
 		&expected_paths,
 		payment_preimage,
-	);
+	)
+	.with_expected_payment_context(expected_payment_context);
 
 	if let Some(extra) = expected_extra_fees_msat {
 		args = args.with_expected_extra_total_fees_msat(extra);
