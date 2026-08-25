@@ -7367,6 +7367,111 @@ fn test_aborted_rbf_ignores_inflight_commitment_signed() {
 }
 
 #[test]
+fn test_pending_rbf_signer_cleared_on_abort() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (first_splice_tx, funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let rbf_contribution = do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, feerate);
+	let acceptor_contribution =
+		do_initiate_splice_in_at_feerate(&nodes[1], &nodes[0], channel_id, added_value, feerate);
+	let tx_ack_rbf = complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		rbf_contribution.clone(),
+		Some(acceptor_contribution),
+		tx_ack_rbf.funding_output_contribution.unwrap_or(0),
+		funding_script,
+	);
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let expected_acceptor_rbf_contribution =
+		nodes[1].node.list_channels()[0].splice_details.as_ref().unwrap().candidates[1]
+			.contribution
+			.clone()
+			.expect("acceptor contributed to the RBF");
+
+	nodes[0].disable_channel_signer_op(
+		&node_id_1,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	match get_event!(nodes[0], Event::FundingTransactionReadyForSigning) {
+		Event::FundingTransactionReadyForSigning {
+			channel_id,
+			counterparty_node_id,
+			unsigned_transaction,
+			..
+		} => {
+			let partially_signed_tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+			nodes[0]
+				.node
+				.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+				.unwrap();
+		},
+		other => panic!("Unexpected event {other:?}"),
+	}
+
+	let _ = get_event!(nodes[1], Event::FundingTransactionReadyForSigning);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	let tx_abort = msgs::TxAbort { channel_id, data: b"Aborting pending splice".to_vec() };
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(
+		matches!(
+			events.as_slice(),
+			[Event::SpliceNegotiationFailed {
+				channel_id: failed_channel_id,
+				contribution: Some(failed_contribution),
+				reason: NegotiationFailureReason::CounterpartyAborted { msg },
+				..
+			}] if *failed_channel_id == channel_id
+				&& failed_contribution == &rbf_contribution
+				&& msg.0 == "Aborting pending splice"
+		),
+		"{events:?}"
+	);
+	let tx_abort_ack = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort_ack);
+	expect_failed_rbf_events(
+		&nodes[1],
+		&channel_id,
+		&expected_acceptor_rbf_contribution,
+		NegotiationFailureReason::CounterpartyAborted {
+			msg: UntrustedString("Acknowledged tx_abort".to_owned()),
+		},
+	);
+	let final_tx_abort_ack = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	nodes[0].node.handle_tx_abort(node_id_1, &final_tx_abort_ack);
+
+	nodes[0].enable_channel_signer_op(
+		&node_id_1,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	nodes[0].node.signer_unblocked(None);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	mine_transaction(&nodes[0], &first_splice_tx);
+	mine_transaction(&nodes[1], &first_splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+}
+
+#[test]
 fn test_splice_rbf_after_splice_locked() {
 	// Test that tx_init_rbf is rejected when the counterparty has already sent splice_locked.
 	let chanmon_cfgs = create_chanmon_cfgs(2);

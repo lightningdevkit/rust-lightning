@@ -7777,6 +7777,7 @@ where
 		self.exit_quiescence();
 		if current_is_awaiting_signatures {
 			self.context.interactive_tx_signing_session.take();
+			self.context.signer_pending_funding = false;
 		}
 
 		splice_funding_failed
