@@ -7659,7 +7659,7 @@ fn test_splice_rbf_no_pending_splice() {
 
 #[cfg(test)]
 enum SpliceConfirmationAbortTest {
-	Connected,
+	Connected { htlc_times_out: bool },
 	Disconnected,
 	Reloaded,
 }
@@ -7702,15 +7702,24 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 	let _ = get_event!(nodes[1], Event::FundingTransactionReadyForSigning);
 	let is_reloaded = matches!(&test_case, SpliceConfirmationAbortTest::Reloaded);
 	let is_disconnected = matches!(&test_case, SpliceConfirmationAbortTest::Disconnected);
+	let htlc_times_out =
+		matches!(&test_case, SpliceConfirmationAbortTest::Connected { htlc_times_out: true });
 	let expected_acceptor_rbf_contribution =
 		nodes[1].node.list_channels()[0].splice_details.as_ref().unwrap().candidates[1]
 			.contribution
 			.clone()
 			.expect("acceptor contributed to the RBF");
 	let payment_data = match test_case {
-		SpliceConfirmationAbortTest::Connected | SpliceConfirmationAbortTest::Reloaded => {
-			let (route, payment_hash, payment_preimage, payment_secret) =
+		SpliceConfirmationAbortTest::Connected { .. } | SpliceConfirmationAbortTest::Reloaded => {
+			let (mut route, payment_hash, payment_preimage, payment_secret) =
 				get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+			if htlc_times_out {
+				// Deliver the confirmation before the best-block update and put the HTLC exactly at
+				// the safety boundary for the confirmation height.
+				*nodes[0].connect_style.borrow_mut() = ConnectStyle::TransactionsFirst;
+				route.paths[0].hops.last_mut().unwrap().cltv_expiry_delta =
+					LATENCY_GRACE_PERIOD_BLOCKS;
+			}
 			let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
 			nodes[0]
 				.node
@@ -7750,12 +7759,14 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 	));
 
 	// The first confirmation aborts the RBF even though the splice needs more confirmations before
-	// `splice_locked`.
+	// `splice_locked`. When the node is connected, the holding cell is released immediately after
+	// pruning HTLCs which are too close to expiry.
 	mine_transaction(&nodes[0], &first_splice_tx);
 	let details = nodes[0].node.list_channels()[0].splice_details.clone().unwrap();
 	assert_eq!(details.candidates.len(), 1);
 	let confirmed = details.confirmed_candidate.unwrap();
 	assert!(!confirmed.splice_locked_sent);
+
 	let mut events = nodes[0].node.get_and_clear_pending_events();
 	if is_reloaded {
 		let signing_event_idx = events
@@ -7764,19 +7775,30 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 			.expect("AwaitingSignatures should regenerate its signing event after reload");
 		events.remove(signing_event_idx);
 	}
+	assert_eq!(events.len(), if htlc_times_out { 3 } else { 1 }, "{events:?}");
+	let splice_failed = events.remove(0);
 	assert!(
 		matches!(
-			events.as_slice(),
-			[Event::SpliceNegotiationFailed {
+			&splice_failed,
+			Event::SpliceNegotiationFailed {
 				channel_id: failed_channel_id,
 				contribution: Some(failed_contribution),
 				reason: NegotiationFailureReason::CannotInitiateRbf,
 				..
-			}] if *failed_channel_id == channel_id
+			} if *failed_channel_id == channel_id
 				&& failed_contribution == &rbf_contribution
 		),
-		"{events:?}"
+		"{splice_failed:?}"
 	);
+	if htlc_times_out {
+		let (payment_hash, _, _) = payment_data.as_ref().expect("connected test has payment data");
+		expect_payment_failed_conditions_event(
+			events,
+			*payment_hash,
+			false,
+			PaymentFailedConditions::new(),
+		);
+	}
 
 	if is_disconnected || is_reloaded {
 		// The confirmation could not notify the disconnected peer that the active RBF was dropped.
@@ -7823,10 +7845,10 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 	let (payment_hash, payment_preimage, payment_secret) =
 		payment_data.expect("connected test has payment data");
 
-	check_added_monitors(&nodes[0], 1);
+	check_added_monitors(&nodes[0], if htlc_times_out { 0 } else { 1 });
 
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	assert_eq!(msg_events.len(), if htlc_times_out { 1 } else { 2 }, "{msg_events:?}");
 	let tx_abort = match &msg_events[0] {
 		MessageSendEvent::SendTxAbort { msg, .. } => {
 			assert_eq!(
@@ -7837,9 +7859,13 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 		},
 		other => panic!("Expected SendTxAbort, got {other:?}"),
 	};
-	let update = match &msg_events[1] {
-		MessageSendEvent::UpdateHTLCs { updates, .. } => updates.clone(),
-		other => panic!("Expected UpdateHTLCs, got {other:?}"),
+	let update = if htlc_times_out {
+		None
+	} else {
+		match &msg_events[1] {
+			MessageSendEvent::UpdateHTLCs { updates, .. } => Some(updates.clone()),
+			other => panic!("Expected UpdateHTLCs, got {other:?}"),
+		}
 	};
 
 	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
@@ -7855,11 +7881,13 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 	);
 	let tx_abort_ack = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
 	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort_ack);
-	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
-	do_commitment_signed_dance(&nodes[1], &nodes[0], &update.commitment_signed, false, false);
-	expect_and_process_pending_htlcs(&nodes[1], false);
-	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 1_000_000);
-	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	if let Some(update) = update {
+		nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &update.commitment_signed, false, false);
+		expect_and_process_pending_htlcs(&nodes[1], false);
+		expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 1_000_000);
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	}
 
 	mine_transaction(&nodes[1], &first_splice_tx);
 	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
@@ -7867,7 +7895,12 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 
 #[test]
 fn test_splice_confirmation_aborts_rbf() {
-	do_test_splice_confirmation_aborts_rbf(SpliceConfirmationAbortTest::Connected);
+	do_test_splice_confirmation_aborts_rbf(SpliceConfirmationAbortTest::Connected {
+		htlc_times_out: false,
+	});
+	do_test_splice_confirmation_aborts_rbf(SpliceConfirmationAbortTest::Connected {
+		htlc_times_out: true,
+	});
 }
 
 #[test]

@@ -12544,9 +12544,16 @@ where
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	#[rustfmt::skip]
 	pub fn transactions_confirmed<NS: NodeSigner, L: Logger>(
-		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
+		&mut self, block_hash: &BlockHash, tx_confirmation_height: u32, best_block_height: u32,
+		txdata: &TransactionData,
 		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<FundingConfirmedMessage>, Option<msgs::AnnouncementSignatures>, Option<SpliceRbfAbort>), ClosureReason> {
+	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>, Option<SpliceRbfAbort>), ClosureReason> {
+		// Confirmation callbacks may arrive behind our current best block. Use the later height so
+		// exiting quiescence below cannot release an HTLC which is already too close to expiry.
+		let timed_out_htlcs = self.remove_timed_out_holding_cell_htlcs(cmp::max(
+			tx_confirmation_height,
+			best_block_height,
+		));
 		let mut splice_rbf_abort = None;
 		for &(index_in_block, tx) in txdata.iter() {
 			let mut confirmed_tx = ConfirmedTransaction::from(tx);
@@ -12555,7 +12562,7 @@ where
 			// and send it immediately instead of waiting for a best_block_updated call (which may have
 			// already happened for this block).
 			let is_funding_tx_confirmed = self.context.check_for_funding_tx_confirmed(
-				&mut self.funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+				&mut self.funding, block_hash, tx_confirmation_height, index_in_block, &mut confirmed_tx, logger,
 			)?;
 
 			if is_funding_tx_confirmed {
@@ -12567,10 +12574,10 @@ where
 					self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
 				}
 
-				if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
+				if let Some(channel_ready) = self.check_get_channel_ready(tx_confirmation_height, logger) {
 					log_info!(logger, "Sending a channel_ready to our peer");
-					let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
-					return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), announcement_sigs, splice_rbf_abort));
+					let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, tx_confirmation_height, logger);
+					return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), timed_out_htlcs, announcement_sigs, splice_rbf_abort));
 				}
 			}
 
@@ -12582,7 +12589,7 @@ where
 					pending_splice.negotiated_candidates.iter_mut().map(|candidate| &mut candidate.funding);
 				for (index, funding) in candidates.enumerate() {
 					if self.context.check_for_funding_tx_confirmed(
-						funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+						funding, block_hash, tx_confirmation_height, index_in_block, &mut confirmed_tx, logger,
 					)? {
 						if funding_already_confirmed || confirmed_funding_index.is_some() {
 							let err_reason = "splice tx of another pending funding already confirmed";
@@ -12606,7 +12613,7 @@ where
 					if let Some(splice_locked) = pending_splice.check_get_splice_locked(
 						&self.context,
 						confirmed_funding_index,
-						height,
+						tx_confirmation_height,
 					) {
 
 						log_info!(
@@ -12624,7 +12631,7 @@ where
 							splice_funding_failed,
 						) =
 							self.maybe_promote_splice_funding(
-								node_signer, chain_hash, user_config, height, logger,
+								node_signer, chain_hash, user_config, tx_confirmation_height, logger,
 							).map(|splice_promotion| (
 								Some(splice_promotion.funding_txo),
 								splice_promotion.monitor_update,
@@ -12639,14 +12646,14 @@ where
 							monitor_update,
 							discarded_funding,
 							splice_funding_failed,
-						)), announcement_sigs, splice_rbf_abort));
+						)), timed_out_htlcs, announcement_sigs, splice_rbf_abort));
 					}
 				}
 			}
 
 		}
 
-		Ok((None, None, splice_rbf_abort))
+		Ok((None, timed_out_htlcs, None, splice_rbf_abort))
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -12672,27 +12679,39 @@ where
 		)
 	}
 
+	/// Removes outbound holding-cell HTLCs which are too close to expiry to safely send.
+	fn remove_timed_out_holding_cell_htlcs(
+		&mut self, height: u32,
+	) -> Vec<(HTLCSource, PaymentHash)> {
+		let mut timed_out_htlcs = Vec::new();
+		// Refuse to send an HTLC when our counterparty should almost certainly just fail it for
+		// expiring ~now.
+		let unforwarded_htlc_cltv_limit = height + LATENCY_GRACE_PERIOD_BLOCKS;
+		self.context.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC {
+				ref payment_hash,
+				ref source,
+				ref cltv_expiry,
+				..
+			} => {
+				if *cltv_expiry <= unforwarded_htlc_cltv_limit {
+					timed_out_htlcs.push((source.clone(), payment_hash.clone()));
+					false
+				} else {
+					true
+				}
+			},
+			_ => true,
+		});
+		timed_out_htlcs
+	}
+
 	#[rustfmt::skip]
 	fn do_best_block_updated<NS: NodeSigner, L: Logger>(
 		&mut self, height: u32, highest_header_time: Option<u32>,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
 	) -> Result<BestBlockUpdatedRes, ClosureReason> {
-		let mut timed_out_htlcs = Vec::new();
-		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
-		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
-		// ~now.
-		let unforwarded_htlc_cltv_limit = height + LATENCY_GRACE_PERIOD_BLOCKS;
-		self.context.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
-					if *cltv_expiry <= unforwarded_htlc_cltv_limit {
-						timed_out_htlcs.push((source.clone(), payment_hash.clone()));
-						false
-					} else { true }
-				},
-				_ => true
-			}
-		});
+		let timed_out_htlcs = self.remove_timed_out_holding_cell_htlcs(height);
 
 		if let Some(time) = highest_header_time {
 			self.context.update_time_counter = cmp::max(self.context.update_time_counter, time);

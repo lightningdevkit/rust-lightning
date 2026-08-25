@@ -8841,6 +8841,7 @@ impl<
 				},
 			}
 		}
+
 		NotifyOption::DoPersist
 	}
 
@@ -16303,10 +16304,15 @@ impl<
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None))
-			.map(|(a, b, c)| (a, Vec::new(), b, c)));
-
 		let last_best_block_height = self.best_block.read().unwrap().height;
+		self.do_chain_event(Some(height), |channel| {
+			channel.transactions_confirmed(
+				&block_hash, height, last_best_block_height, txdata, self.chain_hash, &self.node_signer,
+				&self.config.read().unwrap(),
+				&&WithChannelContext::from(&self.logger, &channel.context, None),
+			)
+		});
+
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
 			let do_update = |channel: &mut FundedChannel<SP>| {
@@ -16698,9 +16704,6 @@ impl<
 		for (counterparty_node_id, channel_id) in to_process_monitor_update_actions {
 			let _ = self.channel_monitor_updated(&channel_id, None, &counterparty_node_id);
 		}
-		if needs_holding_cell_release {
-			self.check_free_holding_cells();
-		}
 
 		if let Some(height) = height_opt {
 			// If height is approaching the number of blocks we think it takes us to get our
@@ -16771,6 +16774,15 @@ impl<
 
 		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, destination, None);
+		}
+
+		if needs_holding_cell_release
+			&& self.background_events_processed_since_startup.load(Ordering::Acquire)
+		{
+			// Chain callbacks may run before the user's ChainMonitor is fully initialized. If the
+			// channel is live, release its holding cell after queuing `tx_abort` to preserve message
+			// ordering. Otherwise, channel reestablishment will release it once the channel is live.
+			self.check_free_holding_cells();
 		}
 	}
 
