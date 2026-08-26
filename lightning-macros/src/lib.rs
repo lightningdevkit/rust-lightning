@@ -125,7 +125,8 @@ fn process_fields(group: Group) -> proc_macro::TokenStream {
 
 			// Fields should take the form `ref field_name: ty_info` where `ty_info`
 			// may be a single ident or may be a group. We skip the field if `ty_info`
-			// is a group where the first token is the ident `legacy`.
+			// is a group where the first token is the ident `legacy` or `custom`, or
+			// if it is the bare ident `retired`.
 			let ref_ident = fields_stream.next().unwrap();
 			expect_ident(&ref_ident, Some("ref"));
 			let field_name_ident = fields_stream.next().unwrap();
@@ -135,12 +136,16 @@ fn process_fields(group: Group) -> proc_macro::TokenStream {
 			let com = fields_stream.next().unwrap();
 			expect_punct(&com, ',');
 
-			if let TokenTree::Group(group) = ty_info {
+			if let TokenTree::Group(group) = &ty_info {
 				let first_group_tok = group.stream().into_iter().next().unwrap();
 				if let TokenTree::Ident(ident) = first_group_tok {
 					if ident.to_string() == "legacy" || ident.to_string() == "custom" {
 						continue;
 					}
+				}
+			} else if let TokenTree::Ident(ident) = &ty_info {
+				if ident.to_string() == "retired" {
+					continue;
 				}
 			}
 
@@ -155,22 +160,24 @@ fn process_fields(group: Group) -> proc_macro::TokenStream {
 	computed_fields
 }
 
-/// Scans a match statement for legacy or custom fields which should be skipped.
+/// Scans a match statement for legacy, custom, or retired fields which should be skipped.
 ///
 /// This is used internally in LDK's TLV serialization logic and is not expected to be used by
 /// other crates.
 ///
 /// Wraps a `match self {..}` statement and scans the fields in the match patterns (in the form
-/// `ref $field_name: $field_ty`) for types marked `legacy` or `custom`, skipping those fields.
+/// `ref $field_name: $field_ty`) for types marked `legacy`, `custom`, or `retired`, skipping
+/// those fields.
 ///
-/// Specifically, it expects input like the following, simply dropping `field3` and the
-/// `: $field_ty` after each field name.
+/// Specifically, it expects input like the following, simply dropping `field3` and `field4` and
+/// the `: $field_ty` after each field name.
 /// ```ignore
 /// match self {
 ///		Enum::Variant {
 ///			ref field1: option,
 ///			ref field2: (option, explicit_type: u64),
 ///			ref field3: (legacy, u64, {}, {}), // will be skipped
+///			ref field4: retired, // will be skipped
 ///			..
 ///		} => expression
 ///	}
@@ -240,7 +247,8 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 	res
 }
 
-/// Scans an enum definition for fields initialized with `legacy` types and drops them.
+/// Scans an enum definition for fields initialized with `legacy` or `retired` types and drops
+/// them.
 ///
 /// This is used internally in LDK's TLV serialization logic and is not expected to be used by
 /// other crates.
@@ -250,9 +258,11 @@ pub fn skip_legacy_fields(expr: TokenStream) -> TokenStream {
 /// drop_legacy_field_definition!(Self {
 /// 	field1: $crate::_init_tlv_based_struct_field!(field1, option),
 /// 	field2: $crate::_init_tlv_based_struct_field!(field2, (legacy, u64, {})),
+/// 	field3: $crate::_init_tlv_based_struct_field!(field3, retired),
 /// })
 /// ```
-/// and will drop fields defined like `field2` with a type starting with `legacy`.
+/// and will drop fields defined like `field2` with a type starting with `legacy` or like
+/// `field3` with the type `retired`.
 #[proc_macro]
 pub fn drop_legacy_field_definition(expr: TokenStream) -> TokenStream {
 	let mut st = if let Ok(parsed) = parse::<syn::Expr>(expr) {
@@ -280,14 +290,18 @@ pub fn drop_legacy_field_definition(expr: TokenStream) -> TokenStream {
 		if let syn::Expr::Macro(syn::ExprMacro { mac, .. }) = &field.expr {
 			let macro_name = mac.path.segments.last().unwrap().ident.to_string();
 			let is_init = macro_name == "_init_tlv_based_struct_field";
-			// Skip `field_name` and `:`, giving us just the type's group
+			// Skip `field_name` and the comma, giving us just the type
 			let ty_tokens = mac.tokens.clone().into_iter().skip(2).next();
-			if let Some(proc_macro2::TokenTree::Group(group)) = ty_tokens {
+			if let Some(proc_macro2::TokenTree::Group(group)) = &ty_tokens {
 				let first_token = group.stream().into_iter().next();
 				if let Some(proc_macro2::TokenTree::Ident(ident)) = first_token {
 					if is_init && ident == "legacy" {
 						continue;
 					}
+				}
+			} else if let Some(proc_macro2::TokenTree::Ident(ident)) = &ty_tokens {
+				if is_init && ident == "retired" {
+					continue;
 				}
 			}
 		}

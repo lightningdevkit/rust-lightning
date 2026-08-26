@@ -740,7 +740,7 @@ macro_rules! _decode_tlv_stream_range {
 ///
 /// This is useful to implement a [`CustomMessageReader`].
 ///
-/// Currently `$fieldty` may only be `option`, i.e., `$tlvfield` is optional field.
+/// Currently `$fieldty` may only be `option` (making `$tlvfield` an optional field) or `retired`.
 ///
 /// For example,
 /// ```
@@ -781,10 +781,10 @@ macro_rules! impl_writeable_msg {
 				$(let $field = $crate::util::ser::Readable::read(r)?;)*
 				$($crate::_init_tlv_field_var!($tlvfield, $fieldty);)*
 				$crate::decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
-				Ok(Self {
+				Ok(::lightning_macros::drop_legacy_field_definition!(Self {
 					$($field,)*
 					$($tlvfield: $crate::_init_tlv_based_struct_field!($tlvfield, $fieldty)),*
-				})
+				}))
 			}
 		}
 	}
@@ -949,9 +949,6 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, (static_value, $value: expr)) => {
 		$field
 	};
-	($field: ident, retired) => {
-		compile_error!("`retired` fields have no backing struct field and cannot be used in macros that construct the deserialized object; use them with `write_tlv_fields!`/`read_tlv_fields!`-style manual implementations")
-	};
 	($field: ident, option) => {
 		$field
 	};
@@ -964,7 +961,7 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_init_tlv_based_struct_field!($field, option)
 	};
-	// Note that legacy TLVs are eaten by `drop_legacy_field_definition`
+	// Note that legacy and retired TLVs are eaten by `drop_legacy_field_definition`
 	($field: ident, upgradable_required) => {
 		$field.0.unwrap()
 	};
@@ -1120,9 +1117,7 @@ macro_rules! _decode_and_build {
 ///    type number but which is no longer written. Nothing is serialized, and on read any value
 ///    present is ignored (its bytes are consumed, so retired even types written by a previous
 ///    version do not fail the read). The entry reserves the type number against reuse. If the
-///    field is still written for prior versions' benefit, use `legacy` instead. Note that
-///    `retired` is not supported by macros which construct the deserialized object (including
-///    this one); use it in [`write_tlv_fields`]/[`read_tlv_fields`]-style manual implementations.
+///    field is still written for prior versions' benefit, use `legacy` instead.
 /// If `$fieldty` is `(legacy, $ty, $read, $write)` then, when writing, the function $write will be
 ///    called with the object being serialized and a returned `Option` and is written as a TLV if
 ///    `Some`. When reading, an optional field of type `$ty` is read, and after all TLV fields are
@@ -1161,8 +1156,6 @@ macro_rules! _decode_and_build {
 /// [`MaybeReadable`]: crate::util::ser::MaybeReadable
 /// [`Writeable`]: crate::util::ser::Writeable
 /// [`Vec`]: crate::prelude::Vec
-/// [`write_tlv_fields`]: crate::write_tlv_fields
-/// [`read_tlv_fields`]: crate::read_tlv_fields
 #[macro_export]
 macro_rules! impl_ser_tlv_based {
 	($st: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}) => {
@@ -2057,6 +2050,97 @@ mod tests {
 		let encoded = t.encode();
 		assert_eq!(t.serialized_length(), encoded.len());
 		assert_eq!(encoded, <Vec<u8>>::from_hex("0a0108000000000000002a").unwrap());
+	}
+
+	#[derive(Debug, PartialEq)]
+	struct WithRetired {
+		a: u64,
+		b: Option<u32>,
+	}
+	impl_ser_tlv_based!(WithRetired, {
+		(1, a, required),
+		(2, _old_even, retired),
+		(3, b, option),
+	});
+
+	// Same fields and type numbers, without the retired entry.
+	#[derive(Debug, PartialEq)]
+	struct WithoutRetired {
+		a: u64,
+		b: Option<u32>,
+	}
+	impl_ser_tlv_based!(WithoutRetired, {
+		(1, a, required),
+		(3, b, option),
+	});
+
+	#[test]
+	fn retired_tlvs_in_struct_macro() {
+		let with_retired = WithRetired { a: 0xdead, b: Some(0x1dea) };
+		let without_retired = WithoutRetired { a: 0xdead, b: Some(0x1dea) };
+		let encoded = with_retired.encode();
+		// The retired entry writes nothing.
+		assert_eq!(encoded, without_retired.encode());
+		assert_eq!(with_retired.serialized_length(), encoded.len());
+
+		// A record at the retired (even) type number is skipped on read...
+		let stream = <Vec<u8>>::from_hex(concat!(
+			"13",                   // stream length
+			"0108000000000000dead", // (1, a)
+			"0201ff",               // (2, _old_even), ignored
+			"030400001dea",         // (3, b)
+		))
+		.unwrap();
+		let read: WithRetired = Readable::read(&mut &stream[..]).unwrap();
+		assert_eq!(read, with_retired);
+		// ...but without the retired entry in the field list, the even type fails the read.
+		let err = <WithoutRetired as Readable>::read(&mut &stream[..]).unwrap_err();
+		assert!(matches!(err, DecodeError::UnknownRequiredFeature));
+	}
+
+	#[derive(Debug, PartialEq)]
+	enum RetiredEnum {
+		A { x: u64 },
+	}
+	impl_ser_tlv_based_enum!(RetiredEnum,
+		(0, A) => {(1, x, required), (2, _old, retired)},
+	);
+
+	#[test]
+	fn retired_tlvs_in_enum_macro() {
+		let e = RetiredEnum::A { x: 0x2a };
+		let encoded = e.encode();
+		// Variant byte, stream length, then only the type-1 record.
+		assert_eq!(encoded, <Vec<u8>>::from_hex("000a0108000000000000002a").unwrap());
+
+		// A record at the retired type number is skipped on read.
+		let with_retired = <Vec<u8>>::from_hex("000d0108000000000000002a0201ff").unwrap();
+		let read: RetiredEnum = Readable::read(&mut &with_retired[..]).unwrap();
+		assert_eq!(read, e);
+	}
+
+	#[derive(Debug, PartialEq)]
+	struct RetiredMsg {
+		fixed: u32,
+		opt: Option<u32>,
+	}
+	impl_writeable_msg!(RetiredMsg, { fixed }, {
+		(0, _old_even, retired),
+		(1, opt, option),
+	});
+
+	#[test]
+	fn retired_tlvs_in_msg_macro() {
+		let msg = RetiredMsg { fixed: 0x2a, opt: Some(7) };
+		let encoded = msg.encode();
+		// The non-TLV field, then an unprefixed TLV stream with only the type-1 record.
+		assert_eq!(encoded, <Vec<u8>>::from_hex("0000002a010400000007").unwrap());
+
+		// A record at the retired (even) type number is skipped on read.
+		let with_retired = <Vec<u8>>::from_hex("0000002a0001ff010400000007").unwrap();
+		let read: RetiredMsg =
+			LengthReadable::read_from_fixed_length_buffer(&mut &with_retired[..]).unwrap();
+		assert_eq!(read, msg);
 	}
 
 	#[derive(Debug, Eq, PartialEq)]
