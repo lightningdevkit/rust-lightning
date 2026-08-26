@@ -7859,30 +7859,37 @@ where
 		Some(SpliceRbfAbort { tx_abort, splice_funding_failed })
 	}
 
-	pub(super) fn maybe_splice_funding_failed(&self) -> Option<SpliceFundingFailed> {
-		if !self.should_reset_pending_splice_state(true) {
-			return None;
+	/// Returns a [`SpliceFundingFailed`] for each splice contribution which a restart drops
+	/// because it is not persisted: one in a funding negotiation which is not written, and one
+	/// still queued waiting on quiescence.
+	pub(super) fn on_restart_splice_failures(&self) -> impl Iterator<Item = SpliceFundingFailed> {
+		let mut negotiation_failure = None;
+		if self.should_reset_pending_splice_state(true) {
+			let pending_splice = self
+				.pending_splice
+				.as_ref()
+				.expect("should_reset_pending_splice_state requires pending_splice");
+			debug_assert!(
+				pending_splice.funding_negotiation.is_some(),
+				"a pending splice to reset requires an active funding negotiation"
+			);
+			negotiation_failure =
+				pending_splice.negotiation_contribution.clone().map(|contribution| {
+					pending_splice
+						.funding_components()
+						.without_current_contribution()
+						.splice_funding_failed(contribution)
+				});
 		}
 
-		let pending_splice = self.pending_splice.as_ref()?;
-		debug_assert!(
-			pending_splice.funding_negotiation.is_some(),
-			"maybe_splice_funding_failed requires an active funding negotiation"
-		);
-		let contribution = pending_splice.negotiation_contribution.clone()?;
-		Some(
-			pending_splice
-				.funding_components()
-				.without_current_contribution()
-				.splice_funding_failed(contribution),
-		)
-	}
+		// A contribution queued for a later round (e.g., behind a counterparty-initiated
+		// negotiation) fails independently of the active round and must also be reported.
+		let queued_failure = self
+			.queued_funding_contribution()
+			.cloned()
+			.map(|contribution| self.splice_funding_failed_for(contribution));
 
-	/// Returns a [`SpliceFundingFailed`] for a contribution still queued waiting on quiescence,
-	/// if any. Queued contributions are not persisted, so a reload drops them.
-	pub(super) fn maybe_queued_splice_funding_failed(&self) -> Option<SpliceFundingFailed> {
-		let contribution = self.queued_funding_contribution()?.clone();
-		Some(self.splice_funding_failed_for(contribution))
+		negotiation_failure.into_iter().chain(queued_failure)
 	}
 
 	#[rustfmt::skip]
