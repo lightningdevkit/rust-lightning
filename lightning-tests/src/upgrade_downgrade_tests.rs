@@ -54,6 +54,7 @@ use lightning_0_0_125::routing::router as router_0_0_125;
 use lightning_0_0_125::util::ser::Writeable as _;
 
 use lightning::blinded_path::message::NextMessageHop;
+use lightning::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType, NegotiationFailureReason};
 use lightning::ln::channel_state::SpliceCandidateStatus;
@@ -1373,6 +1374,100 @@ fn upgrade_queued_splice_contribution_from_0_2() {
 	let details = channels.iter().find(|c| c.channel_id == channel_id).unwrap();
 	assert!(details.splice_details.is_none());
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
+fn downgrade_overlapping_splice_failure_to_0_2() {
+	// A contribution reusing an output already committed to a pending splice fails, releasing only
+	// the outputs unique to it; the rest stay committed to that splice. Check that a downgraded 0.2
+	// node is told about exactly the released ones, since it cannot read the `DiscardFunding`
+	// carrying them and has to rely on `SpliceFailed` instead (see #4919).
+	let (node_0_ser, mon_0_ser, released_script, chan_id_bytes);
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		let channel_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0).2;
+		chan_id_bytes = channel_id.0;
+
+		let added_value = Amount::from_sat(50_000);
+		provide_utxo_reserves(&nodes, 2, added_value * 2);
+		let committed_output = TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		};
+		let contribution = do_initiate_splice_in_and_out(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			added_value,
+			vec![committed_output.clone()],
+		);
+		let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+		mine_transaction(&nodes[0], &splice_tx);
+		mine_transaction(&nodes[1], &splice_tx);
+
+		// Send `splice_locked` without receiving the counterparty's, leaving the splice pending
+		// but no longer RBF-able.
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+		let _ = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+		nodes[0].node.get_and_clear_pending_events();
+		nodes[0].node.get_and_clear_pending_msg_events();
+
+		// As the splice cannot be RBF'd, a contribution reusing its output is refused with only
+		// the additional output released.
+		let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+		released_script = script_pubkey.clone();
+		let released_output = TxOut { value: Amount::from_sat(1_000), script_pubkey };
+		let floor_feerate = bitcoin::FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+		let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+		let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
+		let contribution = funding_template
+			.without_prior_contribution(feerate, bitcoin::FeeRate::MAX)
+			.add_outputs(vec![committed_output, released_output])
+			.build()
+			.unwrap();
+		assert_eq!(
+			nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None),
+			Err(APIError::APIMisuseError {
+				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			})
+		);
+
+		node_0_ser = nodes[0].node.encode();
+		mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
+
+		// The failure events have to remain in the serialization above for the 0.2 read below, so
+		// only drain them here, satisfying the check for unhandled events as the node is dropped.
+		nodes[0].node.get_and_clear_pending_events();
+	}
+
+	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut config = lightning_0_2_utils::test_default_channel_config();
+	// The current side uses the anchors channel type by default; 0.2 only accepts a channel whose
+	// type it advertises support for.
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+	let mgr_0 =
+		lightning_0_2_utils::_reload_node(&nodes[0], config, &node_0_ser, &[&mon_0_ser[..]]);
+	assert_eq!(mgr_0.list_channels().len(), 1);
+	let events = mgr_0.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event_0_2::SpliceFailed { channel_id, contributed_inputs, contributed_outputs, .. } => {
+			assert_eq!(channel_id.0, chan_id_bytes);
+			assert!(contributed_inputs.is_empty());
+			assert_eq!(contributed_outputs.len(), 1, "{contributed_outputs:?}");
+			assert_eq!(contributed_outputs[0].script_pubkey, released_script);
+		},
+		ev => panic!("Expected SpliceFailed, got {ev:?}"),
+	}
 }
 
 #[test]

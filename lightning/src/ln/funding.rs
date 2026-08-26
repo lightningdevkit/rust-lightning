@@ -724,24 +724,6 @@ impl FundingContribution {
 		self.max_feerate
 	}
 
-	#[cfg(test)]
-	pub(crate) fn new_for_test(
-		inputs: Vec<ConfirmedUtxo>, outputs: Vec<TxOut>, change_output: Option<TxOut>,
-	) -> Self {
-		FundingContribution {
-			estimated_fee: Amount::ZERO,
-			inputs,
-			outputs,
-			change_output,
-			feerate: FeeRate::from_sat_per_kwu(
-				crate::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW as u64,
-			),
-			max_feerate: FeeRate::MAX,
-			is_splice: true,
-			input_mode: Some(FundingInputMode::CoinSelected),
-		}
-	}
-
 	/// Tries to satisfy a new request using only this contribution's existing inputs.
 	///
 	/// For input-backed contributions, this reuses the current inputs, adjusts the explicit
