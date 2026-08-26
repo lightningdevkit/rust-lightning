@@ -1262,6 +1262,120 @@ fn downgrade_mid_splice_negotiation_to_0_2() {
 }
 
 #[test]
+fn downgrade_queued_splice_contribution_fails_on_0_2() {
+	// A contribution committed via `funding_contributed` that is still queued waiting on
+	// quiescence is not persisted, so a ChannelManager written with one embeds synthesized
+	// `SpliceNegotiationFailed` and `DiscardFunding` events. A downgraded 0.2 node skips the
+	// `DiscardFunding` and surfaces the failure as `SpliceFailed` with the contributed outputs,
+	// letting the user reclaim them.
+	let (node_0_ser, mon_0_ser, channel_id, outputs);
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		channel_id =
+			create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 50_000_000).2;
+
+		// Commit to a contribution while disconnected so it sits queued waiting on quiescence when
+		// the node is persisted.
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+		outputs = vec![TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		}];
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs.clone()).unwrap();
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+		node_0_ser = nodes[0].node.encode();
+		mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
+	}
+
+	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut config = lightning_0_2_utils::test_default_channel_config();
+	// The current side uses the anchors channel type by default; 0.2 only accepts a channel whose
+	// type it advertises support for.
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+	let mgr = lightning_0_2_utils::_reload_node(&nodes[0], config, &node_0_ser, &[&mon_0_ser[..]]);
+	assert_eq!(mgr.list_channels().len(), 1);
+	let events = mgr.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event_0_2::SpliceFailed {
+			channel_id: chan_id,
+			contributed_inputs,
+			contributed_outputs,
+			..
+		} => {
+			assert_eq!(chan_id.0, channel_id.0);
+			assert!(contributed_inputs.is_empty());
+			assert_eq!(*contributed_outputs, outputs);
+		},
+		ev => panic!("Expected SpliceFailed, got {ev:?}"),
+	}
+}
+
+#[test]
+fn upgrade_queued_splice_contribution_from_0_2() {
+	// A splice queued by LDK 0.2 while waiting on quiescence was persisted in a legacy form
+	// (SpliceInstructions) that current versions do not read: the channel loads and the queued
+	// intent is dropped.
+	let (node_0_ser, mon_0_ser, chan_id_bytes);
+	{
+		let chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+		let channel_id = lightning_0_2_utils::create_announced_chan_between_nodes_with_value(
+			&nodes, 0, 1, 100_000, 50_000_000,
+		)
+		.2;
+		chan_id_bytes = channel_id.0;
+
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+
+		// Propose a splice while disconnected so 0.2 persists the queued QuiescentAction.
+		let contribution = lightning_0_2::ln::funding::SpliceContribution::SpliceOut {
+			outputs: vec![bitcoin::TxOut {
+				value: bitcoin::Amount::from_sat(1_000),
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			}],
+		};
+		nodes[0].node.splice_channel(&channel_id, &node_id_1, contribution, 1024, None).unwrap();
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+		node_0_ser = nodes[0].node.encode();
+		mon_0_ser = get_monitor_0_2!(nodes[0], channel_id).encode();
+	}
+
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister, chain_mon, new_node);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let config = test_default_channel_config();
+	reload_node!(nodes[0], config, &node_0_ser, &[&mon_0_ser[..]], persister, chain_mon, new_node);
+
+	// The 0.2 queued splice is dropped without generating any events; no splice is pending.
+	let channel_id = ChannelId(chan_id_bytes);
+	let channels = nodes[0].node.list_channels();
+	let details = channels.iter().find(|c| c.channel_id == channel_id).unwrap();
+	assert!(details.splice_details.is_none());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+}
+
+#[test]
 fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	// Negotiate a contributory splice on current, downgrade to LDK 0.2, then upgrade back. LDK 0.2
 	// persists neither our contribution nor the splice feerate. The splice therefore returns to
