@@ -10766,17 +10766,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Decode attribution data to hold times.
 		let hold_times = sources.into_iter().filter_map(|(source, attribution_data)| {
 			if let HTLCSource::OutboundRoute { ref session_priv, ref path, .. } = source {
-				// If the path has trampoline hops, we need to hash the session private key to get the outer session key.
-				let derived_key;
-				let session_priv = if path.has_trampoline_hops() {
-					let session_priv_hash =
-						<Sha256 as CryptoHash>::hash(&session_priv.secret_bytes()).to_byte_array();
-					derived_key = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
-					&derived_key
-				} else {
-					session_priv
-				};
-
 				let hold_times = attribution_data.map_or(Vec::new(), |attribution_data| {
 					decode_fulfill_attribution_data(
 						&self.secp_ctx,

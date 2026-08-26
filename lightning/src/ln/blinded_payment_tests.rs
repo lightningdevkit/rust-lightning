@@ -2537,7 +2537,22 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
 	if success {
-		claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_preimage);
+		nodes[2].node.claim_funds(payment_preimage);
+		let expected_path = &[&nodes[1], &nodes[2]];
+		let expected_route = &[&expected_path[..]];
+		let expected_fee = pass_claimed_payment_along_route(ClaimAlongRouteArgs::new(
+			&nodes[0], &expected_route[..], payment_preimage,
+		));
+		let (_, path_events) = expect_payment_sent(
+			&nodes[0], payment_preimage, Some(Some(expected_fee)), true, true,
+		);
+		assert_eq!(path_events.len(), 1);
+		match &path_events[0] {
+			Event::PaymentPathSuccessful { hold_times, .. } => {
+				assert_eq!(hold_times, &[0, 0]);
+			},
+			_ => panic!("Unexpected event"),
+		}
 	} else {
 		fail_payment(&nodes[0], &[&nodes[1], &nodes[2]], payment_hash);
 	}
