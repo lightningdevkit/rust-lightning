@@ -43,7 +43,7 @@ use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::types::string::UntrustedString;
 use crate::util::errors::APIError;
 use crate::util::ser::{
-	BigSize, FixedLengthReader, MaybeReadable, Readable, ReadableArgs, RequiredWrapper,
+	BigSize, FixedLengthReader, Iterable, MaybeReadable, Readable, ReadableArgs, RequiredWrapper,
 	UpgradableRequired, WithoutLength, Writeable, Writer,
 };
 
@@ -53,7 +53,7 @@ use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::script::ScriptBuf;
 use bitcoin::secp256k1::PublicKey;
-use bitcoin::{OutPoint, Transaction};
+use bitcoin::{OutPoint, Transaction, TxOut};
 use core::ops::Deref;
 
 #[allow(unused_imports)]
@@ -100,6 +100,64 @@ impl_ser_tlv_based_enum!(FundingInfo,
 		(3, outputs, optional_vec),
 	}
 );
+
+/// The funding contribution from a failed splice negotiation round, see
+/// [`Event::SpliceNegotiationFailed`].
+///
+/// This has no serialization of its own; it is written and read as part of the event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FailedSpliceContribution {
+	/// UTXOs spent as inputs contributed to the failed round that were released by the failure,
+	/// i.e., excluding any still committed to an existing splice attempt.
+	contributed_inputs: Vec<OutPoint>,
+	/// Outputs contributed to the failed round that were released by the failure.
+	contributed_outputs: Vec<TxOut>,
+	/// The full contribution from the failed round.
+	contribution: FundingContribution,
+}
+
+impl FailedSpliceContribution {
+	pub(crate) fn new(
+		contributed_inputs: Vec<OutPoint>, contributed_outputs: Vec<TxOut>,
+		contribution: FundingContribution,
+	) -> Self {
+		Self { contributed_inputs, contributed_outputs, contribution }
+	}
+
+	/// The funding contribution from the failed negotiation round. This can be fed back to
+	/// [`ChannelManager::funding_contributed`] to retry with the same parameters. Alternatively,
+	/// call [`ChannelManager::splice_channel`] to obtain a fresh [`FundingTemplate`] and build a
+	/// new contribution.
+	///
+	/// The contribution preserves the full set of inputs and outputs from the failed round,
+	/// including any that were also committed to an existing splice attempt (a prior negotiated
+	/// candidate, a round still under negotiation, or a splice that just locked). Those
+	/// overlapping inputs and outputs are intentionally omitted from the preceding
+	/// [`Event::DiscardFunding`], since they remain committed to that other splice.
+	///
+	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
+	/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
+	pub fn contribution(&self) -> &FundingContribution {
+		&self.contribution
+	}
+
+	/// Consumes this, returning the funding contribution from the failed negotiation round, see
+	/// [`Self::contribution`].
+	pub fn into_contribution(self) -> FundingContribution {
+		self.contribution
+	}
+
+	#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+	pub(crate) fn contributed_inputs(&self) -> &[OutPoint] {
+		&self.contributed_inputs
+	}
+
+	#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+	pub(crate) fn contributed_outputs(&self) -> &[TxOut] {
+		&self.contributed_outputs
+	}
+}
 
 /// The reason a funding negotiation round failed.
 ///
@@ -1727,8 +1785,8 @@ pub enum Event {
 	/// [`Event::SpliceNegotiated`] is emitted if the negotiated transaction includes local
 	/// inputs or outputs. Prior successfully negotiated splice transactions are unaffected.
 	///
-	/// Any UTXOs contributed to the failed round that are not committed to a prior negotiated
-	/// splice transaction will be returned via a preceding [`Event::DiscardFunding`].
+	/// Any UTXOs contributed to the failed round that are not committed to an existing splice
+	/// attempt will be returned via a preceding [`Event::DiscardFunding`].
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
@@ -1746,21 +1804,10 @@ pub enum Event {
 		counterparty_node_id: PublicKey,
 		/// The reason the splice negotiation failed.
 		reason: NegotiationFailureReason,
-		/// The funding contribution from the failed negotiation round, if available. This can be
-		/// fed back to [`ChannelManager::funding_contributed`] to retry with the same parameters.
-		/// Alternatively, call [`ChannelManager::splice_channel`] to obtain a fresh
-		/// [`FundingTemplate`] and build a new contribution.
-		///
-		/// The contribution preserves the full set of inputs and outputs from the failed round,
-		/// including any that were also committed to a prior negotiated (but not yet locked)
-		/// splice transaction. Those overlapping inputs and outputs are intentionally omitted
-		/// from the preceding [`Event::DiscardFunding`], since they remain committed to that
-		/// prior splice.
-		///
-		/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
-		/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
-		/// [`FundingTemplate`]: crate::ln::funding::FundingTemplate
-		contribution: Option<FundingContribution>,
+		/// The funding contribution from the failed negotiation round, if available. See
+		/// [`FailedSpliceContribution::contribution`] for how it can be reused in a subsequent
+		/// splice attempt.
+		contribution: Option<FailedSpliceContribution>,
 	},
 	/// Used to indicate to the user that they can abandon the funding transaction and recycle the
 	/// inputs for another purpose.
@@ -2316,18 +2363,28 @@ impl Writeable for Event {
 				});
 			},
 			&Event::DiscardFunding { ref channel_id, ref funding_info } => {
-				11u8.write(writer)?;
-
-				let transaction = if let FundingInfo::Tx { transaction } = funding_info {
-					Some(transaction)
+				if let FundingInfo::Contribution { .. } = funding_info {
+					// 0.2 requires a transaction or outpoint when reading event type 11, so write
+					// `FundingInfo::Contribution` under an odd event type it will ignore instead.
+					53u8.write(writer)?;
+					write_tlv_fields!(writer, {
+						(1, channel_id, required),
+						(3, funding_info, required),
+					})
 				} else {
-					None
-				};
-				write_tlv_fields!(writer, {
-					(0, channel_id, required),
-					(2, transaction, option),
-					(4, funding_info, required),
-				})
+					11u8.write(writer)?;
+
+					let transaction = if let FundingInfo::Tx { transaction } = funding_info {
+						Some(transaction)
+					} else {
+						None
+					};
+					write_tlv_fields!(writer, {
+						(0, channel_id, required),
+						(2, transaction, option),
+						(4, funding_info, required),
+					})
+				}
 			},
 			&Event::PaymentPathSuccessful {
 				ref payment_id,
@@ -2590,12 +2647,28 @@ impl Writeable for Event {
 				ref contribution,
 			} => {
 				52u8.write(writer)?;
+				// 0.2 wrote `contributed_inputs` and `contributed_outputs` at types 11 and 13, so
+				// write them for its benefit when downgrading. They are also read back to survive
+				// re-serialization. Types 3 and 9 were `channel_type` and `abandoned_funding_txo`
+				// in 0.2 and must not be reused.
+				let contributed_inputs = contribution
+					.as_ref()
+					.filter(|contribution| !contribution.contributed_inputs.is_empty())
+					.map(|contribution| Iterable(contribution.contributed_inputs.iter()));
+				let contributed_outputs = contribution
+					.as_ref()
+					.filter(|contribution| !contribution.contributed_outputs.is_empty())
+					.map(|contribution| Iterable(contribution.contributed_outputs.iter()));
+				let funding_contribution =
+					contribution.as_ref().map(|contribution| &contribution.contribution);
 				write_tlv_fields!(writer, {
 					(1, channel_id, required),
 					(5, user_channel_id, required),
 					(7, counterparty_node_id, required),
-					(11, reason, required),
-					(13, contribution, option),
+					(11, contributed_inputs, option),
+					(13, contributed_outputs, option),
+					(15, reason, required),
+					(17, funding_contribution, option),
 				});
 			},
 			// Note that, going forward, all new events must only write data inside of
@@ -3245,20 +3318,45 @@ impl MaybeReadable for Event {
 			},
 			52u8 => {
 				let mut f = || {
+					// Types 11 and 13 were written by 0.2 with the same encoding. When type 17 is
+					// absent (an event written by 0.2), they are dropped along with the missing
+					// contribution. Types 3 and 9 were `channel_type` and `abandoned_funding_txo`
+					// in 0.2 and must not be reused.
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
 						(1, channel_id, required),
 						(5, user_channel_id, required),
 						(7, counterparty_node_id, required),
-						(11, reason, upgradable_option),
-						(13, contribution, option),
+						(11, contributed_inputs, optional_vec),
+						(13, contributed_outputs, optional_vec),
+						(15, reason, upgradable_option),
+						(17, contribution, option),
 					});
 
+					let contribution = contribution.map(|contribution| FailedSpliceContribution {
+						contributed_inputs: contributed_inputs.unwrap_or(Vec::new()),
+						contributed_outputs: contributed_outputs.unwrap_or(Vec::new()),
+						contribution,
+					});
 					Ok(Some(Event::SpliceNegotiationFailed {
 						channel_id: channel_id.0.unwrap(),
 						user_channel_id: user_channel_id.0.unwrap(),
 						counterparty_node_id: counterparty_node_id.0.unwrap(),
 						reason: reason.unwrap_or(NegotiationFailureReason::Unknown),
 						contribution,
+					}))
+				};
+				f()
+			},
+			53u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, channel_id, required),
+						(3, funding_info, required),
+					});
+
+					Ok(Some(Event::DiscardFunding {
+						channel_id: channel_id.0.unwrap(),
+						funding_info: funding_info.0.unwrap(),
 					}))
 				};
 				f()
@@ -3286,6 +3384,39 @@ impl MaybeReadable for Event {
 #[cfg(test)]
 mod tests {
 	use super::*;
+	use crate::util::wallet_utils::ConfirmedUtxo;
+
+	fn test_funding_contribution() -> (FundingContribution, Vec<OutPoint>, Vec<bitcoin::TxOut>) {
+		let input_prevtx = Transaction {
+			version: bitcoin::transaction::Version::TWO,
+			lock_time: bitcoin::absolute::LockTime::ZERO,
+			input: vec![],
+			output: vec![bitcoin::TxOut {
+				value: bitcoin::Amount::from_sat(50_000),
+				script_pubkey: ScriptBuf::new_p2wpkh(
+					&bitcoin::WPubkeyHash::from_slice(&[6; 20]).unwrap(),
+				),
+			}],
+		};
+		let expected_inputs = vec![OutPoint { txid: input_prevtx.compute_txid(), vout: 0 }];
+		let inputs = vec![ConfirmedUtxo::new_p2wpkh(input_prevtx, 0).unwrap()];
+		let outputs = vec![bitcoin::TxOut {
+			value: bitcoin::Amount::from_sat(10_000),
+			script_pubkey: ScriptBuf::new_p2wpkh(
+				&bitcoin::WPubkeyHash::from_slice(&[7; 20]).unwrap(),
+			),
+		}];
+		let change_output = bitcoin::TxOut {
+			value: bitcoin::Amount::from_sat(30_000),
+			script_pubkey: ScriptBuf::new_p2wpkh(
+				&bitcoin::WPubkeyHash::from_slice(&[8; 20]).unwrap(),
+			),
+		};
+		let mut expected_outputs = outputs.clone();
+		expected_outputs.push(change_output.clone());
+		let contribution = FundingContribution::new_for_test(inputs, outputs, Some(change_output));
+		(contribution, expected_inputs, expected_outputs)
+	}
 
 	#[test]
 	fn legacy_payment_forwarded_preserves_unknown_inbound_htlc_amount() {
@@ -3323,6 +3454,219 @@ mod tests {
 			},
 			_ => panic!("expected PaymentForwarded event"),
 		}
+	}
+
+	#[test]
+	fn legacy_splice_failed_event_read() {
+		let expected_channel_id = ChannelId::from_bytes([2; 32]);
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap();
+		let expected_node_id = PublicKey::from_secret_key(&secp_ctx, &secret_key);
+
+		// A 0.2-serialized `SpliceFailed` event, which wrote `abandoned_funding_txo`,
+		// `contributed_inputs`, and `contributed_outputs` at types 9, 11, and 13.
+		let mut tlvs = vec![1, 32]; // channel_id
+		tlvs.extend_from_slice(&[2; 32]);
+		tlvs.extend_from_slice(&[5, 16]); // user_channel_id
+		tlvs.extend_from_slice(&786u128.to_be_bytes());
+		tlvs.extend_from_slice(&[7, 33]); // counterparty_node_id
+		tlvs.extend_from_slice(&expected_node_id.serialize());
+		tlvs.extend_from_slice(&[9, 36]); // abandoned_funding_txo
+		tlvs.extend_from_slice(&[3; 32]);
+		tlvs.extend_from_slice(&[0, 0, 0, 1]);
+		tlvs.extend_from_slice(&[11, 72]); // contributed_inputs: two outpoints
+		tlvs.extend_from_slice(&[4; 32]);
+		tlvs.extend_from_slice(&[0, 0, 0, 2]);
+		tlvs.extend_from_slice(&[5; 32]);
+		tlvs.extend_from_slice(&[0, 0, 0, 3]);
+		tlvs.extend_from_slice(&[13, 31]); // contributed_outputs: one 546-sat P2WPKH output
+		tlvs.extend_from_slice(&546u64.to_le_bytes());
+		tlvs.push(22); // script length
+		tlvs.extend_from_slice(&[0, 20]); // OP_0 OP_PUSHBYTES_20
+		tlvs.extend_from_slice(&[6; 20]);
+
+		let mut encoded_legacy_event = vec![52, tlvs.len() as u8];
+		encoded_legacy_event.extend_from_slice(&tlvs);
+
+		match Event::read(&mut &encoded_legacy_event[..]).unwrap().unwrap() {
+			Event::SpliceNegotiationFailed {
+				channel_id,
+				user_channel_id,
+				counterparty_node_id,
+				reason,
+				contribution,
+			} => {
+				assert_eq!(channel_id, expected_channel_id);
+				assert_eq!(user_channel_id, 786);
+				assert_eq!(counterparty_node_id, expected_node_id);
+				assert_eq!(reason, NegotiationFailureReason::Unknown);
+				assert_eq!(contribution, None);
+			},
+			_ => panic!("expected SpliceNegotiationFailed event"),
+		}
+	}
+
+	#[test]
+	fn splice_negotiation_failed_event_read_by_0_2() -> Result<(), msgs::DecodeError> {
+		do_splice_negotiation_failed_event_read_by_0_2(None, Vec::new(), Vec::new())
+	}
+
+	#[test]
+	fn splice_negotiation_failed_event_contribution_read_by_0_2() -> Result<(), msgs::DecodeError> {
+		let (contribution, expected_inputs, expected_outputs) = test_funding_contribution();
+		let contribution = FailedSpliceContribution {
+			contributed_inputs: expected_inputs.clone(),
+			contributed_outputs: expected_outputs.clone(),
+			contribution,
+		};
+		do_splice_negotiation_failed_event_read_by_0_2(
+			Some(contribution),
+			expected_inputs,
+			expected_outputs,
+		)
+	}
+
+	#[test]
+	fn splice_negotiation_failed_event_overlapping_contribution_read_by_0_2(
+	) -> Result<(), msgs::DecodeError> {
+		// Only the inputs and outputs released by the failure are written at types 11 and 13, not
+		// the contribution's full sets, which may include some still committed to an existing
+		// splice attempt.
+		let (contribution, _, outputs) = test_funding_contribution();
+		let expected_outputs = vec![outputs[0].clone()];
+		let contribution = FailedSpliceContribution {
+			contributed_inputs: Vec::new(),
+			contributed_outputs: expected_outputs.clone(),
+			contribution,
+		};
+		do_splice_negotiation_failed_event_read_by_0_2(
+			Some(contribution),
+			Vec::new(),
+			expected_outputs,
+		)
+	}
+
+	fn do_splice_negotiation_failed_event_read_by_0_2(
+		contribution: Option<FailedSpliceContribution>, expected_inputs: Vec<OutPoint>,
+		expected_outputs: Vec<bitcoin::TxOut>,
+	) -> Result<(), msgs::DecodeError> {
+		let expected_channel_id = ChannelId::from_bytes([2; 32]);
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap();
+		let expected_node_id = PublicKey::from_secret_key(&secp_ctx, &secret_key);
+
+		let event = Event::SpliceNegotiationFailed {
+			channel_id: expected_channel_id,
+			user_channel_id: 786,
+			counterparty_node_id: expected_node_id,
+			reason: NegotiationFailureReason::PeerDisconnected,
+			contribution,
+		};
+		let encoded = event.encode();
+		let mut cursor = &encoded[..];
+		let event_type: u8 = Readable::read(&mut cursor)?;
+		assert_eq!(event_type, 52);
+
+		// Mirrors the 0.2 read for event type 52, which must not error on newly written events.
+		let reader = &mut cursor;
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, channel_id, required),
+			(3, channel_type, option),
+			(5, user_channel_id, required),
+			(7, counterparty_node_id, required),
+			(9, abandoned_funding_txo, option),
+			(11, contributed_inputs, optional_vec),
+			(13, contributed_outputs, optional_vec),
+		});
+		assert!(cursor.is_empty());
+
+		let channel_id: ChannelId = channel_id.0.unwrap();
+		assert_eq!(channel_id, expected_channel_id);
+		let channel_type: Option<ChannelTypeFeatures> = channel_type;
+		assert_eq!(channel_type, None);
+		let user_channel_id: u128 = user_channel_id.0.unwrap();
+		assert_eq!(user_channel_id, 786);
+		let counterparty_node_id: PublicKey = counterparty_node_id.0.unwrap();
+		assert_eq!(counterparty_node_id, expected_node_id);
+		let abandoned_funding_txo: Option<OutPoint> = abandoned_funding_txo;
+		assert_eq!(abandoned_funding_txo, None);
+		let contributed_inputs: Option<Vec<OutPoint>> = contributed_inputs;
+		assert_eq!(contributed_inputs.unwrap(), expected_inputs);
+		let contributed_outputs: Option<Vec<bitcoin::TxOut>> = contributed_outputs;
+		assert_eq!(contributed_outputs.unwrap(), expected_outputs);
+
+		Ok(())
+	}
+
+	#[test]
+	fn splice_negotiation_failed_event_round_trip() {
+		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
+		let secret_key = bitcoin::secp256k1::SecretKey::from_slice(&[42; 32]).unwrap();
+		let (contribution, inputs, outputs) = test_funding_contribution();
+		let full_contribution = FailedSpliceContribution {
+			contributed_inputs: inputs,
+			contributed_outputs: outputs.clone(),
+			contribution: contribution.clone(),
+		};
+		// The contributed inputs and outputs must round trip independently of the contribution's
+		// own sets since some may still be committed to an existing splice attempt.
+		let overlapping_contribution = FailedSpliceContribution {
+			contributed_inputs: Vec::new(),
+			contributed_outputs: vec![outputs[0].clone()],
+			contribution,
+		};
+		for contribution in [None, Some(full_contribution), Some(overlapping_contribution)] {
+			let event = Event::SpliceNegotiationFailed {
+				channel_id: ChannelId::from_bytes([2; 32]),
+				user_channel_id: 786,
+				counterparty_node_id: PublicKey::from_secret_key(&secp_ctx, &secret_key),
+				reason: NegotiationFailureReason::CounterpartyAborted {
+					msg: UntrustedString("hodl".to_owned()),
+				},
+				contribution,
+			};
+			let encoded = event.encode();
+			let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+			assert_eq!(event, decoded);
+		}
+	}
+
+	#[test]
+	fn discard_funding_event_type_depends_on_funding_info() {
+		let channel_id = ChannelId::from_bytes([2; 32]);
+
+		// `FundingInfo::Contribution` is written under an odd event type, which 0.2 skips as it
+		// cannot read the enum variant.
+		let event = Event::DiscardFunding {
+			channel_id,
+			funding_info: FundingInfo::Contribution {
+				inputs: vec![OutPoint {
+					txid: bitcoin::Txid::from_slice(&[9; 32]).unwrap(),
+					vout: 1,
+				}],
+				outputs: vec![ScriptBuf::new_p2wpkh(
+					&bitcoin::WPubkeyHash::from_slice(&[7; 20]).unwrap(),
+				)],
+			},
+		};
+		let encoded = event.encode();
+		assert_eq!(encoded[0], 53);
+		let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+		assert_eq!(event, decoded);
+
+		// Other variants remain under event type 11, which 0.2 can read.
+		let transaction = Transaction {
+			version: bitcoin::transaction::Version::TWO,
+			lock_time: bitcoin::absolute::LockTime::ZERO,
+			input: vec![],
+			output: vec![],
+		};
+		let event =
+			Event::DiscardFunding { channel_id, funding_info: FundingInfo::Tx { transaction } };
+		let encoded = event.encode();
+		assert_eq!(encoded[0], 11);
+		let decoded = Event::read(&mut &encoded[..]).unwrap().unwrap();
+		assert_eq!(event, decoded);
 	}
 }
 

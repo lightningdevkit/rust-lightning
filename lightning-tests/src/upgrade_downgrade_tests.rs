@@ -10,14 +10,18 @@
 //! Tests which test upgrading from previous versions of LDK or downgrading to previous versions of
 //! LDK.
 
+use lightning_0_2::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW as FEERATE_FLOOR_0_2;
 use lightning_0_2::commitment_signed_dance as commitment_signed_dance_0_2;
 use lightning_0_2::events::bump_transaction::sync::WalletSourceSync as WalletSourceSync_0_2;
 use lightning_0_2::events::Event as Event_0_2;
+use lightning_0_2::get_event_msg as get_event_msg_0_2;
 use lightning_0_2::get_monitor as get_monitor_0_2;
 use lightning_0_2::ln::channelmanager::PaymentId as PaymentId_0_2;
 use lightning_0_2::ln::channelmanager::RecipientOnionFields as RecipientOnionFields_0_2;
 use lightning_0_2::ln::functional_test_utils as lightning_0_2_utils;
+use lightning_0_2::ln::msgs::BaseMessageHandler as _;
 use lightning_0_2::ln::msgs::ChannelMessageHandler as _;
+use lightning_0_2::ln::msgs::MessageSendEvent as MessageSendEvent_0_2;
 use lightning_0_2::ln::msgs::OnionMessage as OnionMessage_0_2;
 use lightning_0_2::onion_message::packet::Packet as Packet_0_2;
 use lightning_0_2::routing::router as router_0_2;
@@ -1057,6 +1061,204 @@ fn upgrade_single_splice_from_0_2() {
 	let node_id_1 = nodes[1].node.get_our_node_id();
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert!(funding_template.min_rbf_feerate().is_none());
+}
+
+#[test]
+fn upgrade_mid_splice_negotiation_from_0_2() {
+	// An incomplete splice negotiation does not persist, so a ChannelManager written by 0.2
+	// mid-negotiation embeds a synthesized `SpliceFailed` event carrying the contributed
+	// inputs/outputs at TLV types since reused for `reason` and `contribution`. Ensure current
+	// code can read it (see #4919).
+	let (node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, chan_id_bytes);
+	{
+		let chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		let node_id_1 = nodes[1].node.get_our_node_id();
+
+		let channel_id = lightning_0_2_utils::create_announced_chan_between_nodes_with_value(
+			&nodes, 0, 1, 100_000, 50_000_000,
+		)
+		.2;
+		chan_id_bytes = channel_id.0;
+
+		let contribution = lightning_0_2::ln::funding::SpliceContribution::SpliceOut {
+			outputs: vec![bitcoin::TxOut {
+				value: bitcoin::Amount::from_sat(1_000),
+				script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+			}],
+		};
+		nodes[0]
+			.node
+			.splice_channel(&channel_id, &node_id_1, contribution, FEERATE_FLOOR_0_2, None)
+			.unwrap();
+
+		// Stop the negotiation after `splice_ack`, leaving both nodes in a state that isn't
+		// persisted.
+		let stfu = get_event_msg_0_2!(nodes[0], MessageSendEvent_0_2::SendStfu, node_id_1);
+		nodes[1].node.handle_stfu(node_id_0, &stfu);
+		let stfu = get_event_msg_0_2!(nodes[1], MessageSendEvent_0_2::SendStfu, node_id_0);
+		nodes[0].node.handle_stfu(node_id_1, &stfu);
+		let splice_init =
+			get_event_msg_0_2!(nodes[0], MessageSendEvent_0_2::SendSpliceInit, node_id_1);
+		nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+		let _ = get_event_msg_0_2!(nodes[1], MessageSendEvent_0_2::SendSpliceAck, node_id_0);
+
+		node_0_ser = nodes[0].node.encode();
+		node_1_ser = nodes[1].node.encode();
+		mon_0_ser = get_monitor_0_2!(nodes[0], channel_id).encode();
+		mon_1_ser = get_monitor_0_2!(nodes[1], channel_id).encode();
+	}
+
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_a, persister_b, chain_mon_a, chain_mon_b);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let (node_a, node_b);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let config = test_default_channel_config();
+	reload_node!(
+		nodes[0],
+		config.clone(),
+		&node_0_ser,
+		&[&mon_0_ser[..]],
+		persister_a,
+		chain_mon_a,
+		node_a
+	);
+	reload_node!(
+		nodes[1],
+		config,
+		&node_1_ser,
+		&[&mon_1_ser[..]],
+		persister_b,
+		chain_mon_b,
+		node_b
+	);
+
+	// The initiator's aborted negotiation surfaces as `SpliceNegotiationFailed`; 0.2 wrote
+	// neither a reason nor a contribution. The acceptor had no splice state to lose.
+	let channel_id = ChannelId(chan_id_bytes);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event::SpliceNegotiationFailed { channel_id: chan_id, reason, contribution, .. } => {
+			assert_eq!(*chan_id, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::Unknown);
+			assert_eq!(*contribution, None);
+		},
+		ev => panic!("Expected SpliceNegotiationFailed, got {ev:?}"),
+	}
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// The channel itself is unaffected.
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (true, true);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_nodes(reconnect_args);
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+}
+
+#[test]
+fn downgrade_mid_splice_negotiation_to_0_2() {
+	// An incomplete splice negotiation does not persist, so a ChannelManager written
+	// mid-negotiation embeds synthesized `SpliceNegotiationFailed` and `DiscardFunding` events.
+	// 0.2 must skip the `DiscardFunding` -- written under an odd event type since it carries
+	// `FundingInfo::Contribution`, which 0.2 cannot read -- and surface the failure as
+	// `SpliceFailed` with the contributed inputs and outputs at the TLV types it natively wrote
+	// them (see #4919).
+	let (node_0_ser, node_1_ser, mon_0_ser, mon_1_ser, channel_id, contribution);
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		channel_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0).2;
+
+		let added_value = Amount::from_sat(50_000);
+		provide_utxo_reserves(&nodes, 2, added_value * 2);
+		let splice_out_output = TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		};
+		contribution = do_initiate_splice_in_and_out(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			added_value,
+			vec![splice_out_output],
+		);
+
+		// Stop the negotiation after `splice_ack`, leaving both nodes in a state that isn't
+		// persisted.
+		let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+		nodes[1].node.handle_stfu(node_id_0, &stfu);
+		let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+		nodes[0].node.handle_stfu(node_id_1, &stfu);
+		let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+		nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+		let _ = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+
+		node_0_ser = nodes[0].node.encode();
+		node_1_ser = nodes[1].node.encode();
+		mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
+		mon_1_ser = get_monitor!(nodes[1], channel_id).encode();
+	}
+
+	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	chanmon_cfgs[1].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut config = lightning_0_2_utils::test_default_channel_config();
+	// The current side uses the anchors channel type by default; 0.2 only accepts a channel whose
+	// type it advertises support for.
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+	// The initiator's aborted negotiation surfaces as `SpliceFailed` carrying the freed inputs
+	// and outputs; the `DiscardFunding` with `FundingInfo::Contribution` is skipped.
+	let mgr_0 = lightning_0_2_utils::_reload_node(
+		&nodes[0],
+		config.clone(),
+		&node_0_ser,
+		&[&mon_0_ser[..]],
+	);
+	assert_eq!(mgr_0.list_channels().len(), 1);
+	let expected_inputs: Vec<bitcoin::OutPoint> =
+		contribution.inputs().iter().map(|utxo| utxo.outpoint()).collect();
+	let mut expected_outputs = contribution.outputs().to_vec();
+	expected_outputs.extend(contribution.change_output().cloned());
+	assert!(!expected_inputs.is_empty());
+	assert!(!expected_outputs.is_empty());
+	let events = mgr_0.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event_0_2::SpliceFailed {
+			channel_id: chan_id,
+			contributed_inputs,
+			contributed_outputs,
+			..
+		} => {
+			assert_eq!(chan_id.0, channel_id.0);
+			assert_eq!(*contributed_inputs, expected_inputs);
+			assert_eq!(*contributed_outputs, expected_outputs);
+		},
+		ev => panic!("Expected SpliceFailed, got {ev:?}"),
+	}
+
+	// The acceptor did not contribute, so it has no splice state to lose.
+	let mgr_1 =
+		lightning_0_2_utils::_reload_node(&nodes[1], config, &node_1_ser, &[&mon_1_ser[..]]);
+	assert_eq!(mgr_1.list_channels().len(), 1);
+	assert!(mgr_1.get_and_clear_pending_events().is_empty());
 }
 
 #[test]

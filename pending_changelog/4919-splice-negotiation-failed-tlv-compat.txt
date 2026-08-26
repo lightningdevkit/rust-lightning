@@ -1,0 +1,29 @@
+# API Updates
+
+ * The `contribution` field of `Event::SpliceNegotiationFailed` is now an
+   `Option<FailedSpliceContribution>`, which exposes the `FundingContribution` for retry (#4919).
+
+# Backwards Compatibility (0.3)
+
+ * A pending `Event::SpliceFailed` written by 0.2 is read as `Event::SpliceNegotiationFailed` with
+   `reason` set to `NegotiationFailureReason::Unknown` and no `contribution` (#4919).
+
+# Forward Compatibility (0.3)
+
+ * When downgrading to 0.2 with a splice negotiation pending, the failure surfaces as
+   `Event::SpliceFailed` with the contributed inputs and outputs released by the failure set,
+   i.e., excluding any still committed to a prior negotiated splice transaction (#4919).
+
+ * A pending `Event::DiscardFunding` with `FundingInfo::Contribution` is not surfaced on 0.2
+   (#4919).
+
+# Note for the 0.3 changelog
+
+ * The 0.3 changelog entry drafted from `4388-splice-failed-discard-funding.txt` states that
+   downgrading will not set the removed `contributed_inputs`/`contributed_outputs` fields on
+   `SpliceNegotiationFailed`. That is no longer accurate once this change lands and should be
+   corrected on the 0.3 branch to match the forward compatibility notes above (#4919).
+
+ * The entry drafted from `4514-splice-negotiation-failed.txt` describes the `contribution`
+   field as returning the `FundingContribution`. It is now an `Option<FailedSpliceContribution>`
+   and should be corrected on the 0.3 branch to match the API updates above (#4919).
