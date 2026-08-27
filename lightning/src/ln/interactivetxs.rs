@@ -133,8 +133,6 @@ pub(crate) enum AbortReason {
 	/// The RBF feerate is insufficient (e.g., doesn't satisfy the minimum feerate increase rule or
 	/// can't accommodate prior contributions).
 	InsufficientRbfFeerate,
-	/// A funding negotiation is already in progress.
-	NegotiationInProgress,
 	/// The initiator's feerate exceeds our maximum.
 	FeeRateTooHigh,
 	/// The user manually intervened to abort the funding negotiation via
@@ -206,9 +204,6 @@ impl Display for AbortReason {
 			},
 			AbortReason::DuplicateFundingInput => f.write_str("More than one funding input found"),
 			AbortReason::InsufficientRbfFeerate => f.write_str("Insufficient RBF feerate"),
-			AbortReason::NegotiationInProgress => {
-				f.write_str("A funding negotiation is already in progress")
-			},
 			AbortReason::FeeRateTooHigh => {
 				f.write_str("The initiator's feerate exceeds our maximum")
 			},

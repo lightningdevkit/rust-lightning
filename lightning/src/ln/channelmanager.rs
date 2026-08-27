@@ -62,7 +62,8 @@ use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
 	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	SpliceFundingPromotion, StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	SpliceFundingPromotion, SpliceRbfAbort, StfuResponse, UpdateFulfillCommitFetch,
+	WithChannelContext,
 };
 use crate::ln::channel_state::{ChannelDetails, InboundHTLCReference, OutboundHTLCSource};
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -5044,10 +5045,12 @@ impl<
 	/// # Return Value
 	///
 	/// Returns a [`FundingTemplate`] which should be used to obtain a [`FundingContribution`]
-	/// to pass to [`ChannelManager::funding_contributed`]. If a splice has been negotiated but
-	/// not yet locked, it can be replaced with a higher feerate transaction to speed up
-	/// confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
-	/// a fresh contribution or reusing a prior one for RBF.
+	/// to pass to [`ChannelManager::funding_contributed`]. If an unconfirmed splice has been
+	/// negotiated but not yet locked, it can be replaced with a higher feerate transaction to speed
+	/// up confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
+	/// a fresh contribution or reusing a prior one for RBF. Once a candidate confirms it can no
+	/// longer be replaced, and the returned template instead builds a fresh splice to be queued
+	/// behind it.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -9266,6 +9269,7 @@ impl<
 				},
 			}
 		}
+
 		NotifyOption::DoPersist
 	}
 
@@ -16732,10 +16736,15 @@ impl<
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None))
-			.map(|(a, b)| (a, Vec::new(), b)));
-
 		let last_best_block_height = self.best_block.read().unwrap().height;
+		self.do_chain_event(Some(height), |channel| {
+			channel.transactions_confirmed(
+				&block_hash, height, last_best_block_height, txdata, self.chain_hash, &self.node_signer,
+				&self.config.read().unwrap(),
+				&&WithChannelContext::from(&self.logger, &channel.context, None),
+			)
+		});
+
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
 			let do_update = |channel: &mut FundedChannel<SP>| {
@@ -16861,7 +16870,7 @@ impl<
 			);
 		self.do_chain_event(None, |channel| {
 			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None))
+			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None, None))
 		});
 	}
 }
@@ -16900,6 +16909,7 @@ impl<
 				Option<FundingConfirmedMessage>,
 				Vec<(HTLCSource, PaymentHash)>,
 				Option<msgs::AnnouncementSignatures>,
+				Option<SpliceRbfAbort>,
 			),
 			ClosureReason,
 		>,
@@ -16913,6 +16923,7 @@ impl<
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
 		let mut to_process_monitor_update_actions = Vec::new();
+		let mut needs_holding_cell_release = false;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
@@ -16926,7 +16937,7 @@ impl<
 						None => true,
 						Some(funded_channel) => {
 							let res = f(funded_channel);
-							if let Ok((funding_confirmed_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+							if let Ok((funding_confirmed_opt, mut timed_out_pending_htlcs, announcement_sigs, splice_rbf_abort)) = res {
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 									let reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
 									let data = self.get_htlc_inbound_temp_fail_data(reason);
@@ -16934,6 +16945,28 @@ impl<
 									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(reason, data), failure_type));
 								}
 								let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
+								if let Some(SpliceRbfAbort { tx_abort, splice_funding_failed }) = splice_rbf_abort {
+									let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
+									let channel_id = funded_channel.context.channel_id();
+									if peer_state.is_connected {
+										pending_msg_events.push(MessageSendEvent::SendTxAbort {
+											node_id: counterparty_node_id,
+											msg: tx_abort,
+										});
+									}
+									if let Some(splice_funding_failed) = splice_funding_failed {
+										self.handle_quiescent_error(
+											channel_id,
+											counterparty_node_id,
+											funded_channel.context.get_user_id(),
+											QuiescentError::FailSplice(
+												splice_funding_failed,
+												events::NegotiationFailureReason::CannotInitiateRbf,
+											),
+										);
+									}
+									needs_holding_cell_release = true;
+								}
 								match funding_confirmed_opt {
 									Some(FundingConfirmedMessage::Establishment(channel_ready)) => {
 										self.send_channel_ready(pending_msg_events, funded_channel, channel_ready);
@@ -17198,6 +17231,15 @@ impl<
 
 		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, destination, None);
+		}
+
+		if needs_holding_cell_release
+			&& self.background_events_processed_since_startup.load(Ordering::Acquire)
+		{
+			// Chain callbacks may run before the user's ChainMonitor is fully initialized. If the
+			// channel is live, release its holding cell after queuing `tx_abort` to preserve message
+			// ordering. Otherwise, channel reestablishment will release it once the channel is live.
+			self.check_free_holding_cells();
 		}
 	}
 

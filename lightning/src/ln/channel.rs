@@ -1859,6 +1859,27 @@ where
 		}
 	}
 
+	fn interactive_tx_constructor_for_message(
+		&mut self, msg_name: &str,
+	) -> Result<&mut InteractiveTxConstructor, InteractiveTxMsgError> {
+		if matches!(
+			&self.phase,
+			ChannelPhase::Funded(chan) if !chan.context.channel_state.is_quiescent()
+		) {
+			return Err(InteractiveTxMsgError::new(
+				ChannelError::Ignore(format!("Ignoring unexpected {msg_name} while not quiescent")),
+				None,
+			));
+		}
+		match self.interactive_tx_constructor_mut() {
+			Some(interactive_tx_constructor) => Ok(interactive_tx_constructor),
+			None => Err(InteractiveTxMsgError::new(
+				ChannelError::WarnAndDisconnect(format!("Received unexpected {msg_name}")),
+				None,
+			)),
+		}
+	}
+
 	fn fail_interactive_tx_negotiation<L: Logger>(
 		&mut self, reason: AbortReason, logger: &L,
 	) -> InteractiveTxMsgError {
@@ -1888,82 +1909,42 @@ where
 	pub fn tx_add_input<L: Logger>(
 		&mut self, msg: &msgs::TxAddInput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_add_input(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_add_input")?
+			.handle_tx_add_input(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_add_output<L: Logger>(
 		&mut self, msg: &msgs::TxAddOutput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_add_output(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_add_output")?
+			.handle_tx_add_output(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_remove_input<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveInput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_remove_input(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_remove_input")?
+			.handle_tx_remove_input(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_remove_output<L: Logger>(
 		&mut self, msg: &msgs::TxRemoveOutput, logger: &L,
 	) -> Result<InteractiveTxMessageSend, InteractiveTxMsgError> {
-		match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_remove_output(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger)),
-			None => Err(InteractiveTxMsgError::new(
-				ChannelError::WarnAndDisconnect(
-					"Received unexpected interactive transaction negotiation message".to_owned(),
-				),
-				None,
-			)),
-		}
+		self.interactive_tx_constructor_for_message("tx_remove_output")?
+			.handle_tx_remove_output(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))
 	}
 
 	pub fn tx_complete<F: FeeEstimator, L: Logger>(
 		&mut self, msg: &msgs::TxComplete, fee_estimator: &LowerBoundedFeeEstimator<F>, logger: &L,
 	) -> Result<TxCompleteResult, InteractiveTxMsgError> {
-		let tx_complete_action = match self.interactive_tx_constructor_mut() {
-			Some(interactive_tx_constructor) => interactive_tx_constructor
-				.handle_tx_complete(msg)
-				.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?,
-			None => {
-				let err = "Received unexpected interactive transaction negotiation message";
-				return Err(InteractiveTxMsgError::new(
-					ChannelError::WarnAndDisconnect(err.to_owned()),
-					None,
-				));
-			},
-		};
+		let tx_complete_action = self
+			.interactive_tx_constructor_for_message("tx_complete")?
+			.handle_tx_complete(msg)
+			.map_err(|reason| self.fail_interactive_tx_negotiation(reason, logger))?;
 
 		let (interactive_tx_msg_send, negotiation_complete) = match tx_complete_action {
 			HandleTxCompleteValue::SendTxMessage(interactive_tx_msg_send) => {
@@ -3354,6 +3335,12 @@ impl FundingNegotiation {
 }
 
 impl PendingFunding {
+	fn has_confirmed_candidate(&self) -> bool {
+		self.negotiated_candidates
+			.iter()
+			.any(|candidate| candidate.funding.funding_tx_confirmation_height != 0)
+	}
+
 	/// Whether our contributions form a suffix of the negotiated candidates: once a round includes
 	/// our contribution, every later round carries it forward (so the splice intention is never
 	/// lost).
@@ -7454,6 +7441,7 @@ type BestBlockUpdatedRes = (
 	Option<FundingConfirmedMessage>,
 	Vec<(HTLCSource, PaymentHash)>,
 	Option<msgs::AnnouncementSignatures>,
+	Option<SpliceRbfAbort>,
 );
 
 /// The result of handling a `tx_complete` message during interactive transaction construction.
@@ -7521,6 +7509,12 @@ pub struct SpliceFundingFailed {
 
 	/// The funding contribution from the failed round.
 	contribution: FundingContribution,
+}
+
+/// Information about an active RBF negotiation aborted after a prior splice candidate confirmed.
+pub(super) struct SpliceRbfAbort {
+	pub tx_abort: msgs::TxAbort,
+	pub splice_funding_failed: Option<SpliceFundingFailed>,
 }
 
 impl SpliceFundingFailed {
@@ -7815,9 +7809,54 @@ where
 		self.exit_quiescence();
 		if current_is_awaiting_signatures {
 			self.context.interactive_tx_signing_session.take();
+			self.context.signer_pending_funding = false;
 		}
 
 		splice_funding_failed
+	}
+
+	fn abort_ongoing_rbf_after_splice_confirmation<L: Logger>(
+		&mut self, logger: &L,
+	) -> Option<SpliceRbfAbort> {
+		let has_ongoing_rbf = self
+			.pending_splice
+			.as_ref()
+			.map(|pending_splice| {
+				pending_splice.has_confirmed_candidate()
+					&& pending_splice.funding_negotiation.is_some()
+			})
+			.unwrap_or(false);
+		if !has_ongoing_rbf {
+			return None;
+		}
+
+		// Before the current round reaches AwaitingSignatures, the retained signing session belongs
+		// to the prior candidate and must not prevent aborting the new RBF.
+		let has_provided_funding_signatures = self.has_pending_splice_awaiting_signatures()
+			&& self
+				.context
+				.interactive_tx_signing_session
+				.as_ref()
+				.map(|signing_session| signing_session.has_holder_witnesses())
+				.unwrap_or(false);
+		if has_provided_funding_signatures {
+			// Once signing has advanced this far, leave the negotiation active and allow the
+			// signature exchange to continue. If the confirmed candidate reaches lock-in first,
+			// normal promotion will discard the conflicting RBF attempt.
+			debug_assert!(!self.should_reset_pending_splice_state(true));
+			log_debug!(
+				logger,
+				"Continuing an RBF negotiation after another splice candidate confirmed because signing has advanced too far to abort safely",
+			);
+			return None;
+		}
+
+		log_info!(logger, "Aborting an active RBF negotiation after a splice candidate confirmed");
+		let splice_funding_failed = self.reset_pending_splice_state();
+		let tx_abort =
+			AbortReason::RbfUnavailable("A negotiated splice candidate has confirmed".to_owned())
+				.into_tx_abort_msg(self.context.channel_id());
+		Some(SpliceRbfAbort { tx_abort, splice_funding_failed })
 	}
 
 	pub(super) fn maybe_splice_funding_failed(&self) -> Option<SpliceFundingFailed> {
@@ -8965,19 +9004,23 @@ where
 	) -> Result<Option<ChannelMonitorUpdate>, ChannelError> {
 		self.commitment_signed_check_state()?;
 
-		if !self.negotiated_candidates().is_empty() {
-			return Err(ChannelError::close(
-				"Got a single commitment_signed message when expecting a batch".to_owned(),
-			));
-		}
 		if let Some(funding_txid) = msg.funding_txid {
-			let locked_funding_txid =
-				self.funding.get_funding_txid().expect("funded channel must have known txid");
-			if funding_txid != locked_funding_txid {
+			// We may have aborted a pending funding negotiation while the counterparty's initial
+			// `commitment_signed` was in flight.
+			let is_known_funding = core::iter::once(&self.funding)
+				.chain(self.pending_funding())
+				.any(|funding| funding.get_funding_txid() == Some(funding_txid));
+			if !is_known_funding {
 				return Err(ChannelError::Ignore(format!(
 					"Ignoring commitment_signed for stale funding txid {funding_txid}"
 				)));
 			}
+		}
+
+		if !self.negotiated_candidates().is_empty() {
+			return Err(ChannelError::close(
+				"Got a single commitment_signed message when expecting a batch".to_owned(),
+			));
 		}
 
 		let transaction_number = self.holder_commitment_point.next_transaction_number();
@@ -12498,9 +12541,17 @@ where
 	/// In the second, we simply return an Err indicating we need to be force-closed now.
 	#[rustfmt::skip]
 	pub fn transactions_confirmed<NS: NodeSigner, L: Logger>(
-		&mut self, block_hash: &BlockHash, height: u32, txdata: &TransactionData,
+		&mut self, block_hash: &BlockHash, tx_confirmation_height: u32, best_block_height: u32,
+		txdata: &TransactionData,
 		chain_hash: ChainHash, node_signer: &NS, user_config: &UserConfig, logger: &L
-	) -> Result<(Option<FundingConfirmedMessage>, Option<msgs::AnnouncementSignatures>), ClosureReason> {
+	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>, Option<SpliceRbfAbort>), ClosureReason> {
+		// Confirmation callbacks may arrive behind our current best block. Use the later height so
+		// exiting quiescence below cannot release an HTLC which is already too close to expiry.
+		let timed_out_htlcs = self.remove_timed_out_holding_cell_htlcs(cmp::max(
+			tx_confirmation_height,
+			best_block_height,
+		));
+		let mut splice_rbf_abort = None;
 		for &(index_in_block, tx) in txdata.iter() {
 			let mut confirmed_tx = ConfirmedTransaction::from(tx);
 
@@ -12508,7 +12559,7 @@ where
 			// and send it immediately instead of waiting for a best_block_updated call (which may have
 			// already happened for this block).
 			let is_funding_tx_confirmed = self.context.check_for_funding_tx_confirmed(
-				&mut self.funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+				&mut self.funding, block_hash, tx_confirmation_height, index_in_block, &mut confirmed_tx, logger,
 			)?;
 
 			if is_funding_tx_confirmed {
@@ -12520,14 +12571,14 @@ where
 					self.funding.minimum_depth_override = Some(COINBASE_MATURITY);
 				}
 
-				if let Some(channel_ready) = self.check_get_channel_ready(height, logger) {
+				if let Some(channel_ready) = self.check_get_channel_ready(tx_confirmation_height, logger) {
 					log_info!(logger, "Sending a channel_ready to our peer");
-					let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger);
-					return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), announcement_sigs));
+					let announcement_sigs = self.get_announcement_sigs(node_signer, chain_hash, user_config, tx_confirmation_height, logger);
+					return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), timed_out_htlcs, announcement_sigs, splice_rbf_abort));
 				}
 			}
 
-			if let Some(pending_splice) = &mut self.pending_splice {
+			let confirmed_funding_index = if let Some(pending_splice) = &mut self.pending_splice {
 				let mut confirmed_funding_index = None;
 				let mut funding_already_confirmed = false;
 
@@ -12535,7 +12586,7 @@ where
 					pending_splice.negotiated_candidates.iter_mut().map(|candidate| &mut candidate.funding);
 				for (index, funding) in candidates.enumerate() {
 					if self.context.check_for_funding_tx_confirmed(
-						funding, block_hash, height, index_in_block, &mut confirmed_tx, logger,
+						funding, block_hash, tx_confirmation_height, index_in_block, &mut confirmed_tx, logger,
 					)? {
 						if funding_already_confirmed || confirmed_funding_index.is_some() {
 							let err_reason = "splice tx of another pending funding already confirmed";
@@ -12548,11 +12599,18 @@ where
 					}
 				}
 
-				if let Some(confirmed_funding_index) = confirmed_funding_index {
+				confirmed_funding_index
+			} else {
+				None
+			};
+
+			if let Some(confirmed_funding_index) = confirmed_funding_index {
+				splice_rbf_abort = self.abort_ongoing_rbf_after_splice_confirmation(logger);
+				if let Some(pending_splice) = &mut self.pending_splice {
 					if let Some(splice_locked) = pending_splice.check_get_splice_locked(
 						&self.context,
 						confirmed_funding_index,
-						height,
+						tx_confirmation_height,
 					) {
 
 						log_info!(
@@ -12570,7 +12628,7 @@ where
 							splice_funding_failed,
 						) =
 							self.maybe_promote_splice_funding(
-								node_signer, chain_hash, user_config, height, logger,
+								node_signer, chain_hash, user_config, tx_confirmation_height, logger,
 							).map(|splice_promotion| (
 								Some(splice_promotion.funding_txo),
 								splice_promotion.monitor_update,
@@ -12585,14 +12643,14 @@ where
 							monitor_update,
 							discarded_funding,
 							splice_funding_failed,
-						)), announcement_sigs));
+						)), timed_out_htlcs, announcement_sigs, splice_rbf_abort));
 					}
 				}
 			}
 
 		}
 
-		Ok((None, None))
+		Ok((None, timed_out_htlcs, None, splice_rbf_abort))
 	}
 
 	/// When a new block is connected, we check the height of the block against outbound holding
@@ -12618,27 +12676,39 @@ where
 		)
 	}
 
+	/// Removes outbound holding-cell HTLCs which are too close to expiry to safely send.
+	fn remove_timed_out_holding_cell_htlcs(
+		&mut self, height: u32,
+	) -> Vec<(HTLCSource, PaymentHash)> {
+		let mut timed_out_htlcs = Vec::new();
+		// Refuse to send an HTLC when our counterparty should almost certainly just fail it for
+		// expiring ~now.
+		let unforwarded_htlc_cltv_limit = height + LATENCY_GRACE_PERIOD_BLOCKS;
+		self.context.holding_cell_htlc_updates.retain(|htlc_update| match htlc_update {
+			&HTLCUpdateAwaitingACK::AddHTLC {
+				ref payment_hash,
+				ref source,
+				ref cltv_expiry,
+				..
+			} => {
+				if *cltv_expiry <= unforwarded_htlc_cltv_limit {
+					timed_out_htlcs.push((source.clone(), payment_hash.clone()));
+					false
+				} else {
+					true
+				}
+			},
+			_ => true,
+		});
+		timed_out_htlcs
+	}
+
 	#[rustfmt::skip]
 	fn do_best_block_updated<NS: NodeSigner, L: Logger>(
 		&mut self, height: u32, highest_header_time: Option<u32>,
 		chain_node_signer: Option<(ChainHash, &NS, &UserConfig)>, logger: &L
-	) -> Result<(Option<FundingConfirmedMessage>, Vec<(HTLCSource, PaymentHash)>, Option<msgs::AnnouncementSignatures>), ClosureReason> {
-		let mut timed_out_htlcs = Vec::new();
-		// This mirrors the check in ChannelManager::decode_update_add_htlc_onion, refusing to
-		// forward an HTLC when our counterparty should almost certainly just fail it for expiring
-		// ~now.
-		let unforwarded_htlc_cltv_limit = height + LATENCY_GRACE_PERIOD_BLOCKS;
-		self.context.holding_cell_htlc_updates.retain(|htlc_update| {
-			match htlc_update {
-				&HTLCUpdateAwaitingACK::AddHTLC { ref payment_hash, ref source, ref cltv_expiry, .. } => {
-					if *cltv_expiry <= unforwarded_htlc_cltv_limit {
-						timed_out_htlcs.push((source.clone(), payment_hash.clone()));
-						false
-					} else { true }
-				},
-				_ => true
-			}
-		});
+	) -> Result<BestBlockUpdatedRes, ClosureReason> {
+		let timed_out_htlcs = self.remove_timed_out_holding_cell_htlcs(height);
 
 		if let Some(time) = highest_header_time {
 			self.context.update_time_counter = cmp::max(self.context.update_time_counter, time);
@@ -12659,7 +12729,7 @@ where
 				self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 			} else { None };
 			log_info!(logger, "Sending a channel_ready to our peer");
-			return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), timed_out_htlcs, announcement_sigs));
+			return Ok((Some(FundingConfirmedMessage::Establishment(channel_ready)), timed_out_htlcs, announcement_sigs, None));
 		}
 
 		if matches!(self.context.channel_state, ChannelState::ChannelReady(_)) ||
@@ -12776,7 +12846,7 @@ where
 						monitor_update,
 						discarded_funding,
 						splice_funding_failed,
-					)), timed_out_htlcs, announcement_sigs));
+					)), timed_out_htlcs, announcement_sigs, None));
 				}
 			}
 		}
@@ -12784,7 +12854,7 @@ where
 		let announcement_sigs = if let Some((chain_hash, node_signer, user_config)) = chain_node_signer {
 			self.get_announcement_sigs(node_signer, chain_hash, user_config, height, logger)
 		} else { None };
-		Ok((None, timed_out_htlcs, announcement_sigs))
+		Ok((None, timed_out_htlcs, announcement_sigs, None))
 	}
 
 	pub fn get_relevant_txids(&self) -> impl Iterator<Item = (Txid, u32, Option<BlockHash>)> + '_ {
@@ -12828,10 +12898,11 @@ where
 
 				let signer_config = None::<(ChainHash, &&dyn NodeSigner, &UserConfig)>;
 				match self.do_best_block_updated(reorg_height, None, signer_config, logger) {
-					Ok((channel_ready, timed_out_htlcs, announcement_sigs)) => {
+					Ok((channel_ready, timed_out_htlcs, announcement_sigs, splice_rbf_abort)) => {
 						assert!(channel_ready.is_none(), "We can't generate a funding with 0 confirmations?");
 						assert!(timed_out_htlcs.is_empty(), "We can't have accepted HTLCs with a timeout before our funding confirmation?");
 						assert!(announcement_sigs.is_none(), "We can't generate an announcement_sigs with 0 confirmations?");
+						assert!(splice_rbf_abort.is_none(), "We can't abort an RBF while unconfirming funding?");
 						Ok(())
 					},
 					Err(e) => Err(e),
@@ -13215,6 +13286,15 @@ where
 		let (min_rbf_feerate, prior_contribution) = if self.is_rbf_compatible().is_err() {
 			// Channel can never RBF (e.g., zero-conf).
 			(None, None)
+		} else if self.pending_splice.as_ref().is_some_and(|pending_splice| {
+			pending_splice.has_confirmed_candidate()
+				|| pending_splice.received_funding_txid.is_some()
+		}) {
+			// The pending candidate can no longer be replaced. Return a fresh template so
+			// that any non-overlapping contribution waits for it to lock instead of being
+			// presented as an RBF attempt. Submission separately rejects stale RBF templates
+			// built before confirmation or receipt of `splice_locked`.
+			(None, None)
 		} else if let Some(pending_splice) = self.pending_splice.as_ref() {
 			// A splice is pending — either a completed negotiation that hasn't locked yet
 			// or an in-progress negotiation. In either case, the user's splice will need
@@ -13281,7 +13361,7 @@ where
 		if self.is_rbf_compatible().is_err() {
 			return false;
 		}
-		if pending_splice.sent_funding_txid.is_some()
+		if pending_splice.has_confirmed_candidate()
 			|| pending_splice.received_funding_txid.is_some()
 		{
 			return false;
@@ -13320,10 +13400,9 @@ where
 			));
 		}
 
-		if pending_splice.sent_funding_txid.is_some() {
+		if pending_splice.has_confirmed_candidate() {
 			return Err(
-				"A splice transaction already met the confirmations required to lock, cannot RBF"
-					.to_owned(),
+				"A negotiated splice transaction has already confirmed, cannot RBF".to_owned()
 			);
 		}
 
@@ -14037,7 +14116,10 @@ where
 			})?;
 
 		if pending_splice.funding_negotiation.is_some() {
-			return Err(ChannelError::Abort(AbortReason::NegotiationInProgress));
+			return Err(ChannelError::WarnAndDisconnect(
+				"Received tx_init_rbf while a funding negotiation is already in progress"
+					.to_owned(),
+			));
 		}
 
 		if pending_splice.received_funding_txid.is_some() {
@@ -14046,10 +14128,9 @@ where
 			)));
 		}
 
-		if pending_splice.sent_funding_txid.is_some() {
+		if pending_splice.has_confirmed_candidate() {
 			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
-				"A splice transaction already met the confirmations required to lock, cannot RBF"
-					.into(),
+				"A negotiated splice transaction has already confirmed".into(),
 			)));
 		}
 
