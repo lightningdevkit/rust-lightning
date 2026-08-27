@@ -2408,15 +2408,13 @@ impl OutboundPayments {
 		}
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn claim_htlc<L: Logger>(
-		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, bolt12_invoice: Option<PaidBolt12Invoice>,
-		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
+		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage,
+		bolt12_invoice: Option<PaidBolt12Invoice>, session_priv: SecretKey, path: Path,
+		from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
-	)
-	where
-	{
+	) {
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
@@ -2427,14 +2425,17 @@ impl OutboundPayments {
 				log_info!(logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
 				let amount_msat = payment.get().total_msat();
-				pending_events.push_back((events::Event::PaymentSent {
-					payment_id: Some(payment_id),
-					payment_preimage,
-					payment_hash,
-					amount_msat,
-					fee_paid_msat,
-					bolt12_invoice: bolt12_invoice,
-				}, ev_completion_action.take()));
+				pending_events.push_back((
+					events::Event::PaymentSent {
+						payment_id: Some(payment_id),
+						payment_preimage,
+						payment_hash,
+						amount_msat,
+						fee_paid_msat,
+						bolt12_invoice,
+					},
+					ev_completion_action.take(),
+				));
 				payment.get_mut().mark_fulfilled();
 			}
 
@@ -2444,17 +2445,25 @@ impl OutboundPayments {
 				// with a reorg of one block causing us to re-add the fulfilled payment on
 				// restart.
 				if payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
-					let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array()));
-					pending_events.push_back((events::Event::PaymentPathSuccessful {
-						payment_id,
-						payment_hash,
-						path,
-						hold_times: Vec::new(),
-					}, ev_completion_action.take()));
+					let payment_hash =
+						Some(PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array()));
+					pending_events.push_back((
+						events::Event::PaymentPathSuccessful {
+							payment_id,
+							payment_hash,
+							path,
+							hold_times: Vec::new(),
+						},
+						ev_completion_action.take(),
+					));
 				}
 			}
 		} else {
-			log_trace!(logger, "Received duplicative fulfill for HTLC with payment_preimage {}", &payment_preimage);
+			log_trace!(
+				logger,
+				"Received duplicative fulfill for HTLC with payment_preimage {}",
+				&payment_preimage
+			);
 		}
 	}
 
