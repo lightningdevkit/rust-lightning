@@ -50,6 +50,20 @@ pub(crate) fn is_unicode_general_category_other(c: char) -> bool {
 	)
 }
 
+/// Returns `true` if `c` is in Unicode general category `Zl` (Line
+/// Separator) or `Zp` (Paragraph Separator). Terminals and log viewers
+/// commonly render these as hard line breaks, so untrusted strings filter
+/// them alongside the `C` buckets. `Zs` (Space Separator) is deliberately
+/// excluded: it contains U+0020 SPACE and other ordinary spacing
+/// characters.
+#[allow(dead_code)]
+pub(crate) fn is_unicode_general_category_separator(c: char) -> bool {
+	matches!(
+		c as u32,
+		0x2028..=0x2029 // SEPARATOR
+	)
+}
+
 /// Returns `true` if `c` is in Unicode general category `Cn` (Unassigned), or
 /// strictly above U+10FFFF. The trailing `0x110000..=u32::MAX` arm is
 /// unreachable for `char` input (a `char` is bounded to U+10FFFF) but is kept

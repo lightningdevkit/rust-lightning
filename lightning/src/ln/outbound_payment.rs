@@ -901,7 +901,14 @@ impl OutboundPayments {
 					},
 				};
 				if introduction_node_id == our_node_id {
-					let _ = path.advance_path_by_one(node_signer, node_id_lookup, secp_ctx);
+					// TODO: Switch this to
+					// Bolt12PaymentError::SendingFailed(RetryableSendFailure::UnpayableInstructions)
+					// once we add it.
+					if let Err(()) = path.advance_path_by_one(node_signer, node_id_lookup, secp_ctx) {
+						let reason = PaymentFailureReason::RouteNotFound;
+						self.abandon_payment(payment_id, reason, pending_events);
+						Err(Bolt12PaymentError::SendingFailed(RetryableSendFailure::RouteNotFound))?
+					}
 				}
 			}
 		}
