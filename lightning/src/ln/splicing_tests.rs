@@ -7786,7 +7786,7 @@ fn do_test_splice_confirmation_aborts_rbf(test_case: SpliceConfirmationAbortTest
 				reason: NegotiationFailureReason::CannotInitiateRbf,
 				..
 			} if *failed_channel_id == channel_id
-				&& failed_contribution == &rbf_contribution
+				&& failed_contribution.contribution() == &rbf_contribution
 		),
 		"{splice_failed:?}"
 	);
@@ -8066,7 +8066,7 @@ fn test_confirmed_splice_candidate_blocks_new_rbf() {
 				reason: NegotiationFailureReason::CannotInitiateRbf,
 				..
 			}] if *failed_channel_id == channel_id
-				&& failed_contribution == &rbf_contribution
+				&& failed_contribution.contribution() == &rbf_contribution
 		),
 		"{events:?}"
 	);
@@ -8131,7 +8131,7 @@ fn test_confirmed_splice_candidate_rejects_inbound_tx_init_rbf() {
 				reason: NegotiationFailureReason::CounterpartyAborted { msg },
 				..
 			}] if *failed_channel_id == channel_id
-				&& failed_contribution == &rbf_contribution
+				&& failed_contribution.contribution() == &rbf_contribution
 				&& msg == &UntrustedString(tx_abort_data(&tx_abort))
 		),
 		"{events:?}"
@@ -8212,7 +8212,7 @@ fn do_test_aborted_rbf_ignores_inflight_commitment_signed(confirmation_aborts_rb
 					reason: NegotiationFailureReason::CannotInitiateRbf,
 					..
 				}] if *failed_channel_id == channel_id
-					&& failed_contribution == &rbf_contribution
+					&& failed_contribution.contribution() == &rbf_contribution
 			),
 			"{events:?}"
 		);
@@ -8229,7 +8229,7 @@ fn do_test_aborted_rbf_ignores_inflight_commitment_signed(confirmation_aborts_rb
 					reason: NegotiationFailureReason::LocallyCanceled,
 					..
 				}] if *failed_channel_id == channel_id
-					&& failed_contribution == &rbf_contribution
+					&& failed_contribution.contribution() == &rbf_contribution
 			),
 			"{events:?}"
 		);
@@ -8460,7 +8460,7 @@ fn test_pending_rbf_signer_cleared_on_abort() {
 				reason: NegotiationFailureReason::CounterpartyAborted { msg },
 				..
 			}] if *failed_channel_id == channel_id
-				&& failed_contribution == &rbf_contribution
+				&& failed_contribution.contribution() == &rbf_contribution
 				&& msg.0 == "Aborting pending splice"
 		),
 		"{events:?}"
