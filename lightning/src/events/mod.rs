@@ -1136,7 +1136,7 @@ pub enum Event {
 		/// succeed, however you should wait for [`Event::PaymentClaimed`] to be sure.
 		///
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
-		claim_deadline: Option<u32>,
+		claim_deadline: u32,
 		/// A unique ID describing this payment (derived from the list of HTLCs in the payment).
 		///
 		/// Payers may pay for the same [`PaymentHash`] multiple times (though this is unsafe and
@@ -2197,7 +2197,7 @@ impl Writeable for Event {
 					// `receiving_channel_id_legacy`; superseded by `receiving_channel_ids`.
 					(5, receiving_user_channel_id_legacy, option),
 					// Type 6 was `user_payment_id` on 0.0.103 and earlier
-					(7, claim_deadline, option),
+					(7, claim_deadline, required),
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
 					(10, skimmed_fee_opt, option),
@@ -2693,7 +2693,7 @@ impl MaybeReadable for Event {
 					let mut receiver_node_id = None;
 					let mut _user_payment_id = None::<u64>; // Used in 0.0.103 and earlier, no longer written in 0.0.116+.
 					let mut receiving_channel_id_legacy = None;
-					let mut claim_deadline = None;
+					let mut claim_deadline = 0;
 					let mut receiving_user_channel_id_legacy = None;
 					let mut onion_fields = None;
 					let mut payment_context = None;
@@ -2707,7 +2707,7 @@ impl MaybeReadable for Event {
 						(4, amount_msat, required),
 						(5, receiving_user_channel_id_legacy, option),
 						(6, _user_payment_id, option),
-						(7, claim_deadline, option),
+						(7, claim_deadline, required),
 						(8, payment_preimage, option),
 						(9, onion_fields, (option: ReadableArgs, amount_msat)),
 						(10, counterparty_skimmed_fee_msat_opt, option),
@@ -3454,6 +3454,42 @@ mod tests {
 			},
 			_ => panic!("expected PaymentForwarded event"),
 		}
+	}
+
+	#[test]
+	fn legacy_payment_claimable_without_claim_deadline_fails() {
+		// A 0.0.114-serialized `PaymentClaimable` event has no `claim_deadline` at type 7, and
+		// reading events written by LDK 0.0.114 and earlier is not supported, so the read fails.
+		let mut encoded_legacy_event = vec![
+			1,  // Event::PaymentClaimable
+			78, // TLV stream length
+			0, 32, // payment_hash
+		];
+		encoded_legacy_event.extend_from_slice(&[3; 32]);
+		encoded_legacy_event.extend_from_slice(&[2, 32]); // payment_secret
+		encoded_legacy_event.extend_from_slice(&[4; 32]);
+		encoded_legacy_event.extend_from_slice(&[4, 8]); // amount_msat
+		encoded_legacy_event.extend_from_slice(&1_000_000u64.to_be_bytes());
+
+		assert!(Event::read(&mut &encoded_legacy_event[..]).is_err());
+
+		// Events written since 0.0.115 include `claim_deadline` and round-trip it.
+		let event = Event::PaymentClaimable {
+			receiver_node_id: None,
+			payment_hash: PaymentHash([3; 32]),
+			amount_msat: 1_000_000,
+			counterparty_skimmed_fee_msat: 0,
+			purpose: PaymentPurpose::Bolt11InvoicePayment {
+				payment_preimage: None,
+				payment_secret: PaymentSecret([4; 32]),
+			},
+			receiving_channel_ids: Vec::new(),
+			claim_deadline: 42,
+			onion_fields: None,
+			payment_id: None,
+		};
+		let decoded = Event::read(&mut &event.encode()[..]).unwrap().unwrap();
+		assert_eq!(event, decoded);
 	}
 
 	#[test]

@@ -4627,7 +4627,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 
 	match receive_event.unwrap() {
 		Event::PaymentClaimable { claim_deadline, .. } => {
-			assert_eq!(claim_deadline.unwrap(), final_cltv - HTLC_FAIL_BACK_BUFFER);
+			assert_eq!(claim_deadline, final_cltv - HTLC_FAIL_BACK_BUFFER);
 		},
 		_ => panic!(),
 	}
