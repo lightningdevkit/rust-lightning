@@ -39,6 +39,7 @@ pub(crate) mod byte_utils;
 pub mod hash_tables;
 #[allow(dead_code)] // This is a shared utility file, not all of it is used here
 pub(crate) mod inline_vec;
+pub(crate) mod math;
 pub(crate) mod transaction_utils;
 
 #[cfg(feature = "std")]
