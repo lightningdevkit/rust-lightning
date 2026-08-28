@@ -745,6 +745,13 @@ impl ResourceManager {
 		}
 	}
 
+	fn remove_channel_entry(channels: &mut HashMap<ChannelId, Channel>, channel_id: ChannelId) {
+		channels.remove(&channel_id);
+		for channel in channels.values_mut() {
+			channel.last_congestion_misuse.remove(&channel_id);
+		}
+	}
+
 	/// Removes a channel from the resource manager.
 	///
 	/// This must be called when a channel is closing.
@@ -762,7 +769,7 @@ impl ResourceManager {
 					.any(|pending_htlc| pending_htlc.0.incoming_channel_id == channel_id)
 			}) {
 			// If the channel had no pending HTLCs, we can remove it.
-			channels_lock.remove(&channel_id);
+			Self::remove_channel_entry(&mut channels_lock, channel_id);
 		} else {
 			let channel = channels_lock.get_mut(&channel_id).ok_or(())?;
 			channel.closed = true;
@@ -979,7 +986,7 @@ impl ResourceManager {
 						.iter()
 						.any(|pending_htlc| pending_htlc.0.incoming_channel_id == channel_id)
 				}) {
-					channels_lock.remove(&channel_id);
+					Self::remove_channel_entry(&mut channels_lock, channel_id);
 				}
 			}
 		};
@@ -2416,6 +2423,66 @@ mod tests {
 
 		let channels = rm.channels.lock().unwrap();
 		assert!(channels.get(&OUTGOING_CHANNEL_ID).is_none());
+	}
+
+	#[test]
+	fn test_remove_channel_prunes_congestion_misuse() {
+		// Misuse of the congestion bucket is recorded on the incoming channel, keyed by the
+		// outgoing channel that misused it. Removing the outgoing channel must drop that entry,
+		// as nothing would otherwise ever prune it.
+		let rm = create_test_resource_manager_with_channel_pairs(2);
+
+		mark_congestion_misused(&rm, INCOMING_CHANNEL_ID, OUTGOING_CHANNEL_ID);
+		{
+			let channels = rm.channels.lock().unwrap();
+			let incoming = channels.get(&INCOMING_CHANNEL_ID).unwrap();
+			assert!(incoming.last_congestion_misuse.contains_key(&OUTGOING_CHANNEL_ID));
+		}
+		rm.remove_channel(OUTGOING_CHANNEL_ID).unwrap();
+		{
+			let channels = rm.channels.lock().unwrap();
+			assert!(channels.get(&OUTGOING_CHANNEL_ID).is_none());
+			let incoming = channels.get(&INCOMING_CHANNEL_ID).unwrap();
+			assert!(!incoming.last_congestion_misuse.contains_key(&OUTGOING_CHANNEL_ID));
+		}
+
+		// Deferred removal: the outgoing channel has a pending congestion bucket HTLC, so it is
+		// only fully removed once that HTLC resolves. Resolving it slowly records the misuse in
+		// the same call that removes the channel, and it must still be pruned.
+		fill_general_bucket(&rm, INCOMING_CHANNEL_ID_2);
+		let htlc_id = 1;
+		assert_eq!(
+			rm.add_htlc(
+				INCOMING_CHANNEL_ID_2,
+				HTLC_AMOUNT + FEE_AMOUNT,
+				CLTV_EXPIRY,
+				OUTGOING_CHANNEL_ID_2,
+				HTLC_AMOUNT,
+				false,
+				htlc_id,
+				CURRENT_HEIGHT,
+				START_TIME,
+			)
+			.unwrap(),
+			ForwardingOutcome::Forward(true),
+		);
+		mark_congestion_misused(&rm, INCOMING_CHANNEL_ID_2, OUTGOING_CHANNEL_ID_2);
+		rm.remove_channel(OUTGOING_CHANNEL_ID_2).unwrap();
+		{
+			let channels = rm.channels.lock().unwrap();
+			assert!(channels.get(&OUTGOING_CHANNEL_ID_2).unwrap().closed);
+			let incoming = channels.get(&INCOMING_CHANNEL_ID_2).unwrap();
+			assert!(incoming.last_congestion_misuse.contains_key(&OUTGOING_CHANNEL_ID_2));
+		}
+
+		let slow_resolve = ResourceManagerConfig::default().resolution_period * 3;
+		let resolved_at = START_TIME + slow_resolve.as_secs();
+		rm.resolve_htlc(INCOMING_CHANNEL_ID_2, htlc_id, OUTGOING_CHANNEL_ID_2, false, resolved_at);
+
+		let channels = rm.channels.lock().unwrap();
+		assert!(channels.get(&OUTGOING_CHANNEL_ID_2).is_none());
+		let incoming = channels.get(&INCOMING_CHANNEL_ID_2).unwrap();
+		assert!(!incoming.last_congestion_misuse.contains_key(&OUTGOING_CHANNEL_ID_2));
 	}
 
 	#[test]
