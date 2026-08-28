@@ -8,14 +8,18 @@ RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
+	# Starting with version 1.0.229, `serde_derive` relies on `syn` 3, which has
+	# an MSRV of rustc 1.71.
+	[ "$RUSTC_MINOR_VERSION" -lt 71 ] && cargo update -p serde --precise "1.0.228" --verbose
+
+	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
+	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
+
 	# Starting with version 2.0.107, the `syn` crate has an MSRV of rustc 1.68
 	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
 
 	# Starting with version 1.0.42, the `quote` crate has an MSRV of rustc 1.68
 	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
-
-	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
-	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
 
 	# Starting with version 1.0.104, the `proc-macro2` crate has an MSRV of rustc 1.68
 	[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p proc-macro2 --precise "1.0.103" --verbose
@@ -36,8 +40,9 @@ function PIN_RELEASE_DEPS {
 	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p libc --precise 0.2.183 --verbose
 
 	# Starting with version 0.4.0, the `getrandom` crate has an MSRV of rustc 1.85
+	# Note that `getrandom` 0.4 is not in every workspace we run this in.
 	GETRANDOM_VERSION="$(cargo tree 2>&1 | grep -o 'getrandom v0.4.*' | tr -d ' `' | tr 'v' '@' || echo -n)"
-	[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p "$GETRANDOM_VERSION" --precise 0.3.4 --verbose
+	[ -n "$GETRANDOM_VERSION" ] && [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p "$GETRANDOM_VERSION" --precise 0.3.4 --verbose
 
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
@@ -81,6 +86,8 @@ done
 
 echo -e "\n\nTesting upgrade from prior versions of LDK"
 pushd lightning-tests
+# As above, `serde` has to be pinned before `syn` to keep `syn` unambiguous.
+[ "$RUSTC_MINOR_VERSION" -lt 71 ] && cargo update -p serde --precise "1.0.228" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p regex --precise "1.9.6" --verbose
@@ -145,6 +152,8 @@ cargo test -p lightning-invoice --verbose --color always --no-default-features -
 echo -e "\n\nTesting no_std build on a downstream no-std crate"
 # check no-std compatibility across dependencies
 pushd no-std-check
+# `possiblyrandom` pulls in `getrandom` 0.2, which builds `libc` on std targets.
+[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p libc --precise 0.2.183 --verbose
 cargo check --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
