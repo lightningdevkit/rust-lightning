@@ -748,7 +748,7 @@ impl_ser_tlv_based!(ChannelDetails, {
 /// contribution with [`ChannelManager::funding_contributed`]. The contribution first appears as a
 /// candidate awaiting quiescence; once the channel is quiescent it is negotiated with the
 /// counterparty, and a completed negotiation produces a signed *candidate* splice transaction.
-/// While a candidate has been negotiated but not yet locked, calling
+/// While a negotiated candidate hasn't confirmed yet, calling
 /// [`ChannelManager::splice_channel`] again and contributing a higher-feerate replacement RBFs it,
 /// adding another candidate; the candidates all double-spend the same input, so at most one
 /// confirms. A node sends `splice_locked` for a candidate once it has sufficient confirmations
@@ -848,11 +848,11 @@ pub enum SpliceCandidateStatus {
 	/// may instead be included in that round.
 	WaitingOnQuiescence,
 	/// We have committed a contribution but cannot replace the pending candidate via RBF (our
-	/// contribution's feerate is too low, the channel is zero-conf, or a candidate is already
-	/// locking). Once the pending candidate locks, the contribution will begin a fresh splice if
-	/// it does not reuse any inputs or outputs from pending funding; otherwise it will be discarded.
-	/// When only the feerate prevents the RBF, it may instead be included sooner if the counterparty
-	/// initiates an RBF.
+	/// contribution's feerate is too low, the channel is zero-conf, or a candidate has already
+	/// confirmed or been locked by the counterparty). Once the pending candidate locks, the
+	/// contribution will begin a fresh splice if it does not reuse any inputs or outputs from
+	/// pending funding; otherwise it will be discarded. When only the feerate prevents the RBF, it
+	/// may instead be included sooner if the counterparty initiates an RBF.
 	WaitingOnLock,
 	/// We have proposed this round to the counterparty and are awaiting their acknowledgement.
 	AwaitingAck {
@@ -1084,8 +1084,8 @@ mod tests {
 			splice_details: Some(SpliceDetails {
 				// A reachable arrangement: a negotiated candidate we have confirmed and sent
 				// `splice_locked` for, followed by a committed contribution that cannot yet be spliced
-				// (that candidate is locking) and so waits. There is at most one in-flight round and at
-				// most one `WaitingOn*` entry, which is always last.
+				// (that candidate has confirmed) and so waits. There is at most one in-flight round and
+				// at most one `WaitingOn*` entry, which is always last.
 				candidates: vec![
 					SpliceCandidateDetails {
 						contribution: None,
