@@ -552,7 +552,7 @@ impl Channel {
 				let timestamp = u64::max(at_timestamp, *last_misuse.get());
 				// If the last misuse of the congestion bucket was over more than two
 				// weeks ago, remove the entry.
-				const TWO_WEEKS: u64 = 2016 * 10 * 60;
+				const TWO_WEEKS: u64 = 14 * 24 * 60 * 60;
 				let since_last_misuse = timestamp - last_misuse.get();
 				if since_last_misuse < TWO_WEEKS {
 					true
@@ -916,29 +916,20 @@ impl ResourceManager {
 			return;
 		};
 
-		// Resolution can't happen before the HTLC was added. We still release the bucket resources
-		// below, but reputation and revenue are left untouched as they need accurate timestamps.
-		debug_assert!(
-			resolved_at >= pending_htlc.added_at_unix_seconds,
-			"HTLC resolved before it was added"
-		);
+		// A backwards step of the caller's clock can make the resolution appear to predate the
+		// add. Treat such an HTLC as resolved instantly rather than penalizing the peer for our
+		// clock.
+		let resolved_at = u64::max(resolved_at, pending_htlc.added_at_unix_seconds);
+		let resolution_time = Duration::from_secs(resolved_at - pending_htlc.added_at_unix_seconds);
 
 		let outgoing_closed = outgoing_channel.closed && outgoing_channel.pending_htlcs.is_empty();
-		if resolved_at >= pending_htlc.added_at_unix_seconds {
-			let resolution_time =
-				Duration::from_secs(resolved_at - pending_htlc.added_at_unix_seconds);
-			let effective_fee = self.effective_fees(
-				pending_htlc.fee,
-				resolution_time,
-				pending_htlc.outgoing_accountable,
-				settled,
-			);
-			// Note that the decaying averages for reputation and revenue clamp `resolved_at` to
-			// `last_updated_unix_secs` if it falls behind. This could happen because
-			// `last_updated_unix_secs` is frequently mutated. We accept the clamping rather
-			// than erroring, as rejecting out-of-order timestamps would leave resources stuck.
-			outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at);
-		}
+		let effective_fee = self.effective_fees(
+			pending_htlc.fee,
+			resolution_time,
+			pending_htlc.outgoing_accountable,
+			settled,
+		);
+		outgoing_channel.outgoing_reputation.add_value(effective_fee, resolved_at);
 
 		let Some(incoming_channel) = channels_lock.get_mut(&incoming_channel_id) else {
 			debug_assert!(false, "resolved HTLC on an incoming channel we do not know about");
@@ -951,12 +942,7 @@ impl ResourceManager {
 			},
 			BucketAssigned::Congestion => {
 				// Mark that congestion bucket was misused if it took more than the valid
-				// resolution period. Here we are bit lenient if resolve_at < added_at.
-				// This means there is a bug as resolution can't be before added time but
-				// no reason to mark congestion as misused in this case.
-				let resolution_time = Duration::from_secs(
-					resolved_at.saturating_sub(pending_htlc.added_at_unix_seconds),
-				);
+				// resolution period.
 				if resolution_time > self.config.resolution_period {
 					incoming_channel.misused_congestion(outgoing_channel_id, resolved_at);
 				}
@@ -977,7 +963,7 @@ impl ResourceManager {
 			},
 		}
 
-		if settled && resolved_at >= pending_htlc.added_at_unix_seconds {
+		if settled {
 			let fee: i64 = i64::try_from(pending_htlc.fee).unwrap_or(i64::MAX);
 			incoming_channel.incoming_revenue.add_value(fee, resolved_at);
 		}
