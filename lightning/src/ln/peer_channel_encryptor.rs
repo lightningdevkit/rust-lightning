@@ -10,7 +10,7 @@
 use crate::prelude::*;
 
 use crate::ln::msgs;
-use crate::ln::msgs::LightningError;
+use crate::ln::msgs::{ErrorAction, LightningError};
 use crate::ln::wire;
 use crate::sign::{NodeSigner, Recipient};
 
@@ -524,10 +524,11 @@ impl PeerChannelEncryptor {
 	///
 	/// For effeciency, the [`Vec::capacity`] should be at least 16 bytes larger than the
 	/// [`Vec::len`], to avoid reallocating for the message MAC, which will be appended to the vec.
-	fn encrypt_message_with_header_0s(&mut self, msgbuf: &mut Vec<u8>) {
+	fn encrypt_message_with_header_0s(&mut self, msgbuf: &mut Vec<u8>) -> Result<(), ()> {
 		let msg_len = msgbuf.len() - 16 - 2;
 		if msg_len > LN_MAX_MSG_LEN {
-			panic!("Attempted to encrypt message longer than 65535 bytes!");
+			debug_assert!(false, "Attempted to encrypt message longer than 65535 bytes!");
+			return Err(());
 		}
 
 		match self.noise_state {
@@ -550,30 +551,40 @@ impl PeerChannelEncryptor {
 
 				Self::encrypt_in_place_with_ad(msgbuf, 16 + 2, *sn, sk, &[0; 0]);
 				*sn += 1;
+				Ok(())
 			},
-			_ => panic!("Tried to encrypt a message prior to noise handshake completion"),
+			_ => {
+				debug_assert!(
+					false,
+					"Tried to encrypt a message prior to noise handshake completion"
+				);
+				Err(())
+			},
 		}
 	}
 
 	/// Encrypts the given pre-serialized message, returning the encrypted version.
-	/// panics if msg.len() > 65535 or Noise handshake has not finished.
 	pub fn encrypt_buffer(&mut self, mut msg: MessageBuf) -> Vec<u8> {
-		self.encrypt_message_with_header_0s(&mut msg.0);
+		self.encrypt_message_with_header_0s(&mut msg.0)
+			.expect("Length was checked in buf constructor and peer should be live");
 		msg.0
 	}
 
 	/// Encrypts the given message, returning the encrypted version.
-	/// panics if the length of `message`, once encoded, is greater than 65535 or if the Noise
-	/// handshake has not finished.
-	pub fn encrypt_message<M: wire::Type>(&mut self, message: &M) -> Vec<u8> {
+	///
+	/// Returns `Err(())` if the length of `message`, once encoded, is greater than 65535 or if the
+	/// Noise handshake has not finished.
+	pub(crate) fn encrypt_message<M: wire::Type>(
+		&mut self, message: &M,
+	) -> Result<Vec<u8>, ()> {
 		// Allocate a buffer with 2KB, fitting most common messages. Reserve the first 16+2 bytes
 		// for the 2-byte message type prefix and its MAC.
 		let mut res = VecWriter(Vec::with_capacity(MSG_BUF_ALLOC_SIZE));
 		res.0.resize(16 + 2, 0);
 		wire::write(message, &mut res).expect("In-memory messages must never fail to serialize");
 
-		self.encrypt_message_with_header_0s(&mut res.0);
-		res.0
+		self.encrypt_message_with_header_0s(&mut res.0)?;
+		Ok(res.0)
 	}
 
 	/// Decrypts a message length header from the remote peer.
@@ -602,10 +613,14 @@ impl PeerChannelEncryptor {
 	/// Decrypts the given message up to msg.len() - 16. Bytes after msg.len() - 16 will be left
 	/// undefined (as they contain the Poly1305 tag bytes).
 	///
-	/// panics if msg.len() > 65535 + 16
+	/// Returns an error if `msg.len() > 65535 + 16`.
 	pub fn decrypt_message(&mut self, msg: &mut [u8]) -> Result<(), LightningError> {
 		if msg.len() > LN_MAX_MSG_LEN + 16 {
-			panic!("Attempted to decrypt message longer than 65535 + 16 bytes!");
+			debug_assert!(false, "Attempted to decrypt message longer than 65535 + 16 bytes!");
+			return Err(LightningError {
+				err: "Somehow had an oversized message to decrypt".to_owned(),
+				action: ErrorAction::DisconnectPeer { msg: None },
+			});
 		}
 
 		match self.noise_state {
@@ -649,17 +664,18 @@ impl MessageBuf {
 	/// Creates a new buffer from an encoded message (i.e. the two message-type bytes followed by
 	/// the message contents).
 	///
-	/// Panics if the message is longer than 2^16.
-	pub fn from_encoded(encoded_msg: &[u8]) -> Self {
+	/// Returns `Err(())` if the message is longer than 2^16 - 1.
+	pub fn from_encoded(encoded_msg: &[u8]) -> Result<Self, ()> {
 		if encoded_msg.len() > LN_MAX_MSG_LEN {
-			panic!("Attempted to encrypt message longer than 65535 bytes!");
+			debug_assert!(false, "Attempted to encrypt message longer than 65535 bytes!");
+			return Err(());
 		}
 		// In addition to the message (continaing the two message type bytes), we also have to add
 		// the message length header (and its MAC) and the message MAC.
 		let mut res = Vec::with_capacity(encoded_msg.len() + 16 * 2 + 2);
 		res.resize(encoded_msg.len() + 16 + 2, 0);
 		res[16 + 2..].copy_from_slice(&encoded_msg);
-		Self(res)
+		Ok(Self(res))
 	}
 
 	#[cfg(test)]
@@ -1015,7 +1031,8 @@ mod tests {
 
 		for i in 0..1005 {
 			let msg = [0x68, 0x65, 0x6c, 0x6c, 0x6f];
-			let mut res = outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg));
+			let msgbuf = MessageBuf::from_encoded(&msg).unwrap();
+			let mut res = outbound_peer.encrypt_buffer(msgbuf);
 			assert_eq!(res.len(), 5 + 2 * 16 + 2);
 
 			let len_header = res[0..2 + 16].to_vec();
@@ -1056,20 +1073,38 @@ mod tests {
 	}
 
 	#[test]
+	#[cfg(debug_assertions)]
 	#[should_panic(expected = "Attempted to encrypt message longer than 65535 bytes!")]
 	fn max_message_len_encryption() {
-		let mut outbound_peer = get_outbound_peer_for_initiator_test_vectors();
 		let msg = [4u8; LN_MAX_MSG_LEN + 1];
-		outbound_peer.encrypt_buffer(MessageBuf::from_encoded(&msg));
+		let _ = MessageBuf::from_encoded(&msg);
 	}
 
 	#[test]
+	#[cfg(not(debug_assertions))]
+	fn max_message_len_encryption() {
+		let msg = [4u8; LN_MAX_MSG_LEN + 1];
+		assert!(MessageBuf::from_encoded(&msg).is_err());
+	}
+
+	#[test]
+	#[cfg(debug_assertions)]
 	#[should_panic(expected = "Attempted to decrypt message longer than 65535 + 16 bytes!")]
 	fn max_message_len_decryption() {
 		let mut inbound_peer = get_inbound_peer_for_test_vectors();
 
 		// MSG should not exceed LN_MAX_MSG_LEN + 16
 		let mut msg = [4u8; LN_MAX_MSG_LEN + 17];
-		inbound_peer.decrypt_message(&mut msg).unwrap();
+		let _ = inbound_peer.decrypt_message(&mut msg);
+	}
+
+	#[test]
+	#[cfg(not(debug_assertions))]
+	fn max_message_len_decryption() {
+		let mut inbound_peer = get_inbound_peer_for_test_vectors();
+
+		// MSG should not exceed LN_MAX_MSG_LEN + 16
+		let mut msg = [4u8; LN_MAX_MSG_LEN + 17];
+		assert!(inbound_peer.decrypt_message(&mut msg).is_err());
 	}
 }
