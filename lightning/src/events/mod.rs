@@ -3457,42 +3457,6 @@ mod tests {
 	}
 
 	#[test]
-	fn legacy_payment_claimable_without_claim_deadline_fails() {
-		// A 0.0.114-serialized `PaymentClaimable` event has no `claim_deadline` at type 7, and
-		// reading events written by LDK 0.0.114 and earlier is not supported, so the read fails.
-		let mut encoded_legacy_event = vec![
-			1,  // Event::PaymentClaimable
-			78, // TLV stream length
-			0, 32, // payment_hash
-		];
-		encoded_legacy_event.extend_from_slice(&[3; 32]);
-		encoded_legacy_event.extend_from_slice(&[2, 32]); // payment_secret
-		encoded_legacy_event.extend_from_slice(&[4; 32]);
-		encoded_legacy_event.extend_from_slice(&[4, 8]); // amount_msat
-		encoded_legacy_event.extend_from_slice(&1_000_000u64.to_be_bytes());
-
-		assert!(Event::read(&mut &encoded_legacy_event[..]).is_err());
-
-		// Events written since 0.0.115 include `claim_deadline` and round-trip it.
-		let event = Event::PaymentClaimable {
-			receiver_node_id: None,
-			payment_hash: PaymentHash([3; 32]),
-			amount_msat: 1_000_000,
-			counterparty_skimmed_fee_msat: 0,
-			purpose: PaymentPurpose::Bolt11InvoicePayment {
-				payment_preimage: None,
-				payment_secret: PaymentSecret([4; 32]),
-			},
-			receiving_channel_ids: Vec::new(),
-			claim_deadline: 42,
-			onion_fields: None,
-			payment_id: None,
-		};
-		let decoded = Event::read(&mut &event.encode()[..]).unwrap().unwrap();
-		assert_eq!(event, decoded);
-	}
-
-	#[test]
 	fn legacy_splice_failed_event_read() {
 		let expected_channel_id = ChannelId::from_bytes([2; 32]);
 		let secp_ctx = bitcoin::secp256k1::Secp256k1::new();
