@@ -954,7 +954,7 @@ fn assert_disconnect_action<'a>(
 			// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause
 			// a node to disconnect their counterparty if they're expecting a timely response.
 			let is_quiescent_msg = msg.data.contains(
-				"A splice transaction already met the confirmations required to lock, cannot RBF",
+				"A negotiated splice transaction has already confirmed, cannot RBF",
 			) || msg.data.contains(
 				"Waiting for splice to lock before potentially proceeding with queued contribution",
 			) || msg
