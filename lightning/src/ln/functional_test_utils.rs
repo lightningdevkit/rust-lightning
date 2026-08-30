@@ -3817,12 +3817,9 @@ pub fn do_pass_along_path<'a, 'b, 'c>(args: PassAlongPathArgs) -> Option<Event> 
 								.unwrap();
 							assert_eq!(*user_chan_id, Some(chan.user_channel_id));
 						}
-						assert!(claim_deadline.unwrap() > node.best_block_info().1);
+						assert!(*claim_deadline > node.best_block_info().1);
 						if let Some(expected_cltv) = payment_claimable_cltv {
-							assert_eq!(
-								claim_deadline.unwrap(),
-								expected_cltv - HTLC_FAIL_BACK_BUFFER,
-							);
+							assert_eq!(*claim_deadline, expected_cltv - HTLC_FAIL_BACK_BUFFER,);
 						}
 					},
 					_ => panic!("Unexpected event"),

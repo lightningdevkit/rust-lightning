@@ -1136,7 +1136,7 @@ pub enum Event {
 		/// succeed, however you should wait for [`Event::PaymentClaimed`] to be sure.
 		///
 		/// [`ChannelManager::claim_funds`]: crate::ln::channelmanager::ChannelManager::claim_funds
-		claim_deadline: Option<u32>,
+		claim_deadline: u32,
 		/// A unique ID describing this payment (derived from the list of HTLCs in the payment).
 		///
 		/// Payers may pay for the same [`PaymentHash`] multiple times (though this is unsafe and
@@ -2197,7 +2197,7 @@ impl Writeable for Event {
 					// `receiving_channel_id_legacy`; superseded by `receiving_channel_ids`.
 					(5, receiving_user_channel_id_legacy, option),
 					// Type 6 was `user_payment_id` on 0.0.103 and earlier
-					(7, claim_deadline, option),
+					(7, claim_deadline, required),
 					(8, payment_preimage, option),
 					(9, onion_fields, option),
 					(10, skimmed_fee_opt, option),
@@ -2693,7 +2693,7 @@ impl MaybeReadable for Event {
 					let mut receiver_node_id = None;
 					let mut _user_payment_id = None::<u64>; // Used in 0.0.103 and earlier, no longer written in 0.0.116+.
 					let mut receiving_channel_id_legacy = None;
-					let mut claim_deadline = None;
+					let mut claim_deadline = 0;
 					let mut receiving_user_channel_id_legacy = None;
 					let mut onion_fields = None;
 					let mut payment_context = None;
@@ -2707,7 +2707,7 @@ impl MaybeReadable for Event {
 						(4, amount_msat, required),
 						(5, receiving_user_channel_id_legacy, option),
 						(6, _user_payment_id, option),
-						(7, claim_deadline, option),
+						(7, claim_deadline, required),
 						(8, payment_preimage, option),
 						(9, onion_fields, (option: ReadableArgs, amount_msat)),
 						(10, counterparty_skimmed_fee_msat_opt, option),

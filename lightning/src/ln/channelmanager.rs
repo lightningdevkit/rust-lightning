@@ -8657,15 +8657,14 @@ impl<
 					total_sender_intended.saturating_sub(amount_msat)
 						<= counterparty_skimmed_fee_msat
 				);
-				let claim_deadline = Some(
+				let claim_deadline =
 					match claimable_payment.htlcs.iter().map(|h| h.mpp_part.cltv_expiry).min() {
 						Some(claim_deadline) => claim_deadline,
 						None => {
 							debug_assert!(false, "no htlcs in completed claimable_payment");
 							htlc_expiry
 						},
-					} - HTLC_FAIL_BACK_BUFFER,
-				);
+					} - HTLC_FAIL_BACK_BUFFER;
 				new_events.push_back((
 					events::Event::PaymentClaimable {
 						receiver_node_id: Some(receiver_node_id),
