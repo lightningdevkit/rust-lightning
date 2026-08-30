@@ -19021,11 +19021,7 @@ impl<
 		let mut splice_failed_events: Vec<(Event, Option<EventCompletionAction>)> = Vec::new();
 		for peer_state in peer_states.iter() {
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
-				let failed_splices = chan
-					.maybe_splice_funding_failed()
-					.into_iter()
-					.chain(chan.maybe_queued_splice_funding_failed());
-				for splice_funding_failed in failed_splices {
+				for splice_funding_failed in chan.on_restart_splice_failures() {
 					splice_failed_events.extend(
 						splice_negotiation_failed_events(
 							chan.context.channel_id(),
