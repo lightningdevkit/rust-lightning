@@ -1100,6 +1100,9 @@ impl SmoothedDecayingAverage {
 	}
 }
 
+#[cfg(fuzzing)]
+pub mod fuzz;
+
 #[cfg(test)]
 mod tests {
 	use core::time::Duration;
