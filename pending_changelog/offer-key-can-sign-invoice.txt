@@ -1,4 +1,4 @@
 # API Updates
- * `Offer::matches_invoice_signing_pubkey` answers whether an invoice signing key is the offer's
+ * `Offer::key_can_sign_invoice` answers whether an invoice signing key can sign for the offer's
    recipient, binding an invoice it signed to the offer: the issuer id when the offer has one,
    otherwise a path's final blinded node id.
