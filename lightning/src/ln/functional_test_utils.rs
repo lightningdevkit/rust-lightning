@@ -1052,6 +1052,14 @@ pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 /// Get an specific event message from the pending events queue.
 #[macro_export]
 macro_rules! get_event_msg {
+	($node: expr, $event_type: path) => {{
+		let events = $node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1, "{events:?}");
+		match events[0] {
+			$event_type { ref msg, .. } => (*msg).clone(),
+			_ => panic!("Unexpected event {:?}", events[0]),
+		}
+	}};
 	($node: expr, $event_type: path, $node_id: expr) => {{
 		let events = $node.node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1, "{events:?}");
@@ -3298,7 +3306,16 @@ pub fn expect_failed_rbf_events<'a, 'b, 'c>(
 		Event::SpliceNegotiationFailed { channel_id, reason, contribution, .. } => {
 			assert_eq!(channel_id, expected_channel_id);
 			assert_eq!(*reason, expected_reason);
-			assert_eq!(contribution.as_ref(), Some(expected_contribution));
+			let contribution = contribution.as_ref().unwrap();
+			assert_eq!(contribution.contribution(), expected_contribution);
+			// The inputs and outputs released by the failure must match those discarded.
+			assert_eq!(contribution.contributed_inputs(), &discarded.0[..]);
+			let contributed_output_scripts = contribution
+				.contributed_outputs()
+				.iter()
+				.map(|output| output.script_pubkey.clone())
+				.collect::<Vec<_>>();
+			assert_eq!(contributed_output_scripts, discarded.1);
 		},
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}
@@ -4204,12 +4221,6 @@ pub fn pass_claimed_payment_along_route_from_ev(
 				}
 				let mut events = $node.node.get_and_clear_pending_events();
 				assert_eq!(events.len(), 1);
-				if let Event::PaymentForwarded { next_htlcs, .. } = &events[0] {
-					let fulfilled_htlc_id = next_msgs.as_ref().unwrap().0.htlc_id;
-					assert_eq!(next_htlcs[0].htlc_id, Some(fulfilled_htlc_id));
-				} else {
-					panic!("Unexpected event {:?}", events[0]);
-				}
 				let actual_fee = expect_payment_forwarded(
 					events.pop().unwrap(),
 					*$node,
@@ -5349,6 +5360,15 @@ macro_rules! handle_chan_reestablish_msgs {
 			assert!(!had_channel_update);
 		}
 
+		if stfu.is_none() {
+			if let Some(&MessageSendEvent::SendStfu { ref node_id, ref msg }) = msg_events.get(idx)
+			{
+				idx += 1;
+				assert_eq!(*node_id, $dst_node.node.get_our_node_id());
+				stfu = Some(msg.clone());
+			}
+		}
+
 		assert_eq!(msg_events.len(), idx, "{msg_events:?}");
 
 		(
@@ -5380,6 +5400,7 @@ pub struct ReconnectArgs<'a, 'b, 'c, 'd> {
 	/// and no monitor update is expected
 	pub pending_responding_commitment_signed_dup_monitor: (bool, bool),
 	pub pending_htlc_adds: (usize, usize),
+	pub pending_cell_htlc_adds: (usize, usize),
 	pub pending_htlc_claims: (usize, usize),
 	pub pending_htlc_fails: (usize, usize),
 	pub pending_cell_htlc_claims: (usize, usize),
@@ -5405,6 +5426,7 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 			pending_responding_commitment_signed: (false, false),
 			pending_responding_commitment_signed_dup_monitor: (false, false),
 			pending_htlc_adds: (0, 0),
+			pending_cell_htlc_adds: (0, 0),
 			pending_htlc_claims: (0, 0),
 			pending_htlc_fails: (0, 0),
 			pending_cell_htlc_claims: (0, 0),
@@ -5415,8 +5437,6 @@ impl<'a, 'b, 'c, 'd> ReconnectArgs<'a, 'b, 'c, 'd> {
 	}
 }
 
-/// pending_htlc_adds includes both the holding cell and in-flight update_add_htlcs, whereas
-/// for claims/fails they are separated out.
 pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 	let ReconnectArgs {
 		node_a,
@@ -5429,6 +5449,7 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		send_tx_abort,
 		expect_renegotiated_funding_locked_monitor_update,
 		pending_htlc_adds,
+		pending_cell_htlc_adds,
 		pending_htlc_claims,
 		pending_htlc_fails,
 		pending_cell_htlc_claims,
@@ -5480,7 +5501,8 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		resp_1.push(handle_chan_reestablish_msgs!(node_b, node_a));
 	}
 
-	if pending_cell_htlc_claims.0 != 0
+	if pending_cell_htlc_adds.0 != 0
+		|| pending_cell_htlc_claims.0 != 0
 		|| pending_cell_htlc_fails.0 != 0
 		|| expect_renegotiated_funding_locked_monitor_update.1
 	{
@@ -5494,7 +5516,8 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		node_a.node.handle_channel_reestablish(node_b_id, &msg);
 		resp_2.push(handle_chan_reestablish_msgs!(node_a, node_b));
 	}
-	if pending_cell_htlc_claims.1 != 0
+	if pending_cell_htlc_adds.1 != 0
+		|| pending_cell_htlc_claims.1 != 0
 		|| pending_cell_htlc_fails.1 != 0
 		|| expect_renegotiated_funding_locked_monitor_update.0
 	{
@@ -5506,11 +5529,13 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 	// We don't yet support both needing updates, as that would require a different commitment dance:
 	assert!(
 		(pending_htlc_adds.0 == 0
+			&& pending_cell_htlc_adds.0 == 0
 			&& pending_htlc_claims.0 == 0
 			&& pending_htlc_fails.0 == 0
 			&& pending_cell_htlc_claims.0 == 0
 			&& pending_cell_htlc_fails.0 == 0)
 			|| (pending_htlc_adds.1 == 0
+				&& pending_cell_htlc_adds.1 == 0
 				&& pending_htlc_claims.1 == 0
 				&& pending_htlc_fails.1 == 0
 				&& pending_cell_htlc_claims.1 == 0
@@ -5518,12 +5543,14 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 	);
 	let pending_commitment_update = (
 		pending_htlc_adds.0 != 0
+			|| pending_cell_htlc_adds.0 != 0
 			|| pending_htlc_claims.0 != 0
 			|| pending_htlc_fails.0 != 0
 			|| pending_cell_htlc_claims.0 != 0
 			|| pending_cell_htlc_fails.0 != 0
 			|| pending_responding_commitment_signed.0,
 		pending_htlc_adds.1 != 0
+			|| pending_cell_htlc_adds.1 != 0
 			|| pending_htlc_claims.1 != 0
 			|| pending_htlc_fails.1 != 0
 			|| pending_cell_htlc_claims.1 != 0
@@ -5579,6 +5606,8 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		if send_tx_abort.0 {
 			let tx_abort = chan_msgs.7.take().unwrap();
 			node_a.node.handle_tx_abort(node_b_id, &tx_abort);
+			let tx_abort_ack = get_event_msg!(node_a, MessageSendEvent::SendTxAbort, node_b_id);
+			node_b.node.handle_tx_abort(node_a_id, &tx_abort_ack);
 		} else {
 			assert!(chan_msgs.7.is_none());
 		}
@@ -5598,7 +5627,10 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 		if pending_commitment_update.0 {
 			let commitment_update = chan_msgs.2.unwrap();
-			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.0);
+			assert_eq!(
+				commitment_update.update_add_htlcs.len(),
+				pending_htlc_adds.0 + pending_cell_htlc_adds.0
+			);
 			assert_eq!(
 				commitment_update.update_fulfill_htlcs.len(),
 				pending_htlc_claims.0 + pending_cell_htlc_claims.0
@@ -5691,7 +5723,9 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 		if send_tx_abort.1 {
 			let tx_abort = chan_msgs.7.take().unwrap();
-			node_a.node.handle_tx_abort(node_b_id, &tx_abort);
+			node_b.node.handle_tx_abort(node_a_id, &tx_abort);
+			let tx_abort_ack = get_event_msg!(node_b, MessageSendEvent::SendTxAbort, node_a_id);
+			node_a.node.handle_tx_abort(node_b_id, &tx_abort_ack);
 		} else {
 			assert!(chan_msgs.7.is_none());
 		}
@@ -5711,7 +5745,10 @@ pub fn reconnect_nodes<'a, 'b, 'c, 'd>(args: ReconnectArgs<'a, 'b, 'c, 'd>) {
 		}
 		if pending_commitment_update.1 {
 			let commitment_update = chan_msgs.2.unwrap();
-			assert_eq!(commitment_update.update_add_htlcs.len(), pending_htlc_adds.1);
+			assert_eq!(
+				commitment_update.update_add_htlcs.len(),
+				pending_htlc_adds.1 + pending_cell_htlc_adds.1
+			);
 			assert_eq!(
 				commitment_update.update_fulfill_htlcs.len(),
 				pending_htlc_claims.1 + pending_cell_htlc_claims.1

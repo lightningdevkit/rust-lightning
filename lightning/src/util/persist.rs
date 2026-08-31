@@ -994,7 +994,17 @@ where
 	pub fn read_all_channel_monitors_with_updates(
 		&self,
 	) -> Result<Vec<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
-		poll_sync_future(self.0.read_all_channel_monitors_with_updates())
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_list = poll_sync_future(self.0 .0.kv_store.list(primary, secondary))?;
+		let mut res = Vec::with_capacity(monitor_list.len());
+		for monitor_key in monitor_list {
+			let read_fut = self.0 .0.maybe_read_channel_monitor_with_updates(monitor_key.as_str());
+			if let Some(read_res) = poll_sync_future(read_fut)? {
+				res.push(read_res);
+			}
+		}
+		Ok(res)
 	}
 
 	/// Read a single channel monitor, along with any stored updates for it.
@@ -1170,48 +1180,13 @@ impl<
 		}))
 	}
 
-	/// Reads all stored channel monitors, along with any stored updates for them.
-	///
-	/// While the reads themselves are performed in parallel, deserializing the
-	/// [`ChannelMonitor`]s is not. For large [`ChannelMonitor`]s actively used for forwarding,
-	/// this may substantially limit the parallelism of this method.
-	///
-	/// If you can move this object into an `Arc`, consider using
-	/// [`Self::read_all_channel_monitors_with_updates_parallel`] to parallelize the CPU-bound
-	/// deserialization as well.
-	pub async fn read_all_channel_monitors_with_updates(
-		&self,
-	) -> Result<Vec<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>)>, io::Error> {
-		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
-		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
-		let mut futures = Vec::with_capacity(monitor_list.len());
-		for monitor_key in monitor_list {
-			futures.push(ResultFuture::Pending(Box::pin(async move {
-				self.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await
-			})));
-		}
-		let future_results = MultiResultFuturePoller::new(futures).await;
-		let mut res = Vec::with_capacity(future_results.len());
-		for result in future_results {
-			if let Some(read_res) = result? {
-				res.push(read_res);
-			}
-		}
-		Ok(res)
-	}
-
 	/// Reads all stored channel monitors, along with any stored updates for them, in parallel.
 	///
 	/// Because deserializing large [`ChannelMonitor`]s from forwarding nodes is often CPU-bound,
-	/// this version of [`Self::read_all_channel_monitors_with_updates`] uses the [`FutureSpawner`]
-	/// to parallelize deserialization as well as the IO operations.
-	///
-	/// Because [`FutureSpawner`] requires that the spawned future be `'static` (matching `tokio`
-	/// and other multi-threaded runtime requirements), this method requires that `self` be an
-	/// `Arc` that can live for `'static` and be sent and accessed across threads.
-	pub async fn read_all_channel_monitors_with_updates_parallel(
-		self: &Arc<Self>,
+	/// this uses the [`FutureSpawner`] to parallelize deserialization as well as the IO
+	/// operations.
+	pub async fn read_all_channel_monitors_with_updates(
+		&self,
 	) -> Result<Vec<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>)>, io::Error>
 	where
 		K: MaybeSend + MaybeSync + 'static,
@@ -1227,9 +1202,9 @@ impl<
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
 		let mut futures = Vec::with_capacity(monitor_list.len());
 		for monitor_key in monitor_list {
-			let us = Arc::clone(&self);
+			let us = Arc::clone(&self.0);
 			futures.push(ResultFuture::Pending(self.0.future_spawner.spawn(async move {
-				us.0.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await
+				us.maybe_read_channel_monitor_with_updates(monitor_key.as_str()).await
 			})));
 		}
 		let future_results = MultiResultFuturePoller::new(futures).await;

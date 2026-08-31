@@ -34,6 +34,13 @@ pub enum TransactionType {
 	/// If we initiated the channel the transaction given to
 	/// [`ChannelManager::funding_transaction_generated`] will be broadcast with this type.
 	///
+	/// This type is also used when re-broadcasting a channel's current funding transaction while
+	/// it has not yet confirmed. This includes an interactively-negotiated funding transaction
+	/// (e.g., a splice) once `splice_locked` has been exchanged -- which may happen prior to
+	/// confirmation on 0-conf channels -- even though its initial broadcast used
+	/// [`TransactionType::InteractiveFunding`]. Consumers classifying broadcasts should therefore
+	/// match transactions by txid rather than relying on the type alone.
+	///
 	/// [`ChannelManager::funding_transaction_generated`]: crate::ln::channelmanager::ChannelManager::funding_transaction_generated
 	Funding {
 		/// The counterparty node IDs and channel IDs of the channels being funded.
@@ -111,6 +118,11 @@ pub enum TransactionType {
 	/// A transaction of this type will be broadcast as a result of a
 	/// [`ChannelManager::splice_channel`] operation, or (once supported) V2 (dual-funded) channel
 	/// establishment. The same variant is used for batches of either or both.
+	///
+	/// This type is only used when the transaction is first broadcast, i.e., when the interactive
+	/// negotiation completes with the exchange of `tx_signatures`. If the transaction is later
+	/// re-broadcast because it has not yet confirmed (e.g., after a splice is locked on a 0-conf
+	/// channel), [`TransactionType::Funding`] is used instead.
 	///
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 	InteractiveFunding {

@@ -609,8 +609,10 @@ fn adjust_min_max_htlc_for_dust_exposure(
 		if extra_htlc_remote_dust_exposure > max_dust_htlc_exposure_msat {
 			// If adding an extra HTLC would put us over the dust limit in total fees, we cannot
 			// send any non-dust HTLCs.
-			available_capacity_msat =
-				cmp::min(available_capacity_msat, buffer_dust_limit_success_sat * 1000);
+			available_capacity_msat = cmp::min(
+				available_capacity_msat,
+				buffer_dust_limit_success_sat.saturating_mul(1000).saturating_sub(1),
+			);
 		}
 	}
 

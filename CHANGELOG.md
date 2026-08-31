@@ -100,9 +100,10 @@ GitHub regularly.
    `ReceiveAuthKey` similar to blinded message paths. In doing so, LDK 0.3+ will
    not accept payments over blinded paths created by prior versions. Note that
    this does *not* invalidate existing BOLT 12 offers (#4126).
- * `Event::SpliceNegotiationFailed` no longer lists inputs and outputs which
-   were not included in a finalized splice. Such fields are dropped on upgrade
-   and prior versions of LDK will see empty lists on downgrade (#4388).
+ * A pending `Event::DiscardFunding` with `FundingInfo::Contribution` will be
+   dropped on downgrade to 0.2 (#4919).
+ * An LDK 0.2 `Event::SpliceFailed` is read by 0.3 as `SpliceNegotiationFailed`
+   with `NegotiationFailureReason::Unknown` and no `contribution` (#4919).
  * HTLCs which were first received on an LDK version prior to LDK 0.2 will no
    longer be intercepted. Instead, they will be handled as if they were not
    intercepted and be forwarded/failed automatically (#4300).
@@ -125,9 +126,7 @@ GitHub regularly.
 
 ## Performance Improvements
  * `MonitorUpdatingPersisterAsync::read_all_channel_monitors_with_updates` now
-   reads monitors and updates from channels in parallel to speed up startup.
-   `read_all_channel_monitors_with_updates_parallel` was also added which is
-   even faster (#4147).
+   reads monitors and updates in parallel to speed up startup (#4147, #4921).
  * `lightning-block-sync::init::synchronize_listeners` has additional
    parallelism and caching (#4266).
 
@@ -142,7 +141,10 @@ GitHub regularly.
    is only applied after the block containing the commitment transaction
    confirms are now properly failed. This should not impact users of a
   `ChainMonitor` which applies a `ChannelMonitorUpdate` immediately (#4434).
- 
+ * Stream write failures when serializing a `ChannelManager` no longer results
+   in spurious `Event::SpliceNegotiationFailed`s and `Event::DiscardFunding`s
+   for still-active splices (#4902).
+
 
 # 0.2.5 - Aug 4, 2026 - "The MegaScan Project"
 

@@ -62,7 +62,8 @@ use crate::ln::channel::{
 	self, hold_time_since, Channel, ChannelError, ChannelUpdateStatus, DisconnectResult,
 	FundedChannel, FundingTxSigned, InboundV1Channel, InteractiveTxMsgError, OutboundHop,
 	OutboundV1Channel, PendingV2Channel, ReconnectionMsg, ShutdownResult, SpliceFundingFailed,
-	StfuResponse, UpdateFulfillCommitFetch, WithChannelContext,
+	SpliceFundingPromotion, SpliceRbfAbort, StfuResponse, UpdateFulfillCommitFetch,
+	WithChannelContext,
 };
 use crate::ln::channel_state::ChannelDetails;
 use crate::ln::funding::{FundingContribution, FundingTemplate};
@@ -928,11 +929,11 @@ mod fuzzy_channelmanager {
 	}
 
 	impl HTLCPreviousHopData {
-		pub(super) fn htlc_locator(&self, amount_msat: Option<u64>) -> events::HTLCLocator {
-			events::HTLCLocator {
+		pub(super) fn htlc_locator(&self, amount_msat: Option<u64>) -> events::InboundHTLCLocator {
+			events::InboundHTLCLocator {
 				channel_id: self.channel_id,
-				amount_msat,
 				htlc_id: Some(self.htlc_id),
+				amount_msat,
 				user_channel_id: self.user_channel_id,
 				node_id: self.counterparty_node_id,
 			}
@@ -4540,7 +4541,7 @@ impl<
 				None,
 			));
 
-			if let Some(splice_funding_failed) = shutdown_res.splice_funding_failed.take() {
+			for splice_funding_failed in shutdown_res.splice_funding_failed.drain(..) {
 				pending_events.extend(
 					splice_negotiation_failed_events(
 						shutdown_res.channel_id,
@@ -4933,10 +4934,12 @@ impl<
 	/// # Return Value
 	///
 	/// Returns a [`FundingTemplate`] which should be used to obtain a [`FundingContribution`]
-	/// to pass to [`ChannelManager::funding_contributed`]. If a splice has been negotiated but
-	/// not yet locked, it can be replaced with a higher feerate transaction to speed up
-	/// confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
-	/// a fresh contribution or reusing a prior one for RBF.
+	/// to pass to [`ChannelManager::funding_contributed`]. If an unconfirmed splice has been
+	/// negotiated but not yet locked, it can be replaced with a higher feerate transaction to speed
+	/// up confirmation via Replace By Fee (RBF). See [`FundingTemplate`] for details on building
+	/// a fresh contribution or reusing a prior one for RBF. Once a candidate confirms it can no
+	/// longer be replaced, and the returned template instead builds a fresh splice to be queued
+	/// behind it.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -8838,6 +8841,7 @@ impl<
 				},
 			}
 		}
+
 		NotifyOption::DoPersist
 	}
 
@@ -8886,6 +8890,7 @@ impl<
 	///    the channel.
 	///  * Expiring a channel's previous [`ChannelConfig`] if necessary to only allow forwarding HTLCs
 	///    with the current [`ChannelConfig`].
+	///  * Sending pending `splice_locked` messages after funding negotiations complete.
 	///  * Removing peers which have disconnected but and no longer have any channels.
 	///  * Force-closing and removing channels which have not completed establishment in a timely manner.
 	///  * Forgetting about stale outbound payments, either those that have already been fulfilled
@@ -8906,6 +8911,8 @@ impl<
 			let mut timed_out_mpp_htlcs = Vec::new();
 			let mut pending_peers_awaiting_removal = Vec::new();
 			let mut feerate_cache = new_hash_map();
+			let mut post_update_results = Vec::new();
+			let user_config = self.config.read().unwrap().clone();
 
 			{
 				let per_peer_state = self.per_peer_state.read().unwrap();
@@ -8917,6 +8924,47 @@ impl<
 					peer_state.channel_by_id.retain(|chan_id, chan| {
 						match chan.as_funded_mut() {
 							Some(funded_chan) => {
+								let channel_is_connected = funded_chan.context.is_connected();
+								let logger = WithChannelContext::from(
+									&self.logger,
+									&funded_chan.context,
+									None,
+								);
+								let best_block_height = self.best_block.read().unwrap().height;
+								let pending_splice_locked =
+									funded_chan.timer_check_splice_locked(
+										&self.node_signer,
+										self.chain_hash,
+										&user_config,
+										best_block_height,
+										&&logger,
+									);
+								if let Some((splice_locked, splice_promotion)) = pending_splice_locked
+								{
+									should_persist = NotifyOption::DoPersist;
+									if channel_is_connected {
+										pending_msg_events.push(MessageSendEvent::SendSpliceLocked {
+											node_id: counterparty_node_id,
+											msg: splice_locked,
+										});
+									}
+									if let Some(splice_promotion) = splice_promotion {
+										if let Some(post_update_data) = self
+											.handle_splice_promotion_with_funded_channel(
+												&counterparty_node_id,
+												splice_promotion,
+												funded_chan,
+												&mut peer_state.in_flight_monitor_updates,
+												&mut peer_state.monitor_update_blocked_actions,
+												pending_msg_events,
+												channel_is_connected,
+											)
+										{
+											post_update_results.push(post_update_data);
+										}
+									}
+								}
+
 								let channel_type = funded_chan.funding.get_channel_type();
 								let new_feerate = feerate_cache.get(channel_type).copied().or_else(|| {
 									let feerate = selected_commitment_sat_per_1000_weight(&self.fee_estimator, &channel_type);
@@ -9051,6 +9099,10 @@ impl<
 						pending_peers_awaiting_removal.push(counterparty_node_id);
 					}
 				}
+			}
+
+			for post_update_data in post_update_results {
+				let _ = self.handle_post_monitor_update_chan_resume(post_update_data);
 			}
 
 			// When a peer disconnects but still has channels, the peer's `peer_state` entry in the
@@ -10164,7 +10216,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		&self, source: HTLCSource, payment_preimage: PaymentPreimage,
 		forwarded_htlc_value_msat: u64, skimmed_fee_msat: Option<u64>, from_onchain: bool,
 		next_channel_counterparty_node_id: PublicKey, next_channel_outpoint: OutPoint,
-		next_channel_id: ChannelId, next_user_channel_id: Option<u128>, next_htlc_id: Option<u64>,
+		next_channel_id: ChannelId, next_user_channel_id: Option<u128>,
 		attribution_data: Option<AttributionData>, send_timestamp: Option<Duration>,
 	) {
 		let startup_replay =
@@ -10246,10 +10298,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							prev_htlcs: vec![
 								event_prev_hop_data.htlc_locator(prev_htlc_amount_msat)
 							],
-							next_htlcs: vec![events::HTLCLocator {
+							next_htlcs: vec![events::OutboundHTLCLocator {
 								channel_id: next_channel_id,
 								amount_msat: Some(forwarded_htlc_value_msat),
-								htlc_id: next_htlc_id,
 								user_channel_id: next_user_channel_id,
 								node_id: Some(next_channel_counterparty_node_id),
 							}],
@@ -10290,10 +10341,9 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									// TODO: When trampoline payments are tracked in our
 									// pending_outbound_payments, we'll be able to provide all the
 									// outgoing htlcs for this forward.
-									next_htlcs: vec![events::HTLCLocator {
+									next_htlcs: vec![events::OutboundHTLCLocator {
 										channel_id: next_channel_id,
 										amount_msat: Some(forwarded_htlc_value_msat),
-										htlc_id: next_htlc_id,
 										user_channel_id: next_user_channel_id,
 										node_id: Some(next_channel_counterparty_node_id),
 									}],
@@ -12401,7 +12451,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							msg: tx_abort_msg,
 						});
 					}
-
 					if let Some(splice_funding_failed) = splice_failed {
 						let pending_events = &mut self.pending_events.lock().unwrap();
 						pending_events.extend(
@@ -12830,7 +12879,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			funding_txo,
 			msg.channel_id,
 			Some(next_user_channel_id),
-			Some(msg.htlc_id),
 			msg.attribution_data,
 			send_timestamp,
 		);
@@ -13757,69 +13805,86 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			self.best_block.read().unwrap().height,
 			&&logger,
 		)?;
-		let mut post_update_data = None;
-		if let Some(splice_promotion) = splice_promotion {
-			let splice_funding_failed = splice_promotion.splice_funding_failed;
-			{
-				let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
-				insert_short_channel_id!(short_to_chan_info, chan);
-			}
+		Ok(splice_promotion.and_then(|splice_promotion| {
+			self.handle_splice_promotion_with_funded_channel(
+				counterparty_node_id,
+				splice_promotion,
+				chan,
+				in_flight_monitor_updates,
+				monitor_update_blocked_actions,
+				pending_msg_events,
+				is_connected,
+			)
+		}))
+	}
 
-			{
-				let mut pending_events = self.pending_events.lock().unwrap();
-				pending_events.push_back((
-					events::Event::ChannelReady {
-						channel_id: chan.context.channel_id(),
-						user_channel_id: chan.context.get_user_id(),
-						counterparty_node_id: chan.context.get_counterparty_node_id(),
-						funding_txo: Some(splice_promotion.funding_txo.into_bitcoin_outpoint()),
-						channel_type: chan.funding.get_channel_type().clone(),
-					},
-					None,
-				));
-				splice_promotion.discarded_funding.into_iter().for_each(|funding_info| {
-					let event = Event::DiscardFunding {
-						channel_id: chan.context.channel_id(),
-						funding_info,
-					};
-					pending_events.push_back((event, None));
-				});
-			}
-
-			if let Some(splice_funding_failed) = splice_funding_failed {
-				self.handle_quiescent_error(
-					chan.context.channel_id(),
-					chan.context.get_counterparty_node_id(),
-					chan.context.get_user_id(),
-					QuiescentError::FailSplice(
-						splice_funding_failed,
-						events::NegotiationFailureReason::CannotInitiateRbf,
-					),
-				);
-			}
-
-			if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
-				log_trace!(logger, "Sending announcement_signatures",);
-				pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
-					node_id: counterparty_node_id.clone(),
-					msg: announcement_sigs,
-				});
-			}
-
-			if let Some(monitor_update) = splice_promotion.monitor_update {
-				post_update_data = self.handle_new_monitor_update(
-					in_flight_monitor_updates,
-					monitor_update_blocked_actions,
-					pending_msg_events,
-					is_connected,
-					chan,
-					splice_promotion.funding_txo,
-					monitor_update,
-				);
-			}
+	fn handle_splice_promotion_with_funded_channel(
+		&self, counterparty_node_id: &PublicKey, splice_promotion: SpliceFundingPromotion,
+		chan: &mut FundedChannel<SP>,
+		in_flight_monitor_updates: &mut BTreeMap<ChannelId, (OutPoint, Vec<ChannelMonitorUpdate>)>,
+		monitor_update_blocked_actions: &mut BTreeMap<
+			ChannelId,
+			Vec<MonitorUpdateCompletionAction>,
+		>,
+		pending_msg_events: &mut Vec<MessageSendEvent>, is_connected: bool,
+	) -> Option<PostMonitorUpdateChanResume> {
+		let logger = WithChannelContext::from(&self.logger, &chan.context, None);
+		let splice_funding_failed = splice_promotion.splice_funding_failed;
+		{
+			let mut short_to_chan_info = self.short_to_chan_info.write().unwrap();
+			insert_short_channel_id!(short_to_chan_info, chan);
 		}
 
-		Ok(post_update_data)
+		{
+			let mut pending_events = self.pending_events.lock().unwrap();
+			pending_events.push_back((
+				events::Event::ChannelReady {
+					channel_id: chan.context.channel_id(),
+					user_channel_id: chan.context.get_user_id(),
+					counterparty_node_id: chan.context.get_counterparty_node_id(),
+					funding_txo: Some(splice_promotion.funding_txo.into_bitcoin_outpoint()),
+					channel_type: chan.funding.get_channel_type().clone(),
+				},
+				None,
+			));
+			splice_promotion.discarded_funding.into_iter().for_each(|funding_info| {
+				let event =
+					Event::DiscardFunding { channel_id: chan.context.channel_id(), funding_info };
+				pending_events.push_back((event, None));
+			});
+		}
+
+		if let Some(splice_funding_failed) = splice_funding_failed {
+			self.handle_quiescent_error(
+				chan.context.channel_id(),
+				chan.context.get_counterparty_node_id(),
+				chan.context.get_user_id(),
+				QuiescentError::FailSplice(
+					splice_funding_failed,
+					events::NegotiationFailureReason::CannotInitiateRbf,
+				),
+			);
+		}
+
+		if let Some(announcement_sigs) = splice_promotion.announcement_sigs {
+			log_trace!(logger, "Sending announcement_signatures",);
+			pending_msg_events.push(MessageSendEvent::SendAnnouncementSignatures {
+				node_id: counterparty_node_id.clone(),
+				msg: announcement_sigs,
+			});
+		}
+
+		splice_promotion.monitor_update.and_then(|monitor_update| {
+			self.handle_new_monitor_update(
+				in_flight_monitor_updates,
+				monitor_update_blocked_actions,
+				pending_msg_events,
+				is_connected,
+				chan,
+				splice_promotion.funding_txo,
+				monitor_update,
+			)
+		})
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning the appropriate
@@ -13863,7 +13928,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
-								None,
 								None,
 								None,
 								None,
@@ -16240,10 +16304,15 @@ impl<
 		let _persistence_guard =
 			PersistenceNotifierGuard::optionally_notify_skipping_background_events(
 				self, || -> NotifyOption { NotifyOption::DoPersist });
-		self.do_chain_event(Some(height), |channel| channel.transactions_confirmed(&block_hash, height, txdata, self.chain_hash, &self.node_signer, &self.config.read().unwrap(), &&WithChannelContext::from(&self.logger, &channel.context, None))
-			.map(|(a, b)| (a, Vec::new(), b)));
-
 		let last_best_block_height = self.best_block.read().unwrap().height;
+		self.do_chain_event(Some(height), |channel| {
+			channel.transactions_confirmed(
+				&block_hash, height, last_best_block_height, txdata, self.chain_hash, &self.node_signer,
+				&self.config.read().unwrap(),
+				&&WithChannelContext::from(&self.logger, &channel.context, None),
+			)
+		});
+
 		if height < last_best_block_height {
 			let timestamp = self.highest_seen_timestamp.load(Ordering::Acquire);
 			let do_update = |channel: &mut FundedChannel<SP>| {
@@ -16369,7 +16438,7 @@ impl<
 			);
 		self.do_chain_event(None, |channel| {
 			let logger = WithChannelContext::from(&self.logger, &channel.context, None);
-			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None))
+			channel.transaction_unconfirmed(txid, &&logger).map(|()| (None, Vec::new(), None, None))
 		});
 	}
 }
@@ -16408,6 +16477,7 @@ impl<
 				Option<FundingConfirmedMessage>,
 				Vec<(HTLCSource, PaymentHash)>,
 				Option<msgs::AnnouncementSignatures>,
+				Option<SpliceRbfAbort>,
 			),
 			ClosureReason,
 		>,
@@ -16421,6 +16491,7 @@ impl<
 		let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 		let mut timed_out_htlcs = Vec::new();
 		let mut to_process_monitor_update_actions = Vec::new();
+		let mut needs_holding_cell_release = false;
 		{
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			for (counterparty_node_id, peer_state_mutex) in per_peer_state.iter() {
@@ -16434,7 +16505,7 @@ impl<
 						None => true,
 						Some(funded_channel) => {
 							let res = f(funded_channel);
-							if let Ok((funding_confirmed_opt, mut timed_out_pending_htlcs, announcement_sigs)) = res {
+							if let Ok((funding_confirmed_opt, mut timed_out_pending_htlcs, announcement_sigs, splice_rbf_abort)) = res {
 								for (source, payment_hash) in timed_out_pending_htlcs.drain(..) {
 									let reason = LocalHTLCFailureReason::CLTVExpiryTooSoon;
 									let data = self.get_htlc_inbound_temp_fail_data(reason);
@@ -16442,6 +16513,28 @@ impl<
 									timed_out_htlcs.push((source, payment_hash, HTLCFailReason::reason(reason, data), failure_type));
 								}
 								let logger = WithChannelContext::from(&self.logger, &funded_channel.context, None);
+								if let Some(SpliceRbfAbort { tx_abort, splice_funding_failed }) = splice_rbf_abort {
+									let counterparty_node_id = funded_channel.context.get_counterparty_node_id();
+									let channel_id = funded_channel.context.channel_id();
+									if peer_state.is_connected {
+										pending_msg_events.push(MessageSendEvent::SendTxAbort {
+											node_id: counterparty_node_id,
+											msg: tx_abort,
+										});
+									}
+									if let Some(splice_funding_failed) = splice_funding_failed {
+										self.handle_quiescent_error(
+											channel_id,
+											counterparty_node_id,
+											funded_channel.context.get_user_id(),
+											QuiescentError::FailSplice(
+												splice_funding_failed,
+												events::NegotiationFailureReason::CannotInitiateRbf,
+											),
+										);
+									}
+									needs_holding_cell_release = true;
+								}
 								match funding_confirmed_opt {
 									Some(FundingConfirmedMessage::Establishment(channel_ready)) => {
 										self.send_channel_ready(pending_msg_events, funded_channel, channel_ready);
@@ -16681,6 +16774,15 @@ impl<
 
 		for (source, payment_hash, reason, destination) in timed_out_htlcs.drain(..) {
 			self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, destination, None);
+		}
+
+		if needs_holding_cell_release
+			&& self.background_events_processed_since_startup.load(Ordering::Acquire)
+		{
+			// Chain callbacks may run before the user's ChainMonitor is fully initialized. If the
+			// channel is live, release its holding cell after queuing `tx_abort` to preserve message
+			// ordering. Otherwise, channel reestablishment will release it once the channel is live.
+			self.check_free_holding_cells();
 		}
 	}
 
@@ -18449,17 +18551,21 @@ impl<
 
 		let our_pending_intercepts = self.pending_intercepted_htlcs.lock().unwrap();
 
-		// Since some FundingNegotiation variants are not persisted, any splice in such state must
-		// be failed upon reload. However, as the necessary information for the
-		// SpliceNegotiationFailed and DiscardFunding events is not persisted, the events need to
-		// be persisted even though they
-		// haven't been emitted yet. These are removed after the events are written.
-		let mut events = self.pending_events.lock().unwrap();
-		let event_count = events.len();
+		// Since some FundingNegotiation variants and contributions queued waiting on quiescence
+		// are not persisted, any splice in such state must be failed upon reload. However, as the
+		// necessary information for the SpliceNegotiationFailed and DiscardFunding events is not
+		// persisted, the events need to be persisted even though they haven't been emitted yet.
+		// They are written alongside the pending events below but never added to them, as writing
+		// may fail.
+		let mut splice_failed_events: Vec<(Event, Option<EventCompletionAction>)> = Vec::new();
 		for peer_state in peer_states.iter() {
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
-				if let Some(splice_funding_failed) = chan.maybe_splice_funding_failed() {
-					events.extend(
+				let failed_splices = chan
+					.maybe_splice_funding_failed()
+					.into_iter()
+					.chain(chan.maybe_queued_splice_funding_failed());
+				for splice_funding_failed in failed_splices {
+					splice_failed_events.extend(
 						splice_negotiation_failed_events(
 							chan.context.channel_id(),
 							chan.context.get_counterparty_node_id(),
@@ -18472,6 +18578,7 @@ impl<
 				}
 			}
 		}
+		let events = self.pending_events.lock().unwrap();
 
 		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
 		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
@@ -18482,8 +18589,8 @@ impl<
 			// well save the space and not write any events here.
 			0u64.write(writer)?;
 		} else {
-			(events.len() as u64).write(writer)?;
-			for (event, _) in events.iter() {
+			((events.len() + splice_failed_events.len()) as u64).write(writer)?;
+			for (event, _) in events.iter().chain(splice_failed_events.iter()) {
 				event.write(writer)?;
 			}
 		}
@@ -18568,6 +18675,11 @@ impl<
 			}
 		}
 
+		let pending_events_writer = PendingEventsWriter {
+			pending_events: &*events,
+			splice_failed_events: &splice_failed_events,
+		};
+
 		write_tlv_fields!(writer, {
 			(1, pending_outbound_payments_no_retry, required),
 			(2, pending_intercepted_htlcs, option),
@@ -18576,7 +18688,7 @@ impl<
 			(5, self.our_network_pubkey, required),
 			(6, monitor_update_blocked_actions_per_peer, option),
 			(7, self.fake_scid_rand_bytes, required),
-			(8, if events_not_backwards_compatible { Some(&*events) } else { None }, option),
+			(8, if events_not_backwards_compatible { Some(&pending_events_writer) } else { None }, option),
 			(9, htlc_purposes, required_vec),
 			(10, legacy_in_flight_monitor_updates, option),
 			(11, self.probing_cookie_secret, required),
@@ -18589,17 +18701,22 @@ impl<
 			(23, self.best_block.read().unwrap().previous_blocks, required),
 		});
 
-		// Remove the SpliceNegotiationFailed and DiscardFunding events added earlier.
-		events.truncate(event_count);
-
 		Ok(())
 	}
 }
 
-impl Writeable for VecDeque<(Event, Option<EventCompletionAction>)> {
+/// Writes the pending events of a [`ChannelManager`] chained with any events that are only
+/// generated at serialization time, as if they were a single sequence of events.
+struct PendingEventsWriter<'a> {
+	pending_events: &'a VecDeque<(Event, Option<EventCompletionAction>)>,
+	splice_failed_events: &'a [(Event, Option<EventCompletionAction>)],
+}
+
+impl Writeable for PendingEventsWriter<'_> {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u64).write(w)?;
-		for (event, action) in self.iter() {
+		let Self { pending_events, splice_failed_events } = self;
+		((pending_events.len() + splice_failed_events.len()) as u64).write(w)?;
+		for (event, action) in pending_events.iter().chain(splice_failed_events.iter()) {
 			event.write(w)?;
 			action.write(w)?;
 			#[cfg(debug_assertions)]
@@ -19381,6 +19498,11 @@ impl<
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
+					// Freshly-read channels never restore a queued splice contribution or a
+					// resettable funding negotiation, so force-closing here cannot surface a
+					// splice failure; events for unpersisted splice state were synthesized
+					// when the manager was written.
+					debug_assert!(shutdown_result.splice_funding_failed.is_empty());
 					if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) =
 						shutdown_result.monitor_update
 					{
@@ -20901,7 +21023,6 @@ impl<
 				downstream_funding,
 				downstream_channel_id,
 				downstream_user_channel_id,
-				None,
 				None,
 				None,
 			);
