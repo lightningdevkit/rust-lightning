@@ -711,7 +711,11 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		let features = features.unwrap_or_else(Bolt12InvoiceFeatures::empty);
 
 		let signing_pubkey = node_id.ok_or(Bolt12SemanticError::MissingSigningPubkey)?;
-		check_invoice_signing_pubkey(&signing_pubkey, &offer_tlv_stream)?;
+		check_invoice_signing_pubkey(
+			&signing_pubkey,
+			offer_tlv_stream.issuer_id.as_ref(),
+			offer_tlv_stream.paths.as_deref(),
+		)?;
 
 		if offer_tlv_stream.paths.is_none() {
 			return Err(Bolt12SemanticError::MissingPaths);

@@ -750,6 +750,21 @@ impl Offer {
 		self.contents.expects_quantity()
 	}
 
+	/// Returns whether `invoice_signing_pubkey` is the recipient of this offer.
+	///
+	/// Per BOLT 12 that is [`Self::issuer_signing_pubkey`] when the offer has one, and otherwise
+	/// the final blinded node id of one of [`Self::paths`].
+	pub fn matches_invoice_signing_pubkey(
+		&self, invoice_signing_pubkey: &bitcoin::secp256k1::PublicKey,
+	) -> bool {
+		super::invoice::check_invoice_signing_pubkey(
+			invoice_signing_pubkey,
+			self.contents.issuer_signing_pubkey.as_ref(),
+			self.contents.paths.as_deref(),
+		)
+		.is_ok()
+	}
+
 	pub(super) fn tlv_stream_iter<'a>(
 		bytes: &'a [u8],
 	) -> impl core::iter::Iterator<Item = TlvRecord<'a>> {
@@ -2073,6 +2088,54 @@ mod tests {
 				);
 			},
 		}
+	}
+
+	#[test]
+	fn matches_invoice_signing_pubkey_issuer_id_or_path_last_hop() {
+		let issuer = pubkey(42);
+		let with_issuer = OfferBuilder::new(issuer).build().unwrap();
+		assert!(with_issuer.matches_invoice_signing_pubkey(&issuer));
+		assert!(!with_issuer.matches_invoice_signing_pubkey(&pubkey(43)));
+
+		// An issuer id wins even when paths are present.
+		let with_both = OfferBuilder::new(issuer)
+			.path(BlindedMessagePath::from_blinded_path(
+				pubkey(40),
+				pubkey(41),
+				vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			))
+			.build()
+			.unwrap();
+		assert!(with_both.matches_invoice_signing_pubkey(&issuer));
+		assert!(!with_both.matches_invoice_signing_pubkey(&pubkey(44)));
+
+		let paths_only = OfferBuilder::new(issuer)
+			.path(BlindedMessagePath::from_blinded_path(
+				pubkey(40),
+				pubkey(41),
+				vec![
+					BlindedHop { blinded_node_id: pubkey(43), encrypted_payload: vec![0; 43] },
+					BlindedHop { blinded_node_id: pubkey(44), encrypted_payload: vec![0; 44] },
+				],
+			))
+			.path(BlindedMessagePath::from_blinded_path(
+				pubkey(40),
+				pubkey(41),
+				vec![
+					BlindedHop { blinded_node_id: pubkey(45), encrypted_payload: vec![0; 45] },
+					BlindedHop { blinded_node_id: pubkey(46), encrypted_payload: vec![0; 46] },
+				],
+			))
+			.clear_issuer_signing_pubkey()
+			.build()
+			.unwrap();
+		assert!(paths_only.matches_invoice_signing_pubkey(&pubkey(44)));
+		assert!(paths_only.matches_invoice_signing_pubkey(&pubkey(46)));
+		assert!(!paths_only.matches_invoice_signing_pubkey(&pubkey(43)));
+		assert!(!paths_only.matches_invoice_signing_pubkey(&issuer));
 	}
 
 	#[test]
