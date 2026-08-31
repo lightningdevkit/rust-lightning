@@ -7841,7 +7841,7 @@ where
 				.unwrap_or(false);
 		if has_provided_funding_signatures {
 			// Once signing has advanced this far, leave the negotiation active and allow the
-			// signature exchange to continue. If the confirmed candidate reaches lock-in first,
+			// signature exchange to continue. If the confirmed candidate locks first,
 			// normal promotion will discard the conflicting RBF attempt.
 			debug_assert!(!self.should_reset_pending_splice_state(true));
 			log_debug!(
@@ -13303,8 +13303,8 @@ where
 			// built before confirmation or receipt of `splice_locked`.
 			(None, None)
 		} else if let Some(pending_splice) = self.pending_splice.as_ref() {
-			// A splice is pending — either a completed negotiation that hasn't locked yet
-			// or an in-progress negotiation. In either case, the user's splice will need
+			// A splice is pending — either a completed negotiation that hasn't confirmed
+			// yet or an in-progress negotiation. In either case, the user's splice will need
 			// to satisfy the minimum RBF feerate. When that feerate is unknown (the splice
 			// was last written by an LDK version prior to 0.3, which persisted neither it nor
 			// our contribution), the minimum RBF feerate is left unset so the new splice is
@@ -13363,8 +13363,8 @@ where
 			Some(pending_splice) => pending_splice,
 			None => return false,
 		};
-		// A zero-conf channel can never RBF, and a candidate that is already locking can no longer
-		// be replaced.
+		// A zero-conf channel can never RBF, and a candidate that has confirmed, or that the
+		// counterparty has locked, can no longer be replaced.
 		if self.is_rbf_compatible().is_err() {
 			return false;
 		}

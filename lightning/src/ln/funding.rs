@@ -206,7 +206,7 @@ impl core::fmt::Display for FundingContributionError {
 ///
 /// # Replace By Fee (RBF)
 ///
-/// When an unconfirmed pending splice exists that hasn't been locked yet, use
+/// When a pending splice exists that hasn't confirmed yet, use
 /// [`FundingTemplate::rbf_prior_contribution_sync`] (or
 /// [`FundingTemplate::rbf_prior_contribution`] for async) to retry the stored prior contribution
 /// at an RBF-compatible feerate. To amend that prior request before building, start from
