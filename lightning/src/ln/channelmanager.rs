@@ -14542,7 +14542,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								preimage,
 								htlc_update.htlc_value_satoshis * 1000,
 								None,
-								true,
+								htlc_update.from_onchain,
 								counterparty_node_id,
 								funding_outpoint,
 								channel_id,
