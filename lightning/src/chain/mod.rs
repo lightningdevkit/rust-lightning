@@ -286,6 +286,9 @@ pub trait Confirm {
 	/// given hash at the given height, they need to be unconfirmed and reconfirmed via
 	/// [`transaction_unconfirmed`] and [`transactions_confirmed`], respectively.
 	///
+	/// The returned transactions reflect this implementation's own view of the chain, which may
+	/// differ from that of other [`Confirm`] implementations watching the same transactions.
+	///
 	/// [`transactions_confirmed`]: Self::transactions_confirmed
 	/// [`transaction_unconfirmed`]: Self::transaction_unconfirmed
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)>;

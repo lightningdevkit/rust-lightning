@@ -1404,14 +1404,24 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	current_holder_htlc_data: CommitmentHTLCData,
 	prev_holder_htlc_data: Option<CommitmentHTLCData>,
 
-	// Upon confirmation, tracks the txid and confirmation height of a renegotiated funding
-	// transaction found in `Self::pending_funding`. Used to determine which commitment we should
-	// broadcast when necessary.
-	//
-	// "Alternative" in this context means a `FundingScope` other than the currently locked one
-	// found at `Self::funding`. We don't use the term "renegotiated", as the currently locked
-	// `FundingScope` could be one that was renegotiated.
-	alternative_funding_confirmed: Option<(Txid, u32)>,
+	/// Upon confirmation, tracks the txid, confirmation height, and hash of the confirming
+	/// block of a renegotiated funding transaction found in `Self::pending_funding`. Used to
+	/// determine which commitment we should broadcast when necessary, as well as to expose the
+	/// transaction via `get_relevant_txids`.
+	///
+	/// "Alternative" in this context means a `FundingScope` other than the currently locked one
+	/// found at `Self::funding`. We don't use the term "renegotiated", as the currently locked
+	/// `FundingScope` could be one that was renegotiated.
+	///
+	/// The block hash may be `None` for state written by versions prior to LDK 0.3, which
+	/// didn't track it.
+	alternative_funding_confirmed: Option<(Txid, u32, Option<BlockHash>)>,
+
+	/// The height and hash of the block in which the currently locked funding transaction
+	/// (found in `Self::funding`) was confirmed.
+	///
+	/// `None` for monitors where funding confirmed pre-LDK 0.3.
+	funding_tx_confirmed_in: Option<(u32, BlockHash)>,
 
 	/// [`ChannelMonitor`]s written by LDK prior to 0.1 need to be re-persisted after startup. To
 	/// make deciding whether to do so simple, here we track whether this monitor was last written
@@ -1425,7 +1435,7 @@ macro_rules! get_confirmed_funding_scope {
 	($self: expr) => {
 		$self
 			.alternative_funding_confirmed
-			.map(|(alternative_funding_txid, _)| {
+			.map(|(alternative_funding_txid, _, _)| {
 				$self
 					.pending_funding
 					.iter()
@@ -1748,6 +1758,12 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			_ => channel_monitor.pending_monitor_events.clone(),
 		};
 
+	let legacy_alternative_funding_confirmed = channel_monitor
+		.alternative_funding_confirmed
+		.map(|(txid, conf_height, _)| (txid, conf_height));
+	let alternative_funding_confirmed_block =
+		channel_monitor.alternative_funding_confirmed.and_then(|(_, _, conf_hash)| conf_hash);
+
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
@@ -1767,11 +1783,13 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(31, channel_monitor.funding.channel_parameters, required),
 		(32, channel_monitor.pending_funding, optional_vec),
 		(33, channel_monitor.htlcs_resolved_to_user, required),
-		(34, channel_monitor.alternative_funding_confirmed, option),
+		(34, legacy_alternative_funding_confirmed, option),
 		(35, channel_monitor.is_manual_broadcast, required),
 		(37, channel_monitor.funding_seen_onchain, required),
 		(39, channel_monitor.best_block.previous_blocks, required),
 		(41, channel_monitor.funding.contribution, option),
+		(43, channel_monitor.funding_tx_confirmed_in, option),
+		(45, alternative_funding_confirmed_block, option),
 	});
 
 	Ok(())
@@ -1987,6 +2005,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			current_holder_htlc_data: CommitmentHTLCData::new(),
 			prev_holder_htlc_data: None,
 
+			funding_tx_confirmed_in: None,
 			alternative_funding_confirmed: None,
 
 			written_by_0_1_or_later: true,
@@ -2475,13 +2494,32 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Returns the set of txids that should be monitored for re-organization out of the chain.
+	///
+	/// Note that any channels which reached initial confirmation prior to LDK 0.3 will not
+	/// include every relevant txid here, and any txids which the [`ChannelManager`] lists in
+	/// its [`Confirm::get_relevant_txids`] implementation must be included implicitly for such
+	/// channels.
+	///
+	/// This is equivalent to the [`Confirm::get_relevant_txids`] method.
+	///
+	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
+	/// [`Confirm::get_relevant_txids`]: crate::chain::Confirm::get_relevant_txids
 	#[rustfmt::skip]
 	pub fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let inner = self.inner.lock().unwrap();
+		let funding_confirmed = inner.funding_tx_confirmed_in.map(|(conf_height, conf_hash)| {
+			(inner.funding.funding_txid(), conf_height, Some(conf_hash))
+		});
+		let alternative_funding_confirmed = inner.alternative_funding_confirmed
+			.and_then(|(alternative_funding_txid, conf_height, conf_hash)| {
+				conf_hash.map(|conf_hash| (alternative_funding_txid, conf_height, Some(conf_hash)))
+			});
 		let mut txids: Vec<(Txid, u32, Option<BlockHash>)> = inner.onchain_events_awaiting_threshold_conf
 			.iter()
 			.map(|entry| (entry.txid, entry.height, entry.block_hash))
 			.chain(inner.onchain_tx_handler.get_relevant_txids().into_iter())
+			.chain(funding_confirmed)
+			.chain(alternative_funding_confirmed)
 			.collect();
 		txids.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
 		txids.dedup_by_key(|(txid, _, _)| *txid);
@@ -3085,7 +3123,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 				.enumerate()
 				.find(|(_, funding)| {
 					us.alternative_funding_confirmed
-						.map(|(funding_txid_confirmed, _)| funding.funding_txid() == funding_txid_confirmed)
+						.map(|(funding_txid_confirmed, _, _)| funding.funding_txid() == funding_txid_confirmed)
 						// If `alternative_funding_confirmed` is not set, we can assume the current
 						// funding is confirmed.
 						.unwrap_or(true)
@@ -4160,6 +4198,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		}
 		let mut discarded_funding = Vec::new();
 		mem::swap(&mut self.pending_funding, &mut discarded_funding);
+		self.funding_tx_confirmed_in = None;
 		let discarded_funding = discarded_funding
 			.into_iter()
 			// The previous funding is filtered out since it was already locked, so nothing needs to
@@ -4169,11 +4208,16 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			});
 		self.queue_discard_funding_event(discarded_funding);
 
-		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.take() {
+		if let Some((alternative_funding_txid, conf_height, conf_hash)) =
+			self.alternative_funding_confirmed.take()
+		{
 			// In exceedingly rare cases, it's possible there was a reorg that caused a potential funding to
 			// be locked in that this `ChannelMonitor` has not yet seen. Thus, we avoid a runtime assertion
 			// and only assert in debug mode.
 			debug_assert_eq!(alternative_funding_txid, new_funding_txid);
+			if alternative_funding_txid == new_funding_txid {
+				self.funding_tx_confirmed_in = conf_hash.map(|conf_hash| (conf_height, conf_hash));
+			}
 		}
 
 		Ok(())
@@ -5465,6 +5509,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			self.best_block = BlockLocator::new(block_hash, height);
 			log_trace!(logger, "Best block re-orged, replaced with new block {} at height {}", block_hash, height);
 			self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= height);
+
 			let conf_target = self.closure_conf_target();
 			self.onchain_tx_handler.blocks_disconnected(
 				height, &broadcaster, conf_target, &self.destination_script, fee_estimator, logger,
@@ -5485,15 +5530,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	) -> Vec<TransactionOutputs> {
 		let funding_seen_before = self.funding_seen_onchain;
 		let txn_matched = self.filter_block(txdata);
+		let block_hash = header.block_hash();
 
-		if !self.funding_seen_onchain {
+		if !self.funding_seen_onchain || self.funding_tx_confirmed_in.is_none() {
 			for tx in txn_matched.iter() {
 				let txid = tx.compute_txid();
-				if txid == self.funding.funding_txid() ||
-					self.pending_funding.iter().any(|f| f.funding_txid() == txid)
-				{
+				if self.funding.funding_txid() == txid {
 					self.funding_seen_onchain = true;
-					break;
+					if self.funding_tx_confirmed_in.is_none() {
+						self.funding_tx_confirmed_in = Some((height, block_hash));
+					}
+				} else if self.pending_funding.iter().any(|f| f.funding_txid() == txid) {
+					// self.alternative_funding_confirmed is updated below
+					self.funding_seen_onchain = true;
 				}
 			}
 		}
@@ -5506,8 +5555,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				if output_val > Amount::MAX_MONEY { panic!("Value-overflowing transaction provided to block connected"); }
 			}
 		}
-
-		let block_hash = header.block_hash();
 
 		// We may need to broadcast our holder commitment if we see a funding transaction reorg,
 		// with a different funding transaction confirming. It's possible we process a
@@ -5527,9 +5574,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			let txid = tx.compute_txid();
 			log_trace!(logger, "Transaction {} confirmed in block {}", txid , block_hash);
 			// If a transaction has already been confirmed, ensure we don't bother processing it duplicatively.
-			if self.alternative_funding_confirmed.map(|(alternative_funding_txid, _)| alternative_funding_txid == txid).unwrap_or(false) {
-				log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
-				continue 'tx_iter;
+			if let Some((alternative_funding_txid, _, conf_hash)) = self.alternative_funding_confirmed {
+				if alternative_funding_txid == txid {
+					if conf_hash.is_none() {
+						self.alternative_funding_confirmed = Some((txid, height, Some(block_hash)));
+					}
+					log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
+					continue 'tx_iter;
+				}
 			}
 			if Some(txid) == self.funding_spend_confirmed {
 				log_debug!(logger, "Skipping redundant processing of funding-spend tx {} as it was previously confirmed", txid);
@@ -5597,7 +5649,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				};
 				log_info!(logger, "{desc} confirmed with txid {txid}{action}");
 
-				self.alternative_funding_confirmed = Some((txid, height));
+				self.alternative_funding_confirmed = Some((txid, height, Some(block_hash)));
 
 				if self.no_further_updates_allowed() {
 					// We can no longer rely on
@@ -5644,7 +5696,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					assert_eq!(
 						funding_txid_spent,
 						self.alternative_funding_confirmed
-							.map(|(txid, _)| txid)
+							.map(|(txid, _, _)| txid)
 							.unwrap_or_else(|| self.funding.funding_txid())
 					);
 					log_info!(logger, "Channel closed by funding output spend in txid {txid}");
@@ -5993,8 +6045,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.onchain_events_awaiting_threshold_conf.retain(|ref entry| entry.height <= new_height);
 
 		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
+		if let Some((conf_height, _)) = self.funding_tx_confirmed_in.as_ref() {
+			if *conf_height > new_height {
+				self.funding_tx_confirmed_in.take();
+			}
+		}
+
+		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
 		let mut should_broadcast_commitment = false;
-		if let Some((_, conf_height)) = self.alternative_funding_confirmed.as_ref() {
+		if let Some((_, conf_height, _)) = self.alternative_funding_confirmed.as_ref() {
 			if *conf_height > new_height {
 				self.alternative_funding_confirmed.take();
 				if self.holder_tx_signed || self.funding_spend_seen {
@@ -6050,9 +6109,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 		debug_assert!(!self.onchain_events_awaiting_threshold_conf.iter().any(|ref entry| entry.txid == *txid));
 
+		if self.funding_tx_confirmed_in.is_some() && self.funding.funding_txid() == *txid {
+			log_info!(logger, "Funding transaction {} was unconfirmed", txid);
+			self.funding_tx_confirmed_in.take();
+		}
+
 		// TODO: Replace with `take_if` once our MSRV is >= 1.80.
 		let mut should_broadcast_commitment = false;
-		if let Some((alternative_funding_txid, _)) = self.alternative_funding_confirmed.as_ref() {
+		if let Some((alternative_funding_txid, _, _)) = self.alternative_funding_confirmed.as_ref() {
 			if alternative_funding_txid == txid {
 				self.alternative_funding_confirmed.take();
 				if self.holder_tx_signed || self.funding_spend_seen {
@@ -6784,11 +6848,13 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut first_negotiated_funding_txo = RequiredWrapper(None);
 		let mut channel_parameters = None;
 		let mut pending_funding = None;
-		let mut alternative_funding_confirmed = None;
+		let mut legacy_alternative_funding_confirmed: Option<(Txid, u32)> = None;
 		let mut is_manual_broadcast = RequiredWrapper(None);
 		let mut funding_seen_onchain = RequiredWrapper(None);
 		let mut best_block_previous_blocks = None;
 		let mut current_funding_contribution = None;
+		let mut funding_tx_confirmed_in = None;
+		let mut alternative_funding_confirmed_block = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -6808,15 +6874,25 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(31, channel_parameters, (option: ReadableArgs, None)),
 			(32, pending_funding, optional_vec),
 			(33, htlcs_resolved_to_user, option),
-			(34, alternative_funding_confirmed, option),
+			(34, legacy_alternative_funding_confirmed, option),
 			(35, is_manual_broadcast, (default_value, false)),
 			(37, funding_seen_onchain, (default_value, true)),
 			(39, best_block_previous_blocks, option), // Added and always set in 0.3
 			(41, current_funding_contribution, option),
+			(43, funding_tx_confirmed_in, option),
+			(45, alternative_funding_confirmed_block, option),
 		});
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
 		}
+
+		if alternative_funding_confirmed_block.is_some()
+			&& legacy_alternative_funding_confirmed.is_none()
+		{
+			return Err(DecodeError::InvalidValue);
+		}
+		let alternative_funding_confirmed = legacy_alternative_funding_confirmed
+			.map(|(txid, height)| (txid, height, alternative_funding_confirmed_block));
 
 		// Note that `payment_preimages_with_info` was added (and is always written) in LDK 0.1, so
 		// we can use it to determine if this monitor was last written by LDK 0.1 or later.
@@ -6995,6 +7071,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			current_holder_htlc_data,
 			prev_holder_htlc_data,
 
+			funding_tx_confirmed_in,
 			alternative_funding_confirmed,
 
 			written_by_0_1_or_later,
