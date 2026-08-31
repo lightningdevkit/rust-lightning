@@ -100,7 +100,7 @@ macro_rules! _encode_tlv {
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! _check_encoded_tlv_order {
+macro_rules! _check_tlv_order {
 	($last_type: expr, $type: expr, (static_value, $value: expr)) => {};
 	($last_type: expr, $type: expr, $fieldty: tt) => {
 		if let Some(t) = $last_type {
@@ -187,11 +187,11 @@ macro_rules! _encode_tlv_stream {
 		{
 			let mut last_seen: Option<u64> = None;
 			$(
-				$crate::_check_encoded_tlv_order!(last_seen, $type, $fieldty);
+				$crate::_check_tlv_order!(last_seen, $type, $fieldty);
 			)*
 			for tlv in $extra_tlvs {
 				let (typ, _): &(u64, Vec<u8>) = tlv;
-				$crate::_check_encoded_tlv_order!(last_seen, *typ, required_vec);
+				$crate::_check_tlv_order!(last_seen, *typ, required_vec);
 			}
 		}
 	} };
@@ -654,6 +654,17 @@ macro_rules! decode_tlv_stream_with_custom_tlv_decode {
 macro_rules! _decode_tlv_stream_range {
 	($stream: expr, $range: expr, $rewind: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
+		// A duplicated type number leaves a dead match arm below, silently dropping the record
+		// rather than reading it into its field. The write side checks the same property, but a
+		// read list is separate code in hand-written implementations, so check it here too.
+		#[allow(unused_mut, unused_variables, unused_assignments)]
+		#[cfg(debug_assertions)]
+		{
+			let mut last_seen: Option<u64> = None;
+			$(
+				$crate::_check_tlv_order!(last_seen, $type, $fieldty);
+			)*
+		}
 		use $crate::ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		let stream_ref = $stream;
@@ -1990,6 +2001,38 @@ mod tests {
 	#[test]
 	fn retired_tlvs_write_nothing() {
 		do_retired_tlv_write().unwrap();
+	}
+
+	fn duplicate_type_reader(s: &[u8]) -> Result<Option<u32>, DecodeError> {
+		let mut s = Cursor::new(s);
+		let mut a: u64 = 0;
+		let mut b: Option<u32> = None;
+		// Type 3 is reserved by a retired entry and reused by `b`, which is the mistake the
+		// read-side assertion exists to catch.
+		decode_tlv_stream!(&mut s, {(1, a, required), (3, _old, retired), (3, b, option)});
+		let _ = a;
+		Ok(b)
+	}
+
+	#[test]
+	#[should_panic(expected = "assertion failed: t < 3")]
+	fn duplicate_read_list_types_panic() {
+		// A read list with a duplicated type number is caught even though nothing writes it.
+		let buf = <Vec<u8>>::from_hex("0108000000000000002a").unwrap();
+		let _ = duplicate_type_reader(&buf[..]);
+	}
+
+	fn runtime_type_number_write(t: u64) -> Result<Vec<u8>, io::Error> {
+		// Type numbers need not be known at compile time; onion message payloads pass
+		// `message.tlv_type()` here.
+		let mut stream = VecWriter(Vec::new());
+		encode_tlv_stream!(&mut stream, {(2, Some(1u32), option), (t, 7u64, required)});
+		Ok(stream.0)
+	}
+
+	#[test]
+	fn runtime_type_numbers_are_accepted() {
+		assert!(!runtime_type_number_write(70).unwrap().is_empty());
 	}
 
 	fn retired_tlv_reader(s: &[u8]) -> Result<(u64, Option<u32>), DecodeError> {
