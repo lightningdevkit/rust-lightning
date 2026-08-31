@@ -576,11 +576,11 @@ impl Channel {
 
 	/// Returns the accumulated in-flight risk of this channel (as an outgoing link).
 	fn outgoing_in_flight_risk(&self) -> u64 {
-		// We only account the in-flight risk for HTLCs that are accountable
+		// We only account the in-flight risk for HTLCs that are accountable.
 		self.pending_htlcs
 			.iter()
 			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
-			.sum()
+			.fold(0u64, |acc, risk| acc.saturating_add(risk))
 	}
 
 	/// Returns whether the outgoing channel's reputation is sufficient to use our protected
