@@ -19070,30 +19070,10 @@ impl<
 		// payments could have been written here.
 		(0 as u64).write(writer)?;
 
-		// For backwards compat, write the session privs and their total length.
-		let mut num_pending_outbounds_compat: u64 = 0;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			if !outbound.is_fulfilled() && !outbound.abandoned() {
-				num_pending_outbounds_compat += outbound.remaining_parts() as u64;
-			}
-		}
-		num_pending_outbounds_compat.write(writer)?;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					for session_priv in session_privs.iter() {
-						session_priv.write(writer)?;
-					}
-				}
-				PendingOutboundPayment::AwaitingInvoice { .. } => {},
-				PendingOutboundPayment::AwaitingOffer { .. } => {},
-				PendingOutboundPayment::InvoiceReceived { .. } => {},
-				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
-				PendingOutboundPayment::Fulfilled { .. } => {},
-				PendingOutboundPayment::Abandoned { .. } => {},
-			}
-		}
+		// LDK versions prior to 0.0.102 took the pending outbound payments from a list of
+		// `session_priv`s written here. As we do not support downgrading to versions that old we
+		// write an empty list, but still write its length, which every version reads.
+		0u64.write(writer)?;
 
 		let mut pending_intercepted_htlcs = None;
 		if our_pending_intercepts.len() != 0 {
