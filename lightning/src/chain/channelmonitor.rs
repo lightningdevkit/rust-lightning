@@ -5704,31 +5704,33 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					self.cancel_prev_commitment_claims(&logger, &txid);
 				}
 			}
-			if tx.input.len() >= 1 {
-				// While all commitment transactions have one input, HTLC transactions may have more
-				// if the HTLC was present in an anchor channel. HTLCs can also be resolved in a few
-				// other ways which can have more than one output.
-				for tx_input in &tx.input {
-					let commitment_txid = tx_input.previous_output.txid;
-					if let Some(&commitment_number) = self.counterparty_commitment_txn_on_chain.get(&commitment_txid) {
-						let (mut new_outpoints, new_outputs_option) = self.check_spend_counterparty_htlc(
-							&tx, commitment_number, &commitment_txid, height, &logger
-						);
-						claimable_outpoints.append(&mut new_outpoints);
-						if let Some(new_outputs) = new_outputs_option {
-							watch_outputs.push(new_outputs);
-						}
-						// Since there may be multiple HTLCs for this channel (all spending the
-						// same commitment tx) being claimed by the counterparty within the same
-						// transaction, and `check_spend_counterparty_htlc` already checks all the
-						// ones relevant to this channel, we can safely break from our loop.
-						break;
+			// While all commitment transactions have one input, HTLC transactions may have more
+			// if the HTLC was present in an anchor channel. HTLCs can also be resolved in a few
+			// other ways which can have more than one output.
+			for tx_input in &tx.input {
+				let commitment_txid = tx_input.previous_output.txid;
+				if let Some(&commitment_number) = self.counterparty_commitment_txn_on_chain.get(&commitment_txid) {
+					let (mut new_outpoints, new_outputs_option) = self.check_spend_counterparty_htlc(
+						&tx, commitment_number, &commitment_txid, height, &logger
+					);
+					claimable_outpoints.append(&mut new_outpoints);
+					if let Some(new_outputs) = new_outputs_option {
+						watch_outputs.push(new_outputs);
 					}
+					// Since there may be multiple HTLCs for this channel (all spending the
+					// same commitment tx) being claimed by the counterparty within the same
+					// transaction, and `check_spend_counterparty_htlc` already checks all the
+					// ones relevant to this channel, we can safely break from our loop.
+					break;
 				}
-				self.is_resolving_htlc_output(&tx, height, &block_hash, logger);
-
-				self.check_tx_and_push_spendable_outputs(&tx, height, &block_hash, logger);
 			}
+			self.is_resolving_htlc_output(&tx, height, &block_hash, logger);
+
+			// Note that if the funding transaction (or some arbitrary dependent of the funding
+			// transaction or some HTLC transaction) spends to the `destination_script` or
+			// `shutdown_script` we'll match it here and push a `SpendableOutput` event. This is
+			// somewhat spurious but also should generally not be harmful.
+			self.check_tx_and_push_spendable_outputs(&tx, height, &block_hash, logger);
 		}
 
 		if height > self.best_block.height {
