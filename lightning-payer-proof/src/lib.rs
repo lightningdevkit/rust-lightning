@@ -208,7 +208,7 @@ impl VerifiedPayerProof {
 	/// are indistinguishable here, so a `true` answers "this was paid to whoever `offer` names"
 	/// rather than "this paid `offer`".
 	pub fn pays_offers_recipient(&self, offer: &Offer) -> bool {
-		offer.matches_invoice_signing_pubkey(&self.0.issuer_signing_pubkey())
+		offer.key_can_sign_invoice(&self.0.issuer_signing_pubkey())
 	}
 
 	/// Whether the invoice this proof covers was issued by the recipient of the offer encoded as

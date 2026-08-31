@@ -750,11 +750,11 @@ impl Offer {
 		self.contents.expects_quantity()
 	}
 
-	/// Returns whether `invoice_signing_pubkey` is the recipient of this offer.
+	/// Returns whether `invoice_signing_pubkey` can sign an invoice for this offer.
 	///
 	/// Per BOLT 12 that is [`Self::issuer_signing_pubkey`] when the offer has one, and otherwise
 	/// the final blinded node id of one of [`Self::paths`].
-	pub fn matches_invoice_signing_pubkey(
+	pub fn key_can_sign_invoice(
 		&self, invoice_signing_pubkey: &bitcoin::secp256k1::PublicKey,
 	) -> bool {
 		super::invoice::check_invoice_signing_pubkey(
@@ -2091,11 +2091,11 @@ mod tests {
 	}
 
 	#[test]
-	fn matches_invoice_signing_pubkey_issuer_id_or_path_last_hop() {
+	fn key_can_sign_invoice_issuer_id_or_path_last_hop() {
 		let issuer = pubkey(42);
 		let with_issuer = OfferBuilder::new(issuer).build().unwrap();
-		assert!(with_issuer.matches_invoice_signing_pubkey(&issuer));
-		assert!(!with_issuer.matches_invoice_signing_pubkey(&pubkey(43)));
+		assert!(with_issuer.key_can_sign_invoice(&issuer));
+		assert!(!with_issuer.key_can_sign_invoice(&pubkey(43)));
 
 		// An issuer id wins even when paths are present.
 		let with_both = OfferBuilder::new(issuer)
@@ -2109,8 +2109,8 @@ mod tests {
 			))
 			.build()
 			.unwrap();
-		assert!(with_both.matches_invoice_signing_pubkey(&issuer));
-		assert!(!with_both.matches_invoice_signing_pubkey(&pubkey(44)));
+		assert!(with_both.key_can_sign_invoice(&issuer));
+		assert!(!with_both.key_can_sign_invoice(&pubkey(44)));
 
 		let paths_only = OfferBuilder::new(issuer)
 			.path(BlindedMessagePath::from_blinded_path(
@@ -2132,10 +2132,10 @@ mod tests {
 			.clear_issuer_signing_pubkey()
 			.build()
 			.unwrap();
-		assert!(paths_only.matches_invoice_signing_pubkey(&pubkey(44)));
-		assert!(paths_only.matches_invoice_signing_pubkey(&pubkey(46)));
-		assert!(!paths_only.matches_invoice_signing_pubkey(&pubkey(43)));
-		assert!(!paths_only.matches_invoice_signing_pubkey(&issuer));
+		assert!(paths_only.key_can_sign_invoice(&pubkey(44)));
+		assert!(paths_only.key_can_sign_invoice(&pubkey(46)));
+		assert!(!paths_only.key_can_sign_invoice(&pubkey(43)));
+		assert!(!paths_only.key_can_sign_invoice(&issuer));
 	}
 
 	#[test]
