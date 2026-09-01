@@ -14504,6 +14504,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
+	/// Processes any [`MonitorEvent`]s pending in our [`chain::Watch`]. Monitor events are
+	/// processed as a part of [`Self::process_pending_events`], but tests often poll message
+	/// events without processing user events, so this allows them to drive monitor event
+	/// processing explicitly.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub fn process_monitor_events(&self) {
+		PersistenceNotifierGuard::optionally_notify(self, || self.process_pending_monitor_events());
+	}
+
 	/// Process pending events from the [`chain::Watch`], returning the appropriate
 	/// [`NotifyOption`] for persistence and event handling.
 	fn process_pending_monitor_events(&self) -> NotifyOption {
@@ -16774,9 +16783,7 @@ impl<
 			// need, especially anything that might end up causing I/O (like a
 			// `ChannelMonitorUpdate`)!
 
-			// TODO: This behavior should be documented. It's unintuitive that we query
-			// ChannelMonitors when clearing other events.
-			let mut result = self.process_pending_monitor_events();
+			let mut result = NotifyOption::SkipPersistNoEvents;
 
 			if self.maybe_generate_initial_closing_signed() {
 				result = NotifyOption::DoPersist;

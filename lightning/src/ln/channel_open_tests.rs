@@ -2353,6 +2353,7 @@ pub fn test_funding_and_commitment_tx_confirm_same_block() {
 	mine_transactions(&nodes[1], &[&funding_tx, &commitment_tx]);
 
 	let check_msg_events = |node: &Node| {
+		node.node.process_monitor_events();
 		let mut msg_events = node.node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 3, "{msg_events:?}");
 		if let MessageSendEvent::SendChannelReady { .. } = msg_events.remove(0) {

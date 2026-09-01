@@ -1636,6 +1636,7 @@ fn do_outbound_update_no_early_closing_signed(use_htlc: bool) {
 		latest_monitor_update_id.get(&chan_id).unwrap().clone()
 	};
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
+	nodes[0].node.process_monitor_events();
 
 	let as_raa_closing_signed = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(as_raa_closing_signed.len(), 2);

@@ -1024,6 +1024,7 @@ pub fn create_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(
 pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	node: &H, recipient: &PublicKey,
 ) -> (msgs::RevokeAndACK, Vec<msgs::CommitmentSigned>) {
+	node.node().process_monitor_events();
 	let events = node.node().get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	(
@@ -1055,6 +1056,7 @@ pub fn get_revoke_commit_msgs<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	node: &H, recipient: &PublicKey,
 ) -> (msgs::CommitmentUpdate, msgs::RevokeAndACK) {
+	node.node().process_monitor_events();
 	let events = node.node().get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 2);
 	(
@@ -1079,6 +1081,7 @@ pub fn get_updates_and_revoke<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 #[macro_export]
 macro_rules! get_event_msg {
 	($node: expr, $event_type: path) => {{
+		$node.node.process_monitor_events();
 		let events = $node.node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1, "{events:?}");
 		match events[0] {
@@ -1087,6 +1090,7 @@ macro_rules! get_event_msg {
 		}
 	}};
 	($node: expr, $event_type: path, $node_id: expr) => {{
+		$node.node.process_monitor_events();
 		let events = $node.node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1, "{events:?}");
 		match events[0] {
@@ -1162,6 +1166,7 @@ macro_rules! get_event {
 
 /// Gets an UpdateHTLCs MessageSendEvent
 pub fn get_htlc_update_msgs(node: &Node, recipient: &PublicKey) -> msgs::CommitmentUpdate {
+	node.node().process_monitor_events();
 	let events = node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	match events[0] {
@@ -1855,6 +1860,7 @@ pub fn create_chan_between_nodes_with_value_confirm_second<'a, 'b, 'c>(
 	node_recv: &Node<'a, 'b, 'c>, node_conf: &Node<'a, 'b, 'c>,
 ) -> ((msgs::ChannelReady, msgs::AnnouncementSignatures), ChannelId) {
 	let channel_id;
+	node_conf.node.process_monitor_events();
 	let events_6 = node_conf.node.get_and_clear_pending_msg_events();
 	assert_eq!(events_6.len(), 3);
 	let announcement_sigs_idx =
@@ -2337,6 +2343,7 @@ pub fn check_closed_broadcast(
 		connect_dummy_node(&node);
 		dummy_connected = true;
 	}
+	node.node.process_monitor_events();
 	let msg_events = node.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), if with_error_msg { num_channels * 2 } else { num_channels });
 	if dummy_connected {
@@ -2645,6 +2652,7 @@ impl SendEvent {
 	}
 
 	pub fn from_node<'a, 'b, 'c>(node: &Node<'a, 'b, 'c>) -> SendEvent {
+		node.node().process_monitor_events();
 		let mut events = node.node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 1);
 		SendEvent::from_event(events.pop().unwrap())
@@ -2689,6 +2697,7 @@ pub fn expect_and_process_pending_htlcs_and_htlc_handling_failed(
 }
 
 pub fn expect_and_process_pending_htlcs(node: &Node<'_, '_, '_>, process_twice: bool) {
+	node.node.process_monitor_events();
 	assert!(node.node.needs_pending_htlc_processing());
 	node.node.process_pending_htlc_forwards();
 	if process_twice {
@@ -2749,10 +2758,12 @@ pub fn do_main_commitment_signed_dance(
 	node_b.node.handle_revoke_and_ack(node_a_id, &as_revoke_and_ack);
 	// Handling the RAA may release HTLCs from node_b's holding cell (e.g., if multiple HTLCs
 	// were sent over the same channel and the second was queued behind the first).
+	node_b.node().process_monitor_events();
 	let node_b_holding_cell_htlcs = node_b.node.get_and_clear_pending_msg_events();
 	check_added_monitors(&node_b, 1);
 	node_b.node.handle_commitment_signed_batch_test(node_a_id, &as_commitment_signed);
 	let (bs_revoke_and_ack, extra_msg_option) = {
+		node_b.node().process_monitor_events();
 		let mut events = node_b.node.get_and_clear_pending_msg_events();
 		assert!(events.len() <= 2);
 		let node_a_event = remove_first_msg_event_to_node(&node_a_id, &mut events);
@@ -2784,6 +2795,7 @@ pub fn commitment_signed_dance_return_raa(
 	commitment_signed: &Vec<msgs::CommitmentSigned>, fail_backwards: bool,
 ) -> msgs::RevokeAndACK {
 	check_added_monitors(&node_a, 0);
+	node_a.node().process_monitor_events();
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	node_a
 		.node
@@ -2808,6 +2820,7 @@ pub fn do_commitment_signed_dance(
 	let node_b_id = node_b.node.get_our_node_id();
 
 	check_added_monitors(&node_a, 0);
+	node_a.node().process_monitor_events();
 	assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	node_a.node.handle_commitment_signed_batch_test(node_b_id, commitment_signed);
 	check_added_monitors(&node_a, 1);
@@ -2853,6 +2866,7 @@ pub fn do_commitment_signed_dance(
 		// Expecting the failure backwards event to the previous hop (not `node_b`)
 		assert_eq!(number_of_msg_events, 1);
 	} else {
+		node_a.node().process_monitor_events();
 		assert!(node_a.node.get_and_clear_pending_msg_events().is_empty());
 	}
 }
@@ -3923,6 +3937,7 @@ pub fn pass_along_path<'a, 'b, 'c>(
 pub fn send_probe_along_route<'a, 'b, 'c>(
 	origin_node: &Node<'a, 'b, 'c>, expected_route: &[(&[&Node<'a, 'b, 'c>], PaymentHash)],
 ) {
+	origin_node.node().process_monitor_events();
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_route.len());
 
@@ -3952,6 +3967,7 @@ pub fn pass_along_route<'a, 'b, 'c>(
 	origin_node: &Node<'a, 'b, 'c>, expected_route: &[&[&Node<'a, 'b, 'c>]], recv_value: u64,
 	our_payment_hash: PaymentHash, our_payment_secret: PaymentSecret,
 ) {
+	origin_node.node().process_monitor_events();
 	let mut events = origin_node.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), expected_route.len());
 
@@ -5189,6 +5205,11 @@ pub fn handle_announce_close_broadcast_events<'a, 'b, 'c>(
 	let node_a_id = nodes[a].node.get_our_node_id();
 	let node_b_id = nodes[b].node.get_our_node_id();
 
+	// The closures may have been initiated by the nodes' `ChannelMonitor`s, in which case the
+	// `ChannelManager`s only learn of them when processing monitor events.
+	nodes[a].node.process_monitor_events();
+	nodes[b].node.process_monitor_events();
+
 	let events_1 = nodes[a].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_1.len(), 2);
 	let as_update = match events_1[1] {
@@ -5311,6 +5332,7 @@ macro_rules! get_chan_reestablish_msgs {
 
 macro_rules! handle_chan_reestablish_msgs {
 	($src_node: expr, $dst_node: expr) => {{
+		$src_node.node.process_monitor_events();
 		let msg_events = $src_node.node.get_and_clear_pending_msg_events();
 		let mut idx = 0;
 

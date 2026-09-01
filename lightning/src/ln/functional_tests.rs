@@ -374,6 +374,7 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 	assert_eq!(has_both_htlcs, 2);
 
 	mine_transaction(&nodes[0], &remote_txn[0]);
+	nodes[0].node.process_monitor_events();
 	let events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 3);
 	for e in events {
@@ -849,6 +850,7 @@ pub fn channel_monitor_network_test() {
 
 	let (close_chan_update_1, close_chan_update_2) = {
 		connect_blocks(&nodes[3], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
+		nodes[3].node.process_monitor_events();
 		let events = nodes[3].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		let close_chan_update_1 = match events[1] {
@@ -884,6 +886,7 @@ pub fn channel_monitor_network_test() {
 		claim_funds!(nodes[4], nodes[3], payment_preimage_2, payment_hash_2);
 
 		connect_blocks(&nodes[4], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
+		nodes[4].node.process_monitor_events();
 		let events = nodes[4].node.get_and_clear_pending_msg_events();
 		assert_eq!(events.len(), 2);
 		let close_chan_update_2 = match events[1] {
@@ -3807,6 +3810,7 @@ pub fn test_static_spendable_outputs_preimage_tx() {
 	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
 	check_added_monitors(&nodes[1], 1);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
+	nodes[1].node.process_monitor_events();
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[0] {
 		MessageSendEvent::UpdateHTLCs { .. } => {},
@@ -3859,6 +3863,7 @@ pub fn test_static_spendable_outputs_timeout_tx() {
 
 	// Settle A's commitment tx on B' chain
 	mine_transaction(&nodes[1], &commitment_tx[0]);
+	nodes[1].node.process_monitor_events();
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[1] {
 		MessageSendEvent::BroadcastChannelUpdate { .. } => {},
@@ -4478,6 +4483,7 @@ pub fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	check_added_monitors(&nodes[1], 1);
 
 	mine_transaction(&nodes[1], &local_txn[0]);
+	nodes[1].node.process_monitor_events();
 	let events = nodes[1].node.get_and_clear_pending_msg_events();
 	match events[0] {
 		MessageSendEvent::UpdateHTLCs { .. } => {},

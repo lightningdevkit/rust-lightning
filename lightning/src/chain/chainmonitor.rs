@@ -1649,7 +1649,11 @@ where
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
 	) -> ChannelMonitorUpdateStatus {
 		if !self.deferred {
-			return self.update_channel_internal(channel_id, update);
+			let status = self.update_channel_internal(channel_id, update);
+			// Applying the update may have generated new events, so assume we have some and wake
+			// the event processor.
+			self.event_notifier.notify();
+			return status;
 		}
 
 		let mut pending_ops = self.pending_ops.lock().unwrap();

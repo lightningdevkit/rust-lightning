@@ -218,6 +218,7 @@ fn do_test_simple_monitor_temporary_update_fail(disconnect: bool) {
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors(&nodes[0], 0);
 
+	nodes[0].node.process_monitor_events();
 	let mut events_2 = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events_2.len(), 1);
 	let payment_event = SendEvent::from_event(events_2.pop().unwrap());
@@ -528,6 +529,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 			as_resp.1.unwrap(),
 		)
 	} else {
+		nodes[0].node.process_monitor_events();
 		let mut events_4 = nodes[0].node.get_and_clear_pending_msg_events();
 		assert_eq!(events_4.len(), 2);
 		(
@@ -763,6 +765,7 @@ fn test_monitor_update_fail_cs() {
 	let (latest_update, _) = nodes[1].chain_monitor.get_latest_mon_update_id(channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors(&nodes[1], 0);
+	nodes[1].node.process_monitor_events();
 	let responses = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(responses.len(), 2);
 
@@ -1577,6 +1580,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update);
 	check_added_monitors(&nodes[1], 0);
 
+	nodes[1].node.process_monitor_events();
 	let mut bs_msgs = nodes[1].node.get_and_clear_pending_msg_events();
 	assert_eq!(bs_msgs.len(), 2);
 
@@ -2347,6 +2351,7 @@ fn test_path_paused_mpp() {
 	let (latest_update, _) = nodes[0].chain_monitor.get_latest_mon_update_id(chan_2_id);
 	nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_2_id, latest_update);
 
+	nodes[0].node.process_monitor_events();
 	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let path_2 = &[&nodes[2], &nodes[3]];
@@ -3111,12 +3116,14 @@ fn double_temp_error() {
 
 	let (latest_update_2, _) = nodes[1].chain_monitor.get_latest_mon_update_id(channel_id);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update_1);
+	nodes[1].node.process_monitor_events();
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[1], 0);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(channel_id, latest_update_2);
 
 	// Complete the first HTLC. Note that as a side-effect we handle the monitor update completions
 	// and get both PaymentClaimed events at once.
+	nodes[1].node.process_monitor_events();
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -3962,7 +3969,7 @@ fn do_test_durable_preimages_on_closed_channel(
 	if close_chans_before_reload && !hold_post_reload_mon_update {
 		// For close_chans_before_reload with hold=false, the deferred completions
 		// haven't been processed yet. Trigger process_pending_monitor_events now.
-		let _ = nodes[1].node.get_and_clear_pending_msg_events();
+		nodes[1].node.process_monitor_events();
 		check_added_monitors(&nodes[1], 0);
 	}
 
@@ -4230,6 +4237,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 			.chain_monitor
 			.channel_monitor_updated(chan_id_ab, ab_update_id)
 			.is_ok());
+		nodes[1].node.process_monitor_events();
 
 		let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 2);
@@ -4397,6 +4405,7 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
 
 	nodes[3].chain_monitor.complete_sole_pending_chan_update(&chan_4_id);
+	nodes[3].node.process_monitor_events();
 	let mut ds_msgs = nodes[3].node.get_and_clear_pending_msg_events();
 	assert_eq!(ds_msgs.len(), 2, "{ds_msgs:?}");
 	check_added_monitors(&nodes[3], 2);
@@ -4596,6 +4605,7 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&chan_a.2);
+	nodes[1].node.process_monitor_events();
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[1], 1);
 	assert!(!get_monitor!(nodes[1], chan_b.2)
