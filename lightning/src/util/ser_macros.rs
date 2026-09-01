@@ -650,9 +650,6 @@ macro_rules! decode_tlv_stream_with_custom_tlv_decode {
 macro_rules! _decode_tlv_stream_range {
 	($stream: expr, $range: expr, $rewind: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
-		// A duplicated type number leaves a dead match arm below, silently dropping the record
-		// rather than reading it into its field. The write side checks the same property, but a
-		// read list is separate code in hand-written implementations, so check it here too.
 		#[allow(unused_mut, unused_variables, unused_assignments)]
 		#[cfg(debug_assertions)]
 		{
