@@ -19106,8 +19106,6 @@ impl<
 		};
 
 		write_tlv_fields!(writer, {
-			// A copy of `pending_outbound_payments` without retry info, written for 0.0.101
-			// compatibility. TLV 3 has taken precedence over it since 0.0.102.
 			(1, _pending_outbound_payments_no_retry, retired),
 			(2, pending_intercepted_htlcs, option),
 			(3, pending_outbound_payments, required),
@@ -19399,8 +19397,6 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		let mut best_block_previous_blocks = None;
 		read_tlv_fields!(reader, {
-			// A copy of `pending_outbound_payments` without retry info, written for 0.0.101
-			// compatibility. TLV 3 has taken precedence over it since 0.0.102.
 			(1, _pending_outbound_payments_no_retry, retired),
 			(2, pending_intercepted_htlcs_legacy, option),
 			(3, pending_outbound_payments, option),
