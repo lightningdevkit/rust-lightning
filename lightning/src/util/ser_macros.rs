@@ -28,8 +28,6 @@ macro_rules! _encode_tlv {
 		let _ = &$field; // Ensure we "use" the $field
 	};
 	($stream: expr, $type: expr, $field: expr, retired $(, $self: ident)?) => {
-		// Retired TLVs were written by a previous version but are no longer written. The entry
-		// exists only to reserve the type number; nothing is serialized.
 	};
 	($stream: expr, $type: expr, $field: expr, required $(, $self: ident)?) => {
 		BigSize($type).write($stream)?;
@@ -475,8 +473,6 @@ macro_rules! _decode_tlv {
 	($outer_reader: expr, $reader: expr, $field: ident, (static_value, $value: expr)) => {{
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, retired) => {{
-		// Retired TLVs may still appear in data written by a previous version. Their contents
-		// are ignored, but the record's bytes must be fully consumed for the read to succeed.
 		$reader.eat_remaining()?;
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, required) => {{
