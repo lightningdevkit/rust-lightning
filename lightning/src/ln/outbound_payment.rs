@@ -271,12 +271,6 @@ impl PendingOutboundPayment {
 			_ => false,
 		}
 	}
-	pub(super) fn abandoned(&self) -> bool {
-		match self {
-			PendingOutboundPayment::Abandoned { .. } => true,
-			_ => false,
-		}
-	}
 	fn get_pending_fee_msat(&self) -> Option<u64> {
 		match self {
 			PendingOutboundPayment::Retryable { pending_fee_msat, .. } => pending_fee_msat.clone(),

@@ -19070,42 +19070,10 @@ impl<
 		// payments could have been written here.
 		(0 as u64).write(writer)?;
 
-		// For backwards compat, write the session privs and their total length.
-		let mut num_pending_outbounds_compat: u64 = 0;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			if !outbound.is_fulfilled() && !outbound.abandoned() {
-				num_pending_outbounds_compat += outbound.remaining_parts() as u64;
-			}
-		}
-		num_pending_outbounds_compat.write(writer)?;
-		for (_, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					for session_priv in session_privs.iter() {
-						session_priv.write(writer)?;
-					}
-				}
-				PendingOutboundPayment::AwaitingInvoice { .. } => {},
-				PendingOutboundPayment::AwaitingOffer { .. } => {},
-				PendingOutboundPayment::InvoiceReceived { .. } => {},
-				PendingOutboundPayment::StaticInvoiceReceived { .. } => {},
-				PendingOutboundPayment::Fulfilled { .. } => {},
-				PendingOutboundPayment::Abandoned { .. } => {},
-			}
-		}
-
-		// Encode without retry info for 0.0.101 compatibility.
-		let mut pending_outbound_payments_no_retry: HashMap<PaymentId, HashSet<[u8; 32]>> = new_hash_map();
-		for (id, outbound) in pending_outbound_payments.iter() {
-			match outbound {
-				PendingOutboundPayment::Legacy { session_privs } |
-				PendingOutboundPayment::Retryable { session_privs, .. } => {
-					pending_outbound_payments_no_retry.insert(*id, session_privs.clone());
-				},
-				_ => {},
-			}
-		}
+		// LDK versions prior to 0.0.102 took the pending outbound payments from a list of
+		// `session_priv`s written here. As we do not support downgrading to versions that old we
+		// write an empty list, but still write its length, which every version reads.
+		0u64.write(writer)?;
 
 		let mut pending_intercepted_htlcs = None;
 		if our_pending_intercepts.len() != 0 {
@@ -19138,7 +19106,9 @@ impl<
 		};
 
 		write_tlv_fields!(writer, {
-			(1, pending_outbound_payments_no_retry, required),
+			// A copy of `pending_outbound_payments` without retry info, written for 0.0.101
+			// compatibility. TLV 3 has taken precedence over it since 0.0.102.
+			(1, _pending_outbound_payments_no_retry, retired),
 			(2, pending_intercepted_htlcs, option),
 			(3, pending_outbound_payments, required),
 			(4, pending_claiming_payments, option),
@@ -19392,28 +19362,17 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			);
 		}
 
+		// Prior to 0.0.102 the pending outbound payments were written here, without retry info.
+		// Every version since has written them as TLV 3 as well, and we do not support upgrading
+		// directly from those versions, so skip over the copy written here.
 		let pending_outbound_payments_count_compat: u64 = Readable::read(reader)?;
-		let mut pending_outbound_payments_compat: HashMap<PaymentId, PendingOutboundPayment> =
-			hash_map_with_capacity(cmp::min(
-				pending_outbound_payments_count_compat as usize,
-				MAX_ALLOC_SIZE / 32,
-			));
 		for _ in 0..pending_outbound_payments_count_compat {
-			let session_priv = Readable::read(reader)?;
-			let payment = PendingOutboundPayment::Legacy {
-				session_privs: hash_set_from_iter([session_priv]),
-			};
-			if pending_outbound_payments_compat.insert(PaymentId(session_priv), payment).is_some() {
-				return Err(DecodeError::InvalidValue);
-			};
+			let _session_priv: SecretKey = Readable::read(reader)?;
 		}
 
 		let mut pending_intercepted_htlcs_legacy: Option<HashMap<InterceptId, PendingAddHTLCInfo>> =
 			None;
 		let mut decode_update_add_htlcs_legacy: Option<HashMap<u64, Vec<msgs::UpdateAddHTLC>>> =
-			None;
-		// pending_outbound_payments_no_retry is for compatibility with 0.0.101 clients.
-		let mut pending_outbound_payments_no_retry: Option<HashMap<PaymentId, HashSet<[u8; 32]>>> =
 			None;
 		let mut pending_outbound_payments = None;
 		let mut received_network_pubkey: Option<PublicKey> = None;
@@ -19440,7 +19399,9 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 		let mut async_receive_offer_cache: AsyncReceiveOfferCache = AsyncReceiveOfferCache::new();
 		let mut best_block_previous_blocks = None;
 		read_tlv_fields!(reader, {
-			(1, pending_outbound_payments_no_retry, option),
+			// A copy of `pending_outbound_payments` without retry info, written for 0.0.101
+			// compatibility. TLV 3 has taken precedence over it since 0.0.102.
+			(1, _pending_outbound_payments_no_retry, retired),
 			(2, pending_intercepted_htlcs_legacy, option),
 			(3, pending_outbound_payments, option),
 			(4, pending_claiming_payments, option),
@@ -19460,21 +19421,10 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 			(23, best_block_previous_blocks, option),
 		});
 
-		// Merge legacy pending_outbound_payments fields into a single HashMap.
-		// Priority: pending_outbound_payments (TLV 3) > pending_outbound_payments_no_retry (TLV 1)
-		//           > pending_outbound_payments_compat (non-TLV legacy)
-		let pending_outbound_payments = pending_outbound_payments
-			.or_else(|| {
-				pending_outbound_payments_no_retry.map(|no_retry| {
-					no_retry
-						.into_iter()
-						.map(|(id, session_privs)| {
-							(id, PendingOutboundPayment::Legacy { session_privs })
-						})
-						.collect()
-				})
-			})
-			.unwrap_or(pending_outbound_payments_compat);
+		// TLV 3 has been written by every version since 0.0.102, and we do not support upgrading
+		// directly from versions prior to that.
+		let pending_outbound_payments =
+			pending_outbound_payments.ok_or(DecodeError::InvalidValue)?;
 
 		// Merge legacy in-flight monitor updates (keyed by OutPoint) into the new format (keyed by
 		// ChannelId).
