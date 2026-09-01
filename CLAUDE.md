@@ -14,14 +14,16 @@ See [README.md](README.md) for the workspace layout and [ARCH.md](ARCH.md) for s
   `cargo +1.75.0 test` for all affected crates and/or features. Upon completion
   of the full task you might prompt the user whether they want you to run the
   full CI tests via `./ci/ci-tests.sh`. Note however that this script will run
-  for a very long time, so please don't timeout when you do.
+  for a very long time, don't timeout when you do.
 - Run `cargo +1.75.0 fmt --all` before committing code changes. If rust 1.75.0 is
   not installed, skip this step.
-- Never add new dependencies unless explicitly requested
-- Please always disclose the use of any AI tools in commit messages and PR descriptions using a `Co-Authored-By:` line.
-- When adding new `.rs` files, please ensure to always add the licensing header as found, e.g., in `lightning/src/lib.rs` and other files.
+- Never add new dependencies unless explicitly requested.
+- Always disclose the use of any AI tools in commit messages and PR descriptions using a `Co-Authored-By:` line.
+- When adding new `.rs` files, always add the licensing header as found in other files.
 - When adding comments, do not refer to internal logic in other modules, instead
   make sure comments make sense in the context they're in without needing other
-  context.
+  context. Only add comments that aren't trivially obvious from the code.
+- Don't add comments or documentation which contrasts the previous state - code
+  comments and documentation must only describe the current state of things.
 - Try to keep code DRY - if new code you add is duplicate with other code,
   deduplicate it.
