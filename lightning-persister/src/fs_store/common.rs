@@ -130,41 +130,62 @@ impl FilesystemStoreInner {
 		Arc::clone(&outer_lock.entry(path).or_default())
 	}
 
-	fn get_dest_dir_path(
-		&self, primary_namespace: &str, secondary_namespace: &str, use_empty_ns_dir: bool,
+	/// Builds the path a key is stored at.
+	///
+	/// The buffer is sized to fit the full path up front so that appending the individual
+	/// components never has to grow it, leaving us with a single allocation per call.
+	fn get_dest_file_path(
+		&self, primary_namespace: &str, secondary_namespace: &str, key: Option<&str>,
+		use_empty_ns_dir: bool,
 	) -> std::io::Result<PathBuf> {
-		let mut dest_dir_path = {
-			#[cfg(target_os = "windows")]
-			{
-				let data_dir = self.data_dir.clone();
-				fs::create_dir_all(data_dir.clone())?;
-				fs::canonicalize(data_dir)?
-			}
-			#[cfg(not(target_os = "windows"))]
-			{
-				self.data_dir.clone()
-			}
+		#[cfg(target_os = "windows")]
+		let canonicalized_data_dir = {
+			fs::create_dir_all(&self.data_dir)?;
+			fs::canonicalize(&self.data_dir)?
 		};
+		#[cfg(target_os = "windows")]
+		let data_dir = canonicalized_data_dir.as_path();
+		#[cfg(not(target_os = "windows"))]
+		let data_dir = self.data_dir.as_path();
 
-		if use_empty_ns_dir {
-			dest_dir_path.push(if primary_namespace.is_empty() {
-				EMPTY_NAMESPACE_DIR
-			} else {
-				primary_namespace
-			});
-			dest_dir_path.push(if secondary_namespace.is_empty() {
+		// Empty namespaces are stored under a placeholder directory where the caller asked for it,
+		// as the resulting paths would otherwise be ambiguous.
+		let (primary, secondary) = if use_empty_ns_dir {
+			let primary =
+				if primary_namespace.is_empty() { EMPTY_NAMESPACE_DIR } else { primary_namespace };
+			let secondary = if secondary_namespace.is_empty() {
 				EMPTY_NAMESPACE_DIR
 			} else {
 				secondary_namespace
-			});
+			};
+			(primary, Some(secondary))
+		} else if secondary_namespace.is_empty() {
+			(primary_namespace, None)
 		} else {
-			dest_dir_path.push(primary_namespace);
-			if !secondary_namespace.is_empty() {
-				dest_dir_path.push(secondary_namespace);
-			}
-		}
+			(primary_namespace, Some(secondary_namespace))
+		};
 
-		Ok(dest_dir_path)
+		// Account for the separator that gets inserted ahead of each component we append.
+		let capacity = data_dir.as_os_str().len()
+			+ 1 + primary.len()
+			+ secondary.map_or(0, |secondary| 1 + secondary.len())
+			+ key.map_or(0, |key| 1 + key.len());
+
+		let mut dest_file_path = PathBuf::with_capacity(capacity);
+		dest_file_path.push(data_dir);
+		dest_file_path.push(primary);
+		if let Some(secondary) = secondary {
+			dest_file_path.push(secondary);
+		}
+		if let Some(key) = key {
+			dest_file_path.push(key);
+		}
+		debug_assert!(
+			dest_file_path.as_os_str().len() <= capacity,
+			"Building a destination path should not have to grow beyond the reserved capacity"
+		);
+
+		Ok(dest_file_path)
 	}
 
 	fn get_checked_dest_file_path(
@@ -173,19 +194,16 @@ impl FilesystemStoreInner {
 	) -> lightning::io::Result<PathBuf> {
 		check_namespace_key_validity(primary_namespace, secondary_namespace, key, operation)?;
 
-		let mut dest_file_path =
-			self.get_dest_dir_path(primary_namespace, secondary_namespace, use_empty_ns_dir)?;
-		if let Some(key) = key {
-			dest_file_path.push(key);
-		}
+		let dest_file_path =
+			self.get_dest_file_path(primary_namespace, secondary_namespace, key, use_empty_ns_dir)?;
 
 		Ok(dest_file_path)
 	}
 
-	fn read(&self, dest_file_path: PathBuf) -> lightning::io::Result<Vec<u8>> {
+	fn read(&self, dest_file_path: &Path) -> lightning::io::Result<Vec<u8>> {
 		let mut buf = Vec::new();
 
-		self.execute_locked_read(dest_file_path.clone(), || {
+		self.execute_locked_read(dest_file_path, || {
 			let mut f = fs::File::open(dest_file_path)?;
 			f.read_to_end(&mut buf)?;
 			Ok(())
@@ -195,7 +213,7 @@ impl FilesystemStoreInner {
 	}
 
 	fn execute_locked_write<F: FnOnce() -> Result<(), lightning::io::Error>>(
-		&self, inner_lock_ref: Arc<RwLock<u64>>, dest_file_path: PathBuf, version: u64, callback: F,
+		&self, inner_lock_ref: Arc<RwLock<u64>>, dest_file_path: &Path, version: u64, callback: F,
 	) -> Result<(), lightning::io::Error> {
 		let res = {
 			let mut last_written_version = inner_lock_ref.write().unwrap();
@@ -220,9 +238,9 @@ impl FilesystemStoreInner {
 	}
 
 	fn execute_locked_read<F: FnOnce() -> Result<(), lightning::io::Error>>(
-		&self, dest_file_path: PathBuf, callback: F,
+		&self, dest_file_path: &Path, callback: F,
 	) -> Result<(), lightning::io::Error> {
-		let inner_lock_ref = self.get_inner_lock_ref(dest_file_path.clone());
+		let inner_lock_ref = self.get_inner_lock_ref(dest_file_path.to_path_buf());
 		let res = {
 			let _guard = inner_lock_ref.read().unwrap();
 			callback()
@@ -231,7 +249,7 @@ impl FilesystemStoreInner {
 		res
 	}
 
-	fn clean_locks(&self, inner_lock_ref: &Arc<RwLock<u64>>, dest_file_path: PathBuf) {
+	fn clean_locks(&self, inner_lock_ref: &Arc<RwLock<u64>>, dest_file_path: &Path) {
 		// If there no arcs in use elsewhere, this means that there are no in-flight writes. We can remove the map entry
 		// to prevent leaking memory. The two arcs that are expected are the one in the map and the one held here in
 		// inner_lock_ref. The outer lock is obtained first, to avoid a new arc being cloned after we've already
@@ -242,7 +260,7 @@ impl FilesystemStoreInner {
 		debug_assert!(strong_count >= 2, "Unexpected FilesystemStore strong count");
 
 		if strong_count == 2 {
-			outer_lock.remove(&dest_file_path);
+			outer_lock.remove(dest_file_path);
 		}
 	}
 
@@ -298,22 +316,21 @@ impl FilesystemStoreInner {
 		}
 
 		let mut tmp_file_needs_cleanup = true;
-		let write_res =
-			self.execute_locked_write(inner_lock_ref, dest_file_path.clone(), version, || {
-				#[cfg(not(target_os = "windows"))]
-				{
-					fs::rename(&tmp_file_path, &dest_file_path)?;
-					tmp_file_needs_cleanup = false;
-					let dir_file = fs::OpenOptions::new().read(true).open(&parent_directory)?;
-					dir_file.sync_all()?;
-					Ok(())
-				}
+		let write_res = self.execute_locked_write(inner_lock_ref, &dest_file_path, version, || {
+			#[cfg(not(target_os = "windows"))]
+			{
+				fs::rename(&tmp_file_path, &dest_file_path)?;
+				tmp_file_needs_cleanup = false;
+				let dir_file = fs::OpenOptions::new().read(true).open(&parent_directory)?;
+				dir_file.sync_all()?;
+				Ok(())
+			}
 
-				#[cfg(target_os = "windows")]
-				{
-					let res = if dest_file_path.exists() {
-						call!(unsafe {
-							windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
+			#[cfg(target_os = "windows")]
+			{
+				let res = if dest_file_path.exists() {
+					call!(unsafe {
+						windows_sys::Win32::Storage::FileSystem::ReplaceFileW(
 							path_to_windows_str(&dest_file_path).as_ptr(),
 							path_to_windows_str(&tmp_file_path).as_ptr(),
 							std::ptr::null(),
@@ -321,33 +338,31 @@ impl FilesystemStoreInner {
 							std::ptr::null_mut() as *const core::ffi::c_void,
 							std::ptr::null_mut() as *const core::ffi::c_void,
 							)
-						})
-					} else {
-						call!(unsafe {
-							windows_sys::Win32::Storage::FileSystem::MoveFileExW(
+					})
+				} else {
+					call!(unsafe {
+						windows_sys::Win32::Storage::FileSystem::MoveFileExW(
 							path_to_windows_str(&tmp_file_path).as_ptr(),
 							path_to_windows_str(&dest_file_path).as_ptr(),
 							windows_sys::Win32::Storage::FileSystem::MOVEFILE_WRITE_THROUGH
 							| windows_sys::Win32::Storage::FileSystem::MOVEFILE_REPLACE_EXISTING,
 							)
-						})
-					};
+					})
+				};
 
-					match res {
-						Ok(()) => {
-							tmp_file_needs_cleanup = false;
-							// We fsync the dest file in hopes this will also flush the metadata to disk.
-							let dest_file = fs::OpenOptions::new()
-								.read(true)
-								.write(true)
-								.open(&dest_file_path)?;
-							dest_file.sync_all()?;
-							Ok(())
-						},
-						Err(e) => Err(e.into()),
-					}
+				match res {
+					Ok(()) => {
+						tmp_file_needs_cleanup = false;
+						// We fsync the dest file in hopes this will also flush the metadata to disk.
+						let dest_file =
+							fs::OpenOptions::new().read(true).write(true).open(&dest_file_path)?;
+						dest_file.sync_all()?;
+						Ok(())
+					},
+					Err(e) => Err(e.into()),
 				}
-			});
+			}
+		});
 		if tmp_file_needs_cleanup {
 			let _ = fs::remove_file(&tmp_file_path);
 		}
@@ -357,7 +372,7 @@ impl FilesystemStoreInner {
 	fn remove_version(
 		&self, inner_lock_ref: Arc<RwLock<u64>>, dest_file_path: PathBuf, lazy: bool, version: u64,
 	) -> lightning::io::Result<()> {
-		self.execute_locked_write(inner_lock_ref, dest_file_path.clone(), version, || {
+		self.execute_locked_write(inner_lock_ref, &dest_file_path, version, || {
 			if !dest_file_path.is_file() {
 				return Ok(());
 			}
@@ -589,7 +604,7 @@ impl FilesystemStoreState {
 			"read",
 			use_empty_ns_dir,
 		)?;
-		self.inner.read(path)
+		self.inner.read(&path)
 	}
 
 	pub(crate) fn write_impl(
@@ -654,7 +669,7 @@ impl FilesystemStoreState {
 				Ok(path) => path,
 				Err(e) => return Err(e),
 			};
-			tokio::task::spawn_blocking(move || this.read(path)).await.unwrap_or_else(|e| {
+			tokio::task::spawn_blocking(move || this.read(&path)).await.unwrap_or_else(|e| {
 				Err(lightning::io::Error::new(lightning::io::ErrorKind::Other, e))
 			})
 		}
