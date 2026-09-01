@@ -22,6 +22,8 @@ See [README.md](README.md) for the workspace layout and [ARCH.md](ARCH.md) for s
 - When adding new `.rs` files, please ensure to always add the licensing header as found, e.g., in `lightning/src/lib.rs` and other files.
 - When adding comments, do not refer to internal logic in other modules, instead
   make sure comments make sense in the context they're in without needing other
-  context.
+  context. Only add comments that aren't trivially obvious from the code.
+- Don't add comments or documentation which contrasts the previous state - code
+  comments and documentation must only describe the current state of things.
 - Try to keep code DRY - if new code you add is duplicate with other code,
   deduplicate it.
