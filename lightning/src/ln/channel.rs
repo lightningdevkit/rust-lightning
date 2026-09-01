@@ -17094,6 +17094,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			(28, holder_max_accepted_htlcs, option),
 			(29, self.context.temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
+			// 33 was `blocked_monitor_updates`, written only by 0.0.116-alpha1
 			(35, pending_outbound_skimmed_fees, optional_vec),
 			(37, holding_cell_skimmed_fees, optional_vec),
 			(38, self.context.is_batch_funding, option),
@@ -17113,7 +17114,7 @@ impl<SP: SignerProvider> Writeable for FundedChannel<SP> {
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 			(63, holder_commitment_point_current, option), // Added in 0.2
 			(64, pending_splice, option), // Added in 0.2
-			// 65 was previously used for quiescent_action
+			(65, _quiescent_action, retired), // Added in 0.2; removed in 0.3
 			(67, pending_outbound_held_htlc_flags, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags, optional_vec), // Added in 0.2
 			(70, has_0reserve, option), // Added in 0.3 to prevent downgrades
@@ -17535,6 +17536,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			(28, holder_max_accepted_htlcs, option),
 			(29, temporary_channel_id, option),
 			(31, channel_pending_event_emitted, option),
+			// 33 was `blocked_monitor_updates`, written only by 0.0.116-alpha1
 			(35, pending_outbound_skimmed_fees_opt, optional_vec),
 			(37, holding_cell_skimmed_fees_opt, optional_vec),
 			(38, is_batch_funding, option),
@@ -17554,7 +17556,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 			(61, fulfill_attribution_data, optional_vec), // Added in 0.2
 			(63, holder_commitment_point_current_opt, option), // Added in 0.2
 			(64, pending_splice, option), // Added in 0.2
-			// 65 quiescent_action: Added in 0.2; removed in 0.3
+			(65, _quiescent_action, retired), // Added in 0.2; removed in 0.3
 			(67, pending_outbound_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(69, holding_cell_held_htlc_flags_opt, optional_vec), // Added in 0.2
 			(70, _has_0reserve, option), // Added in 0.3 to prevent downgrades

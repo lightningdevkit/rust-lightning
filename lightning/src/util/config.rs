@@ -704,9 +704,8 @@ impl crate::util::ser::Writeable for ChannelConfig {
 			(3, self.max_dust_htlc_exposure, required),
 			(4, self.cltv_expiry_delta, required),
 			(6, max_dust_htlc_exposure_msat_fixed_limit, required),
-			// ChannelConfig serialized this field with a required type of 8 prior to the introduction of
-			// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
-			// the next required type of 10, which if seen by the old serialization will always fail.
+			(8, _forwarding_fee_base_msat, retired), // Used before LegacyChannelConfig's introduction
+			// Even type 10 ensures readers of the old format, which used type 8, fail on this one.
 			(10, self.force_close_avoidance_max_fee_satoshis, required),
 		});
 		Ok(())
@@ -730,6 +729,7 @@ impl crate::util::ser::Readable for ChannelConfig {
 			(4, cltv_expiry_delta, required),
 			// Has always been written, but became optionally read in 0.0.116
 			(6, max_dust_htlc_exposure_msat, option),
+			(8, _forwarding_fee_base_msat, retired), // Used before LegacyChannelConfig's introduction
 			(10, force_close_avoidance_max_fee_satoshis, required),
 		});
 		let max_dust_htlc_fixed_limit = max_dust_htlc_exposure_msat.unwrap_or(5_000_000);

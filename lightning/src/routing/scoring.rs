@@ -436,7 +436,9 @@ impl ScoreUpdate for FixedPenaltyScorer {
 impl Writeable for FixedPenaltyScorer {
 	#[inline]
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		write_tlv_fields!(w, {});
+		write_tlv_fields!(w, {
+			(0, _penalty_msat, retired), // Serialized only in 0.0.105
+		});
 		Ok(())
 	}
 }
@@ -444,7 +446,9 @@ impl Writeable for FixedPenaltyScorer {
 impl ReadableArgs<u64> for FixedPenaltyScorer {
 	#[inline]
 	fn read<R: Read>(r: &mut R, penalty_msat: u64) -> Result<Self, DecodeError> {
-		read_tlv_fields!(r, {});
+		read_tlv_fields!(r, {
+			(0, _penalty_msat, retired), // Serialized only in 0.0.105
+		});
 		Ok(Self { penalty_msat })
 	}
 }

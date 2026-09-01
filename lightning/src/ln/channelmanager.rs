@@ -18711,6 +18711,7 @@ impl Readable for HTLCSource {
 					(0, session_priv, required),
 					(1, payment_id, option),
 					(2, first_hop_htlc_msat, required),
+					(3, _payment_secret, retired),
 					(4, path_hops, required_vec),
 					(5, payment_params, (option: ReadableArgs, 0)),
 					(6, blinded_tail, option),
@@ -18764,7 +18765,7 @@ impl Writeable for HTLCSource {
 				   (0, session_priv, required),
 				   (1, payment_id_opt, option),
 				   (2, first_hop_htlc_msat, required),
-				   // 3 was previously used to write a PaymentSecret for the payment.
+				   (3, _payment_secret, retired),
 				   (4, path.hops, required_vec),
 				   (5, None::<PaymentParameters>, option), // payment_params in LDK versions prior to 0.0.115
 				   (6, path.blinded_tail, option),

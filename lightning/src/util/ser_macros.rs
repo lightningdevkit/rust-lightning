@@ -27,6 +27,10 @@ macro_rules! _encode_tlv {
 	($stream: expr, $type: expr, $field: expr, (static_value, $value: expr) $(, $self: ident)?) => {
 		let _ = &$field; // Ensure we "use" the $field
 	};
+	($stream: expr, $type: expr, $field: expr, retired $(, $self: ident)?) => {
+		// Retired TLVs were written by a previous version but are no longer written. The entry
+		// exists only to reserve the type number; nothing is serialized.
+	};
 	($stream: expr, $type: expr, $field: expr, required $(, $self: ident)?) => {
 		BigSize($type).write($stream)?;
 		BigSize($field.serialized_length() as u64).write($stream)?;
@@ -96,7 +100,7 @@ macro_rules! _encode_tlv {
 /// This is exported for use by other exported macros, do not use directly.
 #[doc(hidden)]
 #[macro_export]
-macro_rules! _check_encoded_tlv_order {
+macro_rules! _check_tlv_order {
 	($last_type: expr, $type: expr, (static_value, $value: expr)) => {};
 	($last_type: expr, $type: expr, $fieldty: tt) => {
 		if let Some(t) = $last_type {
@@ -183,11 +187,11 @@ macro_rules! _encode_tlv_stream {
 		{
 			let mut last_seen: Option<u64> = None;
 			$(
-				$crate::_check_encoded_tlv_order!(last_seen, $type, $fieldty);
+				$crate::_check_tlv_order!(last_seen, $type, $fieldty);
 			)*
 			for tlv in $extra_tlvs {
 				let (typ, _): &(u64, Vec<u8>) = tlv;
-				$crate::_check_encoded_tlv_order!(last_seen, *typ, required_vec);
+				$crate::_check_tlv_order!(last_seen, *typ, required_vec);
 			}
 		}
 	} };
@@ -207,6 +211,7 @@ macro_rules! _get_varint_length_prefixed_tlv_length {
 		$crate::_get_varint_length_prefixed_tlv_length!($len, $type, $field, required_vec)
 	};
 	($len: expr, $type: expr, $field: expr, (static_value, $value: expr) $(, $self: ident)?) => {};
+	($len: expr, $type: expr, $field: expr, retired $(, $self: ident)?) => {};
 	($len: expr, $type: expr, $field: expr, required $(, $self: ident)?) => {
 		BigSize($type).write(&mut $len).expect("No in-memory data may fail to serialize");
 		let field_len = $field.serialized_length();
@@ -316,6 +321,9 @@ macro_rules! _check_decoded_tlv_order {
 		);
 	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, (static_value, $value: expr)) => {};
+	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, retired) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $typ: expr, $type: expr, $field: ident, required) => {{
 		// Note that $type may be 0 making the second comparison always false
 		#[allow(unused_comparisons)]
@@ -392,6 +400,9 @@ macro_rules! _check_missing_tlv {
 	($last_seen_type: expr, $type: expr, $field: expr, (static_value, $value: expr)) => {
 		$field = $value;
 	};
+	($last_seen_type: expr, $type: expr, $field: ident, retired) => {{
+		// no-op
+	}};
 	($last_seen_type: expr, $type: expr, $field: ident, required) => {{
 		// Note that $type may be 0 making the second comparison always false
 		#[allow(unused_comparisons)]
@@ -462,6 +473,11 @@ macro_rules! _decode_tlv {
 		$field = $crate::util::ser::RequiredWrapper(Some(f.0));
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, (static_value, $value: expr)) => {{
+	}};
+	($outer_reader: expr, $reader: expr, $field: ident, retired) => {{
+		// Retired TLVs may still appear in data written by a previous version. Their contents
+		// are ignored, but the record's bytes must be fully consumed for the read to succeed.
+		$reader.eat_remaining()?;
 	}};
 	($outer_reader: expr, $reader: expr, $field: ident, required) => {{
 		$field = $crate::util::ser::LengthReadable::read_from_fixed_length_buffer(&mut $reader)?;
@@ -638,6 +654,17 @@ macro_rules! decode_tlv_stream_with_custom_tlv_decode {
 macro_rules! _decode_tlv_stream_range {
 	($stream: expr, $range: expr, $rewind: ident, {$(($type: expr, $field: ident, $fieldty: tt)),* $(,)*}
 	 $(, $decode_custom_tlv: expr)?) => { {
+		// A duplicated type number leaves a dead match arm below, silently dropping the record
+		// rather than reading it into its field. The write side checks the same property, but a
+		// read list is separate code in hand-written implementations, so check it here too.
+		#[allow(unused_mut, unused_variables, unused_assignments)]
+		#[cfg(debug_assertions)]
+		{
+			let mut last_seen: Option<u64> = None;
+			$(
+				$crate::_check_tlv_order!(last_seen, $type, $fieldty);
+			)*
+		}
 		use $crate::ln::msgs::DecodeError;
 		let mut last_seen_type: Option<u64> = None;
 		let stream_ref = $stream;
@@ -724,7 +751,7 @@ macro_rules! _decode_tlv_stream_range {
 ///
 /// This is useful to implement a [`CustomMessageReader`].
 ///
-/// Currently `$fieldty` may only be `option`, i.e., `$tlvfield` is optional field.
+/// Currently `$fieldty` may only be `option` (making `$tlvfield` an optional field) or `retired`.
 ///
 /// For example,
 /// ```
@@ -765,10 +792,10 @@ macro_rules! impl_writeable_msg {
 				$(let $field = $crate::util::ser::Readable::read(r)?;)*
 				$($crate::_init_tlv_field_var!($tlvfield, $fieldty);)*
 				$crate::decode_tlv_stream!(r, {$(($type, $tlvfield, $fieldty)),*});
-				Ok(Self {
+				Ok(::lightning_macros::drop_legacy_field_definition!(Self {
 					$($field,)*
 					$($tlvfield: $crate::_init_tlv_based_struct_field!($tlvfield, $fieldty)),*
-				})
+				}))
 			}
 		}
 	}
@@ -945,7 +972,7 @@ macro_rules! _init_tlv_based_struct_field {
 	($field: ident, (option: $trait: ident $(, $read_arg: expr)?)) => {
 		$crate::_init_tlv_based_struct_field!($field, option)
 	};
-	// Note that legacy TLVs are eaten by `drop_legacy_field_definition`
+	// Note that legacy and retired TLVs are eaten by `drop_legacy_field_definition`
 	($field: ident, upgradable_required) => {
 		$field.0.unwrap()
 	};
@@ -987,6 +1014,7 @@ macro_rules! _init_tlv_field_var {
 	($field: ident, (static_value, $value: expr)) => {
 		let $field;
 	};
+	($field: ident, retired) => {};
 	($field: ident, required) => {
 		let mut $field = $crate::util::ser::RequiredWrapper(None);
 	};
@@ -1096,6 +1124,11 @@ macro_rules! _decode_and_build {
 ///    [`MaybeReadable`], requiring the TLV to be present.
 /// If `$fieldty` is `optional_vec`, then `$field` is a [`Vec`], which needs to have its individual elements serialized.
 ///    Note that for `optional_vec` no bytes are written if the vec is empty
+/// If `$fieldty` is `retired`, then `$field` names a field which a previous version wrote at this
+///    type number but which is no longer written. Nothing is serialized, and on read any value
+///    present is ignored (its bytes are consumed, so retired even types written by a previous
+///    version do not fail the read). The entry reserves the type number against reuse. If the
+///    field is still written for prior versions' benefit, use `legacy` instead.
 /// If `$fieldty` is `(legacy, $ty, $read, $write)` then, when writing, the function $write will be
 ///    called with the object being serialized and a returned `Option` and is written as a TLV if
 ///    `Some`. When reading, an optional field of type `$ty` is read, and after all TLV fields are
@@ -1956,6 +1989,201 @@ mod tests {
 	#[test]
 	fn simple_test_tlv_write() {
 		do_simple_test_tlv_write().unwrap();
+	}
+
+	fn do_retired_tlv_write() -> Result<(), io::Error> {
+		let mut stream = VecWriter(Vec::new());
+		_encode_varint_length_prefixed_tlv!(&mut stream, {(3, 0xdeadbeef1badbeefu64, required), (5, _old, retired), (7, Some(0x1bad1deau32), option)});
+		assert_eq!(stream.0, <Vec<u8>>::from_hex("100308deadbeef1badbeef07041bad1dea").unwrap());
+		Ok(())
+	}
+
+	#[test]
+	fn retired_tlvs_write_nothing() {
+		do_retired_tlv_write().unwrap();
+	}
+
+	fn duplicate_type_reader(s: &[u8]) -> Result<Option<u32>, DecodeError> {
+		let mut s = Cursor::new(s);
+		let mut a: u64 = 0;
+		let mut b: Option<u32> = None;
+		// Type 3 is reserved by a retired entry and reused by `b`, which is the mistake the
+		// read-side assertion exists to catch.
+		decode_tlv_stream!(&mut s, {(1, a, required), (3, _old, retired), (3, b, option)});
+		let _ = a;
+		Ok(b)
+	}
+
+	#[test]
+	#[should_panic(expected = "assertion failed: t < 3")]
+	fn duplicate_read_list_types_panic() {
+		// A read list with a duplicated type number is caught even though nothing writes it.
+		let buf = <Vec<u8>>::from_hex("0108000000000000002a").unwrap();
+		let _ = duplicate_type_reader(&buf[..]);
+	}
+
+	fn runtime_type_number_write(t: u64) -> Result<Vec<u8>, io::Error> {
+		// Type numbers need not be known at compile time; onion message payloads pass
+		// `message.tlv_type()` here.
+		let mut stream = VecWriter(Vec::new());
+		encode_tlv_stream!(&mut stream, {(2, Some(1u32), option), (t, 7u64, required)});
+		Ok(stream.0)
+	}
+
+	#[test]
+	fn runtime_type_numbers_are_accepted() {
+		assert!(!runtime_type_number_write(70).unwrap().is_empty());
+	}
+
+	fn retired_tlv_reader(s: &[u8]) -> Result<(u64, Option<u32>), DecodeError> {
+		let mut s = Cursor::new(s);
+		let mut a: u64 = 0;
+		let mut b: Option<u32> = None;
+		decode_tlv_stream!(&mut s, {(2, _old_even, retired), (3, a, required), (5, _old_odd, retired), (7, b, option)});
+		Ok((a, b))
+	}
+
+	fn unlisted_even_tlv_reader(s: &[u8]) -> Result<(u64, Option<u32>), DecodeError> {
+		let mut s = Cursor::new(s);
+		let mut a: u64 = 0;
+		let mut b: Option<u32> = None;
+		decode_tlv_stream!(&mut s, {(3, a, required), (7, b, option)});
+		Ok((a, b))
+	}
+
+	#[test]
+	fn retired_tlvs_skipped_on_read() {
+		// Streams written by a previous version may contain retired TLVs, which are skipped even
+		// if their type is even.
+		let buf = <Vec<u8>>::from_hex(concat!(
+			"0204ffffffff",
+			"0308deadbeef1badbeef",
+			"05021234",
+			"07041bad1dea"
+		))
+		.unwrap();
+		assert_eq!(retired_tlv_reader(&buf[..]).unwrap(), (0xdeadbeef1badbeef, Some(0x1bad1dea)));
+
+		// Without the retired entry, the same even type fails the read.
+		if let Err(DecodeError::UnknownRequiredFeature) = unlisted_even_tlv_reader(&buf[..]) {
+		} else {
+			panic!();
+		}
+
+		// A truncated retired record is still a short read.
+		let buf = <Vec<u8>>::from_hex("0204ffff").unwrap();
+		if let Err(DecodeError::ShortRead) = retired_tlv_reader(&buf[..]) {
+		} else {
+			panic!();
+		}
+	}
+
+	struct RetiredCarrier {
+		a: u64,
+	}
+
+	impl_writeable_tlv_based!(RetiredCarrier, self, {
+		(1, self.a, required),
+		(3, _old, retired),
+	});
+
+	#[test]
+	fn retired_tlv_serialized_length_consistency() {
+		let t = RetiredCarrier { a: 42 };
+		let encoded = t.encode();
+		assert_eq!(t.serialized_length(), encoded.len());
+		assert_eq!(encoded, <Vec<u8>>::from_hex("0a0108000000000000002a").unwrap());
+	}
+
+	#[derive(Debug, PartialEq)]
+	struct WithRetired {
+		a: u64,
+		b: Option<u32>,
+	}
+	impl_ser_tlv_based!(WithRetired, {
+		(1, a, required),
+		(2, _old_even, retired),
+		(3, b, option),
+	});
+
+	// Same fields and type numbers, without the retired entry.
+	#[derive(Debug, PartialEq)]
+	struct WithoutRetired {
+		a: u64,
+		b: Option<u32>,
+	}
+	impl_ser_tlv_based!(WithoutRetired, {
+		(1, a, required),
+		(3, b, option),
+	});
+
+	#[test]
+	fn retired_tlvs_in_struct_macro() {
+		let with_retired = WithRetired { a: 0xdead, b: Some(0x1dea) };
+		let without_retired = WithoutRetired { a: 0xdead, b: Some(0x1dea) };
+		let encoded = with_retired.encode();
+		// The retired entry writes nothing.
+		assert_eq!(encoded, without_retired.encode());
+		assert_eq!(with_retired.serialized_length(), encoded.len());
+
+		// A record at the retired (even) type number is skipped on read...
+		let stream = <Vec<u8>>::from_hex(concat!(
+			"13",                   // stream length
+			"0108000000000000dead", // (1, a)
+			"0201ff",               // (2, _old_even), ignored
+			"030400001dea",         // (3, b)
+		))
+		.unwrap();
+		let read: WithRetired = Readable::read(&mut &stream[..]).unwrap();
+		assert_eq!(read, with_retired);
+		// ...but without the retired entry in the field list, the even type fails the read.
+		let err = <WithoutRetired as Readable>::read(&mut &stream[..]).unwrap_err();
+		assert!(matches!(err, DecodeError::UnknownRequiredFeature));
+	}
+
+	#[derive(Debug, PartialEq)]
+	enum RetiredEnum {
+		A { x: u64 },
+	}
+	impl_ser_tlv_based_enum!(RetiredEnum,
+		(0, A) => {(1, x, required), (2, _old, retired)},
+	);
+
+	#[test]
+	fn retired_tlvs_in_enum_macro() {
+		let e = RetiredEnum::A { x: 0x2a };
+		let encoded = e.encode();
+		// Variant byte, stream length, then only the type-1 record.
+		assert_eq!(encoded, <Vec<u8>>::from_hex("000a0108000000000000002a").unwrap());
+
+		// A record at the retired type number is skipped on read.
+		let with_retired = <Vec<u8>>::from_hex("000d0108000000000000002a0201ff").unwrap();
+		let read: RetiredEnum = Readable::read(&mut &with_retired[..]).unwrap();
+		assert_eq!(read, e);
+	}
+
+	#[derive(Debug, PartialEq)]
+	struct RetiredMsg {
+		fixed: u32,
+		opt: Option<u32>,
+	}
+	impl_writeable_msg!(RetiredMsg, { fixed }, {
+		(0, _old_even, retired),
+		(1, opt, option),
+	});
+
+	#[test]
+	fn retired_tlvs_in_msg_macro() {
+		let msg = RetiredMsg { fixed: 0x2a, opt: Some(7) };
+		let encoded = msg.encode();
+		// The non-TLV field, then an unprefixed TLV stream with only the type-1 record.
+		assert_eq!(encoded, <Vec<u8>>::from_hex("0000002a010400000007").unwrap());
+
+		// A record at the retired (even) type number is skipped on read.
+		let with_retired = <Vec<u8>>::from_hex("0000002a0001ff010400000007").unwrap();
+		let read: RetiredMsg =
+			LengthReadable::read_from_fixed_length_buffer(&mut &with_retired[..]).unwrap();
+		assert_eq!(read, msg);
 	}
 
 	#[derive(Debug, Eq, PartialEq)]
