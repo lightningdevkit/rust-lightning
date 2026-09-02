@@ -1772,6 +1772,16 @@ where
 					chan.exit_quiescence();
 					None
 				} else {
+					if let Some(FundingNegotiation::AwaitingSignatures {
+						initial_commitment_signed_from_counterparty,
+						..
+					}) = chan
+						.pending_splice
+						.as_mut()
+						.and_then(|pending_splice| pending_splice.funding_negotiation.as_mut())
+					{
+						initial_commitment_signed_from_counterparty.take();
+					}
 					None
 				}
 			} else {

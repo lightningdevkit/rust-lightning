@@ -2770,7 +2770,17 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	let _ = get_htlc_update_msgs(&nodes[1], &node_id_0);
+	let acceptor_commitment_signed = get_htlc_update_msgs(&nodes[1], &node_id_0);
+	if !reload {
+		// Buffer the peer's initial `commitment_signed` before disconnecting. Since we haven't
+		// signed yet, it will be stashed until we do so, though it can be dropped if a disconnect
+		// happens.
+		nodes[0].node.handle_commitment_signed_batch_test(
+			node_id_1,
+			&acceptor_commitment_signed.commitment_signed,
+		);
+		check_added_monitors(&nodes[0], 0);
+	}
 
 	// Disconnect them, and handle the signing event on the initiator side.
 	if reload {
@@ -2830,6 +2840,7 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 		let tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
 		nodes[0].node.funding_transaction_signed(&channel_id, &node_id_1, tx).unwrap();
 	}
+	check_added_monitors(&nodes[0], 0);
 
 	// Since they're not connected, no messages should be sent.
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
