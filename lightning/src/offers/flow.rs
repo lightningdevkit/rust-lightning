@@ -921,9 +921,10 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		let relative_expiry = DEFAULT_RELATIVE_EXPIRY.as_secs() as u32;
 
 		let (payment_hash, payment_secret) = get_payment_info(amount_msats, relative_expiry)?;
-
-		let payment_context =
-			PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata });
+		let payment_context = PaymentContext::Bolt12Refund(Bolt12RefundContext {
+			payment_metadata,
+			invoice_request: Some(refund.invoice_request_fields()),
+		});
 		let payment_paths = self
 			.create_blinded_payment_paths(
 				router,

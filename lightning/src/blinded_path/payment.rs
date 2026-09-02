@@ -22,7 +22,7 @@ use crate::io::Cursor;
 use crate::ln::channel_state::CounterpartyForwardingInfo;
 use crate::ln::msgs::DecodeError;
 use crate::ln::onion_utils;
-use crate::offers::invoice_request::InvoiceRequestFields;
+use crate::offers::invoice_request::PayerFields;
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferId;
 use crate::routing::gossip::{NodeId, ReadOnlyNetworkGraph};
@@ -613,7 +613,7 @@ pub struct Bolt12OfferContext {
 	///
 	/// [`InvoiceRequest`]: crate::offers::invoice_request::InvoiceRequest
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
-	pub invoice_request: InvoiceRequestFields,
+	pub invoice_request: PayerFields,
 
 	/// Additional data about this payment which is not used in LDK and can be used for any
 	/// purpose.
@@ -695,6 +695,19 @@ pub struct Bolt12RefundContext {
 	/// [`RecipientOnionFields::payment_metadata`]: crate::ln::outbound_payment::RecipientOnionFields::payment_metadata
 	/// [`Bolt11Invoice::payment_metadata`]: lightning_invoice::Bolt11Invoice::payment_metadata
 	pub payment_metadata: Option<BTreeMap<u64, Vec<u8>>>,
+
+	/// Fields from the [`Refund`] that this payment is for.
+	///
+	/// Unlike [`Bolt12OfferContext::invoice_request`], these fields are known upfront by the
+	/// payer (here, the [`Refund`] issuer) rather than solicited from a counterparty, since a
+	/// [`Refund`] is itself the payer's commitment. `human_readable_name` will always be `None`,
+	/// as only [`Offer`]s can be resolved using Human Readable Names.
+	///
+	/// This is `None` for payment contexts created prior to LDK supporting this field.
+	///
+	/// [`Refund`]: crate::offers::refund::Refund
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub invoice_request: Option<PayerFields>,
 }
 
 impl TryFrom<CounterpartyForwardingInfo> for PaymentRelay {
@@ -1132,6 +1145,7 @@ impl_ser_tlv_based!(AsyncBolt12OfferContext, {
 
 impl_ser_tlv_based!(Bolt12RefundContext, {
 	(1, payment_metadata, (option, encoding: (BTreeMap<u64, Vec<u8>>, BigSizeKeyedMap))),
+	(3, invoice_request, option),
 });
 
 #[cfg(test)]
@@ -1193,6 +1207,7 @@ mod tests {
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 		let htlc_maximum_msat = 100_000;
@@ -1213,6 +1228,7 @@ mod tests {
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 		let blinded_payinfo = super::compute_payinfo::<ForwardTlvs>(
@@ -1278,6 +1294,7 @@ mod tests {
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 3 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 		let htlc_maximum_msat = 100_000;
@@ -1340,6 +1357,7 @@ mod tests {
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 		let htlc_minimum_msat = 3798;
@@ -1413,6 +1431,7 @@ mod tests {
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 

@@ -85,7 +85,7 @@ pub fn blinded_payment_path(
 			htlc_minimum_msat:
 				intro_node_min_htlc_opt.unwrap_or_else(|| channel_upds.last().unwrap().htlc_minimum_msat),
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: None }),
 	};
 
 	let receive_auth_key = keys_manager.get_receive_auth_key();
@@ -174,7 +174,7 @@ fn do_one_hop_blinded_path(success: bool) {
 			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: None }),
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 
@@ -220,6 +220,7 @@ fn one_hop_blinded_path_with_dummy_hops() {
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 			payment_metadata: None,
+			invoice_request: None,
 		}),
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
@@ -300,7 +301,7 @@ fn mpp_to_one_hop_blinded_path() {
 			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd_1_3.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: None }),
 	};
 	let receive_auth_key = chanmon_cfgs[3].keys_manager.get_receive_auth_key();
 	let blinded_path = BlindedPaymentPath::new(
@@ -1450,6 +1451,7 @@ fn forward_prop_fee_above_one_hundred_percent() {
 		},
 		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 			payment_metadata: None,
+			invoice_request: None,
 		}),
 	};
 	let blinded_path = BlindedPaymentPath::new(
@@ -1531,7 +1533,7 @@ fn custom_tlvs_to_blinded_path() {
 			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: None }),
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 
@@ -1585,7 +1587,7 @@ fn fails_receive_tlvs_authentication() {
 			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: None }),
 	};
 	let receive_auth_key = chanmon_cfgs[1].keys_manager.get_receive_auth_key();
 
@@ -1615,7 +1617,7 @@ fn fails_receive_tlvs_authentication() {
 			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: None }),
 	};
 	// Use a mismatched ReceiveAuthKey to force auth failure:
 	let mismatched_receive_auth_key = ReceiveAuthKey([0u8; 32]);
@@ -2403,7 +2405,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 			max_cltv_expiry: u32::MAX,
 			htlc_minimum_msat: amt_msat,
 		},
-		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None, invoice_request: None }),
 	};
 	let receive_auth_key = nodes[2].keys_manager.get_receive_auth_key();
 	let blinded_path = BlindedPaymentPath::new(&[], carol_node_id, receive_auth_key, payee_tlvs, u64::MAX, 0, nodes[2].keys_manager, &secp_ctx).unwrap();
@@ -2707,6 +2709,7 @@ fn do_test_trampoline_relay(blinded: bool, test_case: TrampolineTestCase) {
 			},
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		},
 		original_trampoline_cltv,
@@ -2934,6 +2937,7 @@ fn send_trampoline_mpp_payment<'a, 'b, 'c>(
 			},
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 		create_trampoline_forward_blinded_tail(

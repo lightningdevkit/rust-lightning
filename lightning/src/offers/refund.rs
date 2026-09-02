@@ -89,8 +89,9 @@ use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::{ExpandedKey, IV_LEN};
 use crate::ln::msgs::{DecodeError, MAX_VALUE_MSAT};
 use crate::offers::invoice_request::{
-	ExperimentalInvoiceRequestTlvStream, ExperimentalInvoiceRequestTlvStreamRef,
-	InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef,
+	string_truncate_safe, ExperimentalInvoiceRequestTlvStream,
+	ExperimentalInvoiceRequestTlvStreamRef, InvoiceRequestTlvStream, InvoiceRequestTlvStreamRef,
+	PayerFields, PAYER_NOTE_LIMIT,
 };
 use crate::offers::nonce::Nonce;
 use crate::offers::offer::{
@@ -112,6 +113,7 @@ use bitcoin::secp256k1::{self, PublicKey, Secp256k1};
 use core::hash::{Hash, Hasher};
 use core::str::FromStr;
 use core::time::Duration;
+use types::string::UntrustedString;
 
 #[cfg(not(c_bindings))]
 use crate::offers::invoice::{DerivedSigningPubkey, ExplicitSigningPubkey, InvoiceBuilder};
@@ -553,6 +555,29 @@ impl Refund {
 	/// Payer provided note to include in the invoice.
 	pub fn payer_note(&self) -> Option<PrintableString<'_>> {
 		self.contents.payer_note()
+	}
+
+	/// Fetch the [`PayerFields`] for this refund.
+	///
+	/// These are fields which we expect to be useful when receiving a payment for this refund,
+	/// and are intended to be included in the [`PaymentContext::Bolt12Refund`].
+	///
+	/// `human_readable_name` is always `None`, as only [`Offer`]s can be resolved using Human
+	/// Readable Names.
+	///
+	/// [`PaymentContext::Bolt12Refund`]: crate::blinded_path::payment::PaymentContext::Bolt12Refund
+	/// [`Offer`]: crate::offers::offer::Offer
+	pub fn invoice_request_fields(&self) -> PayerFields {
+		PayerFields {
+			payer_signing_pubkey: self.contents.payer_signing_pubkey,
+			quantity: self.contents.quantity,
+			payer_note_truncated: self
+				.contents
+				.payer_note
+				.clone()
+				.map(|s| UntrustedString(string_truncate_safe(s, PAYER_NOTE_LIMIT))),
+			human_readable_name: None,
+		}
 	}
 }
 

@@ -1,0 +1,10 @@
+# API Updates
+
+ * `InvoiceRequestFields` has been renamed to `PayerFields`, as it is no
+   longer specific to an `InvoiceRequest` (see below).
+
+ * `Bolt12RefundContext` now has an `invoice_request` field
+   (`Option<PayerFields>`), mirroring `Bolt12OfferContext::invoice_request`.
+   This lets a refund's `quantity`/`payer_note` be recovered from the
+   `PaymentContext` when the refund payment is claimed, without needing to
+   separately persist them (#4859).
