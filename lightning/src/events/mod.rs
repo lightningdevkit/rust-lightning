@@ -101,6 +101,18 @@ impl_ser_tlv_based_enum!(FundingInfo,
 	}
 );
 
+impl FundingInfo {
+	/// Returns a [`FundingInfo::Contribution`] for the given inputs and outputs, or `None` if both
+	/// are empty and there is thus nothing to discard.
+	pub(crate) fn contribution(inputs: Vec<OutPoint>, outputs: Vec<ScriptBuf>) -> Option<Self> {
+		if inputs.is_empty() && outputs.is_empty() {
+			None
+		} else {
+			Some(FundingInfo::Contribution { inputs, outputs })
+		}
+	}
+}
+
 /// The funding contribution from a failed splice negotiation round, see
 /// [`Event::SpliceNegotiationFailed`].
 #[derive(Clone, Debug, PartialEq, Eq)]

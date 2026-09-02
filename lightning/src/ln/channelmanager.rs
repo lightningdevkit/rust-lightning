@@ -6928,12 +6928,9 @@ impl<
 		match error {
 			QuiescentError::DoNothing => {},
 			QuiescentError::DiscardFunding { inputs, outputs } => {
-				if !inputs.is_empty() || !outputs.is_empty() {
+				if let Some(funding_info) = FundingInfo::contribution(inputs, outputs) {
 					self.pending_events.lock().unwrap().push_back((
-						events::Event::DiscardFunding {
-							channel_id,
-							funding_info: FundingInfo::Contribution { inputs, outputs },
-						},
+						events::Event::DiscardFunding { channel_id, funding_info },
 						None,
 					));
 				}
