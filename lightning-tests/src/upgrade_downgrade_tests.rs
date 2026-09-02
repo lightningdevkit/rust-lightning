@@ -1392,8 +1392,8 @@ fn upgrade_queued_splice_contribution_from_0_2() {
 
 #[test]
 fn downgrade_overlapping_splice_failure_to_0_2() {
-	// A contribution reusing an output already committed to a pending splice fails, releasing only
-	// the outputs unique to it; the rest stay committed to that splice. Check that a downgraded 0.2
+	// An RBF negotiation aborted when a prior splice candidate confirms fails, releasing only the
+	// outputs unique to it; the rest stay committed to that candidate. Check that a downgraded 0.2
 	// node is told about exactly the released ones, since it cannot read the `DiscardFunding`
 	// carrying them and has to rely on `SpliceFailed` instead (see #4919).
 	let (node_0_ser, mon_0_ser, released_script, chan_id_bytes);
@@ -1402,6 +1402,7 @@ fn downgrade_overlapping_splice_failure_to_0_2() {
 		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_id_0 = nodes[0].node.get_our_node_id();
 		let node_id_1 = nodes[1].node.get_our_node_id();
 		let channel_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0).2;
 		chan_id_bytes = channel_id.0;
@@ -1417,45 +1418,47 @@ fn downgrade_overlapping_splice_failure_to_0_2() {
 			&nodes[1],
 			channel_id,
 			added_value,
-			vec![committed_output.clone()],
+			vec![committed_output],
 		);
 		let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
-		mine_transaction(&nodes[0], &splice_tx);
-		mine_transaction(&nodes[1], &splice_tx);
 
-		// Send `splice_locked` without receiving the counterparty's, leaving the splice pending
-		// but no longer RBF-able.
-		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		let _ = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
-		nodes[0].node.get_and_clear_pending_events();
-		nodes[0].node.get_and_clear_pending_msg_events();
-
-		// As the splice cannot be RBF'd, a contribution reusing its output is refused with only
-		// the additional output released.
+		// Initiate an RBF reusing the prior contribution plus an output unique to this round, and
+		// drive the negotiation in flight.
 		let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
 		released_script = script_pubkey.clone();
 		let released_output = TxOut { value: Amount::from_sat(1_000), script_pubkey };
-		let floor_feerate = bitcoin::FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
-		let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-		let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
-		let contribution = funding_template
-			.without_prior_contribution(feerate, bitcoin::FeeRate::MAX)
-			.add_outputs(vec![committed_output, released_output])
-			.build()
-			.unwrap();
-		assert_eq!(
-			nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None),
-			Err(APIError::APIMisuseError {
-				err: format!("Channel {} cannot accept funding contribution", channel_id),
-			})
+		let rbf_feerate = bitcoin::FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+		let rbf_contribution = do_initiate_rbf_splice_in_and_out(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			vec![released_output],
+			rbf_feerate,
 		);
+		let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+		nodes[1].node.handle_stfu(node_id_0, &stfu);
+		let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+		nodes[0].node.handle_stfu(node_id_1, &stfu);
+		let _tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+
+		// The prior candidate confirming aborts the in-flight RBF, failing it with only the
+		// unique output released; the prior contribution stays committed to that candidate.
+		mine_transaction(&nodes[0], &splice_tx);
+		let _tx_abort = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
 
 		node_0_ser = nodes[0].node.encode();
 		mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
 
 		// The failure events have to remain in the serialization above for the 0.2 read below, so
 		// only drain them here, satisfying the check for unhandled events as the node is dropped.
-		nodes[0].node.get_and_clear_pending_events();
+		let (inputs, outputs) = expect_failed_rbf_events(
+			&nodes[0],
+			&channel_id,
+			&rbf_contribution,
+			NegotiationFailureReason::CannotInitiateRbf,
+		);
+		assert!(inputs.is_empty());
+		assert_eq!(outputs, vec![released_script.clone()]);
 	}
 
 	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
@@ -1543,24 +1546,14 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	)
 	.unwrap();
 	assert_eq!(
-		nodes[0].node.funding_contributed(
-			&channel_id,
-			&node_id_1,
-			overlapping_contribution.clone(),
-			None,
-		),
+		nodes[0].node.funding_contributed(&channel_id, &node_id_1, overlapping_contribution, None),
 		Err(APIError::APIMisuseError {
 			err: format!("Channel {} cannot accept funding contribution", channel_id),
 		})
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	let (inputs, outputs) = expect_failed_rbf_events(
-		&nodes[0],
-		&channel_id,
-		&overlapping_contribution,
-		NegotiationFailureReason::CannotInitiateRbf,
-	);
+	let (inputs, outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
 	assert!(inputs.is_empty());
 	assert_eq!(outputs, vec![script_pubkey]);
 

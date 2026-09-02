@@ -1791,16 +1791,23 @@ pub enum Event {
 	},
 	/// Used to indicate that a splice negotiation round for the given `channel_id` has failed.
 	///
-	/// Each splice attempt (initial or RBF) resolves to this event on failure. On success,
-	/// [`Event::SpliceNegotiated`] is emitted if the negotiated transaction includes local
-	/// inputs or outputs. Prior successfully negotiated splice transactions are unaffected.
+	/// Each splice attempt (initial or RBF) resolves to this event on failure, unless the
+	/// contribution was rejected with an error returned from
+	/// [`ChannelManager::funding_contributed`], in which case the failure is only reported
+	/// through the returned error. On success, [`Event::SpliceNegotiated`] is emitted if the
+	/// negotiated transaction includes local inputs or outputs. Prior successfully negotiated
+	/// splice transactions are unaffected.
 	///
 	/// Any UTXOs contributed to the failed round that are not committed to an existing splice
-	/// attempt will be returned via a preceding [`Event::DiscardFunding`].
+	/// attempt will be returned via a preceding [`Event::DiscardFunding`]. This also applies to
+	/// contributions rejected with an error, though without a corresponding
+	/// `SpliceNegotiationFailed` event.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
+	///
+	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
 	SpliceNegotiationFailed {
 		/// The `channel_id` of the channel for which the splice negotiation round failed.
 		channel_id: ChannelId,
