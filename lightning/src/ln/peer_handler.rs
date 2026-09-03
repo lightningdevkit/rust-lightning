@@ -1396,12 +1396,11 @@ impl<
 	/// peer using the init message.
 	/// The user should pass the remote network address of the host they are connected to.
 	///
-	/// If an `Err` is returned here you must disconnect the connection immediately.
+	/// Returns an `Err` if `descriptor` is duplicative with some other descriptor which has not yet
+	/// been [`socket_disconnected`]. If an `Err` is returned here you must disconnect the
+	/// connection immediately.
 	///
 	/// Returns a small number of bytes to send to the remote node (currently always 50).
-	///
-	/// Panics if descriptor is duplicative with some other descriptor which has not yet been
-	/// [`socket_disconnected`].
 	///
 	/// [`socket_disconnected`]: PeerManager::socket_disconnected
 	pub fn new_outbound_connection(
@@ -1461,11 +1460,10 @@ impl<
 	/// The user should pass the remote network address of the host they are connected to.
 	///
 	/// May refuse the connection by returning an Err, but will never write bytes to the remote end
-	/// (outbound connector always speaks first). If an `Err` is returned here you must disconnect
-	/// the connection immediately.
-	///
-	/// Panics if descriptor is duplicative with some other descriptor which has not yet been
-	/// [`socket_disconnected`].
+	/// (outbound connector always speaks first). In particular, an `Err` is returned if
+	/// `descriptor` is duplicative with some other descriptor which has not yet been
+	/// [`socket_disconnected`]. If an `Err` is returned here you must disconnect the connection
+	/// immediately.
 	///
 	/// [`socket_disconnected`]: PeerManager::socket_disconnected
 	pub fn new_inbound_connection(
