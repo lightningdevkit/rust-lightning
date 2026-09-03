@@ -2633,10 +2633,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			&& is_all_funds_claimed
 			&& !inner.funding_spend_seen
 		{
-			// We closed the channel without ever advancing it and didn't have any funds in it.
-			// We should immediately archive this monitor as there's nothing for us to ever do with
-			// it.
-			return (true, false);
+			// We closed the channel without ever advancing it and didn't have any funds in it. There's
+			// nothing for us to ever do with this monitor, so we archive it as soon as any pending
+			// `MonitorEvent`s have been processed. This may be necessary in the case that the monitor
+			// initiated the channel close -- archiving now may leave the `ChannelManager` with a
+			// `Channel` that has no corresponding monitor, which is not allowed on restart.
+			return (inner.pending_monitor_events.is_empty(), false);
 		}
 
 		if is_all_funds_claimed && !inner.funding_spend_seen {
