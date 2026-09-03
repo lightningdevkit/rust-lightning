@@ -195,9 +195,10 @@ pub(super) fn monitor_event_id(event: &MonitorEvent) -> u128 {
 		MonitorEvent::HTLCEvent(upd) => {
 			0u8.write(&mut engine).unwrap();
 			SentHTLCId::from_source(&upd.source).write(&mut engine).unwrap();
-			// A claim and a failure of the same HTLC must not share an ID, so that acking one never
-			// removes the other.
+			// A claim and a failure of the same HTLC, or an on-chain and an off-chain resolution of
+			// it, must not share an ID, so that acking one never removes the other.
 			engine.input(&[upd.payment_preimage.is_some() as u8]);
+			engine.input(&[upd.from_onchain as u8]);
 		},
 		MonitorEvent::HolderForceClosed(outpoint)
 		| MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } => {
@@ -6718,15 +6719,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					};
 					self.pending_monitor_events.retain(not_htlc_fail);
 					self.provided_monitor_events.retain(not_htlc_fail);
-					if !self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter()).any(
-						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
-						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
-							source,
-							payment_preimage: Some(payment_preimage),
-							payment_hash,
-							htlc_value_satoshis: amount_msat / 1000,
-							from_onchain: true,
-						}));
+					let update = HTLCUpdate {
+						source,
+						payment_preimage: Some(payment_preimage),
+						payment_hash,
+						htlc_value_satoshis: amount_msat / 1000,
+						from_onchain: true,
+					};
+					// Note that we compare the entire `HTLCUpdate` here when deciding whether the new event
+					// is a duplicate: this allows us to queue an on-chain HTLC update even if an off-chain
+					// update for the same HTLC is already pending unacked. Otherwise, if an outbound HTLC
+					// was first fulfilled off-chain then later fulfilled on-chain, we would only surface
+					// `PaymentPathSuccessful` + delete its outbound payments entry entry after a restart,
+					// since for off-chain claims those are only done after RAA.
+					let already_queued = self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter()).any(
+						|(_, ev)| matches!(ev, MonitorEvent::HTLCEvent(upd) if *upd == update));
+					if !already_queued {
+						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(update));
 					}
 				} else {
 					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {
