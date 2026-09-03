@@ -493,6 +493,10 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 			| ConnectStyle::TransactionsFirstSkippingBlocks
 			| ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks
 			| ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks => {
+				for tx in orig.0.txdata {
+					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.compute_txid());
+					node.node.transaction_unconfirmed(&tx.compute_txid());
+				}
 				if i == count - 1 {
 					node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
 					node.node.best_block_updated(&prev.0.header, prev.1);
@@ -506,6 +510,10 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 				}
 			},
 			_ => {
+				for tx in orig.0.txdata {
+					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.compute_txid());
+					node.node.transaction_unconfirmed(&tx.compute_txid());
+				}
 				node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
 				node.node.best_block_updated(&prev.0.header, prev.1);
 			},
