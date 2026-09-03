@@ -5107,6 +5107,9 @@ impl<
 	///
 	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
 	/// `counterparty_node_id` is provided, or [`APIMisuseError`] otherwise with the error details.
+	/// As with [`ChannelManager::funding_transaction_signed`], either error may be returned simply
+	/// because the funding negotiation failed while its
+	/// [`Event::FundingTransactionReadyForSigning`] was being handled.
 	///
 	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
@@ -7163,6 +7166,9 @@ impl<
 	///
 	/// Returns [`APIMisuseError`] when a channel is not in a state where it is expecting funding
 	/// signatures or if any of the checks described above fail.
+	///
+	/// Note that either error may be returned simply because the funding negotiation failed while
+	/// its [`FundingTransactionReadyForSigning`] event was being handled.
 	///
 	/// [`FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable

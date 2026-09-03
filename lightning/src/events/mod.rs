@@ -2084,6 +2084,15 @@ pub enum Event {
 	/// signed funding transaction. For splices where you contributed inputs or outputs, call
 	/// [`ChannelManager::cancel_funding_contributed`] instead if you no longer wish to proceed.
 	///
+	/// The funding negotiation may fail while this event is pending, e.g. because the counterparty
+	/// aborted it or the channel was closed, in which case
+	/// [`ChannelManager::funding_transaction_signed`] returns an [`APIError::APIMisuseError`] or
+	/// [`APIError::ChannelUnavailable`] without you having done anything wrong. The negotiated
+	/// funding transaction will then never be used. For a splice, an [`Event::DiscardFunding`] (for
+	/// any contributions not also committed to another splice attempt) and an
+	/// [`Event::SpliceNegotiationFailed`] follow, whereas for a channel being opened an
+	/// [`Event::ChannelClosed`] is generated.
+	///
 	/// Generated in [`ChannelManager`] message handling.
 	///
 	/// # Failure Behavior and Persistence
