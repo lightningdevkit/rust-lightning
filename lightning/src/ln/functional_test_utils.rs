@@ -3330,6 +3330,30 @@ pub fn expect_failed_rbf_events<'a, 'b, 'c>(
 	discarded
 }
 
+/// Expects the `DiscardFunding` event emitted when [`ChannelManager::funding_contributed`] rejects
+/// an RBF contribution with an error, returning the discarded inputs and outputs. No
+/// `SpliceNegotiationFailed` is emitted since the failure is already reported through the
+/// returned error.
+///
+/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_rejected_rbf_event<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, expected_channel_id: &ChannelId,
+) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event::DiscardFunding {
+			channel_id,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(channel_id, expected_channel_id);
+			(inputs.clone(), outputs.clone())
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+}
+
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]
 pub fn expect_splice_failed_events<'a, 'b, 'c>(
 	node: &Node<'a, 'b, 'c>, expected_channel_id: &ChannelId,

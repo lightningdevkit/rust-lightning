@@ -1,0 +1,11 @@
+# API Updates
+
+ * `ChannelManager::funding_contributed` no longer emits `Event::SpliceNegotiationFailed` when
+   returning an error; the failure is reported through the returned error alone. An
+   `Event::DiscardFunding` is still emitted for any contributed inputs and outputs not committed
+   to an existing splice attempt.
+
+# Forward Compatibility
+
+ * A `DiscardFunding` event pending at serialization time for a rejected contribution is skipped
+   when read by LDK 0.2, which previously surfaced such rejections as `SpliceFailed`.

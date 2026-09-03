@@ -7546,19 +7546,10 @@ impl SpliceFundingFailed {
 	/// Splits into the funding info for `DiscardFunding` (if there are inputs or outputs to
 	/// discard) and the contribution for `SpliceNegotiationFailed`.
 	pub(super) fn into_parts(self) -> (Option<FundingInfo>, FailedSpliceContribution) {
-		let funding_info =
-			if !self.contributed_inputs.is_empty() || !self.contributed_outputs.is_empty() {
-				Some(FundingInfo::Contribution {
-					inputs: self.contributed_inputs.clone(),
-					outputs: self
-						.contributed_outputs
-						.iter()
-						.map(|output| output.script_pubkey.clone())
-						.collect(),
-				})
-			} else {
-				None
-			};
+		let funding_info = FundingInfo::contribution(
+			self.contributed_inputs.clone(),
+			self.contributed_outputs.iter().map(|output| output.script_pubkey.clone()).collect(),
+		);
 		let contribution = FailedSpliceContribution::new(
 			self.contributed_inputs,
 			self.contributed_outputs,

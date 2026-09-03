@@ -6928,12 +6928,9 @@ impl<
 		match error {
 			QuiescentError::DoNothing => {},
 			QuiescentError::DiscardFunding { inputs, outputs } => {
-				if !inputs.is_empty() || !outputs.is_empty() {
+				if let Some(funding_info) = FundingInfo::contribution(inputs, outputs) {
 					self.pending_events.lock().unwrap().push_back((
-						events::Event::DiscardFunding {
-							channel_id,
-							funding_info: FundingInfo::Contribution { inputs, outputs },
-						},
+						events::Event::DiscardFunding { channel_id, funding_info },
 						None,
 					));
 				}
@@ -7004,7 +7001,7 @@ impl<
 	/// point, any inputs contributed to the splice can only be re-spent if an
 	/// [`Event::DiscardFunding`] is seen.
 	///
-	/// If any failures occur while negotiating the funding transaction, an
+	/// If any failures occur after this method has returned success, an
 	/// [`Event::SpliceNegotiationFailed`] will be emitted. Any contributed inputs no longer used
 	/// will be included in an [`Event::DiscardFunding`] and thus can be re-spent. If a
 	/// [`FundingTemplate`] was obtained while a previous splice was still being negotiated, its
@@ -7025,6 +7022,11 @@ impl<
 	///
 	/// Returns [`APIMisuseError`] when a channel is not in a state where it is expecting funding
 	/// contribution.
+	///
+	/// When an error is returned, the contribution has been rejected without emitting an
+	/// [`Event::SpliceNegotiationFailed`], as the failure is already reported through the error.
+	/// Any contributed inputs and outputs not committed to an existing splice attempt will be
+	/// included in an [`Event::DiscardFunding`] and thus can be re-spent.
 	///
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
@@ -7095,12 +7097,27 @@ impl<
 										),
 									},
 								});
-								self.handle_quiescent_error(
-									*channel_id,
-									*counterparty_node_id,
-									channel.context().get_user_id(),
-									e,
-								);
+								// The failure is already reported through the returned error, so
+								// don't emit `SpliceNegotiationFailed`; only surface any funding
+								// to discard so that wallet inputs can be released.
+								let funding_info = match e {
+									QuiescentError::DoNothing => None,
+									QuiescentError::DiscardFunding { inputs, outputs } => {
+										FundingInfo::contribution(inputs, outputs)
+									},
+									QuiescentError::FailSplice(splice_funding_failed, _) => {
+										splice_funding_failed.into_parts().0
+									},
+								};
+								if let Some(funding_info) = funding_info {
+									self.pending_events.lock().unwrap().push_back((
+										events::Event::DiscardFunding {
+											channel_id: *channel_id,
+											funding_info,
+										},
+										None,
+									));
+								}
 							},
 						}
 
