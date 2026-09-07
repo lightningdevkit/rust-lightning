@@ -38,6 +38,12 @@ function PIN_RELEASE_DEPS {
 	# Starting with version 0.2.184, the `libc` crate has an MSRV of rustc 1.65
 	[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p libc --precise 0.2.183 --verbose
 
+	# Starting with version 1.4.1, the `cc` crate has an MSRV of rustc 1.64
+	[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p cc --precise "1.4.0" --verbose
+
+	# Starting with version 0.1.10, the `find-msvc-tools` crate has an MSRV of rustc 1.64
+	[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p find-msvc-tools --precise "0.1.9" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
@@ -90,6 +96,8 @@ pushd lightning-tests
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p proc-macro2 --precise "1.0.103" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 71 ] && cargo update -p unicode-ident --precise 1.0.22
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p libc --precise 0.2.183 --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p cc --precise "1.4.0" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p find-msvc-tools --precise "0.1.9" --verbose
 cargo test
 popd
 
@@ -169,6 +177,8 @@ pushd no-std-check
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p ryu --precise "1.0.20" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 71 ] && cargo update -p unicode-ident --precise "1.0.22" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p libc --precise "0.2.183" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p cc --precise "1.4.0" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p find-msvc-tools --precise "0.1.9" --verbose
 cargo check --verbose --color always
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
