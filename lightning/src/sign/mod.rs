@@ -56,6 +56,7 @@ use crate::ln::script::ShutdownScript;
 use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::types::features::ChannelTypeFeatures;
 use crate::types::payment::PaymentPreimage;
+use crate::util::logger::Logger;
 use crate::util::native_async::MaybeSend;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::transaction_utils;
@@ -786,6 +787,11 @@ pub trait ChannelSigner {
 	/// Policy checks should be implemented in this function, including checking the amount
 	/// sent to us and checking the HTLCs.
 	///
+	/// Before using `channel_parameters` for validation, implementations of a validating
+	/// signer must verify that it matches the trusted channel state they maintain, including the
+	/// funding keys, value, and outpoint. A validating signer must not trust parameters supplied
+	/// by an untrusted caller.
+	///
 	/// The preimages of outbound HTLCs that were fulfilled since the last commitment are provided.
 	/// A validating signer should ensure that an HTLC output is removed only when the matching
 	/// preimage is provided, or when the value to holder is restored.
@@ -797,8 +803,9 @@ pub trait ChannelSigner {
 	/// closed. If you wish to make this operation asynchronous, you should instead return `Ok(())`
 	/// and pause future signing operations until this validation completes.
 	fn validate_holder_commitment(
-		&self, holder_tx: &HolderCommitmentTransaction,
-		outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()>;
 
 	/// Validate the counterparty's revocation.
@@ -1084,7 +1091,7 @@ impl<T: OutputSpender + ?Sized, O: Deref<Target = T>> OutputSpender for O {
 ///
 /// This is not exported to bindings users as it is not intended for public consumption.
 #[doc(hidden)]
-pub type DynSignerProvider = dyn SignerProvider<EcdsaSigner = InMemorySigner>;
+pub type DynSignerProvider<L> = dyn SignerProvider<EcdsaSigner = InMemorySigner<L>>;
 
 /// A trait that can return signer instances for individual channels.
 ///
@@ -1274,7 +1281,7 @@ pub fn compute_funding_key_tweak(
 ///
 /// This implementation performs no policy checks and is insufficient by itself as
 /// a secure external signer.
-pub struct InMemorySigner {
+pub struct InMemorySigner<L: Logger> {
 	/// Holder secret key in the 2-of-2 multisig script of a channel. This key also backs the
 	/// holder's anchor output in a commitment transaction, if one is present.
 	funding_key: sealed::MaybeTweakedSecretKey,
@@ -1298,9 +1305,11 @@ pub struct InMemorySigner {
 	channel_keys_id: [u8; 32],
 	/// A source of random bytes.
 	entropy_source: RandomBytes,
+	/// A logger.
+	logger: L,
 }
 
-impl PartialEq for InMemorySigner {
+impl<L: Logger> PartialEq for InMemorySigner<L> {
 	fn eq(&self, other: &Self) -> bool {
 		self.funding_key == other.funding_key
 			&& self.revocation_base_key == other.revocation_base_key
@@ -1314,7 +1323,7 @@ impl PartialEq for InMemorySigner {
 	}
 }
 
-impl Clone for InMemorySigner {
+impl<L: Logger + Clone> Clone for InMemorySigner<L> {
 	fn clone(&self) -> Self {
 		Self {
 			funding_key: self.funding_key.clone(),
@@ -1327,18 +1336,19 @@ impl Clone for InMemorySigner {
 			commitment_seed: self.commitment_seed.clone(),
 			channel_keys_id: self.channel_keys_id,
 			entropy_source: RandomBytes::new(self.get_secure_random_bytes()),
+			logger: self.logger.clone(),
 		}
 	}
 }
 
-impl InMemorySigner {
+impl<L: Logger> InMemorySigner<L> {
 	#[cfg(any(feature = "_test_utils", test))]
 	pub fn new(
 		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
 		payment_key_v2: SecretKey, v2_remote_key_derivation: bool,
 		delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey, commitment_seed: [u8; 32],
-		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
-	) -> InMemorySigner {
+		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32], logger: L,
+	) -> InMemorySigner<L> {
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
@@ -1350,6 +1360,7 @@ impl InMemorySigner {
 			commitment_seed,
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
+			logger,
 		}
 	}
 
@@ -1358,8 +1369,8 @@ impl InMemorySigner {
 		funding_key: SecretKey, revocation_base_key: SecretKey, payment_key_v1: SecretKey,
 		payment_key_v2: SecretKey, v2_remote_key_derivation: bool,
 		delayed_payment_base_key: SecretKey, htlc_base_key: SecretKey, commitment_seed: [u8; 32],
-		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32],
-	) -> InMemorySigner {
+		channel_keys_id: [u8; 32], rand_bytes_unique_start: [u8; 32], logger: L,
+	) -> InMemorySigner<L> {
 		InMemorySigner {
 			funding_key: sealed::MaybeTweakedSecretKey::from(funding_key),
 			revocation_base_key,
@@ -1371,6 +1382,7 @@ impl InMemorySigner {
 			commitment_seed,
 			channel_keys_id,
 			entropy_source: RandomBytes::new(rand_bytes_unique_start),
+			logger,
 		}
 	}
 
@@ -1540,13 +1552,13 @@ impl InMemorySigner {
 	}
 }
 
-impl EntropySource for InMemorySigner {
+impl<L: Logger> EntropySource for InMemorySigner<L> {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		self.entropy_source.get_secure_random_bytes()
 	}
 }
 
-impl ChannelSigner for InMemorySigner {
+impl<L: Logger> ChannelSigner for InMemorySigner<L> {
 	fn get_per_commitment_point(
 		&self, idx: u64, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<PublicKey, ()> {
@@ -1561,9 +1573,102 @@ impl ChannelSigner for InMemorySigner {
 	}
 
 	fn validate_holder_commitment(
-		&self, _holder_tx: &HolderCommitmentTransaction,
-		_outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_commitment_tx: &HolderCommitmentTransaction,
+		_outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()> {
+		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
+		let funding_pubkey = funding_key.public_key(secp_ctx);
+		let counterparty_funding_pubkey =
+			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
+		let funding_script =
+			make_funding_redeemscript(&funding_pubkey, &counterparty_funding_pubkey);
+		let channel_value_satoshis = channel_parameters.channel_value_satoshis;
+		let counterparty_selected_delay = channel_parameters
+			.counterparty_parameters
+			.as_ref()
+			.expect(MISSING_PARAMS_ERR)
+			.selected_contest_delay;
+		let channel_type = &channel_parameters.channel_type_features;
+		let commitment_txid = {
+			let trusted_tx = holder_commitment_tx.trust();
+			let bitcoin_tx = trusted_tx.built_transaction();
+			if bitcoin_tx.transaction.output.is_empty() {
+				log_error!(self.logger, "Commitment tx from peer has 0 outputs");
+				return Err(());
+			}
+
+			let sighash = bitcoin_tx.get_sighash_all(&funding_script, channel_value_satoshis);
+
+			log_trace!(self.logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
+				log_bytes!(holder_commitment_tx.counterparty_sig.serialize_compact()[..]),
+				log_bytes!(counterparty_funding_pubkey.serialize()),
+				bitcoin::consensus::encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(sighash[..]), bitcoin::consensus::encode::serialize_hex(&funding_script),
+			);
+			if let Err(_) = secp_ctx.verify_ecdsa(
+				&sighash,
+				&holder_commitment_tx.counterparty_sig,
+				&counterparty_funding_pubkey,
+			) {
+				log_error!(self.logger, "Invalid commitment tx signature from peer");
+				return Err(());
+			}
+			bitcoin_tx.txid
+		};
+
+		let holder_keys = holder_commitment_tx.trust().keys();
+		for (htlc, counterparty_sig) in holder_commitment_tx
+			.nondust_htlcs()
+			.iter()
+			.zip(holder_commitment_tx.counterparty_htlc_sigs.iter())
+		{
+			assert!(htlc.transaction_output_index.is_some());
+			let htlc_tx = chan_utils::build_htlc_transaction(
+				&commitment_txid,
+				holder_commitment_tx.negotiated_feerate_per_kw(),
+				counterparty_selected_delay,
+				&htlc,
+				channel_type,
+				&holder_keys.broadcaster_delayed_payment_key,
+				&holder_keys.revocation_key,
+			);
+
+			let htlc_redeemscript =
+				chan_utils::get_htlc_redeemscript(&htlc, channel_type, &holder_keys);
+			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
+				|| channel_type.supports_anchor_zero_fee_commitments()
+			{
+				EcdsaSighashType::SinglePlusAnyoneCanPay
+			} else {
+				EcdsaSighashType::All
+			};
+			let htlc_sighash = hash_to_message!(
+				&sighash::SighashCache::new(&htlc_tx)
+					.p2wsh_signature_hash(
+						0,
+						&htlc_redeemscript,
+						htlc.to_bitcoin_amount(),
+						htlc_sighashtype
+					)
+					.unwrap()[..]
+			);
+			log_trace!(self.logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
+				log_bytes!(counterparty_sig.serialize_compact()[..]),
+				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
+				bitcoin::consensus::encode::serialize_hex(&htlc_tx),
+				log_bytes!(htlc_sighash[..]),
+				bitcoin::consensus::encode::serialize_hex(&htlc_redeemscript),
+			);
+			if let Err(_) = secp_ctx.verify_ecdsa(
+				&htlc_sighash,
+				&counterparty_sig,
+				&holder_keys.countersignatory_htlc_key.to_public_key(),
+			) {
+				log_error!(self.logger, "Invalid HTLC tx signature from peer");
+				return Err(());
+			}
+		}
 		Ok(())
 	}
 
@@ -1604,7 +1709,7 @@ impl ChannelSigner for InMemorySigner {
 const MISSING_PARAMS_ERR: &'static str =
 	"ChannelTransactionParameters must be populated before signing operations";
 
-impl EcdsaChannelSigner for InMemorySigner {
+impl<L: Logger> EcdsaChannelSigner for InMemorySigner<L> {
 	fn sign_counterparty_commitment(
 		&self, channel_parameters: &ChannelTransactionParameters,
 		commitment_tx: &CommitmentTransaction, _inbound_htlc_preimages: Vec<PaymentPreimage>,
@@ -1980,7 +2085,7 @@ impl EcdsaChannelSigner for InMemorySigner {
 ///
 /// Note that switching between this struct and [`PhantomKeysManager`] will invalidate any
 /// previously issued invoices and attempts to pay previous invoices will fail.
-pub struct KeysManager {
+pub struct KeysManager<L: Logger> {
 	secp_ctx: Secp256k1<secp256k1::All>,
 	node_secret: SecretKey,
 	node_id: PublicKey,
@@ -2002,9 +2107,10 @@ pub struct KeysManager {
 	seed: [u8; 32],
 	starting_time_secs: u64,
 	starting_time_nanos: u32,
+	logger: L,
 }
 
-impl KeysManager {
+impl<L: Logger> KeysManager<L> {
 	/// Constructs a [`KeysManager`] from a 32-byte seed. If the seed is in some way biased (e.g.,
 	/// your CSRNG is busted) this may panic (but more importantly, you will possibly lose funds).
 	/// `starting_time` isn't strictly required to actually be a time, but it must absolutely,
@@ -2029,7 +2135,7 @@ impl KeysManager {
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	pub fn new(
 		seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32,
-		v2_remote_key_derivation: bool,
+		v2_remote_key_derivation: bool, logger: L,
 	) -> Self {
 		// Constants for key derivation path indices used in this function.
 		const NODE_SECRET_INDEX: ChildNumber = ChildNumber::Hardened { index: 0 };
@@ -2122,6 +2228,7 @@ impl KeysManager {
 					seed: *seed,
 					starting_time_secs,
 					starting_time_nanos,
+					logger,
 				};
 				let secp_seed = res.get_secure_random_bytes();
 				res.secp_ctx.seeded_randomize(&secp_seed);
@@ -2180,9 +2287,11 @@ impl KeysManager {
 			.expect("Your RNG is busted")
 			.private_key
 	}
+}
 
+impl<L: Logger + Clone> KeysManager<L> {
 	/// Derive an old [`EcdsaChannelSigner`] containing per-channel secrets based on a key derivation parameters.
-	pub fn derive_channel_keys(&self, params: &[u8; 32]) -> InMemorySigner {
+	pub fn derive_channel_keys(&self, params: &[u8; 32]) -> InMemorySigner<L> {
 		let chan_id = u64::from_be_bytes(params[0..8].try_into().unwrap());
 		let mut unique_start = Sha256::engine();
 		unique_start.input(params);
@@ -2240,6 +2349,7 @@ impl KeysManager {
 			commitment_seed,
 			params.clone(),
 			prng_seed,
+			self.logger.clone(),
 		)
 	}
 
@@ -2254,7 +2364,7 @@ impl KeysManager {
 	pub fn sign_spendable_outputs_psbt<C: Signing>(
 		&self, descriptors: &[&SpendableOutputDescriptor], mut psbt: Psbt, secp_ctx: &Secp256k1<C>,
 	) -> Result<Psbt, ()> {
-		let mut keys_cache: Option<(InMemorySigner, [u8; 32])> = None;
+		let mut keys_cache: Option<(InMemorySigner<L>, [u8; 32])> = None;
 		for outp in descriptors {
 			let get_input_idx = |outpoint: &OutPoint| {
 				psbt.unsigned_tx
@@ -2363,13 +2473,13 @@ impl KeysManager {
 	}
 }
 
-impl EntropySource for KeysManager {
+impl<L: Logger> EntropySource for KeysManager<L> {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		self.entropy_source.get_secure_random_bytes()
 	}
 }
 
-impl NodeSigner for KeysManager {
+impl<L: Logger> NodeSigner for KeysManager<L> {
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		match recipient {
 			Recipient::Node => Ok(self.node_id.clone()),
@@ -2432,7 +2542,7 @@ impl NodeSigner for KeysManager {
 	}
 }
 
-impl OutputSpender for KeysManager {
+impl<L: Logger + Clone> OutputSpender for KeysManager<L> {
 	/// Creates a [`Transaction`] which spends the given descriptors to the given outputs, plus an
 	/// output to the given change destination (if sufficient change value remains).
 	///
@@ -2471,8 +2581,8 @@ impl OutputSpender for KeysManager {
 	}
 }
 
-impl SignerProvider for KeysManager {
-	type EcdsaSigner = InMemorySigner;
+impl<L: Logger + Clone> SignerProvider for KeysManager<L> {
+	type EcdsaSigner = InMemorySigner<L>;
 
 	fn generate_channel_keys_id(&self, _inbound: bool, user_channel_id: u128) -> [u8; 32] {
 		let child_idx = self.channel_child_index.fetch_add(1, Ordering::AcqRel);
@@ -2524,23 +2634,23 @@ impl SignerProvider for KeysManager {
 //
 /// Switching between this struct and [`KeysManager`] will invalidate any previously issued
 /// invoices and attempts to pay previous invoices will fail.
-pub struct PhantomKeysManager {
+pub struct PhantomKeysManager<L: Logger> {
 	#[cfg(test)]
-	pub(crate) inner: KeysManager,
+	pub(crate) inner: KeysManager<L>,
 	#[cfg(not(test))]
-	inner: KeysManager,
+	inner: KeysManager<L>,
 	inbound_payment_key: ExpandedKey,
 	phantom_secret: SecretKey,
 	phantom_node_id: PublicKey,
 }
 
-impl EntropySource for PhantomKeysManager {
+impl<L: Logger> EntropySource for PhantomKeysManager<L> {
 	fn get_secure_random_bytes(&self) -> [u8; 32] {
 		self.inner.get_secure_random_bytes()
 	}
 }
 
-impl NodeSigner for PhantomKeysManager {
+impl<L: Logger> NodeSigner for PhantomKeysManager<L> {
 	fn get_node_id(&self, recipient: Recipient) -> Result<PublicKey, ()> {
 		match recipient {
 			Recipient::Node => self.inner.get_node_id(Recipient::Node),
@@ -2599,7 +2709,7 @@ impl NodeSigner for PhantomKeysManager {
 	}
 }
 
-impl OutputSpender for PhantomKeysManager {
+impl<L: Logger + Clone> OutputSpender for PhantomKeysManager<L> {
 	/// See [`OutputSpender::spend_spendable_outputs`] and [`KeysManager::spend_spendable_outputs`]
 	/// for documentation on this method.
 	fn spend_spendable_outputs(
@@ -2618,8 +2728,8 @@ impl OutputSpender for PhantomKeysManager {
 	}
 }
 
-impl SignerProvider for PhantomKeysManager {
-	type EcdsaSigner = InMemorySigner;
+impl<L: Logger + Clone> SignerProvider for PhantomKeysManager<L> {
+	type EcdsaSigner = InMemorySigner<L>;
 
 	fn generate_channel_keys_id(&self, inbound: bool, user_channel_id: u128) -> [u8; 32] {
 		self.inner.generate_channel_keys_id(inbound, user_channel_id)
@@ -2638,7 +2748,7 @@ impl SignerProvider for PhantomKeysManager {
 	}
 }
 
-impl PhantomKeysManager {
+impl<L: Logger> PhantomKeysManager<L> {
 	/// Constructs a [`PhantomKeysManager`] given a 32-byte seed and an additional `cross_node_seed`
 	/// that is shared across all nodes that intend to participate in [phantom node payments]
 	/// together.
@@ -2652,13 +2762,14 @@ impl PhantomKeysManager {
 	/// [phantom node payments]: PhantomKeysManager
 	pub fn new(
 		seed: &[u8; 32], starting_time_secs: u64, starting_time_nanos: u32,
-		cross_node_seed: &[u8; 32], v2_remote_key_derivation: bool,
+		cross_node_seed: &[u8; 32], v2_remote_key_derivation: bool, logger: L,
 	) -> Self {
 		let inner = KeysManager::new(
 			seed,
 			starting_time_secs,
 			starting_time_nanos,
 			v2_remote_key_derivation,
+			logger,
 		);
 		let (inbound_key, phantom_key) = hkdf_extract_expand_twice(
 			b"LDK Inbound and Phantom Payment Key Expansion",
@@ -2674,11 +2785,6 @@ impl PhantomKeysManager {
 		}
 	}
 
-	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
-	pub fn derive_channel_keys(&self, params: &[u8; 32]) -> InMemorySigner {
-		self.inner.derive_channel_keys(params)
-	}
-
 	/// Gets the "node_id" secret key used to sign gossip announcements, decode onion data, etc.
 	pub fn get_node_secret_key(&self) -> SecretKey {
 		self.inner.get_node_secret_key()
@@ -2688,6 +2794,13 @@ impl PhantomKeysManager {
 	/// last-hop onion data, etc.
 	pub fn get_phantom_node_secret_key(&self) -> SecretKey {
 		self.phantom_secret
+	}
+}
+
+impl<L: Logger + Clone> PhantomKeysManager<L> {
+	/// See [`KeysManager::derive_channel_keys`] for documentation on this method.
+	pub fn derive_channel_keys(&self, params: &[u8; 32]) -> InMemorySigner<L> {
+		self.inner.derive_channel_keys(params)
 	}
 }
 
@@ -2792,6 +2905,7 @@ fn sweep_weight_estimate_accounts_for_to_self_delay() {
 #[cfg(ldk_bench)]
 pub mod benches {
 	use crate::sign::{EntropySource, KeysManager};
+	use crate::util::test_utils::TestLogger;
 	use bitcoin::constants::genesis_block;
 	use bitcoin::Network;
 	use std::sync::mpsc::TryRecvError;
@@ -2804,8 +2918,13 @@ pub mod benches {
 	pub fn bench_get_secure_random_bytes(bench: &mut Criterion) {
 		let seed = [0u8; 32];
 		let now = Duration::from_secs(genesis_block(Network::Testnet).header.time as u64);
-		let keys_manager =
-			Arc::new(KeysManager::new(&seed, now.as_secs(), now.subsec_micros(), true));
+		let keys_manager = Arc::new(KeysManager::new(
+			&seed,
+			now.as_secs(),
+			now.subsec_micros(),
+			true,
+			TestLogger::new(),
+		));
 
 		let mut handles = Vec::new();
 		let mut stops = Vec::new();

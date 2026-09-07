@@ -43,8 +43,9 @@ use bitcoin::secp256k1::{PublicKey, SecretKey};
 /// Initial value for revoked commitment downward counter
 pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 
-/// An implementation of Sign that enforces some policy checks.  The current checks
-/// are an incomplete set.  They include:
+/// An implementation of ChannelSigner that enforces some policy checks in addition to checking
+/// counterparty signatures on the commitment and HTLC transactions. The current policy
+/// checks are an incomplete set. They include:
 ///
 /// - When signing, the holder transaction has not been revoked
 /// - When revoking, the holder transaction has not been signed
@@ -56,9 +57,6 @@ pub const INITIAL_REVOKED_COMMITMENT_NUMBER: u64 = 1 << 48;
 ///
 /// Eventually we will probably want to expose a variant of this which would essentially
 /// be what you'd want to run on a hardware wallet.
-///
-/// Note that counterparty signatures on the holder transaction are not checked, but it should
-/// be in a complete implementation.
 ///
 /// Note that before we do so we should ensure its serialization format has backwards- and
 /// forwards-compatibility prefix/suffixes!
@@ -210,8 +208,9 @@ impl ChannelSigner for TestChannelSigner {
 	}
 
 	fn validate_holder_commitment(
-		&self, holder_tx: &HolderCommitmentTransaction,
-		_outbound_htlc_preimages: Vec<PaymentPreimage>,
+		&self, channel_parameters: &ChannelTransactionParameters,
+		holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()> {
 		let mut state = self.state.lock().unwrap();
 		let idx = holder_tx.commitment_number();
@@ -223,6 +222,14 @@ impl ChannelSigner for TestChannelSigner {
 				state.last_holder_commitment
 			);
 		}
+
+		self.inner.validate_holder_commitment(
+			channel_parameters,
+			holder_tx,
+			outbound_htlc_preimages,
+			secp_ctx,
+		)?;
+
 		state.last_holder_commitment = idx;
 		Ok(())
 	}

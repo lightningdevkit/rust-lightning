@@ -1322,6 +1322,7 @@ mod tests {
 	#[rustfmt::skip]
 	fn test_broadcast_height() {
 		let secp_ctx = Secp256k1::new();
+		let logger = TestLogger::new();
 		let signer = InMemorySigner::new(
 			SecretKey::from_slice(&[41; 32]).unwrap(),
 			SecretKey::from_slice(&[41; 32]).unwrap(),
@@ -1333,6 +1334,7 @@ mod tests {
 			[41; 32],
 			[0; 32],
 			[0; 32],
+			&logger,
 		);
 		let counterparty_pubkeys = ChannelPublicKeys {
 			funding_pubkey: PublicKey::from_secret_key(
@@ -1415,8 +1417,6 @@ mod tests {
 
 		let fee_estimator = TestFeeEstimator::new(253);
 		let fee_estimator = LowerBoundedFeeEstimator::new(&fee_estimator);
-		let logger = TestLogger::new();
-
 		// Request claiming of each HTLC on the holder's commitment, with current block height 1.
 		let holder_commit = tx_handler.current_holder_commitment_tx();
 		let holder_commit_txid = holder_commit.trust().txid();

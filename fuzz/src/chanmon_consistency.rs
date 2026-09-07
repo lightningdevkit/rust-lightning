@@ -764,6 +764,7 @@ struct KeyProvider {
 	node_secret: SecretKey,
 	rand_bytes_id: atomic::AtomicU32,
 	enforcement_states: Mutex<HashMap<[u8; 32], Arc<Mutex<EnforcementState>>>>,
+	logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 }
 
 impl EntropySource for KeyProvider {
@@ -862,6 +863,7 @@ impl SignerProvider for KeyProvider {
 			[id, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 9, self.node_secret[31]],
 			channel_keys_id,
 			channel_keys_id,
+			Arc::clone(&self.logger),
 		);
 		let revoked_commitment = self.make_enforcement_state_cell(keys.commitment_seed);
 		let keys = DynSigner::new(keys);
@@ -1162,6 +1164,7 @@ impl<'a> HarnessNode<'a> {
 			node_secret,
 			rand_bytes_id: atomic::AtomicU32::new(0),
 			enforcement_states: Mutex::new(new_hash_map()),
+			logger: Arc::clone(&logger),
 		});
 		let persister = Self::build_persister(persistence_style);
 		let monitor = Self::build_chain_monitor(

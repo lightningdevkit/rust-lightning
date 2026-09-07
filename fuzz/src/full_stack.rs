@@ -388,6 +388,7 @@ struct KeyProvider {
 	counter: AtomicU64,
 	signer_state: RefCell<HashMap<u8, (bool, Arc<Mutex<EnforcementState>>)>>,
 	rng_output: RefCell<[u8; 32]>,
+	logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 }
 
 impl EntropySource for KeyProvider {
@@ -487,7 +488,19 @@ impl SignerProvider for KeyProvider {
 		f = key;
 		// We leave both the v1 and v2 derivation to_remote keys the same as there's not any real
 		// reason to fuzz differences here, and it keeps us consistent with past behavior.
-		let signer = InMemorySigner::new(a, b, c, c, true, d, e, f, keys_id, keys_id);
+		let signer = InMemorySigner::new(
+			a,
+			b,
+			c,
+			c,
+			true,
+			d,
+			e,
+			f,
+			keys_id,
+			keys_id,
+			Arc::clone(&self.logger),
+		);
 
 		TestChannelSigner::new_with_revoked(DynSigner::new(signer), state, false, false)
 	}
@@ -591,6 +604,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 		counter: AtomicU64::new(0),
 		signer_state: RefCell::new(new_hash_map()),
 		rng_output: RefCell::new([42; 32]),
+		logger: Arc::clone(logger),
 	});
 
 	let monitor = Arc::new(chainmonitor::ChainMonitor::new(

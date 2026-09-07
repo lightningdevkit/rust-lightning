@@ -7094,7 +7094,10 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 #[cfg(test)]
 pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
-	channel_id: ChannelId, wrap_signer: impl FnOnce(crate::sign::InMemorySigner) -> S,
+	channel_id: ChannelId,
+	wrap_signer: impl FnOnce(
+		crate::sign::InMemorySigner<crate::sync::Arc<crate::util::test_utils::TestLogger>>,
+	) -> S,
 ) -> ChannelMonitor<S> {
 	use crate::ln::chan_utils::{ChannelPublicKeys, CounterpartyChannelTransactionParameters};
 	use crate::sign::{ChannelSigner, InMemorySigner};
@@ -7114,6 +7117,7 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 		[41; 32],
 		[0; 32],
 		[0; 32],
+		crate::sync::Arc::new(crate::util::test_utils::TestLogger::new()),
 	);
 	let counterparty_pubkeys = ChannelPublicKeys {
 		funding_pubkey: dummy_key,

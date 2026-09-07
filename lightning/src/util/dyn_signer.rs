@@ -1,6 +1,7 @@
 //! A dynamically dispatched signer
 
 use crate::prelude::*;
+use crate::sync::Arc;
 
 use core::any::Any;
 
@@ -18,6 +19,8 @@ use crate::sign::{EntropySource, HTLCDescriptor, OutputSpender, PhantomKeysManag
 use crate::sign::{
 	NodeSigner, PeerStorageKey, Recipient, SignerProvider, SpendableOutputDescriptor,
 };
+use crate::util::logger::Logger;
+use crate::util::test_utils::TestLogger;
 use bitcoin;
 use bitcoin::absolute::LockTime;
 use bitcoin::secp256k1::All;
@@ -101,8 +104,10 @@ delegate!(DynSigner, ChannelSigner,
 	) -> Result<PublicKey, ()>,
 	fn release_commitment_secret(, idx: u64) -> Result<[u8; 32], ()>,
 	fn validate_holder_commitment(,
+		channel_parameters: &ChannelTransactionParameters,
 		holder_tx: &HolderCommitmentTransaction,
-		preimages: Vec<PaymentPreimage>
+		preimages: Vec<PaymentPreimage>,
+		secp_ctx: &Secp256k1<secp256k1::All>
 	) -> Result<(), ()>,
 	fn pubkeys(,
 		secp_ctx: &Secp256k1<secp256k1::All>
@@ -114,9 +119,9 @@ delegate!(DynSigner, ChannelSigner,
 	fn validate_counterparty_revocation(, idx: u64, secret: &SecretKey) -> Result<(), ()>
 );
 
-impl DynSignerTrait for InMemorySigner {}
+impl<L: Logger + Clone + Send + Sync + 'static> DynSignerTrait for InMemorySigner<L> {}
 
-impl InnerSign for InMemorySigner {
+impl<L: Logger + Clone + Send + Sync + 'static> InnerSign for InMemorySigner<L> {
 	fn box_clone(&self) -> Box<dyn InnerSign> {
 		Box::new(self.clone())
 	}
@@ -182,12 +187,12 @@ pub trait DynKeysInterfaceTrait:
 
 /// A dyn wrapper for PhantomKeysManager
 pub struct DynPhantomKeysInterface {
-	inner: Box<PhantomKeysManager>,
+	inner: Box<PhantomKeysManager<Arc<TestLogger>>>,
 }
 
 impl DynPhantomKeysInterface {
 	/// Create a new DynPhantomKeysInterface
-	pub fn new(inner: PhantomKeysManager) -> Self {
+	pub fn new(inner: PhantomKeysManager<Arc<TestLogger>>) -> Self {
 		DynPhantomKeysInterface { inner: Box::new(inner) }
 	}
 }

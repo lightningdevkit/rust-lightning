@@ -68,7 +68,7 @@ use bitcoin::network::Network;
 use bitcoin::policy::MAX_STANDARD_TX_WEIGHT;
 use bitcoin::pow::CompactTarget;
 use bitcoin::script::ScriptBuf;
-use bitcoin::secp256k1::{PublicKey, SecretKey};
+use bitcoin::secp256k1::{ecdsa::Signature, PublicKey, SecretKey};
 use bitcoin::transaction::{self, Version as TxVersion};
 use bitcoin::transaction::{Transaction, TxIn, TxOut};
 use bitcoin::OutPoint as BitcoinOutPoint;
@@ -84,6 +84,12 @@ use core::mem;
 use core::ops::Deref;
 
 pub const CHAN_CONFIRM_DEPTH: u32 = 10;
+
+pub fn corrupt_signature(signature: &mut Signature) {
+	let mut bytes = signature.serialize_compact();
+	bytes[0] ^= 1;
+	*signature = Signature::from_compact(&bytes).unwrap();
+}
 
 /// Mine the given transaction in the next block and then mine CHAN_CONFIRM_DEPTH - 1 blocks on
 /// top, giving the given transaction CHAN_CONFIRM_DEPTH confirmations.

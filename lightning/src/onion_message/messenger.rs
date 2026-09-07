@@ -185,8 +185,8 @@ impl<
 /// # }
 /// # let seed = [42u8; 32];
 /// # let time = Duration::from_secs(123456);
-/// # let keys_manager = KeysManager::new(&seed, time.as_secs(), time.subsec_nanos(), true);
-/// # let logger = Arc::new(FakeLogger {});
+/// # let logger = FakeLogger {};
+/// # let keys_manager = KeysManager::new(&seed, time.as_secs(), time.subsec_nanos(), true, &logger);
 /// # let node_secret = SecretKey::from_slice(&<Vec<u8>>::from_hex("0101010101010101010101010101010101010101010101010101010101010101").unwrap()[..]).unwrap();
 /// # let secp_ctx = Secp256k1::new();
 /// # let hop_node_id1 = PublicKey::from_secret_key(&secp_ctx, &node_secret);
@@ -201,7 +201,7 @@ impl<
 /// // Create the onion messenger. This must use the same `keys_manager` as is passed to your
 /// // ChannelManager.
 /// let onion_messenger = OnionMessenger::new(
-///     &keys_manager, &keys_manager, logger, &node_id_lookup, message_router,
+///     &keys_manager, &keys_manager, &logger, &node_id_lookup, message_router,
 ///     &offers_message_handler, &async_payments_message_handler, &dns_resolution_message_handler,
 ///     &custom_message_handler,
 /// );
@@ -2389,11 +2389,11 @@ impl<
 /// [`SimpleArcPeerManager`]: crate::ln::peer_handler::SimpleArcPeerManager
 #[cfg(not(c_bindings))]
 pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
-	Arc<KeysManager>,
-	Arc<KeysManager>,
+	Arc<KeysManager<Arc<L>>>,
+	Arc<KeysManager<Arc<L>>>,
 	Arc<L>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
-	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager>>>,
+	Arc<DefaultMessageRouter<Arc<NetworkGraph<Arc<L>>>, Arc<L>, Arc<KeysManager<Arc<L>>>>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	Arc<SimpleArcChannelManager<M, T, F, L>>,
 	IgnoringMessageHandler,
@@ -2410,11 +2410,11 @@ pub type SimpleArcOnionMessenger<M, T, F, L> = OnionMessenger<
 #[cfg(not(c_bindings))]
 pub type SimpleRefOnionMessenger<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, 'j, M, T, F, L> =
 	OnionMessenger<
-		&'a KeysManager,
-		&'a KeysManager,
+		&'a KeysManager<&'b L>,
+		&'a KeysManager<&'b L>,
 		&'b L,
 		&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>,
-		&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager>,
+		&'i DefaultMessageRouter<&'g NetworkGraph<&'b L>, &'b L, &'a KeysManager<&'b L>>,
 		&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>,
 		&'j SimpleRefChannelManager<'a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i, M, T, F, L>,
 		IgnoringMessageHandler,

@@ -81,6 +81,54 @@ use lightning_macros::xtest;
 use crate::ln::functional_test_utils::*;
 
 #[xtest(feature = "_externalize_tests")]
+pub fn test_invalid_holder_commitment_signatures() {
+	do_test_invalid_holder_commitment_signature(false);
+	do_test_invalid_holder_commitment_signature(true);
+}
+
+fn do_test_invalid_holder_commitment_signature(corrupt_htlc_signature: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	let payment_amount = 1_000_000;
+	let (route, payment_hash, _payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(&nodes[0], &nodes[1], payment_amount);
+	let onion = RecipientOnionFields::secret_only(payment_secret, payment_amount);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut update = get_htlc_update_msgs(&nodes[0], &node_id_1);
+	assert_eq!(update.update_add_htlcs.len(), 1);
+	assert_eq!(update.commitment_signed.len(), 1);
+	assert_eq!(update.commitment_signed[0].htlc_signatures.len(), 1);
+	nodes[1].node.handle_update_add_htlc(node_id_0, &update.update_add_htlcs[0]);
+	if corrupt_htlc_signature {
+		corrupt_signature(&mut update.commitment_signed[0].htlc_signatures[0]);
+	} else {
+		corrupt_signature(&mut update.commitment_signed[0].signature);
+	}
+	nodes[1].node.handle_commitment_signed(node_id_0, &update.commitment_signed[0]);
+
+	check_added_monitors(&nodes[1], 1);
+	let error_messages = check_closed_broadcast(&nodes[1], 1, true);
+	assert_eq!(error_messages.len(), 1);
+	assert_eq!(error_messages[0].data, "Failed to validate our commitment");
+	let reason =
+		ClosureReason::ProcessingError { err: "Failed to validate our commitment".to_owned() };
+	check_closed_events(
+		&nodes[1],
+		&[ExpectedCloseEvent::from_id_reason(channel_id, false, reason)],
+	);
+}
+
+#[xtest(feature = "_externalize_tests")]
 pub fn fake_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that payments get routed and transactions broadcast in semi-reasonable ways.
