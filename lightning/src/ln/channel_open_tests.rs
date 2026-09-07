@@ -1469,7 +1469,7 @@ pub fn test_duplicate_funding_err_in_funding() {
 	funding_created_msg.funding_output_index += 10;
 	nodes[1].node.handle_funding_created(node_c_id, &funding_created_msg);
 	get_err_msg(&nodes[1], &node_c_id);
-	let err = "Failed to validate our commitment".to_owned();
+	let err = "Received commitment failed validation".to_owned();
 	let reason = ClosureReason::ProcessingError { err };
 	let expected_closing = ExpectedCloseEvent::from_id_reason(real_channel_id, false, reason);
 	check_closed_events(&nodes[1], &[expected_closing]);
@@ -2511,9 +2511,9 @@ pub fn test_invalid_funding_signed_signature() {
 	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
 	assert!(nodes[0].node.list_channels().is_empty());
 	let error_message = get_err_msg(&nodes[0], &node_b_id);
-	assert_eq!(error_message.data, "Failed to validate our commitment");
+	assert_eq!(error_message.data, "Received commitment failed validation");
 	let reason =
-		ClosureReason::ProcessingError { err: "Failed to validate our commitment".to_owned() };
+		ClosureReason::ProcessingError { err: "Received commitment failed validation".to_owned() };
 	check_closed_events(&nodes[0], &[ExpectedCloseEvent::from_id_reason(channel_id, true, reason)]);
 }
 

@@ -4021,7 +4021,7 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 			if !self.funding().is_outbound() {
 				self.funding_mut().channel_transaction_parameters.funding_outpoint = None;
 			}
-			return Err(ChannelError::close("Failed to validate our commitment".to_owned()));
+			return Err(ChannelError::close("Received commitment failed validation".to_owned()));
 		}
 
 		// Now that we're past error-generating stuff, update our local state:
@@ -6110,7 +6110,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				commitment_data.outbound_htlc_preimages,
 				&self.secp_ctx,
 			)
-			.map_err(|_| ChannelError::close("Failed to validate our commitment".to_owned()))?;
+			.map_err(|_| ChannelError::close("Received commitment failed validation".to_owned()))?;
 
 		Ok((holder_commitment_tx, commitment_data.htlcs_included))
 	}
