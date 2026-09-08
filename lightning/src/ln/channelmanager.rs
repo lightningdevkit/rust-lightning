@@ -20344,6 +20344,12 @@ impl<
 								break;
 							}
 						}
+						// If we have a monitor event resolving this HTLC, don't fail it backwards and wait for
+						// the monitor event to drive its resolution instead.
+						let htlc_id = SentHTLCId::from_source(channel_htlc_source);
+						if monitor.pending_claim_event_id(htlc_id).is_some() {
+							found_htlc = true;
+						}
 						if !found_htlc {
 							// If we have some HTLCs in the channel which are not present in the newer
 							// ChannelMonitor, they have been removed and should be failed back to

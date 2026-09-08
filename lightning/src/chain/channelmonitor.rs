@@ -3351,7 +3351,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	}
 
 	/// Returns the ID of an unacked [`MonitorEvent`] that resolves the given outbound HTLC via claim,
-	/// if any.
+	/// if any. Such an HTLC may no longer appear in [`Self::get_all_current_outbound_htlcs`] if the
+	/// commitment transactions it was a part of have since been revoked.
 	pub(crate) fn pending_claim_event_id(&self, htlc_id: SentHTLCId) -> Option<u128> {
 		let us = self.inner.lock().unwrap();
 		us.pending_monitor_events.iter().chain(us.provided_monitor_events.iter()).find_map(
