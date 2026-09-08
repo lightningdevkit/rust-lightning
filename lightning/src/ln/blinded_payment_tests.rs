@@ -8,8 +8,8 @@
 // licenses.
 
 use crate::blinded_path::payment::{
-	BlindedPaymentPath, Bolt12RefundContext, DummyTlvs, ForwardNode, ForwardTlvs,
-	PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
+	BlindedPaymentPath, BlindedPaymentTlvs, Bolt12RefundContext, DummyTlvs, ForwardNode,
+	ForwardTlvs, PaymentConstraints, PaymentContext, PaymentForwardNode, PaymentRelay, ReceiveTlvs,
 	PAYMENT_PADDING_ROUND_OFF,
 };
 use crate::blinded_path::utils::is_padded;
@@ -32,6 +32,7 @@ use crate::offers::invoice::UnsignedBolt12Invoice;
 use crate::prelude::*;
 use crate::routing::router::{
 	BlindedTail, Path, Payee, PaymentParameters, Route, RouteHop, RouteParameters, TrampolineHop,
+	DEFAULT_PAYMENT_DUMMY_HOPS,
 };
 use crate::sign::{NodeSigner, PeerStorageKey, ReceiveAuthKey, Recipient};
 use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
@@ -267,6 +268,77 @@ fn one_hop_blinded_path_with_dummy_hops() {
 
 	do_pass_along_path(args);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+}
+
+/// Router-created dummy hops should not retain placeholder constraints. Each dummy hop should
+/// instead look like a real forwarding hop whose constraints are derived from its downstream hop
+/// and its own relay delta.
+#[test]
+fn router_derives_dummy_hop_constraints_from_downstream_hops() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	let mut paths = nodes[1]
+		.node
+		.test_create_blinded_payment_paths(
+			Some(5_000),
+			PaymentSecret([42; 32]),
+			PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+			3_600,
+		)
+		.unwrap();
+	assert_eq!(paths.len(), 1);
+
+	let mut path = paths.pop().unwrap();
+	let secp_ctx = Secp256k1::new();
+	let (forward_relay, forward_constraints) =
+		match path.decrypt_intro_payload(&nodes[0].keys_manager).unwrap().0 {
+			BlindedPaymentTlvs::Forward(tlvs) => (tlvs.payment_relay, tlvs.payment_constraints),
+			_ => panic!("Expected forward payload"),
+		};
+	path.advance_path_by_one(&nodes[0].keys_manager, &nodes[0].node, &secp_ctx).unwrap();
+
+	let mut dummy_hops = Vec::new();
+	for _ in 0..DEFAULT_PAYMENT_DUMMY_HOPS {
+		match path.decrypt_intro_payload(&nodes[1].keys_manager).unwrap().0 {
+			BlindedPaymentTlvs::Dummy(tlvs) => {
+				dummy_hops.push((tlvs.payment_relay, tlvs.payment_constraints))
+			},
+			_ => panic!("Expected dummy payload"),
+		}
+		path.advance_path_by_one(&nodes[1].keys_manager, &nodes[1].node, &secp_ctx).unwrap();
+	}
+
+	let receive_constraints = match path.decrypt_intro_payload(&nodes[1].keys_manager).unwrap().0 {
+		BlindedPaymentTlvs::Receive(tlvs) => tlvs.payment_constraints,
+		_ => panic!("Expected receive payload"),
+	};
+
+	let placeholder_constraints =
+		PaymentConstraints { max_cltv_expiry: u32::MAX, htlc_minimum_msat: 0 };
+	let mut downstream_constraints = receive_constraints;
+	// Dummy constraints are derived from the receive hop outward, so verify them from the last
+	// dummy hop back toward the introduction node.
+	for (payment_relay, payment_constraints) in dummy_hops.iter().rev() {
+		let expected_constraints = PaymentConstraints {
+			max_cltv_expiry: downstream_constraints
+				.max_cltv_expiry
+				.checked_add(payment_relay.cltv_expiry_delta as u32)
+				.unwrap(),
+			htlc_minimum_msat: downstream_constraints.htlc_minimum_msat,
+		};
+		assert_eq!(*payment_constraints, expected_constraints);
+		assert_ne!(*payment_constraints, placeholder_constraints);
+		downstream_constraints = *payment_constraints;
+	}
+	assert_eq!(
+		forward_constraints.max_cltv_expiry,
+		downstream_constraints.max_cltv_expiry + forward_relay.cltv_expiry_delta as u32
+	);
+	assert_ne!(forward_constraints, placeholder_constraints);
 }
 
 #[test]
