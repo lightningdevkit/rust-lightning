@@ -232,7 +232,7 @@ jobs:
   fuzz:
     runs-on: self-hosted
     env:
-      TOOLCHAIN: 1.75
+      TOOLCHAIN: stable
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4

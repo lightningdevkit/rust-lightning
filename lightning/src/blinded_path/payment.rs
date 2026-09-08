@@ -1575,6 +1575,7 @@ mod tests {
 			},
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 		let dummy_tlvs = [DummyTlvs::new(
@@ -1674,6 +1675,7 @@ mod tests {
 			payment_constraints: PaymentConstraints { max_cltv_expiry: 0, htlc_minimum_msat: 1 },
 			payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {
 				payment_metadata: None,
+				invoice_request: None,
 			}),
 		};
 		let dummy_tlvs = [

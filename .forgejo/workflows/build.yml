@@ -261,9 +261,9 @@ jobs:
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
-      - name: Install Rust 1.75 toolchain
+      - name: Install Rust stable toolchain
         run: |
-          rustup default 1.75
+          rustup default stable
       - name: Clone fuzzing corpus
         # Clone from this Forgejo instance (rather than the GitHub copy) so
         # that new entries are detected against the repository the corpus
