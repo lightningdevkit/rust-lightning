@@ -2939,7 +2939,7 @@ fn pay_for_bolt12_invoice_with_fresh_payment_id() {
 	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
 
 	route_bolt12_payment(bob, &[alice], &invoice);
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice, Some(50));
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -3023,7 +3023,7 @@ fn pay_for_bolt12_invoice_error_cases() {
 	);
 
 	route_bolt12_payment(bob, &[alice], &invoice);
-	claim_bolt12_payment(bob, &[alice], payment_context, &invoice);
+	claim_bolt12_payment(bob, &[alice], payment_context, &invoice, Some(50));
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
@@ -3069,9 +3069,10 @@ fn pay_for_bolt12_invoice_partial_amount() {
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&alice_id, &mut events);
 
-	// The HTLC carries the partial amount, not the full invoice amount.
+	// The HTLC carries the partial amount plus the blinded path's fees, not the full invoice
+	// amount.
 	if let crate::ln::msgs::MessageSendEvent::UpdateHTLCs { ref updates, .. } = ev {
-		assert_eq!(updates.update_add_htlcs[0].amount_msat, partial_amount);
+		assert_eq!(updates.update_add_htlcs[0].amount_msat, partial_amount + 25);
 	} else {
 		panic!("Expected UpdateHTLCs");
 	}
@@ -3145,14 +3146,14 @@ fn pay_for_bolt12_invoice_partial_amount_multi_payer() {
 	assert!(alice.node.get_and_clear_pending_events().is_empty());
 
 	// Carol pays the remaining half, completing the MPP. The recipient now emits PaymentClaimable
-	// for the full invoice amount.
+	// for the full invoice amount plus the fees both parts paid over her blinded path.
 	carol.node.pay_for_bolt12_invoice(&invoice, PaymentId([3; 32]), partial_params()).unwrap();
 	check_added_monitors(carol, 1);
 	let mut events = carol.node.get_and_clear_pending_msg_events();
 	assert_eq!(events.len(), 1);
 	let ev = remove_first_msg_event_to_node(&alice_id, &mut events);
 	let claimable = do_pass_along_path(
-		PassAlongPathArgs::new(carol, &[alice], invoice_amount, payment_hash, ev)
+		PassAlongPathArgs::new(carol, &[alice], invoice_amount + 20, payment_hash, ev)
 			.with_dummy_tlvs(&[DummyTlvs::default(); DEFAULT_PAYMENT_DUMMY_HOPS]),
 	)
 	.unwrap();
@@ -3165,7 +3166,7 @@ fn pay_for_bolt12_invoice_partial_amount_multi_payer() {
 	// Claiming releases a fulfill to each payer, and each payer sees PaymentSent.
 	alice.node.claim_funds(payment_preimage);
 	check_added_monitors(alice, 2);
-	expect_payment_claimed!(alice, payment_hash, invoice_amount);
+	expect_payment_claimed!(alice, payment_hash, invoice_amount + 20);
 
 	let mut fulfill_events = alice.node.get_and_clear_pending_msg_events();
 	assert_eq!(fulfill_events.len(), 2);

@@ -286,7 +286,10 @@ fn router_derives_dummy_hop_constraints_from_downstream_hops() {
 		.test_create_blinded_payment_paths(
 			Some(5_000),
 			PaymentSecret([42; 32]),
-			PaymentContext::Bolt12Refund(Bolt12RefundContext { payment_metadata: None }),
+			PaymentContext::Bolt12Refund(Bolt12RefundContext {
+				payment_metadata: None,
+				invoice_request: None,
+			}),
 			3_600,
 		)
 		.unwrap();
