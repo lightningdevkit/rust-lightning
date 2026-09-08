@@ -15933,6 +15933,13 @@ pub(super) fn channel_type_from_open_channel(
 			"Channel Type was not understood - we require static remote key".to_owned(),
 		));
 	}
+	if channel_type.requires_anchors_zero_fee_htlc_tx()
+		&& channel_type.requires_anchor_zero_fee_commitments()
+	{
+		return Err(ChannelError::close(
+			"Channel Type cannot require both anchor types".to_owned(),
+		));
+	}
 	// Make sure we support all of the features behind the channel type.
 	if channel_type.requires_unknown_bits_from(&our_supported_features) {
 		return Err(ChannelError::close("Channel Type contains unsupported features".to_owned()));
