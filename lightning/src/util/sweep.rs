@@ -1181,18 +1181,14 @@ mod tests {
 
 	struct DummyChangeDestSource;
 	impl ChangeDestinationSource for DummyChangeDestSource {
-		fn get_change_destination_script<'a>(
-			&'a self,
-		) -> AsyncResult<'a, ScriptBuf, ()> {
+		fn get_change_destination_script<'a>(&'a self) -> AsyncResult<'a, ScriptBuf, ()> {
 			Box::pin(core_future::ready(Ok(ScriptBuf::new())))
 		}
 	}
 
 	struct PendingKVStore;
 	impl KVStore for PendingKVStore {
-		fn read(
-			&self, _: &str, _: &str, _: &str,
-		) -> AsyncResult<'static, Vec<u8>, io::Error> {
+		fn read(&self, _: &str, _: &str, _: &str) -> AsyncResult<'static, Vec<u8>, io::Error> {
 			Box::pin(core_future::ready(Err(io::Error::new(io::ErrorKind::NotFound, ""))))
 		}
 		fn write(
@@ -1205,9 +1201,7 @@ mod tests {
 		) -> AsyncResult<'static, (), io::Error> {
 			Box::pin(core_future::ready(Ok(())))
 		}
-		fn list(
-			&self, _: &str, _: &str,
-		) -> AsyncResult<'static, Vec<String>, io::Error> {
+		fn list(&self, _: &str, _: &str) -> AsyncResult<'static, Vec<String>, io::Error> {
 			Box::pin(core_future::ready(Ok(Vec::new())))
 		}
 	}

@@ -624,9 +624,11 @@ where
 				.collect::<Vec<_>>();
 
 			// Prefer using non-Tor nodes with the most channels as the introduction node.
-			peer_info.sort_unstable_by(|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
-				a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
-			});
+			peer_info.sort_unstable_by(
+				|(_, a_tor_only, a_channels), (_, b_tor_only, b_channels)| {
+					a_tor_only.cmp(b_tor_only).then(a_channels.cmp(b_channels).reverse())
+				},
+			);
 
 			// Try to create paths from peer info, fall back to direct path if needed
 			peer_info
