@@ -794,7 +794,7 @@ where
 		&'a self, outpoint: OutPoint,
 	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a {
 		let prevtx = self.0.get_prevtx(outpoint);
-		Box::pin(async move { prevtx })
+		async move { prevtx }
 	}
 
 	fn get_change_script<'a>(
