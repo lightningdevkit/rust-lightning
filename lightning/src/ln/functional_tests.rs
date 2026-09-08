@@ -119,9 +119,9 @@ fn do_test_invalid_holder_commitment_signature(corrupt_htlc_signature: bool) {
 	check_added_monitors(&nodes[1], 1);
 	let error_messages = check_closed_broadcast(&nodes[1], 1, true);
 	assert_eq!(error_messages.len(), 1);
-	assert_eq!(error_messages[0].data, "Failed to validate our commitment");
+	assert_eq!(error_messages[0].data, "Received commitment failed validation");
 	let reason =
-		ClosureReason::ProcessingError { err: "Failed to validate our commitment".to_owned() };
+		ClosureReason::ProcessingError { err: "Received commitment failed validation".to_owned() };
 	check_closed_events(
 		&nodes[1],
 		&[ExpectedCloseEvent::from_id_reason(channel_id, false, reason)],

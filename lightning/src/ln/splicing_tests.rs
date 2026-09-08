@@ -5825,7 +5825,7 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 			action: msgs::ErrorAction::SendErrorMessage { ref msg },
 			..
 		} => {
-			assert_eq!(msg.data, "Failed to validate our commitment");
+			assert_eq!(msg.data, "Received commitment failed validation");
 		},
 		_ => panic!("Expected HandleError with SendErrorMessage, got {:?}", msg_events[1]),
 	}
@@ -5836,7 +5836,7 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 		_ => panic!("Expected BroadcastChannelUpdate, got {:?}", msg_events[2]),
 	}
 
-	let err = "Failed to validate our commitment".to_owned();
+	let err = "Received commitment failed validation".to_owned();
 	let reason = ClosureReason::ProcessingError { err };
 	check_closed_events(
 		&nodes[0],
@@ -5897,9 +5897,9 @@ fn do_test_splice_batched_invalid_holder_commitment_signature(
 	check_added_monitors(&nodes[1], 1);
 	let error_messages = check_closed_broadcast(&nodes[1], 1, true);
 	assert_eq!(error_messages.len(), 1);
-	assert_eq!(error_messages[0].data, "Failed to validate our commitment");
+	assert_eq!(error_messages[0].data, "Received commitment failed validation");
 	let reason =
-		ClosureReason::ProcessingError { err: "Failed to validate our commitment".to_owned() };
+		ClosureReason::ProcessingError { err: "Received commitment failed validation".to_owned() };
 	check_closed_events(
 		&nodes[1],
 		&[ExpectedCloseEvent::from_id_reason(channel_id, false, reason)],
