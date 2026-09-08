@@ -466,9 +466,19 @@ pub trait WalletSource {
 /// that would avoid conflicting double spends. If not enough UTXOs are available to do so,
 /// conflicting double spends may happen.
 ///
+/// Reservations of selected UTXOs are tracked in memory, so this wrapper is intended for a
+/// [`WalletSource`] whose wallet does not reserve UTXOs on its own. Wallets that do should
+/// implement [`CoinSelectionSource`] directly.
+///
+/// Selected UTXOs stay reserved until released with [`Wallet::release_utxos`]. This must be
+/// called with the inputs from [`Event::DiscardFunding`] once a transaction funded through this
+/// wallet will no longer be broadcast, such as when a splice negotiation fails.
+///
 /// For a synchronous version of this wrapper, see [`WalletSync`].
 ///
 /// This is not exported to bindings users as async is only supported in Rust.
+///
+/// [`Event::DiscardFunding`]: crate::events::Event::DiscardFunding
 // Note that updates to documentation on this struct should be copied to the synchronous version.
 pub struct Wallet<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend>
 where
@@ -476,9 +486,9 @@ where
 {
 	source: W,
 	logger: L,
-	// TODO: Do we care about cleaning this up once the UTXOs have a confirmed spend? We can do so
-	// by checking whether any UTXOs that exist in the map are no longer returned in
-	// `list_confirmed_utxos`.
+	// UTXOs previously selected, keyed to the claim they were selected for. Entries are only
+	// removed by `release_utxos`. Entries for spent UTXOs are harmless since they are never
+	// listed by `list_confirmed_utxos` again.
 	locked_utxos: Mutex<HashMap<OutPoint, Option<ClaimId>>>,
 }
 
@@ -490,6 +500,19 @@ where
 	/// of [`CoinSelectionSource`].
 	pub fn new(source: W, logger: L) -> Self {
 		Self { source, logger, locked_utxos: Mutex::new(new_hash_map()) }
+	}
+
+	/// Releases the given UTXOs so they may be selected again.
+	///
+	/// Call this with the inputs from [`Event::DiscardFunding`] once a transaction funded through
+	/// this wallet will no longer be broadcast, such as when a splice negotiation fails.
+	///
+	/// [`Event::DiscardFunding`]: crate::events::Event::DiscardFunding
+	pub fn release_utxos(&self, outpoints: &[OutPoint]) {
+		let mut locked_utxos = self.locked_utxos.lock().unwrap();
+		for outpoint in outpoints {
+			locked_utxos.remove(outpoint);
+		}
 	}
 
 	/// Performs coin selection on the set of UTXOs obtained from
@@ -816,7 +839,17 @@ where
 /// UTXOs that would avoid conflicting double spends. If not enough UTXOs are available to do so,
 /// conflicting double spends may happen.
 ///
+/// Reservations of selected UTXOs are tracked in memory, so this wrapper is intended for a
+/// [`WalletSourceSync`] whose wallet does not reserve UTXOs on its own. Wallets that do should
+/// implement [`CoinSelectionSourceSync`] directly.
+///
+/// Selected UTXOs stay reserved until released with [`WalletSync::release_utxos`]. This must be
+/// called with the inputs from [`Event::DiscardFunding`] once a transaction funded through this
+/// wallet will no longer be broadcast, such as when a splice negotiation fails.
+///
 /// For an asynchronous version of this wrapper, see [`Wallet`].
+///
+/// [`Event::DiscardFunding`]: crate::events::Event::DiscardFunding
 // Note that updates to documentation on this struct should be copied to the asynchronous version.
 pub struct WalletSync<W: Deref + MaybeSync + MaybeSend, L: Logger + MaybeSync + MaybeSend>
 where
@@ -832,6 +865,16 @@ where
 	/// Constructs a new [`WalletSync`] instance.
 	pub fn new(source: W, logger: L) -> Self {
 		Self { wallet: Wallet::new(WalletSourceSyncWrapper(source), logger) }
+	}
+
+	/// Releases the given UTXOs so they may be selected again.
+	///
+	/// Call this with the inputs from [`Event::DiscardFunding`] once a transaction funded through
+	/// this wallet will no longer be broadcast, such as when a splice negotiation fails.
+	///
+	/// [`Event::DiscardFunding`]: crate::events::Event::DiscardFunding
+	pub fn release_utxos(&self, outpoints: &[OutPoint]) {
+		self.wallet.release_utxos(outpoints)
 	}
 }
 

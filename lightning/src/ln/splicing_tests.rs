@@ -12,7 +12,7 @@
 use crate::chain::chaininterface::{FundingPurpose, TransactionType, FEERATE_FLOOR_SATS_PER_KW};
 use crate::chain::channelmonitor::{ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
-use crate::chain::{ChannelMonitorUpdateStatus, Confirm};
+use crate::chain::{ChannelMonitorUpdateStatus, ClaimId, Confirm};
 use crate::events::{
 	ClosureReason, Event, FundingInfo, HTLCHandlingFailureType, NegotiationFailureReason,
 };
@@ -41,6 +41,7 @@ use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
 use crate::util::test_channel_signer::SignerOp;
+use crate::util::test_utils::{TestLogger, TestWalletSource};
 use crate::util::wallet_utils::{
 	CoinSelection, CoinSelectionSourceSync, ConfirmedUtxo, Input, WalletSourceSync, WalletSync,
 };
@@ -16804,4 +16805,98 @@ fn test_stale_template_from_dropped_candidate_releases_only_its_own_input() {
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None).unwrap();
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+}
+
+/// Initiates a splice-in funded through `wallet`, then has the acceptor abort it during
+/// interactive-tx construction. Handles the resulting `DiscardFunding` event by releasing the
+/// discarded inputs back to `wallet`. Returns the contribution that was discarded.
+#[cfg(test)]
+fn fail_splice_in_with_tx_abort<'a, 'b, 'c, 'd>(
+	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
+	wallet: &WalletSync<Arc<TestWalletSource>, &'d TestLogger>, value_added: Amount,
+) -> FundingContribution {
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+
+	let funding_template = initiator.node.splice_channel(&channel_id, &node_id_acceptor).unwrap();
+	let funding_contribution =
+		funding_template.splice_in_sync(value_added, feerate, FeeRate::MAX, wallet).unwrap();
+	initiator
+		.node
+		.funding_contributed(&channel_id, &node_id_acceptor, funding_contribution.clone(), None)
+		.unwrap();
+
+	let _ = complete_splice_handshake(initiator, acceptor);
+	let tx_add_input =
+		get_event_msg!(initiator, MessageSendEvent::SendTxAddInput, node_id_acceptor);
+	acceptor.node.handle_tx_add_input(node_id_initiator, &tx_add_input);
+	let _ = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+
+	let tx_abort = msgs::TxAbort { channel_id, data: Vec::new() };
+	initiator.node.handle_tx_abort(node_id_acceptor, &tx_abort);
+	let (discarded_inputs, _) = expect_failed_rbf_events(
+		initiator,
+		&channel_id,
+		&funding_contribution,
+		NegotiationFailureReason::CounterpartyAborted { msg: UntrustedString(String::new()) },
+	);
+	let contributed_inputs =
+		funding_contribution.inputs().iter().map(|input| input.outpoint()).collect::<Vec<_>>();
+	assert_eq!(discarded_inputs, contributed_inputs);
+	wallet.release_utxos(&discarded_inputs);
+
+	let tx_abort = get_event_msg!(initiator, MessageSendEvent::SendTxAbort, node_id_acceptor);
+	acceptor.node.handle_tx_abort(node_id_initiator, &tx_abort);
+	let _ = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
+
+	funding_contribution
+}
+
+#[test]
+fn splice_abort_releases_wallet_utxos() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	// A single wallet UTXO, so every attempt below must be funded from the same one.
+	provide_utxo_reserves(&nodes, 1, Amount::from_sat(100_000));
+
+	// A single long-lived wallet, as a node would hold across all splices and claims.
+	let wallet = WalletSync::new(Arc::clone(&initiator.wallet_source), initiator.logger);
+	let splice_in_value = Amount::from_sat(50_000);
+
+	// Each aborted attempt releases its input via `DiscardFunding`, so the next attempt can
+	// select the same UTXO again.
+	let first =
+		fail_splice_in_with_tx_abort(initiator, acceptor, channel_id, &wallet, splice_in_value);
+	let second =
+		fail_splice_in_with_tx_abort(initiator, acceptor, channel_id, &wallet, splice_in_value);
+	assert_eq!(first.inputs().len(), 1);
+	assert_eq!(first.inputs(), second.inputs());
+
+	// The UTXO is likewise available to a claim, as the bump transaction handler would request
+	// it.
+	let claim_output = TxOut {
+		value: splice_in_value,
+		script_pubkey: initiator.wallet_source.get_change_script().unwrap(),
+	};
+	let claim_selection = wallet
+		.select_confirmed_utxos(
+			Some(ClaimId([42; 32])),
+			Vec::new(),
+			&[claim_output],
+			FEERATE_FLOOR_SATS_PER_KW,
+			u64::MAX,
+		)
+		.unwrap();
+	assert_eq!(claim_selection.confirmed_utxos, first.inputs());
 }
