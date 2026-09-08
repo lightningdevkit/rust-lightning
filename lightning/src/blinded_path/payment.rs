@@ -489,21 +489,28 @@ impl DummyTlvs {
 		Self { payment_relay, payment_constraints }
 	}
 
-	/// Builds a dummy-hop tail from the receive constraints outward.
+	/// Builds the TLVs for the `num_hops` dummy hops which sit immediately in front of the
+	/// receiving hop of a [`BlindedPaymentPath`], returned in path order.
 	///
-	/// Each dummy hop's constraints depend on the hop after it, so construction starts at the
-	/// receive hop and reverses the result into path order. Returns the dummy TLVs and the
-	/// upstream-most dummy constraints.
-	pub(crate) fn new_dummy_tail_from_receive_constraints<ES: EntropySource>(
-		num_hops: usize, receive_constraints: PaymentConstraints, _entropy_source: &ES,
+	/// `receive_constraints` must be the [`PaymentConstraints`] of that receiving hop. Along with
+	/// the TLVs, the [`PaymentConstraints`] which the hop preceding the dummy hops relays into are
+	/// returned, which the caller must use in place of `receive_constraints` when building that
+	/// hop.
+	///
+	/// Returns `Err(())` if the accumulated CLTV expiry would overflow.
+	pub fn new_dummy_tail_from_receive_constraints<ES: EntropySource>(
+		num_hops: usize, receive_constraints: PaymentConstraints, entropy_source: &ES,
 	) -> Result<(Vec<Self>, PaymentConstraints), ()> {
+		#[cfg(any(test, feature = "_externalize_tests"))]
+		let _ = entropy_source;
+
 		let mut dummy_tlvs = Vec::with_capacity(num_hops);
 		let mut last_payment_constraints = receive_constraints;
 		for _ in 0..num_hops {
 			#[cfg(any(test, feature = "_externalize_tests"))]
 			let payment_relay = Self::default_relay();
 			#[cfg(not(any(test, feature = "_externalize_tests")))]
-			let payment_relay = Self::random_relay(_entropy_source);
+			let payment_relay = Self::random_relay(entropy_source);
 
 			let payment_constraints =
 				Self::derive_payment_constraints(&payment_relay, last_payment_constraints)?;
