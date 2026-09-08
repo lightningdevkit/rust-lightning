@@ -44,6 +44,11 @@ fn test_quiescence_tie() {
 
 #[test]
 fn test_quiescence_shutdown_ignored() {
+	do_test_quiescence_shutdown_ignored(false);
+	do_test_quiescence_shutdown_ignored(true);
+}
+
+fn do_test_quiescence_shutdown_ignored(peer_stfu_received: bool) {
 	// Test that a shutdown sent/received during quiescence is ignored.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -61,6 +66,11 @@ fn test_quiescence_shutdown_ignored() {
 		);
 	} else {
 		panic!("Expected shutdown to be ignored while quiescent");
+	}
+
+	if peer_stfu_received {
+		let stfu = msgs::Stfu { channel_id: chan_id, initiator: false };
+		nodes[0].node.handle_stfu(nodes[1].node.get_our_node_id(), &stfu);
 	}
 
 	nodes[1].node.close_channel(&chan_id, &nodes[0].node.get_our_node_id()).unwrap();

@@ -13044,16 +13044,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 
 						let funding_txo_opt = chan.funding.get_funding_txo();
-						let res = chan.shutdown(
+						let (res, splice_funding_failed) = chan.shutdown(
 							&self.logger,
 							&self.signer_provider,
 							&peer_state.latest_features,
 							&msg,
 						);
-						let (shutdown, monitor_update_opt, htlcs, splice_funding_failed) =
-							try_channel_entry!(self, peer_state, res, chan_entry);
-						dropped_htlcs = htlcs;
-
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let mut pending_events = self.pending_events.lock().unwrap();
 							pending_events.extend(
@@ -13067,6 +13063,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								.map(|event| (event, None)),
 							);
 						}
+
+						let (shutdown, monitor_update_opt, htlcs) =
+							try_channel_entry!(self, peer_state, res, chan_entry);
+						dropped_htlcs = htlcs;
 
 						if let Some(msg) = shutdown {
 							// We can send the `shutdown` message before updating the `ChannelMonitor`

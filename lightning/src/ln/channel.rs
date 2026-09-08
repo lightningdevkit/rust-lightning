@@ -11545,19 +11545,20 @@ where
 	pub fn shutdown<L: Logger>(
 		&mut self, logger: &L, signer_provider: &SP, their_features: &InitFeatures,
 		msg: &msgs::Shutdown,
-	) -> Result<
-		(
-			Option<msgs::Shutdown>,
-			Option<ChannelMonitorUpdate>,
-			Vec<(HTLCSource, PaymentHash)>,
-			Option<SpliceFundingFailed>,
-		),
-		ChannelError,
-	> {
+	) -> (
+		Result<
+			(Option<msgs::Shutdown>, Option<ChannelMonitorUpdate>, Vec<(HTLCSource, PaymentHash)>),
+			ChannelError,
+		>,
+		Option<SpliceFundingFailed>,
+	) {
 		if self.context.channel_state.is_peer_disconnected() {
-			return Err(ChannelError::close(
-				"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
-			));
+			return (
+				Err(ChannelError::close(
+					"Peer sent shutdown when we needed a channel_reestablish".to_owned(),
+				)),
+				None,
+			);
 		}
 		let mut not_broadcasted_initial_funding =
 			matches!(self.context.channel_state, ChannelState::NegotiatingFunding(_));
@@ -11575,37 +11576,47 @@ where
 			// Spec says we should fail the connection, not the channel, but that's nonsense, there
 			// are plenty of reasons you may want to fail a channel pre-funding, and spec says you
 			// can do that via error message without getting a connection fail anyway...
-			return Err(ChannelError::close("Shutdown before funding was broadcasted".to_owned()));
+			return (
+				Err(ChannelError::close("Shutdown before funding was broadcasted".to_owned())),
+				None,
+			);
 		}
 		for htlc in self.context.pending_inbound_htlcs.iter() {
 			if let InboundHTLCState::RemoteAnnounced(_) = htlc.state {
-				return Err(ChannelError::close(
-					"Got shutdown with remote pending HTLCs".to_owned(),
-				));
+				return (
+					Err(ChannelError::close("Got shutdown with remote pending HTLCs".to_owned())),
+					None,
+				);
 			}
 		}
 		assert!(!matches!(self.context.channel_state, ChannelState::ShutdownComplete));
 
-		// TODO: The spec is pretty vague regarding the handling of shutdown within quiescence.
 		if self.context.channel_state.is_local_stfu_sent()
 			|| self.context.channel_state.is_remote_stfu_sent()
 			|| self.context.channel_state.is_quiescent()
 		{
-			return Err(ChannelError::WarnAndDisconnect(
-				"Got shutdown request while quiescent".to_owned(),
-			));
+			let splice_funding_failed = self.abandon_quiescent_action();
+			return (
+				Err(ChannelError::WarnAndDisconnect(
+					"Got shutdown request while quiescent".to_owned(),
+				)),
+				splice_funding_failed,
+			);
 		}
 
 		if !script::is_bolt2_compliant(&msg.scriptpubkey, their_features) {
-			return Err(ChannelError::Warn(format!(
-				"Got a nonstandard scriptpubkey ({}) from remote peer",
-				msg.scriptpubkey.to_hex_string()
-			)));
+			return (
+				Err(ChannelError::Warn(format!(
+					"Got a nonstandard scriptpubkey ({}) from remote peer",
+					msg.scriptpubkey.to_hex_string()
+				))),
+				None,
+			);
 		}
 
 		if self.context.counterparty_shutdown_scriptpubkey.is_some() {
 			if Some(&msg.scriptpubkey) != self.context.counterparty_shutdown_scriptpubkey.as_ref() {
-				return Err(ChannelError::Warn(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_hex_string())));
+				return (Err(ChannelError::Warn(format!("Got shutdown request with a scriptpubkey ({}) which did not match their previous scriptpubkey.", msg.scriptpubkey.to_hex_string()))), None);
 			}
 		} else {
 			self.context.counterparty_shutdown_scriptpubkey = Some(msg.scriptpubkey.clone());
@@ -11623,16 +11634,22 @@ where
 				let shutdown_scriptpubkey = match signer_provider.get_shutdown_scriptpubkey() {
 					Ok(scriptpubkey) => scriptpubkey,
 					Err(_) => {
-						return Err(ChannelError::close(
-							"Failed to get shutdown scriptpubkey".to_owned(),
-						))
+						return (
+							Err(ChannelError::close(
+								"Failed to get shutdown scriptpubkey".to_owned(),
+							)),
+							None,
+						)
 					},
 				};
 				if !shutdown_scriptpubkey.is_compatible(their_features) {
-					return Err(ChannelError::close(format!(
-						"Provided a scriptpubkey format not accepted by peer: {}",
-						shutdown_scriptpubkey
-					)));
+					return (
+						Err(ChannelError::close(format!(
+							"Provided a scriptpubkey format not accepted by peer: {}",
+							shutdown_scriptpubkey
+						))),
+						None,
+					);
 				}
 				self.context.shutdown_scriptpubkey = Some(shutdown_scriptpubkey);
 				true
@@ -11694,7 +11711,7 @@ where
 
 		let splice_funding_failed = self.abandon_quiescent_action();
 
-		Ok((shutdown, monitor_update, dropped_outbound_htlcs, splice_funding_failed))
+		(Ok((shutdown, monitor_update, dropped_outbound_htlcs)), splice_funding_failed)
 	}
 
 	fn build_signed_closing_transaction(
