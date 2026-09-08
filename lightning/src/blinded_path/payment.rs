@@ -524,7 +524,7 @@ impl DummyTlvs {
 	/// avoids placeholder constraint values that would make dummy hops identifiable in the blinded
 	/// path. The HTLC minimum is copied from the downstream hop because there is no separate dummy-hop
 	/// channel policy to enforce.
-	pub(crate) fn derive_payment_constraints(
+	fn derive_payment_constraints(
 		payment_relay: &PaymentRelay, downstream_constraints: PaymentConstraints,
 	) -> Result<PaymentConstraints, ()> {
 		Ok(PaymentConstraints {
@@ -538,7 +538,7 @@ impl DummyTlvs {
 
 	#[cfg(any(test, feature = "_externalize_tests"))]
 	/// Returns deterministic dummy-hop relay parameters for tests that require fixed fees and CLTV.
-	pub(crate) fn default_relay() -> PaymentRelay {
+	fn default_relay() -> PaymentRelay {
 		PaymentRelay { cltv_expiry_delta: 40, fee_proportional_millionths: 1, fee_base_msat: 0 }
 	}
 
@@ -548,7 +548,7 @@ impl DummyTlvs {
 	/// Independent sampling avoids policy correlation between dummy hops and bounds their added fee
 	/// and CLTV requirements.
 	#[cfg(not(any(test, feature = "_externalize_tests")))]
-	pub(crate) fn random_relay<ES: EntropySource>(entropy_source: &ES) -> PaymentRelay {
+	fn random_relay<ES: EntropySource>(entropy_source: &ES) -> PaymentRelay {
 		// Selects one candidate using entropy from the dummy-hop policy seed.
 		fn choose<T: Copy>(values: &[T], byte: u8) -> T {
 			values[byte as usize % values.len()]
