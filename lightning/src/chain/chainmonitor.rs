@@ -579,7 +579,9 @@ where
 		};
 
 		let has_pending_claims = monitor_state.monitor.has_pending_claims();
-		if has_pending_claims || get_partition_key(channel_id).map(|key| key % partition_factor == 0).unwrap_or(false) {
+		if has_pending_claims
+			|| get_partition_key(channel_id).map(|key| key % partition_factor == 0).unwrap_or(false)
+		{
 			log_trace!(
 				logger,
 				"Syncing Channel Monitor for channel {}",

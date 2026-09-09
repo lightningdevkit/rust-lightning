@@ -532,8 +532,15 @@ fn test_signer_unblocked_clears_monitor_pending_raa_after_reestablish() {
 	assert!(updates.update_fee.is_none());
 	nodes[1].node.handle_update_fail_htlc(node_c_id, &updates.update_fail_htlcs[0]);
 
-	let pending_c_raa =
-		commitment_signed_dance!(&nodes[1], &nodes[2], &updates.commitment_signed, false, true, false, true);
+	let pending_c_raa = commitment_signed_dance!(
+		&nodes[1],
+		&nodes[2],
+		&updates.commitment_signed,
+		false,
+		true,
+		false,
+		true
+	);
 	check_added_monitors(&nodes[0], 0);
 
 	// While B is waiting for C's RAA, forward another A-to-C payment. B accepts it on the A-B

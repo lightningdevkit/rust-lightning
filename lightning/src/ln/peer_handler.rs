@@ -3258,7 +3258,8 @@ where
 									let msg = msg.map(|msg| {
 										wire::Message::<<<CMH as Deref>::Target as wire::CustomMessageReader>::CustomMessage>::Error(msg)
 									});
-									peers_to_disconnect.insert(node_id, (msg, "DisconnectPeer HandleError"));
+									peers_to_disconnect
+										.insert(node_id, (msg, "DisconnectPeer HandleError"));
 								},
 								msgs::ErrorAction::DisconnectPeerWithWarning { msg } => {
 									log_trace!(logger, "Handling DisconnectPeer HandleError event in peer_handler for node {} with message {}",
@@ -3267,7 +3268,8 @@ where
 									// about to disconnect the peer and do it after we finish
 									// processing most messages.
 									peers_to_disconnect.insert(
-										node_id, (
+										node_id,
+										(
 											Some(wire::Message::Warning(msg)),
 											"DisconnectPeerWithWarning HandleError",
 										),
@@ -4681,13 +4683,15 @@ mod tests {
 			{
 				let peers = peer_a.peers.read().unwrap();
 				let mut peer_b = peers.get(&fd_a).unwrap().lock().unwrap();
-				peer_a.enqueue_message(
-					&mut peer_b,
-					&msgs::WarningMessage {
-						channel_id: ChannelId([0; 32]),
-						data: "no disconnect plz".to_string(),
-					},
-				).unwrap();
+				peer_a
+					.enqueue_message(
+						&mut peer_b,
+						&msgs::WarningMessage {
+							channel_id: ChannelId([0; 32]),
+							data: "no disconnect plz".to_string(),
+						},
+					)
+					.unwrap();
 			}
 			peer_a.process_events();
 			let msg = fd_a.outbound_data.lock().unwrap().split_off(0);

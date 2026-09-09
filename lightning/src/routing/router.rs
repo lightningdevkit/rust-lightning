@@ -3950,7 +3950,7 @@ mod tests {
 	use bitcoin::bech32::primitives::decode::CheckedHrpstring;
 	use bitcoin::bech32::{ByteIterExt, Fe32IterExt};
 	use bitcoin::constants::ChainHash;
-	use bitcoin::hashes::{Hash, sha256::Hash as Sha256};
+	use bitcoin::hashes::{sha256::Hash as Sha256, Hash};
 	use bitcoin::hex::FromHex;
 	use bitcoin::network::Network;
 	use bitcoin::opcodes;
