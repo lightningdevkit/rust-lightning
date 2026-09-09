@@ -140,10 +140,9 @@ impl FailedSpliceContribution {
 	/// new contribution.
 	///
 	/// The contribution preserves the full set of inputs and outputs from the failed round,
-	/// including any that were also committed to an existing splice attempt (a prior negotiated
-	/// candidate, a round still under negotiation, or a splice that just locked). Those
-	/// overlapping inputs and outputs are intentionally omitted from the preceding
-	/// [`Event::DiscardFunding`], since they remain committed to that other splice.
+	/// including any still committed to an existing splice attempt (a prior negotiated candidate,
+	/// a round still under negotiation, or a splice that just locked). These inputs and outputs are
+	/// omitted from [`Event::DiscardFunding`] while they remain committed.
 	///
 	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
@@ -1756,8 +1755,9 @@ pub enum Event {
 		last_local_balance_msat: Option<u64>,
 	},
 	/// Used to indicate that a splice for the given `channel_id` has been negotiated, its
-	/// funding transaction has been broadcast, and local inputs or outputs were contributed to
-	/// it.
+	/// funding transaction may be broadcast, and local inputs or outputs were contributed to it.
+	/// This also applies when a channel closes with our funding signatures ready to send, even if
+	/// the counterparty has not provided theirs.
 	///
 	/// This event is not emitted if the counterparty negotiated a splice without using a local
 	/// contribution.
@@ -1802,6 +1802,13 @@ pub enum Event {
 	/// attempt will be returned via a preceding [`Event::DiscardFunding`]. This also applies to
 	/// contributions rejected with an error, though without a corresponding
 	/// `SpliceNegotiationFailed` event.
+	///
+	/// If the channel closes after the counterparty has committed to the splice, funding remains
+	/// reserved and [`Event::DiscardFunding`] follows once the closing transaction has enough
+	/// confirmations.
+	///
+	/// A channel closing with our funding signatures ready to send instead produces
+	/// [`Event::SpliceNegotiated`]. Wait for [`Event::DiscardFunding`] before reusing funding.
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler

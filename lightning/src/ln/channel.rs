@@ -1306,6 +1306,8 @@ pub(crate) struct ShutdownResult {
 	/// the splice funding information for emitting SpliceNegotiationFailed events. Both an
 	/// active negotiation round and a contribution queued for a later round may fail at once.
 	pub(crate) splice_funding_failed: Vec<SpliceFundingFailed>,
+	/// A splice pending at closure because our funding signatures are ready to send.
+	pub(crate) splice_funding_negotiated: Option<SpliceFundingNegotiated>,
 }
 
 /// The result of a peer disconnection.
@@ -1759,7 +1761,9 @@ where
 				if chan.should_reset_pending_splice_state(true) {
 					// If there was a pending splice negotiation that failed due to disconnecting, we
 					// also take the opportunity to clean up our state.
-					let splice_funding_failed = chan.reset_pending_splice_state();
+					let (splice_funding_failed, splice_funding_negotiated) =
+						chan.reset_pending_splice_state();
+					debug_assert!(splice_funding_negotiated.is_none());
 					debug_assert!(!chan.context.channel_state.is_quiescent());
 					splice_funding_failed
 				} else if !chan.has_pending_splice_awaiting_signatures() {
@@ -1905,7 +1909,10 @@ where
 			},
 			ChannelPhase::Funded(funded_channel) => {
 				if funded_channel.should_reset_pending_splice_state(true) {
-					funded_channel.reset_pending_splice_state()
+					let (splice_funding_failed, splice_funding_negotiated) =
+						funded_channel.reset_pending_splice_state();
+					debug_assert!(splice_funding_negotiated.is_none());
+					splice_funding_failed
 				} else {
 					debug_assert!(false, "We should never fail an interactive funding negotiation once we're exchanging tx_signatures");
 					None
@@ -2054,7 +2061,9 @@ where
 						.map(|pending_splice| pending_splice.funding_negotiation.is_some())
 						.unwrap_or(false);
 					debug_assert!(has_funding_negotiation);
-					let splice_funding_failed = funded_channel.reset_pending_splice_state();
+					let (splice_funding_failed, splice_funding_negotiated) =
+						funded_channel.reset_pending_splice_state();
+					debug_assert!(splice_funding_negotiated.is_none());
 					(true, splice_funding_failed)
 				} else {
 					// We were not tracking the pending funding negotiation state anymore, likely
@@ -6863,6 +6872,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			channel_funding_txo: funding.get_funding_txo(),
 			last_local_balance_msat: funding.value_to_self_msat,
 			splice_funding_failed: Vec::new(),
+			splice_funding_negotiated: None,
 		}
 	}
 
@@ -7475,12 +7485,12 @@ pub struct SpliceFundingNegotiated {
 
 /// Information about a splice funding negotiation that has failed.
 pub struct SpliceFundingFailed {
-	/// UTXOs spent as inputs contributed to the splice transaction. Excludes inputs already
-	/// contributed in prior rounds, which may be included in `contribution`.
+	/// UTXOs released by the failure. Excludes inputs still committed to a splice transaction,
+	/// which may be included in `contribution`.
 	contributed_inputs: Vec<bitcoin::OutPoint>,
 
-	/// Outputs contributed to the splice transaction. Excludes outputs already contributed
-	/// in prior rounds, which may be included in `contribution`.
+	/// Outputs released by the failure. Excludes outputs still committed to a splice transaction,
+	/// which may be included in `contribution`.
 	contributed_outputs: Vec<TxOut>,
 
 	/// The funding contribution from the failed round.
@@ -7542,10 +7552,12 @@ where
 	}
 
 	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
-		let splice_funding_failed = self.maybe_fail_splice_negotiation();
+		let (splice_funding_failed, splice_funding_negotiated) =
+			self.resolve_pending_splice_on_close();
 
 		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
 		shutdown_result.splice_funding_failed = splice_funding_failed;
+		shutdown_result.splice_funding_negotiated = splice_funding_negotiated;
 		shutdown_result
 	}
 
@@ -7574,19 +7586,19 @@ where
 		}
 	}
 
-	fn maybe_fail_splice_negotiation(&mut self) -> Vec<SpliceFundingFailed> {
+	fn resolve_pending_splice_on_close(
+		&mut self,
+	) -> (Vec<SpliceFundingFailed>, Option<SpliceFundingNegotiated>) {
 		if !matches!(self.context.channel_state, ChannelState::ChannelReady(_)) {
-			return Vec::new();
+			return (Vec::new(), None);
 		}
-		let negotiation_failed = if self.should_reset_pending_splice_state(true) {
-			self.reset_pending_splice_state()
-		} else {
-			None
-		};
 		// A contribution queued for a later round (e.g., behind a counterparty-initiated
-		// negotiation) fails independently of the active round and must also be reported.
+		// negotiation) fails independently. Filter it before resetting the active round so
+		// funding still committed to that round is not released by the queued failure.
 		let queued_failed = self.abandon_quiescent_action();
-		negotiation_failed.into_iter().chain(queued_failed).collect()
+		let (negotiation_failed, splice_funding_negotiated) = self.reset_pending_splice_state();
+		let splice_funding_failed = negotiation_failed.into_iter().chain(queued_failed).collect();
+		(splice_funding_failed, splice_funding_negotiated)
 	}
 
 	fn interactive_tx_constructor_mut(&mut self) -> Option<&mut InteractiveTxConstructor> {
@@ -7718,68 +7730,84 @@ where
 			.unwrap_or(false)
 	}
 
-	fn reset_pending_splice_state(&mut self) -> Option<SpliceFundingFailed> {
-		debug_assert!(self.should_reset_pending_splice_state(false));
-
-		// Only clear the signing session if the current round is mid-signing. When an earlier
-		// round completed signing and a later RBF round is in AwaitingAck or
-		// ConstructingTransaction, the session belongs to the prior round and must be preserved.
-		let current_is_awaiting_signatures = self
-			.pending_splice
-			.as_ref()
-			.and_then(|ps| ps.funding_negotiation.as_ref())
-			.map(|fn_| matches!(fn_, FundingNegotiation::AwaitingSignatures { .. }))
-			.unwrap_or(false);
-		if current_is_awaiting_signatures {
-			debug_assert!(
-				self.context.interactive_tx_signing_session.is_none()
-					|| !self
-						.context
-						.interactive_tx_signing_session
-						.as_ref()
-						.expect("We have a pending splice awaiting signatures")
-						.has_received_commitment_signed()
-			);
-		}
-
-		// Take the funding negotiation and pop the current round's contribution, if any
-		// (acceptors may not have one).
-		let pending_splice = self
+	/// Resets splice negotiation and quiescence state, returning a failed local contribution or
+	/// a pending splice whose funding signatures are ready to send.
+	fn reset_pending_splice_state(
+		&mut self,
+	) -> (Option<SpliceFundingFailed>, Option<SpliceFundingNegotiated>) {
+		let funding_negotiation = self
 			.pending_splice
 			.as_mut()
-			.expect("reset_pending_splice_state requires pending_splice");
-		debug_assert!(
-			pending_splice.funding_negotiation.is_some(),
-			"reset_pending_splice_state requires an active funding negotiation"
-		);
-		pending_splice.funding_negotiation.take();
-		let contribution = pending_splice.negotiation_contribution.take();
-		if let Some(ref contribution) = contribution {
-			debug_assert!(
-				pending_splice
-					.last_funding_feerate_sat_per_1000_weight
-					.map(|f| contribution.feerate() > FeeRate::from_sat_per_kwu(f as u64))
-					.unwrap_or(true),
-				"current round's feerate should be greater than the last negotiated feerate",
-			);
-		}
+			.and_then(|pending_splice| pending_splice.funding_negotiation.take());
 
-		// With the in-flight contribution taken, the component set contains only prior rounds.
-		let splice_funding_failed = contribution.map(|contribution| {
-			pending_splice.funding_components().splice_funding_failed(contribution)
-		});
+		let (counterparty_committed, splice_funding_negotiated) = match funding_negotiation.as_ref()
+		{
+			Some(FundingNegotiation::AwaitingSignatures { funding, .. }) => {
+				let signing_session = self
+					.context
+					.interactive_tx_signing_session
+					.as_ref()
+					.expect("We have a pending splice awaiting signatures");
+				let splice_funding_negotiated =
+					signing_session.holder_tx_signatures().map(|_| SpliceFundingNegotiated {
+						funding_txo: funding
+							.get_funding_txo()
+							.expect("Negotiated funding has an outpoint")
+							.into_bitcoin_outpoint(),
+						has_local_contribution: signing_session.has_local_contribution(),
+						channel_type: funding.get_channel_type().clone(),
+						funding_redeem_script: funding.get_funding_redeemscript(),
+					});
+				(signing_session.has_received_commitment_signed(), splice_funding_negotiated)
+			},
+			_ => (false, None),
+		};
+		let splice_funding_failed =
+			if funding_negotiation.is_some() && splice_funding_negotiated.is_none() {
+				self.pending_splice.as_mut().and_then(|pending_splice| {
+					if let Some(ref contribution) = pending_splice.negotiation_contribution {
+						debug_assert!(
+						pending_splice
+							.last_funding_feerate_sat_per_1000_weight
+							.map(|f| contribution.feerate() > FeeRate::from_sat_per_kwu(f as u64))
+							.unwrap_or(true),
+						"current round's feerate should be greater than the last negotiated feerate",
+					);
+					}
+					pending_splice.negotiation_contribution.take().map(|contribution| {
+						if counterparty_committed {
+							// Committed funding remains reserved until the closing transaction has
+							// enough confirmations to safely discard it.
+							SpliceFundingFailed {
+								contributed_inputs: Vec::new(),
+								contributed_outputs: Vec::new(),
+								contribution,
+							}
+						} else {
+							pending_splice.funding_components().splice_funding_failed(contribution)
+						}
+					})
+				})
+			} else {
+				None
+			};
 
 		if self.negotiated_candidates().is_empty() {
 			self.pending_splice.take();
 		}
-
-		self.exit_quiescence();
-		if current_is_awaiting_signatures {
+		if funding_negotiation.is_some() {
+			self.exit_quiescence();
+		}
+		if matches!(funding_negotiation, Some(FundingNegotiation::AwaitingSignatures { .. })) {
+			// Only clear the signing session if the current round is mid-signing. When an earlier
+			// round completed signing and a later RBF round is in `AwaitingAck` or
+			// `ConstructingTransaction`, the session belongs to the prior round and must be
+			// preserved.
 			self.context.interactive_tx_signing_session.take();
 			self.context.signer_pending_funding = false;
 		}
 
-		splice_funding_failed
+		(splice_funding_failed, splice_funding_negotiated)
 	}
 
 	fn abort_ongoing_rbf_after_splice_confirmation<L: Logger>(
@@ -7819,7 +7847,8 @@ where
 		}
 
 		log_info!(logger, "Aborting an active RBF negotiation after a splice candidate confirmed");
-		let splice_funding_failed = self.reset_pending_splice_state();
+		let (splice_funding_failed, splice_funding_negotiated) = self.reset_pending_splice_state();
+		debug_assert!(splice_funding_negotiated.is_none());
 		let tx_abort =
 			AbortReason::RbfUnavailable("A negotiated splice candidate has confirmed".to_owned())
 				.into_tx_abort_msg(self.context.channel_id());
@@ -11791,6 +11820,7 @@ where
 			channel_funding_txo: self.funding.get_funding_txo(),
 			last_local_balance_msat: self.funding.value_to_self_msat,
 			splice_funding_failed: Vec::new(),
+			splice_funding_negotiated: None,
 		}
 	}
 
@@ -13807,7 +13837,8 @@ where
 		}
 
 		debug_assert!(self.context.channel_state.is_quiescent());
-		let splice_funding_failed = self.reset_pending_splice_state();
+		let (splice_funding_failed, splice_funding_negotiated) = self.reset_pending_splice_state();
+		debug_assert!(splice_funding_negotiated.is_none());
 		debug_assert!(splice_funding_failed.is_some());
 		Ok(InteractiveTxMsgError::new(
 			ChannelError::Abort(AbortReason::ManualIntervention),

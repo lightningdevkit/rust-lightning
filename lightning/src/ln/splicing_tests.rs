@@ -5459,6 +5459,214 @@ fn do_test_shutdown_with_outstanding_splice_stfu(reconnect: bool, late_stfu: boo
 }
 
 #[test]
+fn fail_splice_awaiting_signatures_on_channel_close() {
+	for async_signer in [false, true] {
+		do_fail_splice_awaiting_signatures_on_channel_close(false, false, false, async_signer);
+		do_fail_splice_awaiting_signatures_on_channel_close(false, true, false, async_signer);
+		do_fail_splice_awaiting_signatures_on_channel_close(true, false, false, async_signer);
+		do_fail_splice_awaiting_signatures_on_channel_close(true, true, false, async_signer);
+		do_fail_splice_awaiting_signatures_on_channel_close(true, false, true, async_signer);
+		do_fail_splice_awaiting_signatures_on_channel_close(true, true, true, async_signer);
+	}
+}
+
+#[cfg(test)]
+fn do_fail_splice_awaiting_signatures_on_channel_close(
+	counterparty_committed: bool, holder_sends_first: bool, async_monitor: bool, async_signer: bool,
+) {
+	// Available holder funding signatures leave the splice pending on close, including when
+	// sending them is blocked on persistence. Otherwise, closing fails the negotiation.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let initiator = &nodes[0];
+	let acceptor = &nodes[1];
+
+	let node_id_initiator = initiator.node.get_our_node_id();
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+
+	let initial_channel_capacity = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+
+	if async_signer {
+		initiator.disable_channel_signer_op(
+			&node_id_acceptor,
+			&channel_id,
+			SignerOp::SignSpliceSharedInput,
+		);
+	}
+
+	provide_utxo_reserves(&nodes, 3, Amount::from_sat(100_000));
+
+	let contribution =
+		initiate_splice_in(initiator, acceptor, channel_id, Amount::from_sat(50_000));
+	// The initiator contributes one input plus the shared input. Give the acceptor three inputs
+	// when the initiator should send funding signatures first, and one input otherwise.
+	let acceptor_added_value =
+		if holder_sends_first { Amount::from_sat(200_000) } else { Amount::from_sat(25_000) };
+	let acceptor_contribution =
+		initiate_splice_in(acceptor, initiator, channel_id, acceptor_added_value);
+	let new_funding_script = complete_splice_handshake(initiator, acceptor);
+	complete_interactive_funding_negotiation_for_both(
+		initiator,
+		acceptor,
+		channel_id,
+		contribution.clone(),
+		Some(acceptor_contribution.clone()),
+		acceptor_contribution.net_value().to_sat(),
+		new_funding_script,
+	);
+
+	let event = get_event!(acceptor, Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = event {
+		let partially_signed_tx = acceptor.wallet_source.sign_tx(unsigned_transaction).unwrap();
+		acceptor
+			.node
+			.funding_transaction_signed(&channel_id, &node_id_initiator, partially_signed_tx)
+			.unwrap();
+	} else {
+		panic!("Expected FundingTransactionReadyForSigning event");
+	}
+	// Withhold the acceptor's commitment until the initiator has signed.
+	let acceptor_msg_events = acceptor.node.get_and_clear_pending_msg_events();
+	let acceptor_commitment_signed = match acceptor_msg_events.as_slice() {
+		[MessageSendEvent::UpdateHTLCs { updates, .. }] => updates.commitment_signed[0].clone(),
+		other => panic!("Expected UpdateHTLCs, got {other:?}"),
+	};
+
+	let event = get_event!(initiator, Event::FundingTransactionReadyForSigning);
+	let splice_funding =
+		if let Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } = event {
+			let (vout, txout) = unsigned_transaction
+				.output
+				.iter()
+				.enumerate()
+				.find(|(_, output)| output.script_pubkey.is_p2wsh())
+				.unwrap();
+			let outpoint =
+				OutPoint { txid: unsigned_transaction.compute_txid(), index: vout as u16 };
+			let script_pubkey = txout.script_pubkey.clone();
+			let partially_signed_tx =
+				initiator.wallet_source.sign_tx(unsigned_transaction).unwrap();
+			initiator
+				.node
+				.funding_transaction_signed(&channel_id, &node_id_acceptor, partially_signed_tx)
+				.unwrap();
+			(outpoint, script_pubkey)
+		} else {
+			panic!("Expected FundingTransactionReadyForSigning event");
+		};
+	let _ = get_htlc_update_msgs(initiator, &node_id_acceptor);
+
+	if counterparty_committed {
+		if async_monitor {
+			chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+		}
+		initiator.node.handle_commitment_signed(node_id_acceptor, &acceptor_commitment_signed);
+		check_added_monitors(initiator, 1);
+	}
+	let funding_signatures_available =
+		counterparty_committed && holder_sends_first && !async_signer;
+	if funding_signatures_available && !async_monitor {
+		let _ = get_event_msg!(initiator, MessageSendEvent::SendTxSignatures, node_id_acceptor);
+	} else {
+		assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
+	}
+	let initial_monitor_update_id = initiator.chain_monitor.get_latest_mon_update_id(channel_id).1;
+
+	initiator
+		.node
+		.force_close_broadcasting_latest_txn(&channel_id, &node_id_acceptor, "test".to_owned())
+		.unwrap();
+	if async_monitor {
+		initiator
+			.chain_monitor
+			.chain_monitor
+			.channel_monitor_updated(channel_id, initial_monitor_update_id)
+			.unwrap();
+	}
+	handle_bump_events(initiator, true, 0);
+
+	let (expected_inputs, expected_outputs) =
+		contribution.clone().into_contributed_inputs_and_outputs();
+	let events = initiator.node.get_and_clear_pending_events();
+	let mut discard_count =
+		events.iter().filter(|event| matches!(event, Event::DiscardFunding { .. })).count();
+	assert_eq!(events.len(), if counterparty_committed { 2 } else { 3 }, "{events:?}");
+	assert!(matches!(events[0], Event::ChannelClosed { .. }));
+	if !counterparty_committed {
+		match &events[1] {
+			Event::DiscardFunding {
+				funding_info: FundingInfo::Contribution { inputs, outputs },
+				..
+			} => {
+				assert_eq!(*inputs, expected_inputs);
+				assert_eq!(*outputs, expected_outputs);
+			},
+			other => panic!("Expected DiscardFunding, got {other:?}"),
+		}
+	}
+	if funding_signatures_available {
+		match events.last().unwrap() {
+			Event::SpliceNegotiated { new_funding_txo, .. } => {
+				assert_eq!(*new_funding_txo, splice_funding.0.into_bitcoin_outpoint());
+			},
+			other => panic!("Expected SpliceNegotiated, got {other:?}"),
+		}
+	} else {
+		match events.last().unwrap() {
+			Event::SpliceNegotiationFailed { reason, contribution: failed, .. } => {
+				assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+				let failed = failed.as_ref().unwrap();
+				assert_eq!(failed.contribution(), &contribution);
+				if counterparty_committed {
+					assert!(failed.contributed_inputs().is_empty());
+					assert!(failed.contributed_outputs().is_empty());
+				}
+			},
+			other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+		}
+	}
+
+	check_closed_broadcast(initiator, 1, true);
+	check_added_monitors(initiator, 1);
+
+	// The monitor releases contributions for funding transactions it is tracking once the close
+	// has confirmed deeply enough.
+	let commitment_tx = initiator.tx_broadcaster.txn_broadcast().remove(0);
+	mine_transaction(initiator, &commitment_tx);
+	connect_blocks(initiator, BREAKDOWN_TIMEOUT as u32);
+	if counterparty_committed {
+		// The monitor stopped tracking the splice funding transaction, so the chain source no
+		// longer needs to watch for it.
+		let (outpoint, script_pubkey) = splice_funding;
+		initiator.chain_source.remove_watched_txn_and_outputs(outpoint, script_pubkey);
+	}
+
+	let events = initiator.chain_monitor.chain_monitor.get_and_clear_pending_events();
+	discard_count +=
+		events.iter().filter(|event| matches!(event, Event::DiscardFunding { .. })).count();
+	assert_eq!(discard_count, 1, "Contributions must be released exactly once");
+	assert_eq!(events.len(), if counterparty_committed { 2 } else { 1 }, "{events:?}");
+	if counterparty_committed {
+		match &events[0] {
+			Event::DiscardFunding {
+				funding_info: FundingInfo::Contribution { inputs, outputs },
+				..
+			} => {
+				assert_eq!(*inputs, expected_inputs);
+				assert_eq!(*outputs, expected_outputs);
+			},
+			other => panic!("Expected DiscardFunding, got {other:?}"),
+		}
+	}
+	assert!(matches!(events.last().unwrap(), Event::SpendableOutputs { .. }), "{events:?}");
+}
+
+#[test]
 fn abandon_splice_quiescent_action_on_shutdown() {
 	do_abandon_splice_quiescent_action_on_shutdown(true, false);
 	do_abandon_splice_quiescent_action_on_shutdown(false, false);
@@ -5963,11 +6171,18 @@ fn test_splice_buffer_invalid_commitment_signed_closes_channel() {
 		_ => panic!("Expected BroadcastChannelUpdate, got {:?}", msg_events[2]),
 	}
 
+	// The counterparty never validly committed to the splice, so it is dropped and reported.
 	let err = "Received commitment failed validation".to_owned();
 	let reason = ClosureReason::ProcessingError { err };
 	check_closed_events(
 		&nodes[0],
-		&[ExpectedCloseEvent::from_id_reason(channel_id, false, reason)],
+		&[ExpectedCloseEvent {
+			channel_id: Some(channel_id),
+			discard_funding: true,
+			splice_failed: true,
+			reason: Some(reason),
+			..Default::default()
+		}],
 	);
 	check_added_monitors(&nodes[0], 1);
 }
