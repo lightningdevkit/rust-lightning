@@ -7769,8 +7769,10 @@ where
 						counterparty_skimmed_fee_msat: skimmed_fee_msat,
 					};
 
+					let mut just_added = false;
 					let mut committed_to_claimable = false;
 
+					let mut claimable_payments = self.claimable_payments.lock().unwrap();
 					macro_rules! fail_htlc {
 						($htlc: expr, $payment_hash: expr) => {
 							debug_assert!(!committed_to_claimable);
@@ -7802,6 +7804,9 @@ where
 								),
 								HTLCHandlingFailureType::Receive { payment_hash: $payment_hash },
 							));
+							if just_added {
+								claimable_payments.claimable_payments.remove(&payment_hash);
+							}
 							continue 'next_forwardable_htlc;
 						};
 					}
@@ -7818,7 +7823,6 @@ where
 						($purpose: expr) => {{
 							let mut payment_claimable_generated = false;
 							let is_keysend = $purpose.is_keysend();
-							let mut claimable_payments = self.claimable_payments.lock().unwrap();
 							if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
 								fail_htlc!(claimable_htlc, payment_hash);
 							}
@@ -7826,7 +7830,7 @@ where
 								.entry(payment_hash)
 								// Note that if we insert here we MUST NOT fail_htlc!()
 								.or_insert_with(|| {
-									committed_to_claimable = true;
+									just_added = true;
 									ClaimablePayment {
 										purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None,
 									}
@@ -17883,6 +17887,9 @@ where
 					.into_iter()
 					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
 				{
+					if htlcs.is_empty() {
+						continue;
+					}
 					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: onion };
 					let existing_payment = claimable_payments.insert(payment_hash, claimable);
 					if existing_payment.is_some() {
@@ -17893,6 +17900,9 @@ where
 				for (purpose, (payment_hash, htlcs)) in
 					purposes.into_iter().zip(claimable_htlcs_list.into_iter())
 				{
+					if htlcs.is_empty() {
+						continue;
+					}
 					let claimable = ClaimablePayment { purpose, htlcs, onion_fields: None };
 					let existing_payment = claimable_payments.insert(payment_hash, claimable);
 					if existing_payment.is_some() {

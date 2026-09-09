@@ -13,7 +13,7 @@
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
 use crate::chain::Watch;
-use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitor, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::{BumpTransactionEvent};
@@ -21,13 +21,14 @@ use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, PaymentId, RecipientOnionFields};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManagerReadArgs, PaymentId, RecipientOnionFields};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::crypto::utils::sign;
-use crate::util::ser::Writeable;
+use crate::util::ser::{ReadableArgs, Writeable};
+use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::scid_utils::block_from_scid;
 
-use bitcoin::{Amount, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
+use bitcoin::{Amount, BlockHash, PublicKey, ScriptBuf, Transaction, TxIn, TxOut, Witness};
 use bitcoin::locktime::absolute::LockTime;
 use bitcoin::script::Builder;
 use bitcoin::opcodes;
@@ -307,6 +308,111 @@ fn archive_fully_resolved_monitors() {
 			htlc_claim_tx[0].output[0].script_pubkey.clone()
 		);
 	}
+}
+
+#[test]
+fn archive_monitor_with_pending_closure_event() {
+	// Test that we don't archive a `ChannelMonitor` which still has a closure `MonitorEvent` that
+	// the `ChannelManager` hasn't processed yet.
+	//
+	// A channel which never advanced its commitment state and holds no funds is archived as soon as
+	// it is closed, without waiting for `ARCHIVAL_DELAY_BLOCKS`. If the monitor itself initiated the
+	// closure, the `MonitorEvent` it generated may be the only way the `ChannelManager` will learn
+	// of it before shutdown, so archiving the monitor first drops the event and leaves the
+	// `ChannelManager` with a channel for which no `ChannelMonitor` exists, which is not allowed on
+	// startup.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+
+	// Open a channel inbound to nodes[1] but never confirm the funding transaction. This leaves
+	// nodes[1] with a monitor which never advanced its commitment state and which will have no
+	// funds to claim once closed.
+	let funding_tx =
+		create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 100_000);
+	let chan_id = nodes[1].node.list_channels()[0].channel_id;
+
+	// Broadcast nodes[1]'s commitment transaction via the `ChannelMonitor` directly, so that the
+	// only indication of the closure the `ChannelManager` will ever get is the `MonitorEvent`.
+	get_monitor!(nodes[1], chan_id).broadcast_latest_holder_commitment_txn(
+		&nodes[1].tx_broadcaster, &nodes[1].fee_estimator, &nodes[1].logger
+	);
+	let commitment_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(commitment_tx.len(), 1);
+	check_spends!(commitment_tx[0], funding_tx);
+
+	// The monitor has no funds left to claim, but its closure `MonitorEvent` is still pending, so
+	// it must not be archived yet.
+	assert!(nodes[1].chain_monitor.chain_monitor.get_claimable_balances(&[]).is_empty());
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+
+	// The `ChannelManager` requires a `ChannelMonitor` for each of its channels in order to be
+	// deserialized, so as long as it still has the channel we must still have the monitor.
+	{
+		let manager_ser = nodes[1].node.encode();
+		// Read fresh copies of the monitors rather than borrowing the ones the `ChainMonitor`
+		// holds, as keeping its monitor set locked while reading a `ChannelManager` would
+		// invert our lockorder.
+		let monitors_ser: Vec<_> = nodes[1].chain_monitor.chain_monitor.list_monitors().into_iter()
+			.map(|chan_id| get_monitor!(nodes[1], chan_id).encode())
+			.collect();
+		let keys_manager = nodes[1].keys_manager;
+		let monitors: Vec<_> = monitors_ser.iter()
+			.map(|mon_ser| {
+				<(BlockHash, ChannelMonitor<TestChannelSigner>)>::read(
+					&mut &mon_ser[..], (keys_manager, keys_manager)
+				).unwrap().1
+			})
+			.collect();
+		let read_args = ChannelManagerReadArgs {
+			config: nodes[1].node.get_current_config(),
+			entropy_source: nodes[1].keys_manager,
+			node_signer: nodes[1].keys_manager,
+			signer_provider: nodes[1].keys_manager,
+			fee_estimator: nodes[1].fee_estimator,
+			router: nodes[1].router,
+			message_router: nodes[1].message_router,
+			chain_monitor: nodes[1].chain_monitor,
+			tx_broadcaster: nodes[1].tx_broadcaster,
+			logger: nodes[1].logger,
+			channel_monitors: monitors.iter().map(|mon| (mon.channel_id(), mon)).collect(),
+		};
+		let read = <(BlockHash, TestChannelManager)>::read(&mut &manager_ser[..], read_args);
+		if let Err(e) = read {
+			panic!("nodes[1] can no longer be restarted: {:?}", e);
+		}
+	}
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
+
+	// Process the closure `MonitorEvent`, closing the channel in the `ChannelManager`.
+	let message = "ChannelMonitor-initiated commitment transaction broadcast".to_owned();
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 1_000_000);
+	check_added_monitors(&nodes[1], 1);
+	assert!(nodes[1].node.list_channels().is_empty());
+
+	// The channel was never announced, so the only message we send is the error to our peer.
+	let close_ev = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(close_ev.len(), 1);
+	match close_ev[0] {
+		MessageSendEvent::HandleError { ref node_id, .. } => assert_eq!(*node_id, node_a_id),
+		_ => panic!("Unexpected event"),
+	}
+
+	// Now that the `ChannelManager` knows the channel is closed, the monitor can be archived.
+	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
+	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 0);
+
+	// Remove the corresponding outputs and transactions the chain source is
+	// watching. This is to make sure the `Drop` function assertions pass.
+	nodes[1].chain_source.remove_watched_txn_and_outputs(
+		OutPoint { txid: funding_tx.compute_txid(), index: 0 },
+		funding_tx.output[0].script_pubkey.clone(),
+	);
 }
 
 fn do_chanmon_claim_value_coop_close(keyed_anchors: bool, p2a_anchor: bool) {

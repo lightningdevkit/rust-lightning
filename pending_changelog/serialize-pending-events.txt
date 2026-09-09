@@ -1,5 +1,0 @@
-# Bug Fixes
-
- * If serializing a `ChannelManager` failed while a splice negotiation was
-   pending, spurious `Event::SpliceNegotiationFailed` and
-   `Event::DiscardFunding` events could be emitted for the still-active splice.
