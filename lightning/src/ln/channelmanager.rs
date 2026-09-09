@@ -4996,6 +4996,9 @@ impl<
 	///
 	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
 	/// `counterparty_node_id` is provided, or [`APIMisuseError`] otherwise with the error details.
+	/// As with [`ChannelManager::funding_transaction_signed`], either error may be returned simply
+	/// because the funding negotiation failed while its
+	/// [`Event::FundingTransactionReadyForSigning`] was being handled.
 	///
 	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
@@ -6965,6 +6968,9 @@ impl<
 	/// Returns [`APIMisuseError`] when a channel is not in a state where it is expecting funding
 	/// signatures or if any of the checks described above fail.
 	///
+	/// Note that either error may be returned simply because the funding negotiation failed while
+	/// its [`FundingTransactionReadyForSigning`] event was being handled.
+	///
 	/// [`FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
@@ -8409,14 +8415,12 @@ impl<
 			return Err(());
 		}
 
-		// We should not fail if we're adding the first htlc to a ClaimablePayment (as our
-		// validation compares fields across parts, and our first part can't overflow maximum
-		// msats because each htlc's amount is individually validated - overflow is only possible
-		// with multiple parts).
-		let mut first_claimable_htlc = false;
-		let ref mut claimable_payment =
+		// If we intend to return an Err(()) and `just_added` is set we must first call
+		// `claimable_payments.claimable_payments.remove(&payment_hash)`.
+		let mut just_added = false;
+		let claimable_payment =
 			claimable_payments.claimable_payments.entry(payment_hash).or_insert_with(|| {
-				first_claimable_htlc = true;
+				just_added = true;
 				ClaimablePayment {
 					purpose: purpose.clone(),
 					htlcs: Vec::new(),
@@ -8428,7 +8432,9 @@ impl<
 		if purpose != claimable_payment.purpose {
 			let log_keysend = |keysend| if keysend { "keysend" } else { "non-keysend" };
 			log_trace!(self.logger, "Failing new {} HTLC with payment_hash {} as we already had an existing {} HTLC with the same payment hash", log_keysend(is_keysend), &payment_hash, log_keysend(!is_keysend));
-			debug_assert!(!first_claimable_htlc);
+			if just_added {
+				claimable_payments.claimable_payments.remove(&payment_hash);
+			}
 			return Err(());
 		}
 
@@ -8486,7 +8492,9 @@ impl<
 			// No action if MPP hasn't completed yet.
 			Ok(false) => Ok(()),
 			Err(()) => {
-				debug_assert!(!first_claimable_htlc);
+				if just_added {
+					claimable_payments.claimable_payments.remove(&payment_hash);
+				}
 				Err(())
 			},
 		}
@@ -12613,16 +12621,12 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						}
 
 						let funding_txo_opt = chan.funding.get_funding_txo();
-						let res = chan.shutdown(
+						let (res, splice_funding_failed) = chan.shutdown(
 							&self.logger,
 							&self.signer_provider,
 							&peer_state.latest_features,
 							&msg,
 						);
-						let (shutdown, monitor_update_opt, htlcs, splice_funding_failed) =
-							try_channel_entry!(self, peer_state, res, chan_entry);
-						dropped_htlcs = htlcs;
-
 						if let Some(splice_funding_failed) = splice_funding_failed {
 							let mut pending_events = self.pending_events.lock().unwrap();
 							pending_events.extend(
@@ -12636,6 +12640,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								.map(|event| (event, None)),
 							);
 						}
+
+						let (shutdown, monitor_update_opt, htlcs) =
+							try_channel_entry!(self, peer_state, res, chan_entry);
+						dropped_htlcs = htlcs;
 
 						if let Some(msg) = shutdown {
 							// We can send the `shutdown` message before updating the `ChannelMonitor`
@@ -18896,7 +18904,7 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 				total_mpp_value_msat = Some(total_mpp_value_msat_read);
 				previous_hops.push(htlc);
 			}
-			let total_mpp_value_msat = total_mpp_value_msat.ok_or(DecodeError::InvalidValue)?;
+			let total_mpp_value_msat = total_mpp_value_msat.unwrap_or(0);
 			claimable_htlcs_list.push((payment_hash, previous_hops, total_mpp_value_msat));
 		}
 
@@ -19082,6 +19090,9 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 					.into_iter()
 					.zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
 				{
+					if htlcs.is_empty() {
+						continue;
+					}
 					let onion_fields = if let Some(mut onion) = onion {
 						if onion.0.total_mpp_amount_msat != 0
 							&& onion.0.total_mpp_amount_msat != total_mpp_value_msat

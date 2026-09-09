@@ -23,7 +23,9 @@ use crate::ln::channel::{
 	MIN_CHANNEL_VALUE_SATOSHIS,
 };
 use crate::ln::channel_state::{SpliceCandidateDetails, SpliceCandidateStatus, SpliceDetails};
-use crate::ln::channelmanager::{provided_init_features, PaymentId, BREAKDOWN_TIMEOUT};
+use crate::ln::channelmanager::{
+	provided_init_features, PaymentId, RAACommitmentOrder, BREAKDOWN_TIMEOUT,
+};
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{FundingContribution, FundingContributionError, FundingTemplate};
 use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -5330,6 +5332,131 @@ fn fail_folded_and_queued_splice_contributions_on_channel_close() {
 
 	check_closed_broadcast(acceptor, 1, true);
 	check_added_monitors(acceptor, 1);
+}
+
+#[test]
+fn test_shutdown_with_outstanding_splice_stfu() {
+	for reconnect in [false, true] {
+		for late_stfu in [false, true] {
+			do_test_shutdown_with_outstanding_splice_stfu(reconnect, late_stfu);
+		}
+	}
+}
+
+#[cfg(test)]
+fn do_test_shutdown_with_outstanding_splice_stfu(reconnect: bool, late_stfu: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let channel_value = 1_000_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, channel_value, 0);
+	// Advance the commitments so reconnecting does not resend `channel_ready`.
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
+
+	let outputs = vec![TxOut {
+		value: Amount::from_sat(channel_value / 4),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	}];
+	let contribution = initiate_splice_out(&nodes[0], &nodes[1], channel_id, outputs).unwrap();
+	let mut stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// The peer starts closing before receiving our quiescence proposal.
+	nodes[1].node.close_channel(&channel_id, &node_id_0).unwrap();
+	let mut shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_id_0);
+	if reconnect {
+		// Hold the retransmitted shutdown until our stfu has been resent.
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+		connect_nodes(&nodes[0], &nodes[1]);
+		let reestablish_0 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+		let reestablish_1 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+		nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0[0]);
+		shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_id_0);
+		nodes[0].node.handle_channel_reestablish(node_id_1, &reestablish_1[0]);
+		let (_, _, _, _, _, _, resent_stfu, _, _) =
+			handle_chan_reestablish_msgs!(nodes[0], nodes[1]);
+		stfu = resent_stfu.unwrap();
+	}
+	nodes[1].node.handle_stfu(node_id_0, &stfu);
+	let _ = get_warning_msg(&nodes[1], &node_id_0);
+
+	// Cancel the queued action, but retain the stfu state until we actually disconnect.
+	nodes[0].node.handle_shutdown(node_id_1, &shutdown);
+	expect_splice_failed_events(
+		&nodes[0],
+		&channel_id,
+		contribution,
+		NegotiationFailureReason::ChannelClosing,
+	);
+	let expect_disconnect = |message: &str| {
+		let messages = nodes[0].node.get_and_clear_pending_msg_events();
+		match &messages[..] {
+			[MessageSendEvent::HandleError {
+				action: msgs::ErrorAction::DisconnectPeerWithWarning { msg },
+				..
+			}] => {
+				assert_eq!(msg.data, message);
+			},
+			_ => panic!("Unexpected messages: {messages:?}"),
+		}
+	};
+	expect_disconnect("Got shutdown request while quiescent");
+	assert_eq!(
+		nodes[0].node.close_channel(&channel_id, &node_id_1),
+		Err(APIError::APIMisuseError { err: "Cannot begin shutdown while quiescent".into() }),
+	);
+	if late_stfu {
+		// A non-LDK peer may have processed our stfu and replied after sending shutdown. Its
+		// delayed response must not execute the canceled splice or allow channel updates.
+		let stfu = msgs::Stfu { channel_id, initiator: false };
+		nodes[0].node.handle_stfu(node_id_1, &stfu);
+		expect_disconnect("Quiescence no longer needed");
+	}
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	connect_nodes(&nodes[0], &nodes[1]);
+	let reestablish_0 = get_chan_reestablish_msgs!(nodes[0], nodes[1]);
+	let reestablish_1 = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	nodes[0].node.handle_channel_reestablish(node_id_1, &reestablish_1[0]);
+	// Poll before receiving the retransmitted shutdown: there must be no new stfu proposal.
+	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendChannelUpdate, node_id_1);
+	nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0[0]);
+	let shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_id_0);
+	nodes[0].node.handle_shutdown(node_id_1, &shutdown);
+
+	let messages = nodes[0].node.get_and_clear_pending_msg_events();
+	let (shutdown, closing_signed) = match &messages[..] {
+		[MessageSendEvent::SendShutdown { msg: shutdown, .. }, MessageSendEvent::SendClosingSigned { msg: closing_signed, .. }] => {
+			(shutdown, closing_signed)
+		},
+		_ => panic!("Unexpected messages: {messages:?}"),
+	};
+	nodes[1].node.handle_shutdown(node_id_0, shutdown);
+	nodes[1].node.handle_closing_signed(node_id_0, closing_signed);
+	let closing_signed = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_id_0);
+	nodes[0].node.handle_closing_signed(node_id_1, &closing_signed);
+	let (_, closing_signed) = get_closing_signed_broadcast(&nodes[0], node_id_1);
+	nodes[1].node.handle_closing_signed(node_id_0, &closing_signed.unwrap());
+	let _ = get_closing_signed_broadcast(&nodes[1], node_id_0);
+	check_closed_event(
+		&nodes[0],
+		1,
+		ClosureReason::CounterpartyInitiatedCooperativeClosure,
+		&[node_id_1],
+		channel_value,
+	);
+	check_closed_event(
+		&nodes[1],
+		1,
+		ClosureReason::LocallyInitiatedCooperativeClosure,
+		&[node_id_0],
+		channel_value,
+	);
 }
 
 #[test]
