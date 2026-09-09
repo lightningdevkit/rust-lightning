@@ -5343,6 +5343,7 @@ fn test_shutdown_with_outstanding_splice_stfu() {
 	}
 }
 
+#[cfg(test)]
 fn do_test_shutdown_with_outstanding_splice_stfu(reconnect: bool, late_stfu: bool) {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
