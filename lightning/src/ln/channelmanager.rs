@@ -8707,15 +8707,20 @@ impl<
 	) -> Result<(), (HTLCSource, HTLCFailReason)> {
 		let mut trampoline_payments = self.awaiting_trampoline_forwards.lock().unwrap();
 
-		// We should not fail if we're adding the first htlc to a ClaimablePayment (as our
-		// validation compares fields across parts, and our first part can't overflow maximum
-		// msats because each htlc's amount is individually validated - overflow is only possible
-		// with multiple parts).
-		let mut first_trampoline_htlc = false;
-		trampoline_payments.entry(payment_hash).or_insert_with(|| {
-			first_trampoline_htlc = true;
-			TrampolinePayment { htlcs: Vec::new(), onion_fields: onion_fields.clone() }
-		});
+		// If we intend to return an Err(()) and `just_added` is set we must first call
+		// `claimable_payment_entry.remove()`.
+		let mut just_added = false;
+		let mut trampoline_payment_entry = match trampoline_payments.entry(payment_hash) {
+			hash_map::Entry::Occupied(e) => e,
+			hash_map::Entry::Vacant(e) => {
+				just_added = true;
+				e.insert_entry(TrampolinePayment {
+					htlcs: Vec::new(),
+					onion_fields: onion_fields.clone(),
+				})
+			},
+		};
+		let ref mut trampoline_payment = trampoline_payment_entry.get_mut();
 
 		// TODO: add restriction to specification that trampoline should be consistent across
 		// MPP parts? Currently, we'll accept a MPP trampoline payments that specify different
@@ -8725,8 +8730,6 @@ impl<
 		// arrived, remove the entry from the map so that all downstream paths consume it.
 		let prev_hop = mpp_part.prev_hop.clone();
 		let check_result = {
-			let trampoline_payment =
-				trampoline_payments.get_mut(&payment_hash).expect("just inserted");
 			self.check_incoming_mpp_part(
 				&mut trampoline_payment.htlcs,
 				&mut trampoline_payment.onion_fields,
@@ -8738,10 +8741,9 @@ impl<
 		let trampoline_payment = match check_result {
 			Ok(false) => return Ok(()),
 			Err(()) => {
-				debug_assert!(
-					!first_trampoline_htlc,
-					"first trampoline HTLC should not fail check_incoming_mpp_part"
-				);
+				if just_added {
+					trampoline_payment_entry.remove();
+				}
 				return Err((
 					// When we couldn't add a new HTLC, we just fail back our last received htlc,
 					// allowing others to wait for more MPP parts to arrive.
@@ -8755,7 +8757,7 @@ impl<
 					),
 				));
 			},
-			Ok(true) => trampoline_payments.remove(&payment_hash).expect("just inserted"),
+			Ok(true) => trampoline_payment_entry.remove(),
 		};
 
 		let incoming_amt_msat: u64 = trampoline_payment.htlcs.iter().map(|h| h.value).sum();
