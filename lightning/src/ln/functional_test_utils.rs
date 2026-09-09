@@ -493,6 +493,10 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 			| ConnectStyle::TransactionsFirstSkippingBlocks
 			| ConnectStyle::HighlyRedundantTransactionsFirstSkippingBlocks
 			| ConnectStyle::TransactionsDuplicativelyFirstSkippingBlocks => {
+				for tx in orig.0.txdata {
+					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.compute_txid());
+					node.node.transaction_unconfirmed(&tx.compute_txid());
+				}
 				if i == count - 1 {
 					node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
 					node.node.best_block_updated(&prev.0.header, prev.1);
@@ -506,6 +510,10 @@ pub fn disconnect_blocks<'a, 'b, 'c, 'd>(node: &'a Node<'b, 'c, 'd>, count: u32)
 				}
 			},
 			_ => {
+				for tx in orig.0.txdata {
+					node.chain_monitor.chain_monitor.transaction_unconfirmed(&tx.compute_txid());
+					node.node.transaction_unconfirmed(&tx.compute_txid());
+				}
 				node.chain_monitor.chain_monitor.best_block_updated(&prev.0.header, prev.1);
 				node.node.best_block_updated(&prev.0.header, prev.1);
 			},
@@ -3320,6 +3328,30 @@ pub fn expect_failed_rbf_events<'a, 'b, 'c>(
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}
 	discarded
+}
+
+/// Expects the `DiscardFunding` event emitted when [`ChannelManager::funding_contributed`] rejects
+/// an RBF contribution with an error, returning the discarded inputs and outputs. No
+/// `SpliceNegotiationFailed` is emitted since the failure is already reported through the
+/// returned error.
+///
+/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+pub fn expect_rejected_rbf_event<'a, 'b, 'c>(
+	node: &Node<'a, 'b, 'c>, expected_channel_id: &ChannelId,
+) -> (Vec<BitcoinOutPoint>, Vec<ScriptBuf>) {
+	let events = node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event::DiscardFunding {
+			channel_id,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(channel_id, expected_channel_id);
+			(inputs.clone(), outputs.clone())
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
 }
 
 #[cfg(any(test, ldk_bench, feature = "_test_utils"))]

@@ -54,6 +54,7 @@ use lightning_0_0_125::routing::router as router_0_0_125;
 use lightning_0_0_125::util::ser::Writeable as _;
 
 use lightning::blinded_path::message::NextMessageHop;
+use lightning::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType, NegotiationFailureReason};
 use lightning::ln::channel_state::SpliceCandidateStatus;
@@ -1376,6 +1377,103 @@ fn upgrade_queued_splice_contribution_from_0_2() {
 }
 
 #[test]
+fn downgrade_overlapping_splice_failure_to_0_2() {
+	// An RBF negotiation aborted when a prior splice candidate confirms fails, releasing only the
+	// outputs unique to it; the rest stay committed to that candidate. Check that a downgraded 0.2
+	// node is told about exactly the released ones, since it cannot read the `DiscardFunding`
+	// carrying them and has to rely on `SpliceFailed` instead (see #4919).
+	let (node_0_ser, mon_0_ser, released_script, chan_id_bytes);
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_id_0 = nodes[0].node.get_our_node_id();
+		let node_id_1 = nodes[1].node.get_our_node_id();
+		let channel_id = create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0).2;
+		chan_id_bytes = channel_id.0;
+
+		let added_value = Amount::from_sat(50_000);
+		provide_utxo_reserves(&nodes, 2, added_value * 2);
+		let committed_output = TxOut {
+			value: Amount::from_sat(1_000),
+			script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+		};
+		let contribution = do_initiate_splice_in_and_out(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			added_value,
+			vec![committed_output],
+		);
+		let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+
+		// Initiate an RBF reusing the prior contribution plus an output unique to this round, and
+		// drive the negotiation in flight.
+		let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+		released_script = script_pubkey.clone();
+		let released_output = TxOut { value: Amount::from_sat(1_000), script_pubkey };
+		let rbf_feerate = bitcoin::FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+		let rbf_contribution = do_initiate_rbf_splice_in_and_out(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			vec![released_output],
+			rbf_feerate,
+		);
+		let stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+		nodes[1].node.handle_stfu(node_id_0, &stfu);
+		let stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+		nodes[0].node.handle_stfu(node_id_1, &stfu);
+		let _tx_init_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxInitRbf, node_id_1);
+
+		// The prior candidate confirming aborts the in-flight RBF, failing it with only the
+		// unique output released; the prior contribution stays committed to that candidate.
+		mine_transaction(&nodes[0], &splice_tx);
+		let _tx_abort = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+
+		node_0_ser = nodes[0].node.encode();
+		mon_0_ser = get_monitor!(nodes[0], channel_id).encode();
+
+		// The failure events have to remain in the serialization above for the 0.2 read below, so
+		// only drain them here, satisfying the check for unhandled events as the node is dropped.
+		let (inputs, outputs) = expect_failed_rbf_events(
+			&nodes[0],
+			&channel_id,
+			&rbf_contribution,
+			NegotiationFailureReason::CannotInitiateRbf,
+		);
+		assert!(inputs.is_empty());
+		assert_eq!(outputs, vec![released_script.clone()]);
+	}
+
+	let mut chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+	chanmon_cfgs[0].keys_manager.disable_all_state_policy_checks = true;
+	let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+	let mut config = lightning_0_2_utils::test_default_channel_config();
+	// The current side uses the anchors channel type by default; 0.2 only accepts a channel whose
+	// type it advertises support for.
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+
+	let mgr_0 =
+		lightning_0_2_utils::_reload_node(&nodes[0], config, &node_0_ser, &[&mon_0_ser[..]]);
+	assert_eq!(mgr_0.list_channels().len(), 1);
+	let events = mgr_0.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match &events[0] {
+		Event_0_2::SpliceFailed { channel_id, contributed_inputs, contributed_outputs, .. } => {
+			assert_eq!(channel_id.0, chan_id_bytes);
+			assert!(contributed_inputs.is_empty());
+			assert_eq!(contributed_outputs.len(), 1, "{contributed_outputs:?}");
+			assert_eq!(contributed_outputs[0].script_pubkey, released_script);
+		},
+		ev => panic!("Expected SpliceFailed, got {ev:?}"),
+	}
+}
+
+#[test]
 fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	// Negotiate a contributory splice on current, downgrade to LDK 0.2, then upgrade back. LDK 0.2
 	// persists neither our contribution nor the splice feerate. The splice therefore returns to
@@ -1434,24 +1532,14 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	)
 	.unwrap();
 	assert_eq!(
-		nodes[0].node.funding_contributed(
-			&channel_id,
-			&node_id_1,
-			overlapping_contribution.clone(),
-			None,
-		),
+		nodes[0].node.funding_contributed(&channel_id, &node_id_1, overlapping_contribution, None),
 		Err(APIError::APIMisuseError {
 			err: format!("Channel {} cannot accept funding contribution", channel_id),
 		})
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
-	let (inputs, outputs) = expect_failed_rbf_events(
-		&nodes[0],
-		&channel_id,
-		&overlapping_contribution,
-		NegotiationFailureReason::CannotInitiateRbf,
-	);
+	let (inputs, outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
 	assert!(inputs.is_empty());
 	assert_eq!(outputs, vec![script_pubkey]);
 

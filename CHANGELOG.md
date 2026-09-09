@@ -141,6 +141,11 @@ GitHub regularly.
    is only applied after the block containing the commitment transaction
    confirms are now properly failed. This should not impact users of a
   `ChainMonitor` which applies a `ChannelMonitorUpdate` immediately (#4434).
+ * `ChannelMonitor::get_relevant_txids` (and, thus, `<ChainMonitor as Confirm>`)
+   now correctly include the funding transaction, once confirmed, rather than
+   the `ChannelMonitor` relying on the chain sync logic to provide funding
+   transaction confirmation updates as a side effect of
+   `ChannelManager::get_relevant_txids` (#4943).
  * Stream write failures when serializing a `ChannelManager` no longer results
    in spurious `Event::SpliceNegotiationFailed`s and `Event::DiscardFunding`s
    for still-active splices (#4902).

@@ -14,9 +14,10 @@
 //! To test this we stand up a network of three nodes and read bytes from the fuzz input to denote
 //! actions such as sending payments, handling events, or changing monitor update return values on
 //! a per-node basis. This should allow it to find any cases where the ordering of actions results
-//! in us getting out of sync with ourselves, and, assuming at least one of our recieve- or
-//! send-side handling is correct, other peers. We consider it a failure if any action results in a
-//! channel being force-closed.
+//! in us getting out of sync with ourselves, and, assuming at least one of our receive- or
+//! send-side handling is correct, other peers. We consider it a failure if any action results in
+//! a channel being force-closed. The fuzzer also models transaction relay through a harness
+//! mempool, making transaction confirmation and block delivery closer to normal node behavior.
 
 use bitcoin::amount::Amount;
 use bitcoin::constants::genesis_block;
@@ -27,6 +28,7 @@ use bitcoin::script::{Builder, ScriptBuf};
 use bitcoin::transaction::Version;
 use bitcoin::transaction::{Transaction, TxOut};
 use bitcoin::FeeRate;
+use bitcoin::OutPoint as BitcoinOutPoint;
 
 use bitcoin::block::Header;
 use bitcoin::hash_types::Txid;
@@ -41,15 +43,15 @@ use lightning::chain;
 use lightning::chain::chaininterface::{
 	BroadcasterInterface, ConfirmationTarget, FeeEstimator, TransactionType,
 };
-use lightning::chain::channelmonitor::ChannelMonitor;
+use lightning::chain::channelmonitor::{ChannelMonitor, ANTI_REORG_DELAY};
 use lightning::chain::{
 	chainmonitor, channelmonitor, BlockLocator, ChannelMonitorUpdateStatus, Confirm, Watch,
 };
-use lightning::events;
+use lightning::events::{self, EventsProvider};
 use lightning::ln::channel::{
 	FEE_SPIKE_BUFFER_FEE_INCREASE_MULTIPLE, MAX_STD_OUTPUT_DUST_LIMIT_SATOSHIS,
 };
-use lightning::ln::channel_state::ChannelDetails;
+use lightning::ln::channel_state::{ChannelDetails, SpliceCandidateStatus};
 use lightning::ln::channelmanager::{
 	ChainParameters, ChannelManager, ChannelManagerReadArgs, PaymentId, RecentPaymentDetails,
 	TrustedChannelFeatures,
@@ -83,6 +85,8 @@ use lightning::util::test_channel_signer::{EnforcementState, SignerOp, TestChann
 use lightning::util::test_utils::TestWalletSource;
 use lightning::util::wallet_utils::{WalletSourceSync, WalletSync};
 
+use lightning::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
+
 use lightning_invoice::RawBolt11Invoice;
 
 use crate::utils::test_logger::{self, Output};
@@ -94,7 +98,7 @@ use bitcoin::secp256k1::{self, Message, PublicKey, Scalar, Secp256k1, SecretKey}
 
 use lightning::util::dyn_signer::DynSigner;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::cmp;
 use std::collections::HashSet;
 use std::mem;
@@ -103,6 +107,18 @@ use std::sync::{Arc, Mutex};
 
 const MAX_FEE: u32 = 10_000;
 const MAX_SETTLE_ITERATIONS: usize = 256;
+const FORCE_CLOSE_CLEANUP_ROUNDS: usize = 512;
+// Each wallet is seeded with enough confirmed UTXOs that repeated splice
+// transactions don't run out of inputs mid-run.
+const NUM_WALLET_UTXOS: u32 = 50;
+// A single fuzz byte can mine more than one block so a corpus entry does not
+// need long runs of identical "mine one block" commands to reach CSV or CLTV
+// boundaries. Mining commands are capped in `safe_mine_block_count` if
+// unresolved HTLCs are near expiry.
+const MINE_BLOCK_COUNTS: [u32; 8] = [1, 2, 3, 6, 12, 24, 48, 144];
+// Finish-time relay/mining rounds are capped so cleanup cannot spin forever.
+const MAX_FINISH_RELAY_MINE_ROUNDS: usize = 32;
+
 struct FuzzEstimator {
 	ret_val: atomic::AtomicU32,
 }
@@ -184,9 +200,14 @@ impl BroadcasterInterface for TestBroadcaster {
 struct ChainState {
 	blocks: Vec<(Header, Vec<Transaction>)>,
 	confirmed_txids: HashSet<Txid>,
-	/// Unconfirmed transactions (e.g., splice txs). Conflicting RBF candidates may coexist;
-	/// `confirm_pending_txs` determines which one confirms.
+	/// Unconfirmed transactions admitted to the mempool, in valid block order:
+	/// every input is either confirmed already or created by an earlier
+	/// transaction in this vector.
 	pending_txs: Vec<(Txid, Transaction)>,
+	/// Unspent outputs created by confirmed transactions. Mempool admission
+	/// checks inputs against this set, adjusted for outputs created and spent
+	/// by the transactions already in `pending_txs`.
+	utxos: HashSet<BitcoinOutPoint>,
 }
 
 impl ChainState {
@@ -197,6 +218,7 @@ impl ChainState {
 			blocks: vec![(genesis_header, Vec::new())],
 			confirmed_txids: HashSet::new(),
 			pending_txs: Vec::new(),
+			utxos: HashSet::new(),
 		}
 	}
 
@@ -204,79 +226,221 @@ impl ChainState {
 		(self.blocks.len() - 1) as u32
 	}
 
-	fn is_outpoint_spent(&self, outpoint: &bitcoin::OutPoint) -> bool {
-		self.blocks.iter().any(|(_, txs)| {
-			txs.iter().any(|tx| tx.input.iter().any(|input| input.previous_output == *outpoint))
+	fn is_unspent(&self, outpoint: &BitcoinOutPoint) -> bool {
+		self.utxos.contains(outpoint)
+	}
+
+	fn confirmed_output(&self, outpoint: &BitcoinOutPoint) -> Option<&TxOut> {
+		if !self.confirmed_txids.contains(&outpoint.txid) {
+			return None;
+		}
+		self.blocks.iter().find_map(|(_, txs)| {
+			txs.iter().find_map(|tx| {
+				if tx.compute_txid() == outpoint.txid {
+					tx.output.get(outpoint.vout as usize)
+				} else {
+					None
+				}
+			})
 		})
 	}
 
-	fn confirm_tx(&mut self, tx: Transaction) -> bool {
-		let txid = tx.compute_txid();
-		if self.confirmed_txids.contains(&txid) {
-			return false;
-		}
-		if tx.input.iter().any(|input| self.is_outpoint_spent(&input.previous_output)) {
-			return false;
-		}
-		self.confirmed_txids.insert(txid);
+	// Initial channel funding is represented by a no-input transaction. It is
+	// not a valid Bitcoin transaction, but it gives LDK a stable funding
+	// outpoint without modeling coin selection during channel setup.
+	fn is_synthetic_funding_tx(tx: &Transaction) -> bool {
+		!tx.is_coinbase() && tx.input.is_empty()
+	}
 
+	// Checks whether a transaction spends an input twice or spends an output
+	// not present in `utxos`.
+	fn has_invalid_inputs(tx: &Transaction, utxos: &HashSet<BitcoinOutPoint>) -> bool {
+		let mut spent_inputs = HashSet::new();
+		for input in &tx.input {
+			if !spent_inputs.insert(input.previous_output) {
+				return true;
+			}
+			if !utxos.contains(&input.previous_output) {
+				return true;
+			}
+		}
+		false
+	}
+
+	fn apply_tx_to_utxos(&mut self, txid: Txid, tx: &Transaction) {
+		for input in &tx.input {
+			self.utxos.remove(&input.previous_output);
+		}
+		for idx in 0..tx.output.len() {
+			self.utxos.insert(BitcoinOutPoint { txid, vout: idx as u32 });
+		}
+	}
+
+	fn mine_block(&mut self, txs: Vec<Transaction>) {
 		let prev_hash = self.blocks.last().unwrap().0.block_hash();
 		let header = create_dummy_header(prev_hash, 42);
-		self.blocks.push((header, vec![tx]));
-
-		for _ in 0..5 {
-			let prev_hash = self.blocks.last().unwrap().0.block_hash();
-			let header = create_dummy_header(prev_hash, 42);
-			self.blocks.push((header, Vec::new()));
-		}
-		true
+		self.blocks.push((header, txs));
 	}
 
-	/// Add a transaction to the pending pool (mempool). Multiple conflicting transactions (RBF
-	/// candidates) may coexist; `confirm_pending_txs` selects which one to confirm.
-	fn add_pending_tx(&mut self, tx: Transaction) {
-		self.pending_txs.push((tx.compute_txid(), tx));
+	fn mine_empty_blocks(&mut self, count: u32) {
+		for _ in 0..count {
+			self.mine_block(Vec::new());
+		}
 	}
 
-	/// Confirm pending transactions in a single block, selecting deterministically among
-	/// conflicting RBF candidates. Sorting by txid ensures the winner is determined by fuzz input
-	/// content. Transactions that double-spend an already-confirmed outpoint are skipped.
-	fn confirm_pending_txs(&mut self) {
-		let mut txs = std::mem::take(&mut self.pending_txs);
-		txs.sort_by_key(|(txid, _)| *txid);
+	// Mines a setup transaction directly into a block, bypassing the mempool,
+	// and buries it to `depth`. Wallet seeding and synthetic funding
+	// transactions are not relayable, so they cannot go through normal
+	// admission.
+	fn mine_setup_tx_to_depth(&mut self, tx: Transaction, depth: u32) {
+		assert!(
+			tx.is_coinbase() || Self::is_synthetic_funding_tx(&tx),
+			"direct setup mining is only for coinbase and synthetic funding transactions: {:?}",
+			tx,
+		);
+		let txid = tx.compute_txid();
+		assert!(
+			self.confirmed_txids.insert(txid),
+			"direct setup transaction was already confirmed: {:?}",
+			tx,
+		);
+		self.apply_tx_to_utxos(txid, &tx);
 
-		let mut confirmed = Vec::new();
-		let mut spent_outpoints = Vec::new();
-		for (txid, tx) in txs {
-			if self.confirmed_txids.contains(&txid) {
-				continue;
-			}
-			if tx.input.iter().any(|input| {
-				self.is_outpoint_spent(&input.previous_output)
-					|| spent_outpoints.contains(&input.previous_output)
-			}) {
-				continue;
-			}
-			self.confirmed_txids.insert(txid);
-			for input in &tx.input {
-				spent_outpoints.push(input.previous_output);
-			}
-			confirmed.push(tx);
+		self.mine_block(vec![tx]);
+		self.mine_empty_blocks(depth.saturating_sub(1));
+	}
+
+	// Attempts to admit a broadcast transaction to the mempool, enforcing
+	// locktime, input, and RBF rules. Mining later confirms the whole mempool
+	// without further selection.
+	fn admit_tx_to_mempool(&mut self, tx: Transaction) {
+		let txid = tx.compute_txid();
+		let lock_time = tx.lock_time.to_consensus_u32();
+		let locktime_enabled =
+			tx.input.iter().any(|input| input.sequence.enables_absolute_lock_time());
+
+		let is_ldk_commitment_obscured_locktime =
+			tx.input.len() == 1 && tx.input[0].sequence.0 >> 24 == 0x80 && lock_time >> 24 == 0x20;
+
+		let immature_absolute_locktime =
+			locktime_enabled && tx.lock_time.is_block_height() && self.tip_height() < lock_time;
+		assert!(
+			!immature_absolute_locktime,
+			"broadcast immature locktime transaction into chanmon harness mempool: {:?}",
+			tx,
+		);
+
+		let unmodeled_time_locktime = locktime_enabled
+			&& tx.lock_time.is_block_time()
+			&& !is_ldk_commitment_obscured_locktime;
+		assert!(
+			!unmodeled_time_locktime,
+			"broadcast time-locked transaction into chanmon harness mempool: {:?}",
+			tx,
+		);
+
+		assert!(
+			!tx.is_coinbase() && !Self::is_synthetic_funding_tx(&tx),
+			"setup-only transaction entered chanmon harness mempool: {:?}",
+			tx,
+		);
+
+		if self.confirmed_txids.contains(&txid) {
+			return;
 		}
-
-		if confirmed.is_empty() {
+		if self.pending_txs.iter().any(|(pending_txid, _)| *pending_txid == txid) {
 			return;
 		}
 
-		let prev_hash = self.blocks.last().unwrap().0.block_hash();
-		let header = create_dummy_header(prev_hash, 42);
-		self.blocks.push((header, confirmed));
-
-		for _ in 0..5 {
-			let prev_hash = self.blocks.last().unwrap().0.block_hash();
-			let header = create_dummy_header(prev_hash, 42);
-			self.blocks.push((header, Vec::new()));
+		// Fee-rate policy is not modeled, so among conflicting RBF candidates
+		// the last one relayed wins.
+		let mut conflicting_pending_txids = HashSet::new();
+		for (pending_txid, pending_tx) in &self.pending_txs {
+			let signals_rbf = pending_tx.input.iter().any(|input| input.sequence.is_rbf());
+			let conflicts_with_new_tx = pending_tx.input.iter().any(|pending_input| {
+				tx.input.iter().any(|input| input.previous_output == pending_input.previous_output)
+			});
+			if conflicts_with_new_tx {
+				if !signals_rbf {
+					return;
+				}
+				conflicting_pending_txids.insert(*pending_txid);
+			}
 		}
+		if !conflicting_pending_txids.is_empty() {
+			let mut removed_outputs = HashSet::new();
+			let mut retained_txs = Vec::new();
+			for (pending_txid, pending_tx) in self.pending_txs.drain(..) {
+				let direct_conflict = conflicting_pending_txids.contains(&pending_txid);
+				let spends_removed_tx = pending_tx
+					.input
+					.iter()
+					.any(|input| removed_outputs.contains(&input.previous_output));
+				if direct_conflict || spends_removed_tx {
+					for idx in 0..pending_tx.output.len() {
+						removed_outputs
+							.insert(BitcoinOutPoint { txid: pending_txid, vout: idx as u32 });
+					}
+				} else {
+					retained_txs.push((pending_txid, pending_tx));
+				}
+			}
+			self.pending_txs = retained_txs;
+		}
+
+		// Build the UTXO set this transaction would see if the current mempool
+		// confirmed.
+		let mut available_utxos = self.utxos.clone();
+		for (pending_txid, pending_tx) in &self.pending_txs {
+			for input in &pending_tx.input {
+				available_utxos.remove(&input.previous_output);
+			}
+			for idx in 0..pending_tx.output.len() {
+				available_utxos.insert(BitcoinOutPoint { txid: *pending_txid, vout: idx as u32 });
+			}
+		}
+		if Self::has_invalid_inputs(&tx, &available_utxos) {
+			return;
+		}
+		self.pending_txs.push((txid, tx));
+	}
+
+	fn relay_transactions(&mut self, txs: Vec<Transaction>) {
+		for tx in txs {
+			self.admit_tx_to_mempool(tx);
+		}
+	}
+
+	// Mines `count` blocks, confirming the current mempool in the first block.
+	fn mine_blocks(&mut self, count: u32) -> Vec<Transaction> {
+		assert!(count > 0, "mining zero blocks should not be requested");
+
+		let mempool_txs = std::mem::take(&mut self.pending_txs);
+		let confirmed_txs = if mempool_txs.is_empty() {
+			self.mine_empty_blocks(1);
+			Vec::new()
+		} else {
+			let mut confirmed = Vec::new();
+			for (txid, tx) in mempool_txs {
+				assert!(
+					!Self::has_invalid_inputs(&tx, &self.utxos),
+					"mempool transaction was no longer valid at mining time: {:?}",
+					tx,
+				);
+				assert!(
+					self.confirmed_txids.insert(txid),
+					"mempool transaction was already confirmed at mining time: {:?}",
+					tx,
+				);
+				self.apply_tx_to_utxos(txid, &tx);
+				confirmed.push(tx);
+			}
+			let confirmed_txs = confirmed.clone();
+			self.mine_block(confirmed);
+			confirmed_txs
+		};
+		self.mine_empty_blocks(count - 1);
+		confirmed_txs
 	}
 
 	fn block_at(&self, height: u32) -> &(Header, Vec<Transaction>) {
@@ -587,6 +751,12 @@ type TestChainMonitor = chainmonitor::ChainMonitor<
 	Arc<HarnessPersister>,
 	Arc<KeyProvider>,
 >;
+type TestBumpTransactionEventHandler = BumpTransactionEventHandlerSync<
+	Arc<TestBroadcaster>,
+	Arc<WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+	Arc<KeyProvider>,
+	Arc<dyn Logger + MaybeSend + MaybeSync>,
+>;
 
 struct KeyProvider {
 	node_secret: SecretKey,
@@ -719,13 +889,16 @@ impl SignerProvider for KeyProvider {
 	}
 }
 
-// Since this fuzzer is only concerned with live-channel operations, we don't need to worry about
-// any signer operations that come after a force close.
-const SUPPORTED_SIGNER_OPS: [SignerOp; 4] = [
+// These signer operations can be blocked by fuzz bytes. The first four cover
+// live-channel and splice signing, while the holder-side operations cover local
+// on-chain claim signing after LDK has moved a channel to chain handling.
+const SUPPORTED_SIGNER_OPS: [SignerOp; 6] = [
 	SignerOp::SignCounterpartyCommitment,
 	SignerOp::GetPerCommitmentPoint,
 	SignerOp::ReleaseCommitmentSecret,
 	SignerOp::SignSpliceSharedInput,
+	SignerOp::SignHolderCommitment,
+	SignerOp::SignHolderHtlcTransaction,
 ];
 
 impl KeyProvider {
@@ -771,24 +944,123 @@ type ChanMan<'a> = ChannelManager<
 >;
 
 #[inline]
-fn assert_disconnect_action(action: &msgs::ErrorAction) -> (&msgs::WarningMessage, bool) {
-	// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause a node to
-	// disconnect their counterparty if they're expecting a timely response.
-	if let msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } = action {
-		let is_quiescent_msg = msg
-			.data
-			.contains("A negotiated splice transaction has already confirmed, cannot RBF")
-			|| msg.data.contains(
-				"Waiting for splice to lock before potentially proceeding with queued contribution",
-			) || msg.data.contains("contribution no longer valid at quiescence")
-			|| msg.data.contains("Quiescence no longer needed");
-		if !msg.data.contains("Disconnecting due to timeout awaiting response") && !is_quiescent_msg
-		{
-			panic!("Unexpected disconnect case: {}", msg.data);
-		}
-		(msg, is_quiescent_msg)
-	} else {
-		panic!("Expected disconnect, got: {:?}", action);
+fn assert_disconnect_action<'a>(
+	action: &'a msgs::ErrorAction, close_tracker: &ChannelCloseTracker,
+) -> ExpectedControlAction<'a> {
+	match action {
+		msgs::ErrorAction::DisconnectPeerWithWarning { ref msg } => {
+			// Since sending/receiving messages may be delayed, `timer_tick_occurred` may cause
+			// a node to disconnect their counterparty if they're expecting a timely response.
+			let is_quiescent_msg = msg
+				.data
+				.contains("A negotiated splice transaction has already confirmed, cannot RBF")
+				|| msg.data.contains(
+					"Waiting for splice to lock before potentially proceeding with queued contribution",
+				) || msg.data.contains("contribution no longer valid at quiescence")
+				|| msg.data.contains("Quiescence no longer needed");
+			assert!(
+				msg.data.contains("Disconnecting due to timeout awaiting response")
+					|| is_quiescent_msg,
+				"Unexpected disconnect case: {}",
+				msg.data,
+			);
+			ExpectedControlAction::Warning(msg, is_quiescent_msg)
+		},
+		msgs::ErrorAction::SendErrorMessage { ref msg } => {
+			assert!(
+				close_tracker.is_expected_closed_channel_error_msg(msg),
+				"Expected closed-channel error, got: {:?}",
+				msg,
+			);
+			ExpectedControlAction::Error(msg)
+		},
+		msgs::ErrorAction::SendWarningMessage { ref msg, .. } => {
+			assert!(
+				close_tracker.is_expected_closed_channel_warning_msg(msg),
+				"Expected closed-channel warning, got: {:?}",
+				msg,
+			);
+			ExpectedControlAction::Warning(msg, false)
+		},
+		_ => panic!("Expected harness control error, got: {:?}", action),
+	}
+}
+
+enum ExpectedControlAction<'a> {
+	Warning(&'a msgs::WarningMessage, bool),
+	Error(&'a msgs::ErrorMessage),
+}
+
+struct ChannelCloseTracker {
+	// Channels this input explicitly requested to close, with the error reason
+	// passed to `force_close_broadcasting_latest_txn`.
+	closed_channels: HashMap<ChannelId, String>,
+}
+
+impl ChannelCloseTracker {
+	fn new() -> Self {
+		Self { closed_channels: new_hash_map() }
+	}
+
+	fn is_closed_or_closing(&self, channel_id: &ChannelId) -> bool {
+		self.closed_channels.contains_key(channel_id)
+	}
+
+	fn is_open(&self, channel_id: &ChannelId) -> bool {
+		!self.is_closed_or_closing(channel_id)
+	}
+
+	fn open_channels(&self, channel_ids: &[ChannelId]) -> Vec<ChannelId> {
+		channel_ids.iter().copied().filter(|channel_id| self.is_open(channel_id)).collect()
+	}
+
+	fn has_closed_channels(&self) -> bool {
+		!self.closed_channels.is_empty()
+	}
+
+	fn expect_channel_close(&mut self, channel_id: ChannelId, reason: String) {
+		assert!(
+			self.closed_channels.insert(channel_id, reason).is_none(),
+			"Channel {:?} close was already tracked",
+			channel_id,
+		);
+	}
+
+	fn verify_channel_closed_event(
+		&mut self, channel_id: ChannelId, reason: &events::ClosureReason,
+	) {
+		assert!(
+			self.closed_channels.contains_key(&channel_id),
+			"Channel {:?} closed without an explicit force-close: {:?}",
+			channel_id,
+			reason,
+		);
+	}
+
+	fn is_expected_closed_channel_error_msg(&self, msg: &msgs::ErrorMessage) -> bool {
+		let expected_reason = match self.closed_channels.get(&msg.channel_id) {
+			Some(reason) => reason,
+			None => return false,
+		};
+		msg.data == *expected_reason
+			|| msg.data
+				== "Channel closed because commitment or closing transaction was confirmed on chain."
+			// Messages queued before the close can be delivered
+			// after the counterparty has removed the channel.
+			|| msg.data.starts_with(
+				"Got a message for a channel from the wrong node! No such channel_id",
+			)
+			// A stale channel message may already have been delivered before
+			// the harness observes the close. If it errors against the same
+			// tracked channel, the result is part of explicit-close cleanup.
+			|| msg.data
+				== "Peer sent an invalid channel_reestablish to force close in a non-standard way"
+			|| msg.data.contains("when we needed a channel_reestablish")
+	}
+
+	fn is_expected_closed_channel_warning_msg(&self, msg: &msgs::WarningMessage) -> bool {
+		self.closed_channels.contains_key(&msg.channel_id)
+			&& msg.data == "Peer sent `stfu` when we were not in a live state"
 	}
 }
 
@@ -823,11 +1095,13 @@ struct HarnessNode<'a> {
 	logger: Arc<dyn Logger + MaybeSend + MaybeSync>,
 	broadcaster: Arc<TestBroadcaster>,
 	fee_estimator: Arc<FuzzEstimator>,
-	wallet: TestWalletSource,
+	wallet: Arc<TestWalletSource>,
+	wallet_sync: Arc<WalletSync<Arc<TestWalletSource>, Arc<dyn Logger + MaybeSend + MaybeSync>>>,
+	bump_tx_handler: TestBumpTransactionEventHandler,
 	persistence_style: ChannelMonitorUpdateStatus,
 	deferred: bool,
 	serialized_manager: Vec<u8>,
-	height: u32,
+	serialized_manager_generation: u64,
 	last_htlc_clear_fee: u32,
 }
 
@@ -871,7 +1145,7 @@ impl<'a> HarnessNode<'a> {
 	}
 
 	fn new<Out: Output + MaybeSend + MaybeSync>(
-		node_id: u8, wallet: TestWalletSource, fee_estimator: Arc<FuzzEstimator>,
+		node_id: u8, wallet: Arc<TestWalletSource>, fee_estimator: Arc<FuzzEstimator>,
 		broadcaster: Arc<TestBroadcaster>, persistence_style: ChannelMonitorUpdateStatus,
 		deferred: bool, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
 	) -> Self {
@@ -894,6 +1168,16 @@ impl<'a> HarnessNode<'a> {
 			Arc::clone(&logger),
 			&persister,
 			deferred,
+		);
+		let wallet_sync = Arc::new(WalletSync::new(Arc::clone(&wallet), Arc::clone(&logger)));
+		// Wallet-backed handler that completes and broadcasts the transactions
+		// requested by monitor BumpTransaction events. It shares the node's
+		// wallet sync so anchor spends and splice funding share UTXO lock state.
+		let bump_tx_handler = BumpTransactionEventHandlerSync::new(
+			Arc::clone(&broadcaster),
+			Arc::clone(&wallet_sync),
+			Arc::clone(&keys_manager),
+			Arc::clone(&logger),
 		);
 		let network = Network::Bitcoin;
 		let best_block_timestamp = genesis_block(network).header.time;
@@ -922,10 +1206,12 @@ impl<'a> HarnessNode<'a> {
 			broadcaster,
 			fee_estimator,
 			wallet,
+			wallet_sync,
+			bump_tx_handler,
 			persistence_style,
 			deferred,
 			serialized_manager: Vec::new(),
-			height: 0,
+			serialized_manager_generation: 0,
 			last_htlc_clear_fee: 253,
 		}
 	}
@@ -962,21 +1248,127 @@ impl<'a> HarnessNode<'a> {
 		}
 	}
 
+	fn manager_height(&self) -> u32 {
+		self.node.current_best_block().height
+	}
+
+	fn has_awaiting_signature_splice(&self) -> bool {
+		self.list_channels().iter().any(|channel| {
+			channel.splice_details.as_ref().map_or(false, |splice_details| {
+				splice_details.candidates.iter().any(|candidate| {
+					matches!(candidate.status, SpliceCandidateStatus::AwaitingSignatures { .. })
+				})
+			})
+		})
+	}
+
+	// Connects a block range to the ChannelManager, and to the ChainMonitor when
+	// sync_monitors is set. Reload syncs monitors separately because they can be
+	// at different heights than the manager, so it leaves them out here.
+	fn connect_chain_range(
+		&mut self, chain_state: &ChainState, start_height: u32, target_height: u32,
+		sync_monitors: bool,
+	) {
+		assert!(
+			target_height >= start_height,
+			"connect_chain_range cannot move height backward ({} -> {})",
+			start_height,
+			target_height
+		);
+		let mut height = start_height;
+		while height < target_height {
+			let mut next_height = height + 1;
+			while next_height <= target_height && chain_state.block_at(next_height).1.is_empty() {
+				next_height += 1;
+			}
+			if next_height > target_height {
+				// The rest of the range is empty. One best-block update to the
+				// final height is enough because LDK's Confirm API explicitly
+				// allows best_block_updated to skip intermediary blocks.
+				height = target_height;
+				let (header, _) = chain_state.block_at(height);
+				if sync_monitors {
+					self.monitor.best_block_updated(header, height);
+				}
+				self.node.best_block_updated(header, height);
+				break;
+			}
+			height = next_height;
+			let (header, txn) = chain_state.block_at(height);
+			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+			if sync_monitors {
+				self.monitor.transactions_confirmed(header, &txdata, height);
+			}
+			self.node.transactions_confirmed(header, &txdata, height);
+			if sync_monitors {
+				self.monitor.best_block_updated(header, height);
+			}
+			self.node.best_block_updated(header, height);
+		}
+	}
+
 	fn sync_with_chain_state(&mut self, chain_state: &ChainState, num_blocks: Option<u32>) {
 		let target_height = if let Some(num_blocks) = num_blocks {
-			std::cmp::min(self.height + num_blocks, chain_state.tip_height())
+			std::cmp::min(self.manager_height() + num_blocks, chain_state.tip_height())
 		} else {
 			chain_state.tip_height()
 		};
 
-		while self.height < target_height {
-			self.height += 1;
-			let (header, txn) = chain_state.block_at(self.height);
-			let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
-			if !txdata.is_empty() {
-				self.node.transactions_confirmed(header, &txdata, self.height);
+		let start_height = self.manager_height();
+		self.connect_chain_range(chain_state, start_height, target_height, true);
+	}
+
+	// Brings every channel monitor up to the chain tip from its own best block.
+	// On reload monitors can sit at different heights, so syncing them one by
+	// one avoids replaying a block into a monitor that already saw it, which the
+	// monitor would treat as a reorg. Each block is connected the same way as
+	// live operation: confirm its transactions, then advance the best block,
+	// ending with a best-block update to the tip for the trailing empty blocks.
+	fn sync_monitors_to_tip(&self, chain_state: &ChainState) {
+		let target_height = chain_state.tip_height();
+		for chan_id in self.monitor.list_monitors() {
+			let monitor = match self.monitor.get_monitor(chan_id) {
+				Ok(monitor) => monitor,
+				Err(_) => continue,
+			};
+			let start_height = monitor.current_best_block().height;
+			if start_height >= target_height {
+				continue;
 			}
-			self.node.best_block_updated(header, self.height);
+			for height in (start_height + 1)..=target_height {
+				let (header, txn) = chain_state.block_at(height);
+				if txn.is_empty() {
+					continue;
+				}
+				let txdata: Vec<_> = txn.iter().enumerate().map(|(i, tx)| (i + 1, tx)).collect();
+				monitor.transactions_confirmed(
+					header,
+					&txdata,
+					height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+				monitor.best_block_updated(
+					header,
+					height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+			}
+			let (header, txn) = chain_state.block_at(target_height);
+			if txn.is_empty() {
+				// The tip block carried no transactions, so it was skipped above.
+				// Advance the best block over the trailing empty blocks to the tip.
+				monitor.best_block_updated(
+					header,
+					target_height,
+					&self.broadcaster,
+					&self.fee_estimator,
+					&self.logger,
+				);
+			}
 		}
 	}
 
@@ -984,6 +1376,7 @@ impl<'a> HarnessNode<'a> {
 		if self.node.get_and_clear_needs_persistence() {
 			let pending_monitor_writes = self.monitor.pending_operation_count();
 			self.serialized_manager = self.node.encode();
+			self.serialized_manager_generation += 1;
 			if self.deferred {
 				self.monitor.flush(pending_monitor_writes, &self.logger);
 			} else {
@@ -999,12 +1392,17 @@ impl<'a> HarnessNode<'a> {
 	fn force_checkpoint_manager_persistence(&mut self) {
 		let pending_monitor_writes = self.monitor.pending_operation_count();
 		self.serialized_manager = self.node.encode();
+		self.serialized_manager_generation += 1;
 		self.node.get_and_clear_needs_persistence();
 		if self.deferred {
 			self.monitor.flush(pending_monitor_writes, &self.logger);
 		} else {
 			assert_eq!(pending_monitor_writes, 0);
 		}
+	}
+
+	fn next_manager_persistence_generation(&self) -> u64 {
+		self.serialized_manager_generation + 1
 	}
 
 	fn bump_fee_estimate(&mut self, chan_type: ChanType) {
@@ -1023,6 +1421,15 @@ impl<'a> HarnessNode<'a> {
 		self.node.timer_tick_occurred();
 	}
 
+	// Re-enables holder claim signing and asks the chain monitor to retry
+	// pending claim transactions. Different on-chain claim paths use
+	// SignHolderCommitment or SignHolderHtlcTransaction for force-closed channels.
+	fn enable_holder_signer_ops(&self) {
+		self.keys_manager.enable_op_for_all_signers(SignerOp::SignHolderCommitment);
+		self.keys_manager.enable_op_for_all_signers(SignerOp::SignHolderHtlcTransaction);
+		self.monitor.signer_unblocked(None);
+	}
+
 	fn current_feerate_sat_per_kw(&self) -> FeeRate {
 		self.fee_estimator.feerate_sat_per_kw()
 	}
@@ -1031,8 +1438,30 @@ impl<'a> HarnessNode<'a> {
 		self.last_htlc_clear_fee = self.fee_estimator.ret_val.load(atomic::Ordering::Acquire);
 	}
 
+	// Drains raw ChannelMonitor events. Monitor-generated BumpTransaction events
+	// do not flow through the manager event queue but still produce transactions
+	// the harness must mine. SpendableOutputs and DiscardFunding may also surface
+	// here, but the harness does not model an external sweeper wallet.
+	fn process_monitor_pending_events(&self) -> bool {
+		// process_pending_events takes an Fn handler, so use interior mutability
+		// to report whether the callback saw anything.
+		let had_events = Cell::new(false);
+		self.monitor.process_pending_events(&|event: events::Event| {
+			had_events.set(true);
+			match event {
+				events::Event::BumpTransaction(bump) => {
+					self.bump_tx_handler.handle_event(&bump);
+				},
+				events::Event::SpendableOutputs { .. } => {},
+				events::Event::DiscardFunding { .. } => {},
+				event => panic!("Unhandled monitor event: {:?}", event),
+			}
+			Ok(())
+		});
+		had_events.get()
+	}
+
 	fn splice_in(&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId) {
-		let wallet = WalletSync::new(&self.wallet, Arc::clone(&self.logger));
 		match self.node.splice_channel(channel_id, counterparty_node_id) {
 			Ok(funding_template) => {
 				let feerate =
@@ -1041,7 +1470,7 @@ impl<'a> HarnessNode<'a> {
 					Amount::from_sat(10_000),
 					feerate,
 					FeeRate::MAX,
-					&wallet,
+					self.wallet_sync.as_ref(),
 				) {
 					let _ = self.node.funding_contributed(
 						channel_id,
@@ -1106,7 +1535,8 @@ impl<'a> HarnessNode<'a> {
 
 	fn reload<Out: Output + MaybeSend + MaybeSync>(
 		&mut self, use_old_mons: u8, out: &Out, router: &'a FuzzRouter, chan_type: ChanType,
-	) {
+	) -> u64 {
+		let loaded_manager_generation = self.serialized_manager_generation;
 		let logger = Self::build_logger(self.node_id, out);
 		let persister = Self::build_persister(self.persistence_style);
 		let chain_monitor = Self::build_chain_monitor(
@@ -1178,6 +1608,7 @@ impl<'a> HarnessNode<'a> {
 		// even if the reloaded ChannelManager does not need persistence. Always checkpoint here so
 		// those registrations can be flushed against the manager snapshot they belong to.
 		self.force_checkpoint_manager_persistence();
+		loaded_manager_generation
 	}
 }
 
@@ -1263,6 +1694,7 @@ impl EventQueues {
 
 	fn route_from_middle<'a, I: IntoIterator<Item = MessageSendEvent>>(
 		&mut self, excess_events: I, expect_drop_node: Option<usize>, nodes: &[HarnessNode<'a>; 3],
+		close_tracker: &ChannelCloseTracker,
 	) {
 		// Push any events from Node B onto queues.ba and queues.bc.
 		let a_id = nodes[0].get_our_node_id();
@@ -1294,7 +1726,7 @@ impl EventQueues {
 					*node_id == a_id
 				},
 				MessageSendEvent::HandleError { ref action, ref node_id } => {
-					assert_disconnect_action(action);
+					assert_disconnect_action(action, close_tracker);
 					if Some(*node_id) == expect_drop_id {
 						panic!(
 							"peer_disconnected should drop msgs bound for the disconnected peer"
@@ -1329,7 +1761,10 @@ impl EventQueues {
 		}
 	}
 
-	fn drain_on_disconnect(&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3]) {
+	fn drain_on_disconnect(
+		&mut self, edge_node: usize, nodes: &[HarnessNode<'_>; 3],
+		close_tracker: &ChannelCloseTracker,
+	) {
 		match edge_node {
 			0 => {
 				for event in nodes[0].get_and_clear_pending_msg_events() {
@@ -1343,12 +1778,17 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_disconnect_action(action);
+							assert_disconnect_action(action, close_tracker);
 						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(0), nodes);
+				self.route_from_middle(
+					nodes[1].get_and_clear_pending_msg_events(),
+					Some(0),
+					nodes,
+					close_tracker,
+				);
 			},
 			2 => {
 				for event in nodes[2].get_and_clear_pending_msg_events() {
@@ -1362,12 +1802,17 @@ impl EventQueues {
 						MessageSendEvent::BroadcastChannelUpdate { .. } => {},
 						MessageSendEvent::SendChannelUpdate { .. } => {},
 						MessageSendEvent::HandleError { ref action, .. } => {
-							assert_disconnect_action(action);
+							assert_disconnect_action(action, close_tracker);
 						},
 						_ => panic!("Unhandled message event"),
 					}
 				}
-				self.route_from_middle(nodes[1].get_and_clear_pending_msg_events(), Some(2), nodes);
+				self.route_from_middle(
+					nodes[1].get_and_clear_pending_msg_events(),
+					Some(2),
+					nodes,
+					close_tracker,
+				);
 			},
 			_ => panic!("unsupported disconnected edge"),
 		}
@@ -1417,7 +1862,34 @@ impl PeerLink {
 		}
 	}
 
-	fn disconnect(&mut self, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues) {
+	fn assert_no_unexpected_disappeared_channels(
+		&self, nodes: &[HarnessNode<'_>; 3], close_tracker: &ChannelCloseTracker,
+	) {
+		let node_a_channels = nodes[self.node_a].list_channels();
+		let node_b_channels = nodes[self.node_b].list_channels();
+		for channel_id in &self.channel_ids {
+			if close_tracker.is_closed_or_closing(channel_id) {
+				continue;
+			}
+			assert!(
+				node_a_channels.iter().any(|chan| chan.channel_id == *channel_id),
+				"Node {} no longer lists channel {:?} without an explicit force-close",
+				self.node_a,
+				channel_id,
+			);
+			assert!(
+				node_b_channels.iter().any(|chan| chan.channel_id == *channel_id),
+				"Node {} no longer lists channel {:?} without an explicit force-close",
+				self.node_b,
+				channel_id,
+			);
+		}
+	}
+
+	fn disconnect(
+		&mut self, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues,
+		close_tracker: &ChannelCloseTracker,
+	) {
 		if self.disconnected {
 			return;
 		}
@@ -1433,7 +1905,7 @@ impl PeerLink {
 		} else {
 			panic!("unsupported link topology")
 		};
-		queues.drain_on_disconnect(edge_node, nodes);
+		queues.drain_on_disconnect(edge_node, nodes, close_tracker);
 		queues.clear_link(self);
 	}
 
@@ -1460,6 +1932,7 @@ impl PeerLink {
 
 	fn disconnect_for_reload(
 		&mut self, restarted_node: usize, nodes: &[HarnessNode<'_>; 3], queues: &mut EventQueues,
+		close_tracker: &ChannelCloseTracker,
 	) {
 		if self.disconnected {
 			return;
@@ -1476,6 +1949,7 @@ impl PeerLink {
 				nodes[1].get_and_clear_pending_msg_events(),
 				Some(restarted_node),
 				nodes,
+				close_tracker,
 			);
 		} else {
 			nodes[remaining_node].get_and_clear_pending_msg_events();
@@ -1484,14 +1958,78 @@ impl PeerLink {
 	}
 }
 
+struct PendingPayment {
+	payment_id: PaymentId,
+	payment_hash: PaymentHash,
+	first_persisted_manager_generation: u64,
+}
+
 struct NodePayments {
-	pending: Vec<PaymentId>,
+	pending: Vec<PendingPayment>,
 	resolved: HashMap<PaymentId, Option<PaymentHash>>,
 }
 
 impl NodePayments {
 	fn new() -> Self {
 		Self { pending: Vec::new(), resolved: new_hash_map() }
+	}
+
+	fn add_pending(
+		&mut self, payment_id: PaymentId, payment_hash: PaymentHash,
+		first_persisted_manager_generation: u64,
+	) {
+		self.pending.push(PendingPayment {
+			payment_id,
+			payment_hash,
+			first_persisted_manager_generation,
+		});
+	}
+
+	fn mark_sent(&mut self, sent_id: PaymentId, payment_hash: PaymentHash) {
+		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == sent_id);
+		if let Some(idx) = idx_opt {
+			self.pending.remove(idx);
+			self.resolved.insert(sent_id, Some(payment_hash));
+		} else {
+			assert!(self.resolved.contains_key(&sent_id));
+		}
+	}
+
+	fn mark_resolved_without_hash(&mut self, payment_id: PaymentId) {
+		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
+		if let Some(idx) = idx_opt {
+			self.pending.remove(idx);
+			self.resolved.insert(payment_id, None);
+		} else if !self.resolved.contains_key(&payment_id) {
+			// Some resolutions can arrive immediately, before the send helper records
+			// the payment as pending. Track them so later duplicate events are accepted.
+			self.resolved.insert(payment_id, None);
+		}
+	}
+
+	fn mark_successful_probe(&mut self, payment_id: PaymentId) {
+		let idx_opt = self.pending.iter().position(|pending| pending.payment_id == payment_id);
+		if let Some(idx) = idx_opt {
+			self.pending.remove(idx);
+			self.resolved.insert(payment_id, None);
+		} else {
+			assert!(self.resolved.contains_key(&payment_id));
+		}
+	}
+
+	fn sync_pending_with_manager_generation(
+		&mut self, loaded_manager_generation: u64,
+	) -> Vec<PaymentHash> {
+		let mut rolled_back_payment_hashes = Vec::new();
+		let pending = mem::take(&mut self.pending);
+		for pending_payment in pending {
+			if pending_payment.first_persisted_manager_generation > loaded_manager_generation {
+				rolled_back_payment_hashes.push(pending_payment.payment_hash);
+			} else {
+				self.pending.push(pending_payment);
+			}
+		}
+		rolled_back_payment_hashes
 	}
 }
 
@@ -1598,7 +2136,11 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 		succeeded
 	}
@@ -1675,7 +2217,11 @@ impl PaymentTracker {
 			},
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 	}
 
@@ -1744,7 +2290,11 @@ impl PaymentTracker {
 			Ok(()) => Self::check_payment_send_events(source, id),
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 	}
 
@@ -1844,7 +2394,11 @@ impl PaymentTracker {
 			Ok(()) => Self::check_payment_send_events(source, id),
 		};
 		if succeeded {
-			self.nodes[source_idx].pending.push(id);
+			self.nodes[source_idx].add_pending(
+				id,
+				hash,
+				source.next_manager_persistence_generation(),
+			);
 		}
 	}
 
@@ -1858,41 +2412,6 @@ impl PaymentTracker {
 				.expect("PaymentClaimable for unknown payment hash");
 			node.claim_funds(payment_preimage);
 			self.claimed_payment_hashes.insert(payment_hash);
-		}
-	}
-
-	fn mark_sent(&mut self, node_idx: usize, sent_id: PaymentId, payment_hash: PaymentHash) {
-		let node = &mut self.nodes[node_idx];
-		let idx_opt = node.pending.iter().position(|id| *id == sent_id);
-		if let Some(idx) = idx_opt {
-			node.pending.remove(idx);
-			node.resolved.insert(sent_id, Some(payment_hash));
-		} else {
-			assert!(node.resolved.contains_key(&sent_id));
-		}
-	}
-
-	fn mark_resolved_without_hash(&mut self, node_idx: usize, payment_id: PaymentId) {
-		let node = &mut self.nodes[node_idx];
-		let idx_opt = node.pending.iter().position(|id| *id == payment_id);
-		if let Some(idx) = idx_opt {
-			node.pending.remove(idx);
-			node.resolved.insert(payment_id, None);
-		} else if !node.resolved.contains_key(&payment_id) {
-			// Some resolutions can arrive immediately, before the send helper records
-			// the payment as pending. Track them so later duplicate events are accepted.
-			node.resolved.insert(payment_id, None);
-		}
-	}
-
-	fn mark_successful_probe(&mut self, node_idx: usize, payment_id: PaymentId) {
-		let node = &mut self.nodes[node_idx];
-		let idx_opt = node.pending.iter().position(|id| *id == payment_id);
-		if let Some(idx) = idx_opt {
-			node.pending.remove(idx);
-			node.resolved.insert(payment_id, None);
-		} else {
-			assert!(node.resolved.contains_key(&payment_id));
 		}
 	}
 
@@ -1931,6 +2450,7 @@ struct Harness<'a, Out: Output + MaybeSend + MaybeSync> {
 	bc_link: PeerLink,
 	queues: EventQueues,
 	payments: PaymentTracker,
+	close_tracker: ChannelCloseTracker,
 }
 
 fn build_node_config(chan_type: ChanType) -> UserConfig {
@@ -1953,17 +2473,6 @@ fn build_node_config(chan_type: ChanType) -> UserConfig {
 		},
 	}
 	config
-}
-
-fn assert_test_invariants(nodes: &[HarnessNode<'_>; 3]) {
-	assert_eq!(nodes[0].list_channels().len(), 3);
-	assert_eq!(nodes[1].list_channels().len(), 6);
-	assert_eq!(nodes[2].list_channels().len(), 3);
-
-	// All broadcasters should be empty. Broadcast transactions are handled explicitly.
-	assert!(nodes[0].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[1].broadcaster.txn_broadcasted.borrow().is_empty());
-	assert!(nodes[2].broadcaster.txn_broadcasted.borrow().is_empty());
 }
 
 fn connect_peers(source: &ChanMan<'_>, dest: &ChanMan<'_>) {
@@ -2076,7 +2585,7 @@ fn make_channel(
 					tx.clone(),
 				)
 				.unwrap();
-			chain_state.confirm_tx(tx);
+			chain_state.mine_setup_tx_to_depth(tx, ANTI_REORG_DELAY);
 		} else {
 			panic!("Wrong event type");
 		}
@@ -2193,24 +2702,27 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			config_byte & 0b1000_0000 != 0,
 		];
 
-		let wallet_a = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
-		let wallet_b = TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap());
-		let wallet_c = TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap());
-		let wallets = [&wallet_a, &wallet_b, &wallet_c];
-		let coinbase_tx = bitcoin::Transaction {
-			version: bitcoin::transaction::Version::TWO,
-			lock_time: bitcoin::absolute::LockTime::ZERO,
-			input: vec![bitcoin::TxIn { ..Default::default() }],
-			output: wallets
-				.iter()
-				.map(|wallet| TxOut {
-					value: Amount::from_sat(100_000),
-					script_pubkey: wallet.get_change_script().unwrap(),
-				})
-				.collect(),
-		};
-		for (idx, wallet) in wallets.iter().enumerate() {
-			wallet.add_utxo(coinbase_tx.clone(), idx as u32);
+		let wallet_a = Arc::new(TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap()));
+		let wallet_b = Arc::new(TestWalletSource::new(SecretKey::from_slice(&[2; 32]).unwrap()));
+		let wallet_c = Arc::new(TestWalletSource::new(SecretKey::from_slice(&[3; 32]).unwrap()));
+		let wallets = [wallet_a.as_ref(), wallet_b.as_ref(), wallet_c.as_ref()];
+		let mut chain_state = ChainState::new();
+		for wallet in wallets {
+			let coinbase_tx = bitcoin::Transaction {
+				version: bitcoin::transaction::Version::TWO,
+				lock_time: bitcoin::absolute::LockTime::ZERO,
+				input: vec![bitcoin::TxIn { ..Default::default() }],
+				output: (0..NUM_WALLET_UTXOS)
+					.map(|_| TxOut {
+						value: Amount::from_sat(100_000),
+						script_pubkey: wallet.get_change_script().unwrap(),
+					})
+					.collect(),
+			};
+			for vout in 0..NUM_WALLET_UTXOS {
+				wallet.add_utxo(coinbase_tx.clone(), vout);
+			}
+			chain_state.mine_setup_tx_to_depth(coinbase_tx, ANTI_REORG_DELAY);
 		}
 
 		let fee_est_a = Arc::new(FuzzEstimator { ret_val: atomic::AtomicU32::new(253) });
@@ -2225,7 +2737,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		let mut nodes = [
 			HarnessNode::new(
 				0,
-				wallet_a,
+				Arc::clone(&wallet_a),
 				Arc::clone(&fee_est_a),
 				Arc::clone(&broadcast_a),
 				persistence_styles[0],
@@ -2236,7 +2748,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			),
 			HarnessNode::new(
 				1,
-				wallet_b,
+				Arc::clone(&wallet_b),
 				Arc::clone(&fee_est_b),
 				Arc::clone(&broadcast_b),
 				persistence_styles[1],
@@ -2247,7 +2759,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			),
 			HarnessNode::new(
 				2,
-				wallet_c,
+				Arc::clone(&wallet_c),
 				Arc::clone(&fee_est_c),
 				Arc::clone(&broadcast_c),
 				persistence_styles[2],
@@ -2257,8 +2769,6 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				chan_type,
 			),
 		];
-		let mut chain_state = ChainState::new();
-
 		// Connect peers first, then create channels.
 		connect_peers(&nodes[0], &nodes[1]);
 		connect_peers(&nodes[1], &nodes[2]);
@@ -2316,6 +2826,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			bc_link: PeerLink::new(1, 2, chan_bc_ids),
 			queues: EventQueues::new(),
 			payments: PaymentTracker::new(),
+			close_tracker: ChannelCloseTracker::new(),
 		}
 	}
 
@@ -2327,8 +2838,24 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.bc_link.first_channel_id()
 	}
 
-	fn finish(&self) {
-		assert_test_invariants(&self.nodes);
+	// Runs end-of-input cleanup by relaying and mining remaining broadcasts.
+	// Final invariants should not depend on the input ending with explicit relay
+	// and mining bytes.
+	fn finish(&mut self) {
+		self.mine_relayed_txs_until_quiet();
+		self.assert_only_expected_channel_closes();
+
+		// All broadcasters should be empty. Broadcast transactions are handled explicitly.
+		for node in &self.nodes {
+			assert!(node.broadcaster.txn_broadcasted.borrow().is_empty());
+		}
+	}
+
+	fn assert_only_expected_channel_closes(&self) {
+		// A close may show up first as a missing list_channels entry rather
+		// than as an already-drained ChannelClosed event.
+		self.ab_link.assert_no_unexpected_disappeared_channels(&self.nodes, &self.close_tracker);
+		self.bc_link.assert_no_unexpected_disappeared_channels(&self.nodes, &self.close_tracker);
 	}
 
 	fn link_between(&self, source_idx: usize, dest_idx: usize) -> &PeerLink {
@@ -2349,20 +2876,56 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.link_between(source_idx, dest_idx).first_channel_id()
 	}
 
+	// API calls are filtered before we make them if the harness knows they would
+	// target stale state. The open-channel filters below still handle tracked-
+	// closed channel ids after both peers have dropped them from list_channels.
+	fn has_stale_closed_channel_between(&self, source_idx: usize, dest_idx: usize) -> bool {
+		let channel_ids = self.channel_ids_between(source_idx, dest_idx);
+		let source_channels = self.nodes[source_idx].list_channels();
+		let dest_channels = self.nodes[dest_idx].list_channels();
+		channel_ids.iter().any(|channel_id| {
+			self.close_tracker.is_closed_or_closing(channel_id)
+				&& (source_channels.iter().any(|chan| chan.channel_id == *channel_id)
+					|| dest_channels.iter().any(|chan| chan.channel_id == *channel_id))
+		})
+	}
+
 	fn send_on_channel(
 		&mut self, source_idx: usize, dest_idx: usize, dest_chan_id: ChannelId, amt: u64,
 	) -> bool {
+		if !self.close_tracker.is_open(&dest_chan_id) {
+			return false;
+		}
 		self.payments.send(&self.nodes, source_idx, dest_idx, dest_chan_id, amt)
 	}
 
 	fn send(&mut self, source_idx: usize, dest_idx: usize, amt: u64) {
-		let dest_chan_id = self.first_channel_id_between(source_idx, dest_idx);
+		let chan_ids = self.channel_ids_between(source_idx, dest_idx);
+		let dest_chan_id = match self.close_tracker.open_channels(&chan_ids).first().copied() {
+			Some(chan_id) => chan_id,
+			None => return,
+		};
 		self.payments.send_noret(&self.nodes, source_idx, dest_idx, dest_chan_id, amt);
 	}
 
 	fn send_hop(&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, amt: u64) {
+		// Even if we route over an open SCID, the middle node's non-strict
+		// forwarding can pick a parallel channel that the harness has already
+		// tracked closed but the node still lists. In that window, the downstream
+		// HTLC may never get committed, so close cleanup has nothing to fail back
+		// and the source payment can remain pending.
+		if self.has_stale_closed_channel_between(source_idx, middle_idx)
+			|| self.has_stale_closed_channel_between(middle_idx, dest_idx)
+		{
+			return;
+		}
 		let middle_chan_id = self.first_channel_id_between(source_idx, middle_idx);
 		let dest_chan_id = self.first_channel_id_between(middle_idx, dest_idx);
+		if !self.close_tracker.is_open(&middle_chan_id)
+			|| !self.close_tracker.is_open(&dest_chan_id)
+		{
+			return;
+		}
 		self.payments.send_hop(
 			&self.nodes,
 			source_idx,
@@ -2379,17 +2942,22 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	) {
 		match channels {
 			MppDirectChannels::All => {
-				let dest_chan_ids = self.channel_ids_between(source_idx, dest_idx);
+				let dest_chan_ids = self
+					.close_tracker
+					.open_channels(&self.channel_ids_between(source_idx, dest_idx));
 				self.payments.send_mpp_direct(
 					&self.nodes,
 					source_idx,
 					dest_idx,
-					&dest_chan_ids,
+					&dest_chan_ids[..],
 					amt,
 				);
 			},
 			MppDirectChannels::RepeatedFirst => {
 				let dest_chan_id = self.first_channel_id_between(source_idx, dest_idx);
+				if !self.close_tracker.is_open(&dest_chan_id) {
+					return;
+				}
 				let dest_chan_ids = [dest_chan_id, dest_chan_id, dest_chan_id];
 				self.payments.send_mpp_direct(
 					&self.nodes,
@@ -2406,35 +2974,55 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		&mut self, source_idx: usize, middle_idx: usize, dest_idx: usize, channels: MppHopChannels,
 		amt: u64,
 	) {
+		// Even if we route over an open SCID, the middle node's non-strict
+		// forwarding can pick a parallel channel that the harness has already
+		// tracked closed but the node still lists. In that window, the downstream
+		// HTLC may never get committed, so close cleanup has nothing to fail back
+		// and the source payment can remain pending.
+		if self.has_stale_closed_channel_between(source_idx, middle_idx)
+			|| self.has_stale_closed_channel_between(middle_idx, dest_idx)
+		{
+			return;
+		}
 		let middle_chan_ids = self.channel_ids_between(source_idx, middle_idx);
 		let dest_chan_ids = self.channel_ids_between(middle_idx, dest_idx);
 		let middle_first_chan_id = middle_chan_ids[0];
 		let dest_first_chan_id = dest_chan_ids[0];
 		match channels {
 			MppHopChannels::FirstHop => {
+				let middle_chan_ids = self.close_tracker.open_channels(&middle_chan_ids);
+				if !self.close_tracker.is_open(&dest_first_chan_id) {
+					return;
+				}
 				let dest_chan_ids = [dest_first_chan_id];
 				self.payments.send_mpp_hop(
 					&self.nodes,
 					source_idx,
 					middle_idx,
-					&middle_chan_ids,
+					&middle_chan_ids[..],
 					dest_idx,
 					&dest_chan_ids,
 					amt,
 				);
 			},
 			MppHopChannels::BothHops => {
+				let middle_chan_ids = self.close_tracker.open_channels(&middle_chan_ids);
+				let dest_chan_ids = self.close_tracker.open_channels(&dest_chan_ids);
 				self.payments.send_mpp_hop(
 					&self.nodes,
 					source_idx,
 					middle_idx,
-					&middle_chan_ids,
+					&middle_chan_ids[..],
 					dest_idx,
-					&dest_chan_ids,
+					&dest_chan_ids[..],
 					amt,
 				);
 			},
 			MppHopChannels::SecondHop => {
+				if !self.close_tracker.is_open(&middle_first_chan_id) {
+					return;
+				}
+				let dest_chan_ids = self.close_tracker.open_channels(&dest_chan_ids);
 				let middle_chan_ids = [middle_first_chan_id];
 				self.payments.send_mpp_hop(
 					&self.nodes,
@@ -2442,7 +3030,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					middle_idx,
 					&middle_chan_ids,
 					dest_idx,
-					&dest_chan_ids,
+					&dest_chan_ids[..],
 					amt,
 				);
 			},
@@ -2558,8 +3146,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		fn process_msg_event<Out: Output + MaybeSend + MaybeSync>(
 			node_idx: usize, source_node_id: PublicKey, event: MessageSendEvent,
 			corrupt_forward: bool, limit_events: ProcessMessages, nodes: &[HarnessNode<'_>; 3],
-			out: &Out,
+			close_tracker: &ChannelCloseTracker, out: &Out,
 		) -> Option<MessageSendEvent> {
+			// Always deliver message events, even when the harness knows they are stale,
+			// so message handlers exercise their normal error paths.
 			match event {
 				MessageSendEvent::UpdateHTLCs { node_id, channel_id, updates } => {
 					handle_update_htlcs_event(
@@ -2581,6 +3171,12 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					None
 				},
 				MessageSendEvent::SendChannelReestablish { ref node_id, ref msg } => {
+					if close_tracker.is_closed_or_closing(&msg.channel_id) {
+						// A reestablish generated before an explicit close is stale once that
+						// close is tracked. Delivering it can keep generating closed-channel
+						// error messages and prevent settle_all from quiescing.
+						return None;
+					}
 					let dest_idx =
 						log_peer_message(node_idx, node_id, nodes, out, "channel_reestablish");
 					nodes[dest_idx].handle_channel_reestablish(source_node_id, msg);
@@ -2654,14 +3250,26 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					None
 				},
 				MessageSendEvent::HandleError { ref action, ref node_id, .. } => {
-					let (msg, is_quiescent) = assert_disconnect_action(action);
-					let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "warning");
-					if is_quiescent {
-						nodes[node_idx].node.exit_quiescence(node_id, &msg.channel_id).unwrap();
-						nodes[dest_idx]
-							.node
-							.exit_quiescence(&source_node_id, &msg.channel_id)
-							.unwrap();
+					match assert_disconnect_action(action, close_tracker) {
+						ExpectedControlAction::Warning(msg, is_quiescent) => {
+							let dest_idx =
+								log_peer_message(node_idx, node_id, nodes, out, "warning");
+							if is_quiescent && !close_tracker.is_closed_or_closing(&msg.channel_id)
+							{
+								nodes[node_idx]
+									.node
+									.exit_quiescence(node_id, &msg.channel_id)
+									.unwrap();
+								nodes[dest_idx]
+									.node
+									.exit_quiescence(&source_node_id, &msg.channel_id)
+									.unwrap();
+							}
+						},
+						ExpectedControlAction::Error(msg) => {
+							let dest_idx = log_peer_message(node_idx, node_id, nodes, out, "error");
+							nodes[dest_idx].handle_error(source_node_id, msg);
+						},
 					}
 					None
 				},
@@ -2681,6 +3289,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 
 		let nodes = &self.nodes;
+		let close_tracker = &self.close_tracker;
 		let out = &self.out;
 		let queues = &mut self.queues;
 		let mut events = queues.take_for_node(node_idx);
@@ -2701,6 +3310,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 				corrupt_forward,
 				limit_events,
 				nodes,
+				close_tracker,
 				out,
 			);
 			if limit_events != ProcessMessages::AllMessages {
@@ -2709,7 +3319,7 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		if node_idx == 1 {
 			let remaining = extra_ev.into_iter().chain(events_iter).collect::<Vec<_>>();
-			queues.route_from_middle(remaining, None, nodes);
+			queues.route_from_middle(remaining, None, nodes, close_tracker);
 		} else if node_idx == 0 {
 			if let Some(ev) = extra_ev {
 				queues.push_for_node(0, ev);
@@ -2726,8 +3336,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 
 	fn process_events(&mut self, node_idx: usize, fail: bool) -> bool {
 		let nodes = &self.nodes;
-		let chain_state = &mut self.chain_state;
 		let payments = &mut self.payments;
+		let chain_state = &self.chain_state;
+		let close_tracker = &mut self.close_tracker;
 		// Multiple HTLCs can resolve for the same payment hash, so deduplicate
 		// claim/fail handling per event batch.
 		let mut claim_set = new_hash_map();
@@ -2741,17 +3352,17 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					}
 				},
 				events::Event::PaymentSent { payment_id, payment_hash, .. } => {
-					payments.mark_sent(node_idx, payment_id.unwrap(), payment_hash);
+					payments.nodes[node_idx].mark_sent(payment_id.unwrap(), payment_hash);
 				},
 				// Even though we don't explicitly send probes, because probes are detected based on
 				// hashing the payment hash+preimage, it is rather trivial for the fuzzer to build
 				// payments that accidentally end up looking like probes.
 				events::Event::ProbeSuccessful { payment_id, .. } => {
-					payments.mark_successful_probe(node_idx, payment_id);
+					payments.nodes[node_idx].mark_successful_probe(payment_id);
 				},
 				events::Event::PaymentFailed { payment_id, .. }
 				| events::Event::ProbeFailed { payment_id, .. } => {
-					payments.mark_resolved_without_hash(node_idx, payment_id);
+					payments.nodes[node_idx].mark_resolved_without_hash(payment_id);
 				},
 				events::Event::PaymentClaimed { .. } => {},
 				events::Event::PaymentPathSuccessful { .. } => {},
@@ -2765,38 +3376,79 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 					unsigned_transaction,
 					..
 				} => {
-					let signed_tx = nodes[node_idx].wallet.sign_tx(unsigned_transaction).unwrap();
-					match nodes[node_idx].funding_transaction_signed(
-						&channel_id,
-						&counterparty_node_id,
-						signed_tx,
-					) {
-						Ok(()) => {},
-						Err(APIError::APIMisuseError { ref err })
-							if err.contains("not expecting funding signatures") =>
+					if close_tracker.is_closed_or_closing(&channel_id) {
+						// The signing event was queued before an explicit close.
+						// Do not call splice funding APIs for a tracked-closed channel.
+						continue;
+					}
+					let wallet_script = nodes[node_idx].wallet.get_change_script().unwrap();
+					let has_unknown_spent_input = unsigned_transaction.input.iter().any(|input| {
+						!chain_state.is_unspent(&input.previous_output)
+							&& chain_state.confirmed_output(&input.previous_output).is_none()
+					});
+					assert!(
+						!has_unknown_spent_input,
+						"funding transaction referenced an unmodeled input: {:?}",
+						unsigned_transaction,
+					);
+					let has_spent_wallet_input = unsigned_transaction.input.iter().any(|input| {
+						!chain_state.is_unspent(&input.previous_output)
+							&& chain_state
+								.confirmed_output(&input.previous_output)
+								.map_or(false, |output| output.script_pubkey == wallet_script)
+					});
+					if has_spent_wallet_input {
+						// A queued RBF signing request can lose the race against a
+						// transaction confirming with one of its wallet inputs.
+						match nodes[node_idx]
+							.cancel_funding_contributed(&channel_id, &counterparty_node_id)
 						{
-							// A queued signing event can be invalidated by a later `tx_abort`
-							// before the application handles it.
-						},
-						Err(e) => panic!("{e:?}"),
+							Ok(()) => {},
+							Err(APIError::APIMisuseError { ref err })
+								if err.contains("does not have a pending splice negotiation") => {},
+							Err(e) => panic!("{e:?}"),
+						}
+					} else {
+						let signed_tx =
+							nodes[node_idx].wallet.sign_tx(unsigned_transaction).unwrap();
+						match nodes[node_idx].funding_transaction_signed(
+							&channel_id,
+							&counterparty_node_id,
+							signed_tx,
+						) {
+							Ok(()) => {},
+							Err(APIError::APIMisuseError { ref err })
+								if err.contains("not expecting funding signatures") =>
+							{
+								// A queued signing event can be invalidated by a later `tx_abort`
+								// before the application handles it.
+							},
+							Err(e) => panic!("{e:?}"),
+						}
 					}
 				},
-				events::Event::SpliceNegotiated { new_funding_txo, .. } => {
-					let mut txs = nodes[node_idx].broadcaster.txn_broadcasted.borrow_mut();
-					assert!(txs.len() >= 1);
-					let splice_tx = txs.remove(0);
-					assert_eq!(new_funding_txo.txid, splice_tx.compute_txid());
-					chain_state.add_pending_tx(splice_tx);
-				},
+				events::Event::SpliceNegotiated { .. } => {},
 				events::Event::SpliceNegotiationFailed { .. } => {},
+				events::Event::ChannelClosed { channel_id, reason, .. } => {
+					close_tracker.verify_channel_closed_event(channel_id, &reason);
+				},
 				events::Event::DiscardFunding {
 					funding_info:
 						events::FundingInfo::Contribution { .. } | events::FundingInfo::Tx { .. },
 					..
 				} => {},
+				events::Event::SpendableOutputs { .. } => {
+					// The harness does not model an external sweeper wallet.
+				},
+				events::Event::BumpTransaction(bump) => {
+					nodes[node_idx].bump_tx_handler.handle_event(&bump);
+				},
 				_ => panic!("Unhandled event: {:?}", event),
 			}
 		}
+		// Chain monitor events are processed together with manager events,
+		// mirroring how a node's background processor polls both queues.
+		had_events |= nodes[node_idx].process_monitor_pending_events();
 		while nodes[node_idx].needs_pending_htlc_processing() {
 			nodes[node_idx].process_pending_htlc_forwards();
 			had_events = true;
@@ -2871,11 +3523,11 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 	}
 
 	fn disconnect_ab(&mut self) {
-		self.ab_link.disconnect(&self.nodes, &mut self.queues);
+		self.ab_link.disconnect(&self.nodes, &mut self.queues, &self.close_tracker);
 	}
 
 	fn disconnect_bc(&mut self) {
-		self.bc_link.disconnect(&self.nodes, &mut self.queues);
+		self.bc_link.disconnect(&self.nodes, &mut self.queues, &self.close_tracker);
 	}
 
 	fn reconnect_ab(&mut self) {
@@ -2886,24 +3538,133 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		self.bc_link.reconnect(&self.nodes);
 	}
 
+	fn has_pending_htlcs(&self) -> bool {
+		self.nodes.iter().any(|node| {
+			node.list_channels().iter().any(|chan| {
+				!chan.pending_inbound_htlcs.is_empty() || !chan.pending_outbound_htlcs.is_empty()
+			})
+		})
+	}
+
+	fn force_close(&mut self, closer_idx: usize, channel_id: ChannelId, counterparty_idx: usize) {
+		if self.close_tracker.is_closed_or_closing(&channel_id) || self.has_pending_htlcs() {
+			// This opcode only models HTLC-free local closes. Leave it as a no-op
+			// while any channel has pending HTLCs, rather than mixing local
+			// force-close coverage with HTLC settlement.
+			return;
+		}
+		assert!(
+			self.nodes[closer_idx].list_channels().iter().any(|chan| chan.channel_id == channel_id),
+			"force-close target channel {:?} missing before explicit close",
+			channel_id,
+		);
+		let reason =
+			format!("chanmon harness force-close by node {} on {:?}", closer_idx, channel_id);
+		match self.nodes[closer_idx].node.force_close_broadcasting_latest_txn(
+			&channel_id,
+			&self.nodes[counterparty_idx].get_our_node_id(),
+			reason.clone(),
+		) {
+			Ok(()) => self.close_tracker.expect_channel_close(channel_id, reason),
+			Err(e) => panic!("{e:?}"),
+		}
+	}
+
+	fn splice_in(&self, node_idx: usize, channel_id: ChannelId, counterparty_idx: usize) {
+		if self.close_tracker.is_closed_or_closing(&channel_id) {
+			return;
+		}
+		let cp_node_id = self.nodes[counterparty_idx].get_our_node_id();
+		self.nodes[node_idx].splice_in(&cp_node_id, &channel_id);
+	}
+
+	fn splice_out(&self, node_idx: usize, channel_id: ChannelId, counterparty_idx: usize) {
+		if self.close_tracker.is_closed_or_closing(&channel_id) {
+			return;
+		}
+		let cp_node_id = self.nodes[counterparty_idx].get_our_node_id();
+		self.nodes[node_idx].splice_out(&cp_node_id, &channel_id);
+	}
+
 	fn restart_node(&mut self, node_idx: usize, v: u8, router: &'a FuzzRouter) {
+		if self.nodes[node_idx].deferred && self.nodes[node_idx].has_awaiting_signature_splice() {
+			// FIXME: We don't currently checkpoint our signing session prior to sending
+			// `commitment_signed`, so we may run into a case where we commit to a splice
+			// candidate and reload with an outdated manager prior to the signing session
+			// existing. If the counterparty commits to the splice back, and is expecting to
+			// resume, we'll end up aborting erroneously leading to a force close.
+			self.nodes[node_idx].checkpoint_manager_persistence();
+		}
+		if !self.nodes[node_idx].deferred {
+			self.nodes[node_idx].checkpoint_manager_persistence();
+		}
 		match node_idx {
 			0 => {
-				self.ab_link.disconnect_for_reload(0, &self.nodes, &mut self.queues);
+				self.ab_link.disconnect_for_reload(
+					0,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			1 => {
-				self.ab_link.disconnect_for_reload(1, &self.nodes, &mut self.queues);
-				self.bc_link.disconnect_for_reload(1, &self.nodes, &mut self.queues);
+				self.ab_link.disconnect_for_reload(
+					1,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
+				self.bc_link.disconnect_for_reload(
+					1,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			2 => {
-				self.bc_link.disconnect_for_reload(2, &self.nodes, &mut self.queues);
+				self.bc_link.disconnect_for_reload(
+					2,
+					&self.nodes,
+					&mut self.queues,
+					&self.close_tracker,
+				);
 			},
 			_ => panic!("invalid node index"),
 		}
-		self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
+		let loaded_manager_generation =
+			self.nodes[node_idx].reload(v, &self.out, router, self.chan_type);
+		// Startup sync is part of LDK's deserialization contract. Monitors and
+		// the manager can be loaded at different heights, so sync each monitor
+		// from its own best block rather than driving them all from the oldest
+		// one, which would look like a reorg to the monitors already ahead.
+		let manager_start_height = self.nodes[node_idx].manager_height();
+		let tip_height = self.chain_state.tip_height();
+		self.nodes[node_idx].sync_monitors_to_tip(&self.chain_state);
+		self.nodes[node_idx].connect_chain_range(
+			&self.chain_state,
+			manager_start_height,
+			tip_height,
+			false,
+		);
+		assert_eq!(
+			self.nodes[node_idx].manager_height(),
+			self.chain_state.tip_height(),
+			"reloaded node {} must sync to the harness tip before normal operation resumes",
+			node_idx
+		);
+		let rolled_back_payment_hashes = self.payments.nodes[node_idx]
+			.sync_pending_with_manager_generation(loaded_manager_generation);
+		for payment_hash in rolled_back_payment_hashes {
+			self.payments.claimed_payment_hashes.remove(&payment_hash);
+		}
 	}
 
 	fn settle_all(&mut self) {
+		let chain_state = &self.chain_state;
+		for node in &mut self.nodes {
+			node.sync_with_chain_state(chain_state, None);
+		}
+
 		// First, make sure peers are all connected to each other
 		self.reconnect_ab();
 		self.reconnect_bc();
@@ -2913,9 +3674,14 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			self.nodes[1].keys_manager.enable_op_for_all_signers(op);
 			self.nodes[2].keys_manager.enable_op_for_all_signers(op);
 		}
+		// Live-channel signer work retries through the manager, while
+		// on-chain holder claims retry through the chain monitor.
 		self.nodes[0].signer_unblocked(None);
 		self.nodes[1].signer_unblocked(None);
 		self.nodes[2].signer_unblocked(None);
+		self.nodes[0].monitor.signer_unblocked(None);
+		self.nodes[1].monitor.signer_unblocked(None);
+		self.nodes[2].monitor.signer_unblocked(None);
 
 		self.process_all_events();
 
@@ -2927,6 +3693,10 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		}
 		self.process_all_events();
 
+		if self.close_tracker.has_closed_channels() {
+			self.settle_force_close_onchain();
+		}
+
 		// Verify no payments are stuck - all should have resolved
 		self.payments.assert_all_resolved();
 		// Verify that every payment claimed by a receiver resulted in a
@@ -2936,6 +3706,9 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 		// All HTLCs should have been claimed or failed once we reach quiescence.
 		for (idx, node) in self.nodes.iter().enumerate() {
 			for chan in node.list_channels() {
+				if !self.close_tracker.is_open(&chan.channel_id) {
+					continue;
+				}
 				assert!(
 					chan.pending_inbound_htlcs.is_empty() && chan.pending_outbound_htlcs.is_empty(),
 					"Node {} channel {:?} has stuck HTLCs after settling all state: \
@@ -2950,16 +3723,19 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			}
 		}
 
-		// Finally, make sure that at least one end of each channel can make a substantial payment.
+		self.assert_only_expected_channel_closes();
+
+		// Finally, make sure that at least one end of each live channel can make
+		// a substantial payment.
 		let chan_ab_ids = self.ab_link.channel_ids().clone();
 		let chan_bc_ids = self.bc_link.channel_ids().clone();
-		for chan_id in chan_ab_ids {
+		for chan_id in self.close_tracker.open_channels(&chan_ab_ids) {
 			assert!(
 				self.send_on_channel(0, 1, chan_id, 10_000_000)
 					|| self.send_on_channel(1, 0, chan_id, 10_000_000)
 			);
 		}
-		for chan_id in chan_bc_ids {
+		for chan_id in self.close_tracker.open_channels(&chan_bc_ids) {
 			assert!(
 				self.send_on_channel(1, 2, chan_id, 10_000_000)
 					|| self.send_on_channel(2, 1, chan_id, 10_000_000)
@@ -2977,6 +3753,157 @@ impl<'a, Out: Output + MaybeSend + MaybeSync> Harness<'a, Out> {
 			made_progress |= node.checkpoint_manager_persistence();
 		}
 		made_progress
+	}
+
+	// Relays one node's broadcasts into the mempool. Per-node relay lets fuzz
+	// inputs model partial propagation before a block is mined.
+	fn relay_broadcasts_for_node(&mut self, node_idx: usize) {
+		let txs = self.nodes[node_idx]
+			.broadcaster
+			.txn_broadcasted
+			.borrow_mut()
+			.drain(..)
+			.collect::<Vec<_>>();
+		self.chain_state.relay_transactions(txs);
+	}
+
+	fn relay_all_broadcasts(&mut self) {
+		let mut txs = Vec::new();
+		for node in &self.nodes {
+			txs.extend(node.broadcaster.txn_broadcasted.borrow_mut().drain(..));
+		}
+		self.chain_state.relay_transactions(txs);
+	}
+
+	fn earliest_pending_htlc_expiry(&self) -> Option<u32> {
+		let mut earliest_expiry: Option<u32> = None;
+		for node in &self.nodes {
+			for chan in node.list_channels() {
+				for htlc in &chan.pending_inbound_htlcs {
+					earliest_expiry = Some(
+						earliest_expiry
+							.map_or(htlc.cltv_expiry, |expiry| expiry.min(htlc.cltv_expiry)),
+					);
+				}
+				for htlc in &chan.pending_outbound_htlcs {
+					earliest_expiry = Some(
+						earliest_expiry
+							.map_or(htlc.cltv_expiry, |expiry| expiry.min(htlc.cltv_expiry)),
+					);
+				}
+			}
+		}
+		earliest_expiry
+	}
+
+	fn safe_mine_block_count(&self, count: u32) -> u32 {
+		if let Some(expiry) = self.earliest_pending_htlc_expiry() {
+			let current_tip = self.chain_state.tip_height();
+			// LDK may close to protect a pending HTLC before its raw CLTV
+			// expiry. Keep mining outside that fail-back window so fuzzed block
+			// production does not force an on-chain timeout path.
+			let timeout_deadline = expiry.saturating_sub(channelmonitor::HTLC_FAIL_BACK_BUFFER);
+			assert!(
+				current_tip < timeout_deadline,
+				"pending HTLC with expiry {} and timeout deadline {} is already unsafe at tip {}",
+				expiry,
+				timeout_deadline,
+				current_tip
+			);
+			// Stop before the deadline block itself, since connecting it is
+			// enough for ChannelMonitor timeout handling to run.
+			count.min(timeout_deadline - current_tip - 1)
+		} else {
+			count
+		}
+	}
+
+	// Mines blocks through ChainState, then applies confirmed transactions to
+	// the wallets and syncs node chain listeners.
+	fn mine_blocks(&mut self, count: u32) -> u32 {
+		assert!(count > 0, "mining zero blocks should not be requested");
+
+		let count = self.safe_mine_block_count(count);
+		if count == 0 {
+			return 0;
+		}
+		let confirmed_txs = self.chain_state.mine_blocks(count);
+		let wallets = [
+			self.nodes[0].wallet.as_ref(),
+			self.nodes[1].wallet.as_ref(),
+			self.nodes[2].wallet.as_ref(),
+		];
+		for tx in &confirmed_txs {
+			for wallet in wallets.iter().copied() {
+				let change_script = wallet.get_change_script().unwrap();
+				for input in &tx.input {
+					// The test wallet is a simple UTXO source. When one of its
+					// outputs is spent by a confirmed transaction, remove it so
+					// later funding attempts cannot double-spend it.
+					wallet.remove_utxo(input.previous_output);
+				}
+				for (vout, output) in tx.output.iter().enumerate() {
+					if output.script_pubkey == change_script {
+						// Add outputs to whichever test wallet owns the script.
+						// This lets splice flows recycle wallet change through
+						// later fuzz commands.
+						wallet.add_utxo(tx.clone(), vout as u32);
+					}
+				}
+			}
+		}
+		let chain_state = &self.chain_state;
+		for node in &mut self.nodes {
+			node.sync_with_chain_state(chain_state, None);
+		}
+		count
+	}
+
+	fn mine_relayed_txs_until_quiet(&mut self) {
+		for _ in 0..MAX_FINISH_RELAY_MINE_ROUNDS {
+			self.relay_all_broadcasts();
+			if self.chain_state.pending_txs.is_empty() {
+				return;
+			}
+			if self.mine_blocks(ANTI_REORG_DELAY) == 0 {
+				// Pending mempool transactions remain, but no safe block is
+				// left before an HTLC fail-back window. Leave them unconfirmed
+				// rather than advancing the chain past that boundary.
+				return;
+			}
+		}
+		assert!(
+			!self.nodes.iter().any(|node| !node.broadcaster.txn_broadcasted.borrow().is_empty())
+				&& self.chain_state.pending_txs.is_empty(),
+			"tx mining loop failed to quiesce",
+		);
+	}
+
+	fn settle_force_close_onchain(&mut self) {
+		// Alternate event processing, relay, and mining until all tracked
+		// closed-channel on-chain balances have resolved.
+		let deadline_blocked = "force-close cleanup was blocked by an HTLC fail-back deadline";
+		for _ in 0..FORCE_CLOSE_CLEANUP_ROUNDS {
+			self.process_all_events();
+			self.relay_all_broadcasts();
+			if !self.chain_state.pending_txs.is_empty() {
+				assert!(self.mine_blocks(ANTI_REORG_DELAY) > 0, "{}", deadline_blocked);
+				continue;
+			}
+			let has_claimable_balance = self.nodes.iter().any(|node| {
+				// get_claimable_balances ignores the channels passed in. Pass
+				// each node's own live channels so closed-channel balances stay
+				// visible.
+				let open_channels = node.node.list_channels();
+				let open_refs: Vec<_> = open_channels.iter().collect();
+				!node.monitor.get_claimable_balances(&open_refs).is_empty()
+			});
+			if !has_claimable_balance {
+				return;
+			}
+			assert!(self.mine_blocks(1) > 0, "{}", deadline_blocked);
+		}
+		panic!("force-close cleanup loop failed to quiesce");
 	}
 }
 
@@ -3143,66 +4070,34 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			0x88 => harness.nodes[2].bump_fee_estimate(harness.chan_type),
 			0x89 => harness.nodes[2].reset_fee_estimate(),
 
-			0xa0 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[0].splice_in(&cp_node_id, &harness.chan_a_id());
+			0x90 => {
+				harness.nodes[0].checkpoint_manager_persistence();
 			},
-			0xa1 => {
-				let cp_node_id = harness.nodes[0].get_our_node_id();
-				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_a_id());
+			0x91 => {
+				harness.nodes[1].checkpoint_manager_persistence();
 			},
-			0xa2 => {
-				let cp_node_id = harness.nodes[2].get_our_node_id();
-				harness.nodes[1].splice_in(&cp_node_id, &harness.chan_b_id());
-			},
-			0xa3 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[2].splice_in(&cp_node_id, &harness.chan_b_id());
+			0x92 => {
+				harness.nodes[2].checkpoint_manager_persistence();
 			},
 
-			0xa4 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[0].splice_out(&cp_node_id, &harness.chan_a_id());
-			},
-			0xa5 => {
-				let cp_node_id = harness.nodes[0].get_our_node_id();
-				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_a_id());
-			},
-			0xa6 => {
-				let cp_node_id = harness.nodes[2].get_our_node_id();
-				harness.nodes[1].splice_out(&cp_node_id, &harness.chan_b_id());
-			},
-			0xa7 => {
-				let cp_node_id = harness.nodes[1].get_our_node_id();
-				harness.nodes[2].splice_out(&cp_node_id, &harness.chan_b_id());
-			},
+			0xa0 => harness.splice_in(0, harness.chan_a_id(), 1),
+			0xa1 => harness.splice_in(1, harness.chan_a_id(), 0),
+			0xa2 => harness.splice_in(1, harness.chan_b_id(), 2),
+			0xa3 => harness.splice_in(2, harness.chan_b_id(), 1),
 
-			// Sync node by 1 block to cover confirmation of a transaction.
-			0xa8 => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[0].sync_with_chain_state(&harness.chain_state, Some(1));
-			},
-			0xa9 => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[1].sync_with_chain_state(&harness.chain_state, Some(1));
-			},
-			0xaa => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[2].sync_with_chain_state(&harness.chain_state, Some(1));
-			},
-			// Sync node to chain tip to cover confirmation of a transaction post-reorg-risk.
-			0xab => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[0].sync_with_chain_state(&harness.chain_state, None);
-			},
-			0xac => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[1].sync_with_chain_state(&harness.chain_state, None);
-			},
-			0xad => {
-				harness.chain_state.confirm_pending_txs();
-				harness.nodes[2].sync_with_chain_state(&harness.chain_state, None);
-			},
+			0xa4 => harness.splice_out(0, harness.chan_a_id(), 1),
+			0xa5 => harness.splice_out(1, harness.chan_a_id(), 0),
+			0xa6 => harness.splice_out(1, harness.chan_b_id(), 2),
+			0xa7 => harness.splice_out(2, harness.chan_b_id(), 1),
+
+			// Sync node by 1 block.
+			0xa8 => harness.nodes[0].sync_with_chain_state(&harness.chain_state, Some(1)),
+			0xa9 => harness.nodes[1].sync_with_chain_state(&harness.chain_state, Some(1)),
+			0xaa => harness.nodes[2].sync_with_chain_state(&harness.chain_state, Some(1)),
+			// Sync node to chain tip.
+			0xab => harness.nodes[0].sync_with_chain_state(&harness.chain_state, None),
+			0xac => harness.nodes[1].sync_with_chain_state(&harness.chain_state, None),
+			0xad => harness.nodes[2].sync_with_chain_state(&harness.chain_state, None),
 
 			0xb0 | 0xb1 | 0xb2 => {
 				// Restart node A, picking among persisted and in-flight `ChannelMonitor`
@@ -3327,6 +4222,23 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 					.enable_op_for_all_signers(SignerOp::SignSpliceSharedInput);
 				harness.nodes[2].signer_unblocked(None);
 			},
+			// The harness toggles signer availability at node granularity, not
+			// per channel, so each byte re-enables both holder claim ops and
+			// asks that node's monitors to retry.
+			0xd3 => harness.nodes[0].enable_holder_signer_ops(),
+			0xd4 => harness.nodes[1].enable_holder_signer_ops(),
+			0xd5 => harness.nodes[2].enable_holder_signer_ops(),
+			0xd6 => harness.relay_broadcasts_for_node(0),
+			0xd7 => harness.relay_broadcasts_for_node(1),
+			0xd8 => harness.relay_broadcasts_for_node(2),
+			0xd9..=0xe0 => {
+				let count = MINE_BLOCK_COUNTS[(v - 0xd9) as usize];
+				harness.mine_blocks(count);
+			},
+			0xe1 => harness.force_close(0, harness.chan_a_id(), 1),
+			0xe2 => harness.force_close(1, harness.chan_b_id(), 2),
+			0xe3 => harness.force_close(1, harness.chan_a_id(), 0),
+			0xe4 => harness.force_close(2, harness.chan_b_id(), 1),
 
 			0xf0 => harness.ab_link.complete_monitor_updates_for_node(
 				0,
@@ -3399,8 +4311,6 @@ pub fn do_test<Out: Output + MaybeSend + MaybeSync>(data: &[u8], out: Out) {
 			},
 			_ => break 'fuzz_loop,
 		}
-
-		harness.checkpoint_manager_persistences();
 
 		// Compute `ChannelDetails` for every channel after each step (ignoring the result) so the
 		// fuzzer exercises the splice-details derivation in `to_details` across as many states as

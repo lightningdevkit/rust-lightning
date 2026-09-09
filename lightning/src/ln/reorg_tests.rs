@@ -10,16 +10,19 @@
 //! Further functional tests which test blockchain reorganizations.
 
 use crate::chain::chaininterface::LowerBoundedFeeEstimator;
-use crate::chain::channelmonitor::{Balance, ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{
+	Balance, ChannelMonitor, ANTI_REORG_DELAY, LATENCY_GRACE_PERIOD_BLOCKS,
+};
 use crate::chain::transaction::OutPoint;
-use crate::chain::Confirm;
+use crate::chain::{BlockLocator, Confirm};
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, Init, MessageSendEvent};
 use crate::ln::types::ChannelId;
 use crate::sign::OutputSpender;
 use crate::types::payment::PaymentHash;
 use crate::types::string::UntrustedString;
-use crate::util::ser::Writeable;
+use crate::util::ser::{ReadableArgs, Writeable};
+use crate::util::test_channel_signer::TestChannelSigner;
 
 use bitcoin::opcodes;
 use bitcoin::script::Builder;
@@ -504,6 +507,106 @@ fn test_unconf_chan_via_funding_unconfirmed() {
 	do_test_unconf_chan(false, true, true, ConnectStyle::FullBlockViaListen);
 	do_test_unconf_chan(true, false, true, ConnectStyle::FullBlockViaListen);
 	do_test_unconf_chan(false, false, true, ConnectStyle::FullBlockViaListen);
+}
+
+fn do_test_monitor_tracks_funding_confirmation(
+	connect_style: ConnectStyle, use_funding_unconfirmed: bool,
+) {
+	// Tests that a `ChannelMonitor` tracks the confirmation of the channel's funding transaction
+	// and monitors it for reorganization itself, exposing it via `Confirm::get_relevant_txids`.
+	// A caller driving multiple `Confirm` instances cannot be assumed to merge the sets returned
+	// by all their `get_relevant_txids` implementations, and the `ChannelMonitor` may have a
+	// different view of the funding transaction's confirmation than the corresponding
+	// `ChannelManager` (e.g. if only one of them was persisted after a confirmation was
+	// processed), so each must expose and maintain its own view of the confirmation state.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg), None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	*nodes[0].connect_style.borrow_mut() = connect_style;
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let chan_conf_height =
+		core::cmp::max(nodes[0].best_block_info().1 + 1, nodes[1].best_block_info().1 + 1);
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let funding_txid = chan.3.compute_txid();
+
+	// Both the `ChannelManager` and the `ChainMonitor` should report the funding transaction's
+	// confirmation from their own tracked state.
+	let conf_block_hash = nodes[0].get_block_header(chan_conf_height).block_hash();
+	let expected_txids = vec![(funding_txid, chan_conf_height, Some(conf_block_hash))];
+	assert_eq!(nodes[0].node.get_relevant_txids(), expected_txids);
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_relevant_txids(), expected_txids);
+
+	// The monitor's tracked confirmation should survive a serialization round-trip.
+	{
+		let serialized_monitor = get_monitor!(nodes[0], chan.2).encode();
+		let (_, deserialized_monitor) = <(BlockLocator, ChannelMonitor<TestChannelSigner>)>::read(
+			&mut &serialized_monitor[..],
+			(nodes[0].keys_manager, nodes[0].keys_manager),
+		)
+		.unwrap();
+		assert_eq!(deserialized_monitor.get_relevant_txids(), expected_txids);
+	}
+
+	// With expect_channel_force_closed set the TestChainMonitor will enforce that the next update
+	// is a ChannelForceClosed on the right channel with should_broadcast set.
+	*nodes[0].chain_monitor.expect_channel_force_closed.lock().unwrap() = Some((chan.2, true));
+	if use_funding_unconfirmed {
+		// Unconfirming the funding transaction on the `ChannelManager` alone must not affect the
+		// `ChainMonitor`'s view of its confirmation, as the latter hasn't observed any reorg.
+		nodes[0].node.transaction_unconfirmed(&funding_txid);
+		assert_eq!(nodes[0].node.get_relevant_txids(), vec![]);
+		assert_eq!(nodes[0].chain_monitor.chain_monitor.get_relevant_txids(), expected_txids);
+
+		// Once the `ChainMonitor` is told about the unconfirmation, it clears its state as well.
+		nodes[0].chain_monitor.chain_monitor.transaction_unconfirmed(&funding_txid);
+	} else {
+		disconnect_all_blocks(&nodes[0]);
+	}
+	assert_eq!(nodes[0].node.get_relevant_txids(), vec![]);
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_relevant_txids(), vec![]);
+
+	// Handle the channel closure implied by the funding no longer being confirmed.
+	let txn = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(txn.len(), 1);
+	check_added_monitors(&nodes[0], 1);
+	let expected_err = "Funding transaction was un-confirmed, originally locked at 6 confs.";
+	let reason = ClosureReason::ProcessingError { err: expected_err.to_owned() };
+	check_closed_event(&nodes[0], 1, reason, &[node_id_1], 100000);
+	check_closed_broadcast(&nodes[0], 1, true);
+
+	// If the funding transaction confirms again, the monitor should track (and expose) the new
+	// confirmation even though the `ChannelManager` no longer knows the channel at all.
+	let reconf_height = nodes[0].best_block_info().1 + 1;
+	confirm_transaction_at(&nodes[0], &chan.3, reconf_height);
+	let reconf_block_hash = nodes[0].get_block_header(reconf_height).block_hash();
+	assert_eq!(nodes[0].node.get_relevant_txids(), vec![]);
+	assert_eq!(
+		nodes[0].chain_monitor.chain_monitor.get_relevant_txids(),
+		vec![(funding_txid, reconf_height, Some(reconf_block_hash))]
+	);
+}
+
+#[test]
+fn test_monitor_tracks_funding_confirmation() {
+	do_test_monitor_tracks_funding_confirmation(ConnectStyle::BestBlockFirst, false);
+	do_test_monitor_tracks_funding_confirmation(ConnectStyle::TransactionsFirst, false);
+	do_test_monitor_tracks_funding_confirmation(
+		ConnectStyle::TransactionsFirstSkippingBlocks,
+		false,
+	);
+	do_test_monitor_tracks_funding_confirmation(
+		ConnectStyle::TransactionsFirstReorgsOnlyTip,
+		false,
+	);
+	do_test_monitor_tracks_funding_confirmation(ConnectStyle::FullBlockViaListen, false);
+}
+
+#[test]
+fn test_monitor_tracks_funding_confirmation_via_funding_unconfirmed() {
+	do_test_monitor_tracks_funding_confirmation(ConnectStyle::TransactionsFirst, true);
 }
 
 #[test]
