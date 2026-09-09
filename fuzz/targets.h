@@ -14,6 +14,7 @@ void process_network_graph_run(const unsigned char* data, size_t data_len);
 void process_onion_failure_run(const unsigned char* data, size_t data_len);
 void payer_proof_deser_run(const unsigned char* data, size_t data_len);
 void refund_deser_run(const unsigned char* data, size_t data_len);
+void resource_manager_run(const unsigned char* data, size_t data_len);
 void router_run(const unsigned char* data, size_t data_len);
 void zbase32_run(const unsigned char* data, size_t data_len);
 void indexedmap_run(const unsigned char* data, size_t data_len);

@@ -34,7 +34,9 @@ use chacha20_poly1305::{chacha20::ChaCha20, Key, Nonce};
 use core::{f64, fmt::Display, time::Duration};
 
 use crate::{
-	ln::{channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS, types::ChannelId},
+	ln::{
+		channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS, channelmanager::CLTV_FAR_FAR_AWAY, types::ChannelId,
+	},
 	prelude::{hash_map::Entry, new_hash_map, HashMap, Vec},
 	sign::EntropySource,
 	sync::Mutex,
@@ -574,11 +576,11 @@ impl Channel {
 
 	/// Returns the accumulated in-flight risk of this channel (as an outgoing link).
 	fn outgoing_in_flight_risk(&self) -> u64 {
-		// We only account the in-flight risk for HTLCs that are accountable
+		// We only account the in-flight risk for HTLCs that are accountable.
 		self.pending_htlcs
 			.iter()
 			.map(|htlc| if htlc.1.outgoing_accountable { htlc.1.in_flight_risk } else { 0 })
-			.sum()
+			.fold(0u64, |acc, risk| acc.saturating_add(risk))
 	}
 
 	/// Returns whether the outgoing channel's reputation is sufficient to use our protected
@@ -792,7 +794,10 @@ impl ResourceManager {
 		incoming_cltv_expiry: u32, outgoing_channel_id: ChannelId, outgoing_amount_msat: u64,
 		incoming_accountable: bool, htlc_id: u64, height_added: u32, added_at: u64,
 	) -> Result<ForwardingOutcome, ()> {
-		if (outgoing_amount_msat > incoming_amount_msat) || (height_added >= incoming_cltv_expiry) {
+		if (outgoing_amount_msat > incoming_amount_msat)
+			|| (height_added >= incoming_cltv_expiry)
+			|| (incoming_cltv_expiry - height_added) > CLTV_FAR_FAR_AWAY
+		{
 			return Err(());
 		}
 		// A forward over the same channel is allowed by the protocol but this is somewhat
@@ -1094,6 +1099,9 @@ impl SmoothedDecayingAverage {
 			as i64
 	}
 }
+
+#[cfg(fuzzing)]
+pub mod fuzz;
 
 #[cfg(test)]
 mod tests {
