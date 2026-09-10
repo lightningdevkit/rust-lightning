@@ -2,8 +2,8 @@
 
  * `ChannelManager::funding_contributed` no longer emits `Event::SpliceNegotiationFailed` when
    returning an error; the failure is reported through the returned error alone. An
-   `Event::DiscardFunding` is still emitted for any contributed inputs and outputs not committed
-   to an existing splice attempt.
+   `Event::DiscardFunding` is still emitted for the contribution's inputs and outputs, other than
+   any inherited from a splice attempt that remains pending.
 
 # Forward Compatibility
 

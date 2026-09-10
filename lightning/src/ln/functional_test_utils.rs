@@ -3330,6 +3330,11 @@ pub fn expect_failed_rbf_events<'a, 'b, 'c>(
 				.map(|output| output.script_pubkey.clone())
 				.collect::<Vec<_>>();
 			assert_eq!(contributed_output_scripts, discarded.1);
+			// Filtering by the contribution's own record must release the same inputs and outputs.
+			assert_eq!(
+				contribution.contribution().to_unique_contributions(),
+				Some(discarded.clone())
+			);
 		},
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}

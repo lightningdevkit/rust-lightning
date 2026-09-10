@@ -5067,6 +5067,11 @@ impl<
 	/// a fresh contribution or reusing a prior one for RBF. Once a candidate confirms it can no
 	/// longer be replaced, and the returned template instead builds a fresh splice to be queued
 	/// behind it.
+	///
+	/// A template obtained while a splice attempt is pending starts from that attempt's
+	/// contribution and is tied to it: once the attempt is no longer pending, a contribution built
+	/// from the template is rejected by [`ChannelManager::funding_contributed`] as stale, even if
+	/// it kept none of the attempt's inputs and outputs, and a fresh template must be obtained.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -6980,6 +6985,28 @@ impl<
 	/// An optional `locktime` for the funding transaction may be specified. If not given, the
 	/// current best block height is used.
 	///
+	/// # Inputs and Outputs
+	///
+	/// When submitted, the contribution's inputs and outputs must be reserved for it alone: none
+	/// may be in use by another splice attempt on the channel, whether a negotiated candidate
+	/// that may still confirm or a contribution of ours queued or under negotiation, except those
+	/// inherited from the prior contribution of the [`FundingTemplate`] it was built from, which
+	/// the pending attempt that contribution belongs to still holds. Building on that
+	/// contribution is how an RBF attempt reuses the attempt's funding.
+	///
+	/// A failure releases what the contribution reserved itself through an
+	/// [`Event::DiscardFunding`] preceding the [`Event::SpliceNegotiationFailed`] that carries the
+	/// contribution. Retrying with that contribution therefore requires reserving its released
+	/// inputs and outputs again first, confirming they are still free; otherwise, build a new
+	/// contribution from a fresh template.
+	///
+	/// Removing an inherited input or output does not release it: the attempt it was inherited
+	/// from still holds it, and it is released when that attempt fails or is replaced by one that
+	/// confirms. Adding it back in a later contribution reserves it for that contribution
+	/// alone, so a failure releases it even if the attempt it was inherited from has confirmed.
+	/// Expect an [`Event::DiscardFunding`] for such an input even though the confirmed splice
+	/// transaction spent it.
+	///
 	/// # Fee Estimation
 	///
 	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
@@ -7044,8 +7071,20 @@ impl<
 	///
 	/// When an error is returned, the contribution has been rejected without emitting an
 	/// [`Event::SpliceNegotiationFailed`], as the failure is already reported through the error.
-	/// Any contributed inputs and outputs not committed to an existing splice attempt will be
-	/// included in an [`Event::DiscardFunding`] and thus can be re-spent.
+	/// Any contributed inputs and outputs will be included in an [`Event::DiscardFunding`] and
+	/// thus can be re-spent, except those the contribution inherited from the prior contribution
+	/// of its [`FundingTemplate`] (e.g., a fee bump reusing a pending splice's inputs), which are
+	/// withheld as that attempt's transaction may still confirm -- even if the channel is no
+	/// longer known (e.g., it was closed after the contribution was built). Everything else the
+	/// contribution holds is reported, as it was required to be reserved for the contribution
+	/// alone.
+	///
+	/// A contribution built from a [`FundingTemplate`] with a prior contribution is tied to the
+	/// pending splice attempt that contribution belongs to. It is rejected as stale once that
+	/// attempt has been resolved, whether it failed, releasing its funding, or locked, spending it
+	/// -- even if the contribution kept none of the attempt's inputs and outputs. The channel's
+	/// splice state has changed since the template was obtained, so build a new contribution from
+	/// a fresh template in that case.
 	///
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
@@ -7055,23 +7094,35 @@ impl<
 	) -> Result<(), APIError> {
 		let mut result = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let push_discard_funding = |contribution: FundingContribution| {
-				let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
-				self.pending_events.lock().unwrap().push_back((
-					events::Event::DiscardFunding {
-						channel_id: *channel_id,
-						funding_info: FundingInfo::Contribution { inputs, outputs },
-					},
-					None,
-				));
+			// A pushed event is the only unlock signal the caller will ever get for the released
+			// inputs, so the manager must be persisted with it lest a crash leave them reserved
+			// forever.
+			let push_discard_funding = |contribution: FundingContribution| -> NotifyOption {
+				let funding_info = contribution.unique_contributions().map(|(inputs, outputs)| {
+					FundingInfo::Contribution {
+						inputs,
+						outputs: outputs
+							.into_iter()
+							.map(|output| output.script_pubkey.clone())
+							.collect(),
+					}
+				});
+				if let Some(funding_info) = funding_info {
+					self.pending_events.lock().unwrap().push_back((
+						events::Event::DiscardFunding { channel_id: *channel_id, funding_info },
+						None,
+					));
+					NotifyOption::DoPersist
+				} else {
+					NotifyOption::SkipPersistNoEvents
+				}
 			};
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 			if peer_state_mutex_opt.is_none() {
-				push_discard_funding(contribution);
 				result = Err(APIError::no_such_peer(counterparty_node_id));
-				return NotifyOption::SkipPersistNoEvents;
+				return push_discard_funding(contribution);
 			}
 
 			let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
@@ -7143,21 +7194,19 @@ impl<
 						return NotifyOption::DoPersist;
 					},
 					None => {
-						push_discard_funding(contribution);
 						result = Err(APIError::APIMisuseError {
 							err: format!(
 								"Channel with id {} not expecting funding contribution",
 								channel_id
 							),
 						});
-						return NotifyOption::SkipPersistNoEvents;
+						return push_discard_funding(contribution);
 					},
 				},
 				None => {
-					push_discard_funding(contribution);
 					result =
 						Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id));
-					return NotifyOption::SkipPersistNoEvents;
+					return push_discard_funding(contribution);
 				},
 			}
 		});
