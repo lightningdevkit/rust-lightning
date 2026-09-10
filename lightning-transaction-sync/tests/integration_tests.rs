@@ -23,8 +23,69 @@ use electrsd::ElectrsD;
 
 use std::collections::{HashMap, HashSet};
 use std::env;
+#[cfg(feature = "_electrum")]
+use std::io::{BufRead, BufReader, Write};
+#[cfg(feature = "_electrum")]
+use std::net::{TcpListener, TcpStream};
+#[cfg(feature = "_electrum")]
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+
+#[cfg(feature = "_electrum")]
+struct ElectrumRequestCounter {
+	address: std::net::SocketAddr,
+	requests: Arc<Mutex<Vec<String>>>,
+}
+
+#[cfg(feature = "_electrum")]
+impl ElectrumRequestCounter {
+	fn new(upstream_address: String) -> Self {
+		let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+		let address = listener.local_addr().unwrap();
+		let requests = Arc::new(Mutex::new(Vec::new()));
+		let thread_requests = Arc::clone(&requests);
+		std::thread::spawn(move || {
+			let (downstream, _) = listener.accept().unwrap();
+			let mut upstream = TcpStream::connect(upstream_address).unwrap();
+			let mut downstream_writer = downstream.try_clone().unwrap();
+			let mut upstream_reader = upstream.try_clone().unwrap();
+			let response_thread = std::thread::spawn(move || {
+				std::io::copy(&mut upstream_reader, &mut downstream_writer).unwrap();
+			});
+
+			let mut downstream_reader = BufReader::new(downstream);
+			loop {
+				let mut request = String::new();
+				if downstream_reader.read_line(&mut request).unwrap() == 0 {
+					break;
+				}
+				thread_requests.lock().unwrap().push(request.clone());
+				upstream.write_all(request.as_bytes()).unwrap();
+			}
+			drop(upstream);
+			response_thread.join().unwrap();
+		});
+		Self { address, requests }
+	}
+
+	fn url(&self) -> String {
+		format!("tcp://{}", self.address)
+	}
+
+	fn transaction_get_count(&self, txid: Txid) -> usize {
+		let txid = txid.to_string();
+		self.requests
+			.lock()
+			.unwrap()
+			.iter()
+			.filter(|request| {
+				request.contains("\"method\":\"blockchain.transaction.get\"")
+					&& request.contains(&txid)
+			})
+			.count()
+	}
+}
 
 pub fn setup_bitcoind_and_electrsd() -> (BitcoinD, ElectrsD) {
 	let bitcoind_exe =
@@ -341,4 +402,81 @@ fn test_electrum_syncs() {
 	let tx_sync = ElectrumSyncClient::new(electrum_url, &mut logger).unwrap();
 	let confirmable = TestConfirmable::new();
 	test_syncing!(tx_sync, confirmable, bitcoind, electrsd);
+}
+
+#[test]
+#[cfg(feature = "_electrum")]
+fn test_electrum_avoids_creator_transaction_downloads() {
+	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
+	generate_blocks_and_wait(&bitcoind, &electrsd, 101);
+
+	let spend_address = bitcoind.client.new_address().unwrap();
+	let spend_txid = bitcoind
+		.client
+		.send_to_address(&spend_address, Amount::from_sat(5000))
+		.unwrap()
+		.0
+		.parse()
+		.unwrap();
+	let spend_tx = bitcoind.client.get_transaction(spend_txid).unwrap().into_model().unwrap().tx;
+	let spent_outpoint = spend_tx.input.first().unwrap().previous_output;
+	let spent_output_tx =
+		bitcoind.client.get_transaction(spent_outpoint.txid).unwrap().into_model().unwrap().tx;
+
+	let watched_funding_address = bitcoind.client.new_address().unwrap();
+	let watched_funding_txid = bitcoind
+		.client
+		.send_to_address(&watched_funding_address, Amount::from_sat(5000))
+		.unwrap()
+		.0
+		.parse()
+		.unwrap();
+
+	let unspent_address = bitcoind.client.new_address().unwrap();
+	let unspent_txid = bitcoind
+		.client
+		.send_to_address(&unspent_address, Amount::from_sat(5000))
+		.unwrap()
+		.0
+		.parse()
+		.unwrap();
+	generate_blocks_and_wait(&bitcoind, &electrsd, 1);
+	let unspent_tx_res =
+		bitcoind.client.get_transaction(unspent_txid).unwrap().into_model().unwrap();
+	let unspent_output_index = unspent_tx_res
+		.tx
+		.output
+		.iter()
+		.position(|output| output.script_pubkey == unspent_address.script_pubkey())
+		.unwrap();
+
+	let request_counter = ElectrumRequestCounter::new(electrsd.electrum_url.to_string());
+	let mut logger = TestLogger::new();
+	let tx_sync = ElectrumSyncClient::new(request_counter.url(), &mut logger).unwrap();
+	let confirmable = TestConfirmable::new();
+	tx_sync.register_output(WatchedOutput {
+		block_hash: unspent_tx_res.block_hash,
+		outpoint: OutPoint { txid: unspent_txid, index: unspent_output_index as u16 },
+		script_pubkey: unspent_address.script_pubkey(),
+	});
+	tx_sync.register_output(WatchedOutput {
+		block_hash: None,
+		outpoint: OutPoint { txid: spent_outpoint.txid, index: spent_outpoint.vout as u16 },
+		script_pubkey: spent_output_tx.output[spent_outpoint.vout as usize].script_pubkey.clone(),
+	});
+	tx_sync.register_tx(&watched_funding_txid, &watched_funding_address.script_pubkey());
+
+	tx_sync.sync(vec![&confirmable]).unwrap();
+	for _ in 0..2 {
+		generate_blocks_and_wait(&bitcoind, &electrsd, 1);
+		tx_sync.sync(vec![&confirmable]).unwrap();
+	}
+
+	assert_eq!(request_counter.transaction_get_count(unspent_txid), 0);
+	assert_eq!(request_counter.transaction_get_count(spent_outpoint.txid), 0);
+	assert_eq!(request_counter.transaction_get_count(spend_txid), 1);
+	assert_eq!(request_counter.transaction_get_count(watched_funding_txid), 1);
+	let confirmed_txs = confirmable.confirmed_txs.lock().unwrap();
+	assert!(confirmed_txs.contains_key(&spend_txid));
+	assert!(confirmed_txs.contains_key(&watched_funding_txid));
 }
