@@ -118,7 +118,7 @@ impl FundingInfo {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FailedSpliceContribution {
 	/// UTXOs spent as inputs contributed to the failed round that were released by the failure,
-	/// i.e., excluding any still committed to an existing splice attempt.
+	/// i.e., excluding any inherited from a splice attempt that remains pending.
 	contributed_inputs: Vec<OutPoint>,
 	/// Outputs contributed to the failed round that were released by the failure.
 	contributed_outputs: Vec<TxOut>,
@@ -139,10 +139,14 @@ impl FailedSpliceContribution {
 	/// call [`ChannelManager::splice_channel`] to obtain a fresh [`FundingTemplate`] and build a
 	/// new contribution.
 	///
-	/// The contribution preserves the full set of inputs and outputs from the failed round,
-	/// including any still committed to an existing splice attempt (a prior negotiated candidate,
-	/// a round still under negotiation, or a splice that just locked). These inputs and outputs are
-	/// omitted from [`Event::DiscardFunding`] while they remain committed.
+	/// The preceding [`Event::DiscardFunding`] lists the inputs and outputs this contribution
+	/// brought to the failed round, other than any it inherited from a splice attempt that remains
+	/// pending, which that attempt still uses. Before retrying, reserve the listed ones again,
+	/// confirming they are still free: that event released them, and
+	/// [`ChannelManager::funding_contributed`] requires everything a contribution holds to be
+	/// reserved for it alone, other than what it inherited from a pending splice attempt. If the
+	/// channel has since closed, retrying is refused and the same inputs and outputs are reported
+	/// again.
 	///
 	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
@@ -1798,10 +1802,12 @@ pub enum Event {
 	/// negotiated transaction includes local inputs or outputs. Prior successfully negotiated
 	/// splice transactions are unaffected.
 	///
-	/// Any UTXOs contributed to the failed round that are not committed to an existing splice
-	/// attempt will be returned via a preceding [`Event::DiscardFunding`]. This also applies to
-	/// contributions rejected with an error, though without a corresponding
-	/// `SpliceNegotiationFailed` event.
+	/// Any UTXOs contributed to the failed round, other than those inherited from a splice attempt
+	/// that remains pending, will be returned via a preceding [`Event::DiscardFunding`]. This also
+	/// applies to contributions rejected with an error, though without a corresponding
+	/// `SpliceNegotiationFailed` event. As that event precedes this one, the returned UTXOs are
+	/// free again by the time this event is handled; retrying with
+	/// [`FailedSpliceContribution::contribution`] requires reserving them again first.
 	///
 	/// If the channel closes after the counterparty has committed to the splice, funding remains
 	/// reserved and [`Event::DiscardFunding`] follows once the closing transaction has enough
@@ -2115,8 +2121,8 @@ pub enum Event {
 	/// [`ChannelManager::funding_transaction_signed`] returns an [`APIError::APIMisuseError`] or
 	/// [`APIError::ChannelUnavailable`] without you having done anything wrong. The negotiated
 	/// funding transaction will then never be used. For a splice, an [`Event::DiscardFunding`] (for
-	/// any contributions not also committed to another splice attempt) and an
-	/// [`Event::SpliceNegotiationFailed`] follow, whereas for a channel being opened an
+	/// any contributions other than those inherited from a splice attempt that remains pending)
+	/// and an [`Event::SpliceNegotiationFailed`] follow, whereas for a channel being opened an
 	/// [`Event::ChannelClosed`] is generated.
 	///
 	/// Generated in [`ChannelManager`] message handling.
