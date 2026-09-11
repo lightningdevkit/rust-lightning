@@ -19067,6 +19067,10 @@ impl<
 			}
 		}
 		let events = self.pending_events.lock().unwrap();
+		let pending_events_writer = PendingEventsWriter {
+			pending_events: &*events,
+			splice_failed_events: &splice_failed_events,
+		};
 
 		// LDK versions prior to 0.0.115 don't support post-event actions, thus if there's no
 		// actions at all, skip writing the required TLV. Otherwise, pre-0.0.115 versions will
@@ -19077,12 +19081,7 @@ impl<
 			// well save the space and not write any events here.
 			0u64.write(writer)?;
 		} else {
-			let persisted_events =
-				events_to_persist(events.iter().chain(splice_failed_events.iter()));
-			(persisted_events.len() as u64).write(writer)?;
-			for (event, _) in persisted_events {
-				event.write(writer)?;
-			}
+			pending_events_writer.write_without_actions(writer)?;
 		}
 
 		// LDK versions prior to 0.0.116 wrote the `pending_background_events`
@@ -19133,11 +19132,6 @@ impl<
 			}
 		}
 
-		let pending_events_writer = PendingEventsWriter {
-			pending_events: &*events,
-			splice_failed_events: &splice_failed_events,
-		};
-
 		write_tlv_fields!(writer, {
 			(1, _pending_outbound_payments_no_retry, retired),
 			(2, pending_intercepted_htlcs, option),
@@ -19165,50 +19159,29 @@ impl<
 
 /// Writes the pending events of a [`ChannelManager`] chained with any events that are only
 /// generated at serialization time, as if they were a single sequence of events.
+///
+/// Events which aren't useful once we've restarted are skipped, as replaying them after a restart
+/// would at best do nothing and at worst confuse the handler.
 struct PendingEventsWriter<'a> {
 	pending_events: &'a VecDeque<(Event, Option<EventCompletionAction>)>,
 	splice_failed_events: &'a [(Event, Option<EventCompletionAction>)],
 }
 
-impl Writeable for PendingEventsWriter<'_> {
-	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+impl PendingEventsWriter<'_> {
+	fn events_to_persist(&self) -> impl Iterator<Item = &(Event, Option<EventCompletionAction>)> {
 		let Self { pending_events, splice_failed_events } = self;
-		let persisted_events =
-			events_to_persist(pending_events.iter().chain(splice_failed_events.iter()));
-		(persisted_events.len() as u64).write(w)?;
-		for (event, action) in persisted_events {
-			event.write(w)?;
-			action.write(w)?;
-		}
-		Ok(())
-	}
-}
-
-/// Filters the given events down to the ones which should be persisted, in order.
-///
-/// Events which aren't useful once we've restarted are skipped, as replaying them after a restart
-/// would at best do nothing and at worst confuse the handler.
-///
-/// Returning the events to write (rather than testing each event as we go) ensures the number of
-/// events we write can't diverge from the events themselves, and that the debug-only checks below
-/// apply to every path which persists events.
-fn events_to_persist<'a>(
-	events: impl Iterator<Item = &'a (Event, Option<EventCompletionAction>)>,
-) -> Vec<&'a (Event, Option<EventCompletionAction>)> {
-	events
-		.filter(|(event, action)| {
+		pending_events.iter().chain(splice_failed_events.iter()).filter(|(event, action)| {
 			if !event.useful_after_restart() {
-				// Transient events must not have post-event-handling actions, as we'd otherwise
-				// lose the action when skipping the event here.
+				// Skipping an event here would lose its action, so events which we don't
+				// persist must never have one.
 				debug_assert!(action.is_none());
 				return false;
 			}
 			#[cfg(debug_assertions)]
 			{
-				// Events are MaybeReadable, in some cases indicating that they shouldn't actually
-				// be persisted and are regenerated on restart. Any event we persist must be read
-				// back as `Some`, as otherwise we'd lose it (and any post-event-handling action, on
-				// which deserialization fails). Thus, check that the event round-trips here.
+				// `Event`s are `MaybeReadable`, with some variants deliberately reading back
+				// as `None`. Any event we persist has to read back as `Some`, as we'd
+				// otherwise lose it (and fail to deserialize entirely if it had an action).
 				let event_encoded = event.encode();
 				let event_read: Option<Event> =
 					MaybeReadable::read(&mut &event_encoded[..]).unwrap();
@@ -19216,7 +19189,34 @@ fn events_to_persist<'a>(
 			}
 			true
 		})
-		.collect()
+	}
+
+	fn write_with_actions<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.events_to_persist().count() as u64).write(w)?;
+		for (event, action) in self.events_to_persist() {
+			event.write(w)?;
+			action.write(w)?;
+		}
+		Ok(())
+	}
+
+	/// Writes the events without their [`EventCompletionAction`]s, as LDK versions prior to
+	/// 0.0.115 expect.
+	fn write_without_actions<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		(self.events_to_persist().count() as u64).write(w)?;
+		for (event, _) in self.events_to_persist() {
+			event.write(w)?;
+		}
+		Ok(())
+	}
+}
+
+// Only required to write the events as an optional TLV field, which the TLV writing macros do via
+// `Writeable`.
+impl Writeable for PendingEventsWriter<'_> {
+	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+		self.write_with_actions(w)
+	}
 }
 
 impl Readable for VecDeque<(Event, Option<EventCompletionAction>)> {
