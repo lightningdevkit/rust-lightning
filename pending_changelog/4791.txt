@@ -5,10 +5,6 @@ API Updates
    the node has restarted. `ChannelManager` uses it to decide which of its pending events to
    persist, and users who maintain their own event queues can use it to avoid replaying events
    which would only cause confusion on startup (#4791).
- * `Writeable` and `Readable` are now implemented for `bump_transaction::AnchorDescriptor` and
-   `msgs::ChannelParameters`, and `Writeable` and `MaybeReadable` for
-   `bump_transaction::BumpTransactionEvent` and `events::InboundChannelFunds`, as needed to
-   serialize the `Event` variants below (#4791).
 
 Backwards Compatibility
 =======================
