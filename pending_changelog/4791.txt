@@ -21,4 +21,4 @@ Backwards Compatibility
    `ChannelManager` format is unchanged (#4791).
  * Users who serialize `Event`s themselves should note that the above variants, when written by
    this version, are silently dropped (rather than failing to deserialize) when read back by a
-   prior version of LDK, as they are now written with new, skippable TLV types (#4791).
+   prior version of LDK (#4791).

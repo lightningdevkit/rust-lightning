@@ -2657,9 +2657,7 @@ impl Writeable for Event {
 				})
 			},
 			&Event::BumpTransaction(ref event) => {
-				// Type 27 was used for these events in LDK versions prior to 0.4, writing no data as
-				// they were never persisted.
-				59u8.write(writer)?;
+				27u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, event, required),
 				});
@@ -3330,11 +3328,16 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			// LDK versions prior to 0.4 wrote BumpTransaction events as type 27 with no contents,
-			// but did write an (empty) TLV body, so we have to consume its length field here.
 			27u8 => {
-				read_tlv_fields!(reader, {});
-				Ok(None)
+				let mut f = || {
+					// LDK versions prior to 0.4 wrote no contents for these events, in which case
+					// there is nothing to return here.
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, event, upgradable_option),
+					});
+					Ok(event.map(Event::BumpTransaction))
+				};
+				f()
 			},
 			29u8 => {
 				let mut f = || {
@@ -3621,15 +3624,6 @@ impl MaybeReadable for Event {
 						user_channel_id: user_channel_id.0.unwrap(),
 						unsigned_transaction: unsigned_transaction.0.unwrap(),
 					}))
-				};
-				f()
-			},
-			59u8 => {
-				let mut f = || {
-					_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(1, event, upgradable_required),
-					});
-					Ok(Some(Event::BumpTransaction(event.0.unwrap())))
 				};
 				f()
 			},
