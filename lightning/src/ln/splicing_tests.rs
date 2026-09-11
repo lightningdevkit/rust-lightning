@@ -3008,6 +3008,89 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 }
 
 #[test]
+fn test_splice_reestablish_aborts_rbf_with_retained_signing_session() {
+	// Losing the final tx_complete leaves one peer awaiting RBF signatures while the other
+	// retains the completed signing session for the prior candidate. Reconnecting must abort
+	// the RBF and preserve the channel and the prior candidate.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let rbf_contribution = do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, feerate);
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	loop {
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+		match &msg_events[0] {
+			MessageSendEvent::SendTxAddInput { msg, .. } => {
+				nodes[1].node.handle_tx_add_input(node_id_0, msg);
+			},
+			MessageSendEvent::SendTxAddOutput { msg, .. } => {
+				nodes[1].node.handle_tx_add_output(node_id_0, msg);
+			},
+			MessageSendEvent::SendTxComplete { .. } => break,
+			other => panic!("Unexpected event {other:?}"),
+		}
+		let tx_complete = get_event_msg!(nodes[1], MessageSendEvent::SendTxComplete, node_id_0);
+		nodes[0].node.handle_tx_complete(node_id_1, &tx_complete);
+	}
+	let rbf_txid = match get_event!(nodes[0], Event::FundingTransactionReadyForSigning) {
+		Event::FundingTransactionReadyForSigning { unsigned_transaction, .. } => {
+			unsigned_transaction.compute_txid()
+		},
+		_ => unreachable!(),
+	};
+	assert_ne!(rbf_txid, splice_tx.compute_txid());
+	assert!(matches!(
+		nodes[1].node.list_channels()[0].splice_details.as_ref().unwrap().candidates[1].status,
+		SpliceCandidateStatus::ConstructingTransaction { .. }
+	));
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_announcement_sigs = (true, true);
+	reconnect_args.send_tx_abort = (true, false);
+	reconnect_nodes(reconnect_args);
+
+	match get_event!(nodes[0], Event::SpliceNegotiationFailed) {
+		Event::SpliceNegotiationFailed {
+			channel_id: failed_channel_id,
+			contribution,
+			reason,
+			..
+		} => {
+			assert_eq!(failed_channel_id, channel_id);
+			assert_eq!(contribution.unwrap().contribution(), &rbf_contribution);
+			assert_eq!(
+				reason,
+				NegotiationFailureReason::CounterpartyAborted {
+					msg: UntrustedString(format!("Unknown funding with txid {rbf_txid}")),
+				}
+			);
+		},
+		_ => unreachable!(),
+	}
+
+	// The fully signed candidate remains valid after the RBF abort and can become the funding.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+}
+
+#[test]
 fn test_reestablish_sends_tx_signatures_before_splice_locked() {
 	// If a splice confirms after `peer_connected` but before `channel_reestablish` is handled, the
 	// peer state is connected while the channel still has its disconnected bit set. We must not send

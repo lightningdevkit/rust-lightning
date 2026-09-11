@@ -11030,13 +11030,17 @@ where
 			if let Some(session) = &self.context.interactive_tx_signing_session {
 				let our_next_funding_txid = session.unsigned_tx().compute_txid();
 				if our_next_funding_txid != next_funding.txid {
-					return Err(ChannelError::close(format!(
-						"Unexpected next_funding txid: {}; expected: {}",
-						next_funding.txid, our_next_funding_txid,
-					)));
-				}
-
-				if !session.has_holder_witnesses() {
+					if !session.has_received_tx_signatures() {
+						return Err(ChannelError::close(format!(
+							"Unexpected next_funding txid: {}; expected: {}",
+							next_funding.txid, our_next_funding_txid,
+						)));
+					}
+					tx_abort = Some(msgs::TxAbort {
+						channel_id: self.context.channel_id(),
+						data: format!("Unknown funding with txid {}", next_funding.txid).as_bytes().to_vec(),
+					});
+				} else if !session.has_holder_witnesses() {
 					log_debug!(logger, "Waiting for funding transaction signatures to be provided");
 				} else {
 					// - if it has not received `tx_signatures` for that funding transaction:
