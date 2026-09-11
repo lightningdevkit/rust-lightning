@@ -2022,9 +2022,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as the static invoice
-	/// negotiation is simply restarted on startup and this event will be regenerated if the
-	/// recipient still needs an invoice persisted.
+	/// returning `Err(ReplayEvent ())`). It may well still be useful after a restart, but as it is
+	/// generated in response to an onion message, persisting it would put us at risk of a DoS, so
+	/// [`Event::useful_after_restart`] returns `false` for it.
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
@@ -2085,9 +2085,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as it stems from an incoming
-	/// onion message that isn't persisted; if the payer still needs the invoice they will
-	/// re-request it after we restart.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as we may have been offline
+	/// for a long while by then and responding to the request at that point makes little sense -
+	/// the payer will re-request the invoice as required.
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
