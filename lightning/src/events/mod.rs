@@ -1975,7 +1975,8 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as forwarding a message long
+	/// after it was received makes little sense - the sender will retry as required.
 	///
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessageIntercepted {
@@ -2005,7 +2006,8 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as all peers are disconnected
+	/// across one and a fresh event is generated when the peer connects again.
 	///
 	/// [`OnionMessenger::forward_onion_message`]: crate::onion_message::messenger::OnionMessenger::forward_onion_message
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
