@@ -1000,9 +1000,8 @@ impl_ser_tlv_based!(OutboundHTLCLocator, {
 ///
 /// `Writeable` and `MaybeReadable` are implemented for `Event`, but note that many events describe
 /// state which no longer means anything once the node has restarted, so persisting them and
-/// handling them on startup is likely to result in confusion. See [`Event::useful_after_restart`],
-/// which distinguishes the two, and the "Failure Behavior and Persistence" documentation on each
-/// variant for why a given event is or isn't useful after a restart. Event providers may drop the
+/// handling them on startup is likely to result in confusion. See
+/// [`Event::useful_after_restart`], which distinguishes the two. Event providers may drop the
 /// events which aren't useful on restart rather than handing them to downstream code, as
 /// [`ChannelManager`] does.
 ///
@@ -2182,12 +2181,8 @@ impl Event {
 	///
 	/// Some events describe state which does not survive a restart at all - a channel which will
 	/// have been forgotten, a negotiation which will have been abandoned, or information which is
-	/// simply rebuilt on startup. Handling such an event after a restart is at best pointless and
-	/// at worst confusing, so code which persists events for later replay should skip the events
-	/// for which this returns `false`.
-	///
-	/// Each variant's "Failure Behavior and Persistence" documentation describes why it is, or
-	/// isn't, useful after a restart.
+	/// simply rebuilt on startup. Code which persists events for later replay should skip those
+	/// for which this returns `false`. See the documentation on each variant to learn more.
 	pub fn useful_after_restart(&self) -> bool {
 		match self {
 			Event::FundingGenerationReady { .. } => false,
