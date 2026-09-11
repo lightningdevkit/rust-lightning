@@ -2245,8 +2245,6 @@ impl Writeable for Event {
 				ref output_script,
 				ref user_channel_id,
 			} => {
-				// Type 0 was used for these events in LDK versions prior to 0.4, writing no data
-				// as they were never persisted.
 				51u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, temporary_channel_id, required),
@@ -2576,8 +2574,6 @@ impl Writeable for Event {
 				ref is_announced,
 				ref params,
 			} => {
-				// Type 17 was used for these events in LDK versions prior to 0.4, writing no data
-				// as they were never persisted.
 				55u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, temporary_channel_id, required),
@@ -2758,8 +2754,6 @@ impl Writeable for Event {
 				ref recipient_id,
 				ref invoice_persisted_path,
 			} => {
-				// Type 45 was used for these events in LDK versions prior to 0.4, writing no data as
-				// they were never persisted.
 				61u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, invoice, required),
@@ -2775,8 +2769,6 @@ impl Writeable for Event {
 				ref reply_path,
 				ref invoice_request,
 			} => {
-				// Type 47 was used for these events in LDK versions prior to 0.4, writing no data as
-				// they were never persisted.
 				63u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, recipient_id, required),
@@ -2791,8 +2783,6 @@ impl Writeable for Event {
 				ref user_channel_id,
 				ref unsigned_transaction,
 			} => {
-				// Type 49 was used for these events in LDK versions prior to 0.4, writing no data
-				// as they were never persisted.
 				57u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, channel_id, required),
