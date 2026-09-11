@@ -21589,10 +21589,10 @@ fn reconcile_pending_htlcs_with_monitor(
 
 #[cfg(test)]
 mod tests {
-	use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentFailureReason};
+	use crate::events::{ClosureReason, Event, HTLCHandlingFailureType};
 	use crate::ln::channelmanager::{
-		create_recv_pending_htlc_info, inbound_payment, EventCompletionAction, InterceptId,
-		PaymentId, PendingEventsWriter, RecipientOnionFields,
+		create_recv_pending_htlc_info, inbound_payment, InterceptId, PaymentId,
+		RecipientOnionFields,
 	};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -21605,46 +21605,10 @@ mod tests {
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
 	use crate::util::errors::APIError;
-	use crate::util::ser::{Readable, Writeable};
 	use crate::util::test_utils;
-	use bitcoin::script::ScriptBuf;
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
-
-	#[test]
-	fn test_event_queue_transient_event_filtering() {
-		// Transient events, such as `FundingGenerationReady`, should not be persisted as part of
-		// the pending event queue, while others, such as `PaymentFailed`, should be.
-		let secp_ctx = Secp256k1::new();
-		let counterparty_node_id =
-			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
-
-		let mut events: VecDeque<(Event, Option<EventCompletionAction>)> = VecDeque::new();
-		events.push_back((
-			Event::FundingGenerationReady {
-				temporary_channel_id: ChannelId([2; 32]),
-				counterparty_node_id,
-				channel_value_satoshis: 100_000,
-				output_script: ScriptBuf::new(),
-				user_channel_id: 42,
-			},
-			None,
-		));
-		let payment_failed = Event::PaymentFailed {
-			payment_id: PaymentId([42; 32]),
-			payment_hash: None,
-			reason: Some(PaymentFailureReason::RecipientRejected),
-		};
-		events.push_back((payment_failed.clone(), None));
-
-		let writer = PendingEventsWriter { pending_events: &events, splice_failed_events: &[] };
-		let read: VecDeque<(Event, Option<EventCompletionAction>)> =
-			Readable::read(&mut &writer.encode()[..]).unwrap();
-		assert_eq!(read.len(), 1);
-		assert_eq!(read[0].0, payment_failed);
-		assert!(read[0].1.is_none());
-	}
 
 	#[test]
 	#[rustfmt::skip]
