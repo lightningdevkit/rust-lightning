@@ -271,6 +271,15 @@ pub struct ChannelParameters {
 	pub max_accepted_htlcs: u16,
 }
 
+impl_ser_tlv_based!(ChannelParameters, {
+	(1, dust_limit_satoshis, required),
+	(3, max_htlc_value_in_flight_msat, required),
+	(5, htlc_minimum_msat, required),
+	(7, commitment_feerate_sat_per_1000_weight, required),
+	(9, to_self_delay, required),
+	(11, max_accepted_htlcs, required),
+});
+
 /// An [`open_channel`] message to be sent to or received from a peer.
 ///
 /// Used in V1 channel establishment

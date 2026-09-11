@@ -365,7 +365,14 @@ impl_ser_tlv_based!(Responder, {
 
 impl Responder {
 	/// Creates a new [`Responder`] instance with the provided reply path.
+	#[cfg(not(test))]
 	pub(super) fn new(reply_path: BlindedMessagePath) -> Self {
+		Responder { reply_path }
+	}
+
+	/// Creates a new [`Responder`] instance with the provided reply path.
+	#[cfg(test)]
+	pub(crate) fn new(reply_path: BlindedMessagePath) -> Self {
 		Responder { reply_path }
 	}
 

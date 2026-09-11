@@ -3006,7 +3006,6 @@ mod tests {
 	};
 	#[cfg(feature = "std")]
 	use crate::offers::invoice::DEFAULT_RELATIVE_EXPIRY;
-	use crate::offers::invoice_request::InvoiceRequest;
 	use crate::offers::nonce::Nonce;
 	use crate::offers::offer::OfferBuilder;
 	use crate::offers::payer_proof::PaidBolt12Invoice;
@@ -3647,23 +3646,6 @@ mod tests {
 			},
 			_ => panic!("expected a Retryable payment"),
 		}
-	}
-
-	#[rustfmt::skip]
-	fn dummy_invoice_request() -> InvoiceRequest {
-		let expanded_key = ExpandedKey::new([42; 32]);
-		let entropy = FixedEntropy {};
-		let nonce = Nonce::from_entropy_source(&entropy);
-		let secp_ctx = Secp256k1::new();
-		let payment_id = PaymentId([1; 32]);
-
-		OfferBuilder::new(recipient_pubkey())
-			.amount_msats(1000)
-			.build().unwrap()
-			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
-			.unwrap()
-			.build_and_sign()
-			.unwrap()
 	}
 
 	#[test]
