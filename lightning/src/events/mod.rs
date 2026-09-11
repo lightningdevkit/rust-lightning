@@ -3577,16 +3577,6 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			65u8 => {
-				let mut f = || {
-					_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(1, node_id, required),
-						(3, addresses, required_vec),
-					});
-					Ok(Some(Event::ConnectionNeeded { node_id: node_id.0.unwrap(), addresses }))
-				};
-				f()
-			},
 			55u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
@@ -3660,6 +3650,16 @@ impl MaybeReadable for Event {
 						reply_path: reply_path.0.unwrap(),
 						invoice_request: invoice_request.0.unwrap(),
 					}))
+				};
+				f()
+			},
+			65u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, node_id, required),
+						(3, addresses, required_vec),
+					});
+					Ok(Some(Event::ConnectionNeeded { node_id: node_id.0.unwrap(), addresses }))
 				};
 				f()
 			},
