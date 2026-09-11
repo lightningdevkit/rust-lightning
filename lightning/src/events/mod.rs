@@ -1952,9 +1952,8 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as its contents are derived
-	/// from on-chain state and the event will only be regenerated as needed once that state is
-	/// re-evaluated after startup.
+	/// returning `Err(ReplayEvent ())`). There is no need to handle it after a restart, as it will
+	/// be regenerated as required.
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	/// [`ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments
