@@ -175,10 +175,15 @@ impl FailedSpliceContribution {
 /// The reason a funding negotiation round failed.
 ///
 /// Each negotiation attempt (initial or RBF) resolves to either success or failure. This enum
-/// indicates what caused the failure. Use [`is_retriable`] to determine whether the splice can
-/// be reattempted on this channel by calling [`ChannelManager::splice_channel`].
+/// indicates what caused the failure. It is reported through [`Event::SpliceNegotiationFailed`],
+/// or through [`SpliceContributionError::NegotiationFailed`] when
+/// [`ChannelManager::funding_contributed`] refuses the contribution outright. Use
+/// [`is_retriable`] to determine whether the splice can be reattempted on this channel by calling
+/// [`ChannelManager::splice_channel`].
 ///
 /// [`is_retriable`]: Self::is_retriable
+/// [`SpliceContributionError::NegotiationFailed`]: crate::ln::channelmanager::SpliceContributionError::NegotiationFailed
+/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
 /// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NegotiationFailureReason {
@@ -1798,9 +1803,9 @@ pub enum Event {
 	/// Each splice attempt (initial or RBF) resolves to this event on failure, unless the
 	/// contribution was rejected with an error returned from
 	/// [`ChannelManager::funding_contributed`], in which case the failure is only reported
-	/// through the returned error. On success, [`Event::SpliceNegotiated`] is emitted if the
-	/// negotiated transaction includes local inputs or outputs. Prior successfully negotiated
-	/// splice transactions are unaffected.
+	/// through the returned [`SpliceContributionError`]. On success, [`Event::SpliceNegotiated`]
+	/// is emitted if the negotiated transaction includes local inputs or outputs. Prior
+	/// successfully negotiated splice transactions are unaffected.
 	///
 	/// Any UTXOs contributed to the failed round, other than those inherited from a splice attempt
 	/// that remains pending, will be returned via a preceding [`Event::DiscardFunding`]. This also
@@ -1821,6 +1826,7 @@ pub enum Event {
 	/// returning `Err(ReplayEvent ())`) and will be persisted across restarts.
 	///
 	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
+	/// [`SpliceContributionError`]: crate::ln::channelmanager::SpliceContributionError
 	SpliceNegotiationFailed {
 		/// The `channel_id` of the channel for which the splice negotiation round failed.
 		channel_id: ChannelId,
