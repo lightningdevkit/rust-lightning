@@ -16660,3 +16660,141 @@ fn test_queued_contribution_owns_inherited_parts_once_earliest_candidate_locks()
 		}
 	));
 }
+
+#[test]
+fn test_stale_template_from_dropped_candidate_releases_only_its_own_input() {
+	// A template taken while an RBF chain is pending starts from the latest round's contribution
+	// and is tied to it. If an earlier candidate locks instead, the latest round is dropped and
+	// releases the input it reserved itself. A contribution built from the template is then
+	// rejected as stale, and its refusal releases only what it added on top of the inherited
+	// parts: the inherited input the promoted transaction spent is gone, and the one the dropped
+	// round reserved was already released with that round.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let input_value = Amount::from_sat(100_000);
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let new_input = || {
+		let reserves = provide_utxo_reserves(&nodes, 1, input_value);
+		ConfirmedUtxo::new_p2wpkh(reserves, 0).unwrap()
+	};
+
+	// Round 0 spends a hand-picked input, A.
+	let input_a = new_input();
+	let outpoint_a = input_a.outpoint();
+	let round_0_contribution = nodes[0]
+		.node
+		.splice_channel(&channel_id, &node_id_1)
+		.unwrap()
+		.without_prior_contribution(floor_feerate, FeeRate::MAX)
+		.add_input(input_a)
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, round_0_contribution.clone(), None)
+		.unwrap();
+	let (round_0_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, round_0_contribution);
+
+	// Round 1 amends round 0, adding B.
+	let input_b = new_input();
+	let outpoint_b = input_b.outpoint();
+	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let rbf_feerate = template.min_rbf_feerate().unwrap();
+	let round_1_contribution = template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_input(input_b.clone())
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, round_1_contribution.clone(), None)
+		.unwrap();
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		round_1_contribution,
+		new_funding_script,
+	);
+	let (round_1_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(round_0_tx.compute_txid()),
+	);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// While both rounds are pending, take a template. It starts from round 1's contribution. Build
+	// a contribution keeping the inherited A and B and adding a fresh input, D, but hold it.
+	let input_d = new_input();
+	let outpoint_d = input_d.outpoint();
+	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(
+		template.prior_contribution().unwrap().contributed_inputs().collect::<Vec<_>>(),
+		vec![outpoint_a, outpoint_b]
+	);
+	let rbf_feerate = template.min_rbf_feerate().unwrap();
+	let stale_contribution = template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_input(input_d.clone())
+		.unwrap()
+		.build()
+		.unwrap();
+	assert_eq!(
+		stale_contribution.contributed_inputs().collect::<Vec<_>>(),
+		vec![outpoint_a, outpoint_b, outpoint_d]
+	);
+
+	// Round 0 confirms and locks, spending only A. Round 1 is dropped and releases B, the input it
+	// reserved itself.
+	let locked = lock_rbf_splice_after_blocks(
+		&nodes[0],
+		&nodes[1],
+		&round_0_tx,
+		ANTI_REORG_DELAY - 1,
+		&[round_1_tx.compute_txid()],
+	);
+	assert!(locked.stfu.is_none());
+	assert_eq!(locked.node_a_discarded, vec![(vec![outpoint_b], vec![])]);
+	assert!(locked.node_b_discarded.is_empty());
+
+	// The round the template started from is no longer pending, so the contribution is rejected
+	// as stale. Only D is released: A was spent by the locked splice, and B was released when
+	// round 1 was dropped.
+	assert_eq!(
+		nodes[0].node.funding_contributed(&channel_id, &node_id_1, stale_contribution, None),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::ContributionInvalid,
+		}),
+	);
+	let (discarded_inputs, discarded_outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
+	assert_eq!(discarded_inputs, vec![outpoint_d]);
+	assert!(discarded_outputs.is_empty(), "{discarded_outputs:?}");
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert_no_queued_splice(&nodes[0], &channel_id);
+
+	// Restarting from a fresh template, the released inputs B and D are accepted for a new splice.
+	let contribution = nodes[0]
+		.node
+		.splice_channel(&channel_id, &node_id_1)
+		.unwrap()
+		.without_prior_contribution(floor_feerate, FeeRate::MAX)
+		.add_inputs(vec![input_b, input_d])
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None).unwrap();
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	let _stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+}
