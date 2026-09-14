@@ -16452,3 +16452,155 @@ fn do_test_contribution_from_aborted_acceptor_rbf_template(amend_prior: bool) {
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	let _stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
 }
+
+#[test]
+fn test_queued_contribution_owns_inherited_parts_once_earliest_candidate_locks() {
+	// Across an RBF chain, each round's contribution inherits the parts of the round it replaces
+	// and reserves only what it adds, and a contribution queued behind the chain inherits from
+	// the latest round the same way. If the earliest candidate then locks, every later round is
+	// dropped at once. Each releases only what it reserved itself, and nothing the promoted
+	// transaction or the surviving queued contribution uses. The queued contribution, sharing
+	// nothing with the promoted transaction, survives and now owns everything it holds,
+	// including what it inherited, so a later failure of it releases all of its parts.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let input_value = Amount::from_sat(100_000);
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let new_input = || {
+		let reserves = provide_utxo_reserves(&nodes, 1, input_value);
+		ConfirmedUtxo::new_p2wpkh(reserves, 0).unwrap()
+	};
+
+	// Round 0 spends a hand-picked input, A.
+	let input_a = new_input();
+	let outpoint_a = input_a.outpoint();
+	let round_0_contribution = nodes[0]
+		.node
+		.splice_channel(&channel_id, &node_id_1)
+		.unwrap()
+		.without_prior_contribution(floor_feerate, FeeRate::MAX)
+		.add_input(input_a)
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, round_0_contribution.clone(), None)
+		.unwrap();
+	let (round_0_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, round_0_contribution);
+
+	// Each RBF round amends the prior round, adding one input on top of the inherited ones.
+	let rbf_round = |input: ConfirmedUtxo, replaced_tx: &Transaction| -> Transaction {
+		let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+		let rbf_feerate = template.min_rbf_feerate().unwrap();
+		let contribution = template
+			.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+			.add_input(input)
+			.unwrap()
+			.build()
+			.unwrap();
+		nodes[0]
+			.node
+			.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None)
+			.unwrap();
+		complete_rbf_handshake(&nodes[0], &nodes[1]);
+		complete_interactive_funding_negotiation(
+			&nodes[0],
+			&nodes[1],
+			channel_id,
+			contribution,
+			new_funding_script.clone(),
+		);
+		let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
+			SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+				.replacing(replaced_tx.compute_txid()),
+		);
+		assert!(splice_locked.is_none());
+		expect_splice_pending_event(&nodes[0], &node_id_1);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		rbf_tx
+	};
+
+	// Round 1 adds B, and round 2 adds C.
+	let input_b = new_input();
+	let outpoint_b = input_b.outpoint();
+	let round_1_tx = rbf_round(input_b, &round_0_tx);
+	let input_c = new_input();
+	let outpoint_c = input_c.outpoint();
+	let round_2_tx = rbf_round(input_c, &round_1_tx);
+
+	// Queue a contribution built from round 2's template that drops the inputs shared with the
+	// earlier rounds, keeping C and adding a fresh input, D. It inherits C and reserves D itself.
+	let input_d = new_input();
+	let outpoint_d = input_d.outpoint();
+	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(
+		template.prior_contribution().unwrap().contributed_inputs().collect::<Vec<_>>(),
+		vec![outpoint_a, outpoint_b, outpoint_c]
+	);
+	let rbf_feerate = template.min_rbf_feerate().unwrap();
+	let queued_contribution = template
+		.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.remove_input(&outpoint_a)
+		.unwrap()
+		.remove_input(&outpoint_b)
+		.unwrap()
+		.add_input(input_d)
+		.unwrap()
+		.build()
+		.unwrap();
+	assert_eq!(
+		queued_contribution.contributed_inputs().collect::<Vec<_>>(),
+		vec![outpoint_c, outpoint_d]
+	);
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, queued_contribution, None).unwrap();
+	let _queued_stfu = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+
+	// The earliest candidate confirms and locks, spending only A. Round 1 releases B, the input
+	// it reserved itself. Round 2 releases nothing: A and B were not its to release, and C now
+	// belongs to the surviving queued contribution.
+	let locked = lock_rbf_splice_after_blocks(
+		&nodes[0],
+		&nodes[1],
+		&round_0_tx,
+		ANTI_REORG_DELAY - 1,
+		&[round_1_tx.compute_txid(), round_2_tx.compute_txid()],
+	);
+	assert!(locked.stfu.is_none());
+	assert_eq!(locked.node_a_discarded, vec![(vec![outpoint_b], vec![])]);
+	assert!(locked.node_b_discarded.is_empty());
+
+	// The queued contribution survives, still holding C and D, and now owns both: canceling it
+	// releases C along with D.
+	let queued_contribution =
+		splice_candidates(&nodes[0], &channel_id).pop().unwrap().contribution.unwrap();
+	assert_eq!(
+		queued_contribution.contributed_inputs().collect::<Vec<_>>(),
+		vec![outpoint_c, outpoint_d]
+	);
+	nodes[0].node.cancel_funding_contributed(&channel_id, &node_id_1).unwrap();
+	expect_splice_failed_events(
+		&nodes[0],
+		&channel_id,
+		queued_contribution,
+		NegotiationFailureReason::LocallyCanceled,
+	);
+	// The stfu for the queued contribution was already sent, so canceling disconnects the peer.
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(
+		msg_events[0],
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::DisconnectPeerWithWarning { .. },
+			..
+		}
+	));
+}
