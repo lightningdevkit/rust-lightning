@@ -16144,3 +16144,320 @@ fn test_splice_locked_retransmitted_after_tx_signatures_on_reestablish() {
 		.remove_watched_txn_and_outputs(prev_funding_outpoint, prev_funding_script);
 	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
 }
+
+#[test]
+fn test_amended_stale_template_rejected_after_candidate_locked() {
+	do_test_contribution_from_promoted_candidate_template(true);
+}
+
+#[test]
+fn test_fresh_contribution_replacing_promoted_candidate_template() {
+	do_test_contribution_from_promoted_candidate_template(false);
+}
+
+#[cfg(test)]
+fn do_test_contribution_from_promoted_candidate_template(amend_prior: bool) {
+	// A template taken while a splice candidate is pending starts from the candidate's
+	// contribution and is tied to it. Once the candidate locks, a contribution amending that
+	// contribution is rejected as stale even if it swapped every inherited input for a fresh one
+	// and so shares nothing with the locked splice; the refusal releases the fresh input, and the
+	// caller restarts from a fresh template. The same parts built without the prior contribution
+	// are accepted right away.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let input_value = Amount::from_sat(100_000);
+	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+
+	// The candidate spends a hand-picked input and remains unconfirmed for now.
+	let first_reserves = provide_utxo_reserves(&nodes, 1, input_value);
+	let first_input = ConfirmedUtxo::new_p2wpkh(first_reserves, 0).unwrap();
+	let first_outpoint = first_input.outpoint();
+	let first_contribution = nodes[0]
+		.node
+		.splice_channel(&channel_id, &node_id_1)
+		.unwrap()
+		.without_prior_contribution(floor_feerate, FeeRate::MAX)
+		.add_input(first_input)
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, first_contribution.clone(), None)
+		.unwrap();
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, first_contribution);
+
+	// While the candidate is pending, take a template. It starts from the candidate's
+	// contribution.
+	let second_reserves = provide_utxo_reserves(&nodes, 1, input_value);
+	let second_input = ConfirmedUtxo::new_p2wpkh(second_reserves, 0).unwrap();
+	let second_outpoint = second_input.outpoint();
+	assert_ne!(first_outpoint, second_outpoint);
+	let template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	assert_eq!(
+		template.prior_contribution().unwrap().contributed_inputs().collect::<Vec<_>>(),
+		vec![first_outpoint]
+	);
+	let rbf_feerate = template.min_rbf_feerate().unwrap();
+
+	// Build a contribution that swaps the candidate's input for the fresh one, so it shares
+	// nothing with the candidate.
+	let builder = if amend_prior {
+		template
+			.with_prior_contribution(rbf_feerate, FeeRate::MAX)
+			.remove_input(&first_outpoint)
+			.unwrap()
+	} else {
+		template.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+	};
+	let contribution = builder.add_input(second_input.clone()).unwrap().build().unwrap();
+	assert_eq!(contribution.contributed_inputs().collect::<Vec<_>>(), vec![second_outpoint]);
+	assert!(contribution.outputs().is_empty());
+	assert!(contribution.change_output().is_none());
+
+	// The candidate confirms and locks, spending only its own input.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	let locked = lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+	assert!(locked.stfu.is_none());
+	assert!(locked.node_a_discarded.is_empty());
+	assert!(locked.node_b_discarded.is_empty());
+
+	let contribution = if amend_prior {
+		// The candidate the template started from is no longer pending, so the contribution is
+		// rejected as stale although it spends nothing the locked splice did. Only its fresh input
+		// is released.
+		assert_eq!(
+			nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None),
+			Err(APIError::APIMisuseError {
+				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			}),
+		);
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1, "{events:?}");
+		match &events[0] {
+			Event::DiscardFunding {
+				channel_id: event_channel_id,
+				funding_info: FundingInfo::Contribution { inputs, outputs },
+			} => {
+				assert_eq!(*event_channel_id, channel_id);
+				assert_eq!(*inputs, vec![second_outpoint]);
+				assert!(outputs.is_empty(), "{outputs:?}");
+			},
+			other => panic!("Expected DiscardFunding, got {other:?}"),
+		}
+
+		// Restarting from a fresh template, the released input is accepted.
+		nodes[0]
+			.node
+			.splice_channel(&channel_id, &node_id_1)
+			.unwrap()
+			.without_prior_contribution(floor_feerate, FeeRate::MAX)
+			.add_input(second_input)
+			.unwrap()
+			.build()
+			.unwrap()
+	} else {
+		contribution
+	};
+
+	// The contribution spends only the fresh input, which no splice has used, so it is accepted
+	// and starts a fresh splice.
+	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None).unwrap();
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert!(events.is_empty(), "{events:?}");
+	let (fresh_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+	assert!(fresh_splice_tx.input.iter().any(|txin| txin.previous_output == second_outpoint));
+	assert!(!fresh_splice_tx.input.iter().any(|txin| txin.previous_output == first_outpoint));
+	mine_transaction(&nodes[0], &fresh_splice_tx);
+	mine_transaction(&nodes[1], &fresh_splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+}
+
+#[test]
+fn test_amended_stale_template_rejected_after_acceptor_rbf_aborted() {
+	do_test_contribution_from_aborted_acceptor_rbf_template(true);
+}
+
+#[test]
+fn test_fresh_contribution_replacing_aborted_acceptor_rbf_template() {
+	do_test_contribution_from_aborted_acceptor_rbf_template(false);
+}
+
+#[cfg(test)]
+fn do_test_contribution_from_aborted_acceptor_rbf_template(amend_prior: bool) {
+	// An RBF contribution queued behind quiescence may merge into a counterparty-initiated RBF
+	// round via the tie-break. A template taken while that round is under negotiation starts from
+	// the merged contribution and is tied to it. If the counterparty then aborts the round, a
+	// contribution amending that contribution is rejected as stale even if it dropped every
+	// inherited part in favor of a fresh input and so uses nothing any splice attempt still holds;
+	// the refusal releases the fresh input, and the caller restarts from a fresh template. The same
+	// parts built without the prior contribution are accepted right away as a new RBF attempt.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let input_value = Amount::from_sat(100_000);
+
+	// Node 0 alone splices in; the signed candidate remains unconfirmed.
+	provide_utxo_reserves(&nodes, 1, input_value);
+	let initial_contribution =
+		initiate_splice_in(&nodes[0], &nodes[1], channel_id, Amount::from_sat(50_000));
+	splice_channel(&nodes[0], &nodes[1], channel_id, initial_contribution);
+
+	// Node 0 (the funder) queues a fee bump of its contribution and proposes quiescence.
+	let rbf_feerate =
+		nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap().min_rbf_feerate().unwrap();
+	do_initiate_rbf_splice_in(&nodes[0], &nodes[1], channel_id, rbf_feerate);
+
+	// Node 1 queues a contribution spending a hand-picked input at the RBF feerate and proposes
+	// quiescence as well.
+	let queued_reserves = provide_utxo_reserves(&nodes, 1, input_value);
+	let queued_input = ConfirmedUtxo::new_p2wpkh(queued_reserves, 1).unwrap();
+	let queued_outpoint = queued_input.outpoint();
+	let queued_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	assert_eq!(queued_template.min_rbf_feerate(), Some(rbf_feerate));
+	assert!(queued_template.prior_contribution().is_none());
+	let queued_contribution = queued_template
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.add_input(queued_input)
+		.unwrap()
+		.build()
+		.unwrap();
+	assert_eq!(queued_contribution.contributed_inputs().collect::<Vec<_>>(), vec![queued_outpoint]);
+	nodes[1].node.funding_contributed(&channel_id, &node_id_0, queued_contribution, None).unwrap();
+
+	// Node 0 wins the tie-break and initiates the RBF round; node 1's queued contribution merges
+	// into it.
+	let tx_ack_rbf = complete_rbf_handshake(&nodes[0], &nodes[1]);
+	assert!(
+		tx_ack_rbf.funding_output_contribution.is_some_and(|value| value != 0),
+		"the acceptor should contribute to the counterparty's round: {tx_ack_rbf:?}",
+	);
+	// Node 0 starts constructing the transaction; that message is never delivered.
+	nodes[0].node.get_and_clear_pending_msg_events();
+
+	// While node 0's round is under negotiation, node 1 takes a template. It starts from the
+	// contribution merged into that round.
+	let template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let template_feerate = template.min_rbf_feerate().unwrap();
+	assert_eq!(
+		template.prior_contribution().unwrap().contributed_inputs().collect::<Vec<_>>(),
+		vec![queued_outpoint]
+	);
+
+	// Node 0 aborts the round. Node 1's merged contribution is released...
+	let tx_abort = msgs::TxAbort { channel_id, data: Vec::new() };
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
+	let tx_abort_echo = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	match &events[0] {
+		Event::DiscardFunding {
+			channel_id: event_channel_id,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(*event_channel_id, channel_id);
+			assert_eq!(*inputs, vec![queued_outpoint]);
+			assert!(outputs.is_empty(), "{outputs:?}");
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+	assert!(
+		matches!(
+			&events[1],
+			Event::SpliceNegotiationFailed {
+				reason: NegotiationFailureReason::CounterpartyAborted { .. },
+				..
+			}
+		),
+		"{events:?}"
+	);
+
+	// ...and node 0's round fails as well. Only the signed candidate remains pending on both sides.
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort_echo);
+	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+	nodes[0].node.get_and_clear_pending_events();
+	for node in nodes.iter() {
+		let candidates = splice_candidates(node, &channel_id);
+		assert_eq!(candidates.len(), 1, "{candidates:?}");
+		assert!(matches!(candidates[0].status, SpliceCandidateStatus::Negotiated { .. }));
+	}
+
+	// Node 1 builds a contribution from the template, dropping the released input for a fresh one
+	// that no splice attempt has ever used.
+	let fresh_reserves = provide_utxo_reserves(&nodes, 1, input_value);
+	let fresh_input = ConfirmedUtxo::new_p2wpkh(fresh_reserves, 1).unwrap();
+	let fresh_outpoint = fresh_input.outpoint();
+	assert_ne!(fresh_outpoint, queued_outpoint);
+	let builder = if amend_prior {
+		template
+			.with_prior_contribution(template_feerate, FeeRate::MAX)
+			.remove_input(&queued_outpoint)
+			.unwrap()
+	} else {
+		template.without_prior_contribution(template_feerate, FeeRate::MAX)
+	};
+	let contribution = builder.add_input(fresh_input.clone()).unwrap().build().unwrap();
+	assert_eq!(contribution.contributed_inputs().collect::<Vec<_>>(), vec![fresh_outpoint]);
+	assert!(contribution.outputs().is_empty());
+	assert!(contribution.change_output().is_none());
+
+	let contribution = if amend_prior {
+		// The round the template's contribution was merged into has failed, so the contribution
+		// is rejected as stale although it spends nothing any splice attempt holds. Only its fresh
+		// input is released.
+		assert_eq!(
+			nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution, None),
+			Err(APIError::APIMisuseError {
+				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			}),
+		);
+		let events = nodes[1].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1, "{events:?}");
+		match &events[0] {
+			Event::DiscardFunding {
+				channel_id: event_channel_id,
+				funding_info: FundingInfo::Contribution { inputs, outputs },
+			} => {
+				assert_eq!(*event_channel_id, channel_id);
+				assert_eq!(*inputs, vec![fresh_outpoint]);
+				assert!(outputs.is_empty(), "{outputs:?}");
+			},
+			other => panic!("Expected DiscardFunding, got {other:?}"),
+		}
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+		// Restarting from a fresh template, the released input is accepted.
+		let fresh_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+		let fresh_feerate = fresh_template.min_rbf_feerate().unwrap();
+		fresh_template
+			.without_prior_contribution(fresh_feerate, FeeRate::MAX)
+			.add_input(fresh_input)
+			.unwrap()
+			.build()
+			.unwrap()
+	} else {
+		contribution
+	};
+
+	// Nothing the contribution spends is committed to any splice attempt, so it is accepted and
+	// starts a new RBF attempt.
+	nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution, None).unwrap();
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	let _stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+}
