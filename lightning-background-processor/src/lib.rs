@@ -230,17 +230,36 @@ impl<
 		}
 	}
 
-	fn prunable_network_graph(&self) -> Option<&G> {
+	/// Returns the [`NetworkGraph`] if stale data can currently be pruned from it.
+	///
+	/// When gossip is fetched from an RGS server our graph is only as fresh as our last
+	/// successful sync, so if the server has been unreachable for a while pruning would remove
+	/// channels which are in fact still live. Thus, we only prune if the graph has been updated
+	/// with a snapshot newer than the one it held at our last prune, as given by
+	/// `rgs_timestamp_at_last_prune`.
+	fn prunable_network_graph(&self, rgs_timestamp_at_last_prune: Option<u32>) -> Option<&G> {
 		match self {
 			GossipSync::P2P(gossip_sync) => Some(gossip_sync.network_graph()),
 			GossipSync::Rapid(gossip_sync) => {
-				if gossip_sync.is_initial_sync_complete() {
-					Some(gossip_sync.network_graph())
+				let network_graph = gossip_sync.network_graph();
+				if network_graph.get_last_rapid_gossip_sync_timestamp()
+					!= rgs_timestamp_at_last_prune
+				{
+					Some(network_graph)
 				} else {
 					None
 				}
 			},
 			GossipSync::None => None,
+		}
+	}
+
+	fn rapid_gossip_sync_timestamp(&self) -> Option<u32> {
+		match self {
+			GossipSync::Rapid(gossip_sync) => {
+				gossip_sync.network_graph().get_last_rapid_gossip_sync_timestamp()
+			},
+			_ => None,
 		}
 	}
 
@@ -1028,6 +1047,7 @@ where
 	let mut last_sweeper_call = sleeper(SWEEPER_TIMER);
 	let mut last_archive_call = sleeper(FIRST_ARCHIVE_STALE_MONITORS_TIMER);
 	let mut have_pruned = false;
+	let mut rgs_timestamp_at_last_prune = gossip_sync.rapid_gossip_sync_timestamp();
 	let mut have_decayed_scorer = false;
 	let mut have_archived = false;
 
@@ -1191,11 +1211,13 @@ where
 			log_trace!(logger, "Archived stale ChannelMonitors.");
 		}
 
-		let prune_timer = if gossip_sync.prunable_network_graph().is_some() {
-			NETWORK_PRUNE_TIMER
-		} else {
-			FIRST_NETWORK_PRUNE_TIMER
-		};
+		let rgs_timestamp = gossip_sync.rapid_gossip_sync_timestamp();
+		let prune_timer =
+			if gossip_sync.prunable_network_graph(rgs_timestamp_at_last_prune).is_some() {
+				NETWORK_PRUNE_TIMER
+			} else {
+				FIRST_NETWORK_PRUNE_TIMER
+			};
 		let prune_timer_elapsed = {
 			match check_and_reset_sleeper(&mut last_prune_call, || sleeper(prune_timer)) {
 				Some(false) => true,
@@ -1210,8 +1232,10 @@ where
 		};
 
 		let network_graph_to_persist = if should_prune {
-			// The network graph must not be pruned while rapid sync completion is pending
-			if let Some(network_graph) = gossip_sync.prunable_network_graph() {
+			if let Some(network_graph) =
+				gossip_sync.prunable_network_graph(rgs_timestamp_at_last_prune)
+			{
+				rgs_timestamp_at_last_prune = rgs_timestamp;
 				if let Some(duration_since_epoch) = fetch_time() {
 					log_trace!(logger, "Pruning and persisting network graph.");
 					network_graph.remove_stale_channels_and_tracking_with_time(
@@ -1556,8 +1580,8 @@ impl BackgroundProcessor {
 	/// # Rapid Gossip Sync
 	///
 	/// If rapid gossip sync is meant to run at startup, pass [`RapidGossipSync`] via `gossip_sync`
-	/// to indicate that the [`BackgroundProcessor`] should not prune the [`NetworkGraph`] instance
-	/// until the [`RapidGossipSync`] instance completes its first sync.
+	/// to indicate that the [`BackgroundProcessor`] should manage pruning of the
+	/// [`NetworkGraph`] instance as gossip is synced.
 	///
 	/// [top-level documentation]: BackgroundProcessor
 	/// [`join`]: Self::join
@@ -1655,6 +1679,7 @@ impl BackgroundProcessor {
 			let mut last_sweeper_call = Instant::now();
 			let mut last_archive_call = Instant::now();
 			let mut have_pruned = false;
+			let mut rgs_timestamp_at_last_prune = gossip_sync.rapid_gossip_sync_timestamp();
 			let mut have_decayed_scorer = false;
 			let mut have_archived = false;
 
@@ -1775,8 +1800,10 @@ impl BackgroundProcessor {
 					_ => prune_timer_elapsed,
 				};
 				if should_prune {
-					// The network graph must not be pruned while rapid sync completion is pending
-					if let Some(network_graph) = gossip_sync.prunable_network_graph() {
+					let rgs_timestamp = gossip_sync.rapid_gossip_sync_timestamp();
+					if let Some(network_graph) =
+						gossip_sync.prunable_network_graph(rgs_timestamp_at_last_prune)
+					{
 						let duration_since_epoch = std::time::SystemTime::now()
 							.duration_since(std::time::SystemTime::UNIX_EPOCH)
 							.expect("Time should be sometime after 1970");
@@ -1794,8 +1821,9 @@ impl BackgroundProcessor {
 							log_error!(logger, "Error: Failed to persist network graph, check your disk and permissions {}", e);
 						}
 						have_pruned = true;
+						rgs_timestamp_at_last_prune = rgs_timestamp;
+						last_prune_call = Instant::now();
 					}
-					last_prune_call = Instant::now();
 				}
 				if !have_decayed_scorer {
 					if let Some(ref scorer) = scorer {
@@ -3431,6 +3459,25 @@ mod tests {
 		}
 	}
 
+	// An RGS update which adds two channels and removes any other channels in the graph, applied
+	// with `RGS_UPDATE_TIME` as the current time.
+	const RGS_UPDATE: &[u8] = &[
+		76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99, 247, 79,
+		147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227, 98, 218, 0, 0, 0,
+		4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61, 250, 251, 187, 172, 38,
+		46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6, 67, 2, 36, 125, 157, 176, 223,
+		175, 234, 116, 94, 248, 201, 225, 97, 235, 50, 47, 115, 172, 63, 136, 88, 216, 115, 11,
+		111, 217, 114, 84, 116, 124, 231, 107, 2, 158, 1, 242, 121, 152, 106, 204, 131, 186, 35,
+		93, 70, 216, 10, 237, 224, 183, 89, 95, 65, 3, 83, 185, 58, 138, 181, 64, 187, 103, 127,
+		68, 50, 2, 201, 19, 17, 138, 136, 149, 185, 226, 156, 137, 175, 110, 32, 237, 0, 217, 90,
+		31, 100, 228, 149, 46, 219, 175, 168, 77, 4, 143, 38, 128, 76, 97, 0, 0, 0, 2, 0, 0, 255,
+		8, 153, 192, 0, 2, 27, 0, 0, 0, 1, 0, 0, 255, 2, 68, 226, 0, 6, 11, 0, 1, 2, 3, 0, 0, 0, 2,
+		0, 40, 0, 0, 0, 0, 0, 0, 3, 232, 0, 0, 3, 232, 0, 0, 0, 1, 0, 0, 0, 0, 58, 85, 116, 216,
+		255, 8, 153, 192, 0, 2, 27, 0, 0, 25, 0, 0, 0, 1, 0, 0, 0, 125, 255, 2, 68, 226, 0, 6, 11,
+		0, 1, 5, 0, 0, 0, 0, 29, 129, 25, 192,
+	];
+	const RGS_UPDATE_TIME: u64 = 1642291930;
+
 	macro_rules! do_test_not_pruning_network_graph_until_graph_sync_completion {
 		($nodes: expr, $receive: expr, $sleep: expr) => {
 			let features = ChannelFeatures::empty();
@@ -3461,25 +3508,9 @@ mod tests {
 				}
 			}
 
-			let initialization_input = vec![
-				76, 68, 75, 1, 111, 226, 140, 10, 182, 241, 179, 114, 193, 166, 162, 70, 174, 99,
-				247, 79, 147, 30, 131, 101, 225, 90, 8, 156, 104, 214, 25, 0, 0, 0, 0, 0, 97, 227,
-				98, 218, 0, 0, 0, 4, 2, 22, 7, 207, 206, 25, 164, 197, 231, 230, 231, 56, 102, 61,
-				250, 251, 187, 172, 38, 46, 79, 247, 108, 44, 155, 48, 219, 238, 252, 53, 192, 6,
-				67, 2, 36, 125, 157, 176, 223, 175, 234, 116, 94, 248, 201, 225, 97, 235, 50, 47,
-				115, 172, 63, 136, 88, 216, 115, 11, 111, 217, 114, 84, 116, 124, 231, 107, 2, 158,
-				1, 242, 121, 152, 106, 204, 131, 186, 35, 93, 70, 216, 10, 237, 224, 183, 89, 95,
-				65, 3, 83, 185, 58, 138, 181, 64, 187, 103, 127, 68, 50, 2, 201, 19, 17, 138, 136,
-				149, 185, 226, 156, 137, 175, 110, 32, 237, 0, 217, 90, 31, 100, 228, 149, 46, 219,
-				175, 168, 77, 4, 143, 38, 128, 76, 97, 0, 0, 0, 2, 0, 0, 255, 8, 153, 192, 0, 2,
-				27, 0, 0, 0, 1, 0, 0, 255, 2, 68, 226, 0, 6, 11, 0, 1, 2, 3, 0, 0, 0, 2, 0, 40, 0,
-				0, 0, 0, 0, 0, 3, 232, 0, 0, 3, 232, 0, 0, 0, 1, 0, 0, 0, 0, 58, 85, 116, 216, 255,
-				8, 153, 192, 0, 2, 27, 0, 0, 25, 0, 0, 0, 1, 0, 0, 0, 125, 255, 2, 68, 226, 0, 6,
-				11, 0, 1, 5, 0, 0, 0, 0, 29, 129, 25, 192,
-			];
 			$nodes[0]
 				.rapid_gossip_sync
-				.update_network_graph_no_std(&initialization_input[..], Some(1642291930))
+				.update_network_graph_no_std(RGS_UPDATE, Some(RGS_UPDATE_TIME))
 				.unwrap();
 
 			// this should have added two channels and pruned the previous one.
@@ -3595,6 +3626,42 @@ mod tests {
 		let (r1, r2) = tokio::join!(t1, t2);
 		r1.unwrap().unwrap();
 		r2.unwrap()
+	}
+
+	#[test]
+	fn test_rgs_network_graph_prunable_only_after_sync() {
+		// While the graph is only updated via RGS it may be stale if we haven't been able to
+		// reach the server for some time, in which case pruning it would remove channels which
+		// are in fact still live. Check that we thus only consider it prunable once we've
+		// fetched a snapshot newer than the one applied at the previous prune.
+		let logger = Arc::new(test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Bitcoin, Arc::clone(&logger)));
+		let rapid_sync =
+			Arc::new(RapidGossipSync::new(Arc::clone(&network_graph), Arc::clone(&logger)));
+		let gossip_sync: GossipSync<
+			PGS,
+			RGS,
+			Arc<NetworkGraph<Arc<test_utils::TestLogger>>>,
+			Arc<test_utils::TestChainSource>,
+			Arc<test_utils::TestLogger>,
+		> = GossipSync::Rapid(Arc::clone(&rapid_sync));
+
+		assert!(gossip_sync.prunable_network_graph(None).is_none());
+
+		rapid_sync.update_network_graph_no_std(RGS_UPDATE, Some(RGS_UPDATE_TIME)).unwrap();
+		assert!(gossip_sync.prunable_network_graph(None).is_some());
+
+		let rgs_timestamp_at_last_prune = gossip_sync.rapid_gossip_sync_timestamp();
+		assert!(rgs_timestamp_at_last_prune.is_some());
+
+		// Re-applying the same snapshot leaves the graph exactly as stale as it was.
+		rapid_sync.update_network_graph_no_std(RGS_UPDATE, Some(RGS_UPDATE_TIME)).unwrap();
+		assert!(gossip_sync.prunable_network_graph(rgs_timestamp_at_last_prune).is_none());
+
+		// A newer snapshot, however, makes the graph fresh enough to prune again.
+		network_graph
+			.set_last_rapid_gossip_sync_timestamp(rgs_timestamp_at_last_prune.unwrap() + 1);
+		assert!(gossip_sync.prunable_network_graph(rgs_timestamp_at_last_prune).is_some());
 	}
 
 	macro_rules! do_test_payment_path_scoring {
