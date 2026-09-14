@@ -24,7 +24,8 @@ use crate::ln::channel::{
 };
 use crate::ln::channel_state::{SpliceCandidateDetails, SpliceCandidateStatus, SpliceDetails};
 use crate::ln::channelmanager::{
-	provided_init_features, PaymentId, RAACommitmentOrder, BREAKDOWN_TIMEOUT,
+	provided_init_features, PaymentId, RAACommitmentOrder, SpliceContributionError,
+	BREAKDOWN_TIMEOUT,
 };
 use crate::ln::functional_test_utils::*;
 use crate::ln::funding::{
@@ -308,7 +309,7 @@ pub fn do_initiate_splice_in_at_feerate<'a, 'b, 'c, 'd>(
 pub fn initiate_splice_out<'a, 'b, 'c, 'd>(
 	initiator: &'a Node<'b, 'c, 'd>, acceptor: &'a Node<'b, 'c, 'd>, channel_id: ChannelId,
 	outputs: Vec<TxOut>,
-) -> Result<FundingContribution, APIError> {
+) -> Result<FundingContribution, SpliceContributionError> {
 	let node_id_acceptor = acceptor.node.get_our_node_id();
 	let funding_contribution =
 		build_splice_out_contribution(initiator, acceptor, channel_id, outputs).unwrap();
@@ -6792,7 +6793,7 @@ fn test_funding_contributed_counterparty_not_found() {
 			funding_contribution.clone(),
 			None
 		),
-		Err(APIError::no_such_peer(&fake_node_id)),
+		Err(SpliceContributionError::ChannelUnavailable),
 	);
 
 	expect_discard_funding_event(&nodes[0], &channel_id, funding_contribution);
@@ -6831,7 +6832,7 @@ fn test_funding_contributed_channel_not_found() {
 			funding_contribution.clone(),
 			None
 		),
-		Err(APIError::no_such_channel_for_peer(&fake_channel_id, &node_id_1)),
+		Err(SpliceContributionError::ChannelUnavailable),
 	);
 
 	expect_discard_funding_event(&nodes[0], &fake_channel_id, funding_contribution);
@@ -6840,9 +6841,9 @@ fn test_funding_contributed_channel_not_found() {
 #[test]
 fn test_funding_contributed_splice_already_pending() {
 	// Tests that calling funding_contributed when there's already a pending splice
-	// contribution returns Err(APIMisuseError) and emits a DiscardFunding event containing all of
-	// the new contribution's inputs/outputs: built without inheriting from the queued one, it
-	// reserved them all itself, even the change output paying the same script.
+	// contribution returns Err(ContributionPending) and emits a DiscardFunding event containing
+	// all of the new contribution's inputs/outputs: built without inheriting from the queued one,
+	// it reserved them all itself, even the change output paying the same script.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6914,12 +6915,10 @@ fn test_funding_contributed_splice_already_pending() {
 	let (expected_inputs, expected_outputs) =
 		second_contribution.clone().into_contributed_inputs_and_outputs();
 
-	// Returns Err(APIMisuseError) and emits DiscardFunding for the second contribution
+	// Returns Err(ContributionPending) and emits DiscardFunding for the second contribution
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, second_contribution, None),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} already has a pending funding contribution", channel_id),
-		})
+		Err(SpliceContributionError::ContributionPending)
 	);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -6943,10 +6942,10 @@ fn test_funding_contributed_splice_already_pending() {
 #[test]
 fn test_funding_contributed_duplicate_contribution_discards_its_parts() {
 	// Tests that calling funding_contributed with the exact same contribution twice returns
-	// Err(APIMisuseError) and emits DiscardFunding for all of its inputs/outputs on the second
-	// call. Built without a prior contribution, it inherited nothing, so the refusal releases
-	// everything it holds even though the queued copy uses the same inputs and outputs: not
-	// submitting a contribution twice is the caller's responsibility.
+	// Err(ContributionPending) and emits DiscardFunding for all of its inputs/outputs on the
+	// second call. Built without a prior contribution, it inherited nothing, so the refusal
+	// releases everything it holds even though the queued copy uses the same inputs and outputs:
+	// not submitting a contribution twice is the caller's responsibility.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -6973,14 +6972,12 @@ fn test_funding_contributed_duplicate_contribution_discards_its_parts() {
 	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
 
 	// Second funding_contributed with the SAME contribution (same inputs/outputs).
-	// Returns Err(APIMisuseError) and emits DiscardFunding for everything it holds.
+	// Returns Err(ContributionPending) and emits DiscardFunding for everything it holds.
 	let (expected_inputs, expected_outputs) =
 		contribution.clone().into_contributed_inputs_and_outputs();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} already has a pending funding contribution", channel_id),
-		})
+		Err(SpliceContributionError::ContributionPending)
 	);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -7008,7 +7005,7 @@ fn test_funding_contributed_active_funding_negotiation() {
 #[cfg(test)]
 fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 	// Tests that calling funding_contributed when a splice is already being actively negotiated
-	// (pending_splice.funding_negotiation exists and is_initiator()) returns Err(APIMisuseError)
+	// (pending_splice.funding_negotiation exists and is_initiator()) returns Err(ContributionPending)
 	// and emits a DiscardFunding event for everything the new contribution holds, including a
 	// resubmission of the contribution under negotiation.
 	//
@@ -7112,9 +7109,7 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 		second_contribution.clone().into_contributed_inputs_and_outputs();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, second_contribution, None),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} already has a pending funding contribution", channel_id),
-		})
+		Err(SpliceContributionError::ContributionPending)
 	);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -7138,9 +7133,7 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 		first_contribution.clone().into_contributed_inputs_and_outputs();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, first_contribution, None),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} already has a pending funding contribution", channel_id),
-		})
+		Err(SpliceContributionError::ContributionPending)
 	);
 
 	let events = nodes[0].node.get_and_clear_pending_events();
@@ -7174,7 +7167,7 @@ fn do_test_funding_contributed_active_funding_negotiation(state: u8) {
 
 #[test]
 fn test_funding_contributed_channel_shutdown() {
-	// Tests that calling funding_contributed after initiating channel shutdown returns Err(APIMisuseError)
+	// Tests that calling funding_contributed after initiating channel shutdown fails with ChannelClosing
 	// and emits a DiscardFunding event but no SpliceNegotiationFailed, as the failure is already
 	// reported through the returned error. The channel is no longer usable after shutdown is
 	// initiated, so quiescence cannot be proposed.
@@ -7205,7 +7198,7 @@ fn test_funding_contributed_channel_shutdown() {
 
 	// Now call funding_contributed - this should trigger FailSplice because
 	// propose_quiescence() will fail when is_usable() returns false.
-	// Returns Err(APIMisuseError) and emits only DiscardFunding.
+	// Returns Err(NegotiationFailed { ChannelClosing }) and emits only DiscardFunding.
 	assert_eq!(
 		nodes[0].node.funding_contributed(
 			&channel_id,
@@ -7213,8 +7206,8 @@ fn test_funding_contributed_channel_shutdown() {
 			funding_contribution.clone(),
 			None
 		),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::ChannelClosing,
 		})
 	);
 
@@ -7223,7 +7216,7 @@ fn test_funding_contributed_channel_shutdown() {
 
 #[test]
 fn test_funding_contributed_unfunded_channel() {
-	// Tests that calling funding_contributed on an unfunded channel returns APIMisuseError
+	// Tests that calling funding_contributed on an unfunded channel returns ChannelUnavailable
 	// and emits a DiscardFunding event. The channel exists but is not yet funded.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
@@ -7252,7 +7245,7 @@ fn test_funding_contributed_unfunded_channel() {
 		funding_template.splice_in_sync(splice_in_amount, feerate, FeeRate::MAX, &wallet).unwrap();
 
 	// Call funding_contributed with the unfunded channel's ID instead of the funded one.
-	// Returns APIMisuseError because the channel is not funded.
+	// Returns ChannelUnavailable because the channel is not funded.
 	assert_eq!(
 		nodes[0].node.funding_contributed(
 			&unfunded_channel_id,
@@ -7260,12 +7253,7 @@ fn test_funding_contributed_unfunded_channel() {
 			funding_contribution.clone(),
 			None
 		),
-		Err(APIError::APIMisuseError {
-			err: format!(
-				"Channel with id {} not expecting funding contribution",
-				unfunded_channel_id
-			),
-		})
+		Err(SpliceContributionError::ChannelUnavailable)
 	);
 
 	expect_discard_funding_event(&nodes[0], &unfunded_channel_id, funding_contribution);
@@ -7368,7 +7356,7 @@ fn test_funding_contributed_after_force_close_withholds_pending_splice_funding()
 	// A fee bump entirely reusing the pending splice's inputs and outputs has nothing to discard.
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, rbf_contribution, None),
-		Err(APIError::no_such_channel_for_peer(&channel_id, &node_id_1)),
+		Err(SpliceContributionError::ChannelUnavailable),
 	);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 
@@ -7380,7 +7368,7 @@ fn test_funding_contributed_after_force_close_withholds_pending_splice_funding()
 			rbf_with_output_contribution,
 			None
 		),
-		Err(APIError::no_such_channel_for_peer(&channel_id, &node_id_1)),
+		Err(SpliceContributionError::ChannelUnavailable),
 	);
 	let (discarded_inputs, discarded_outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
 	assert!(discarded_inputs.is_empty());
@@ -7391,7 +7379,7 @@ fn test_funding_contributed_after_force_close_withholds_pending_splice_funding()
 	// splice's.
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, fresh_contribution, None),
-		Err(APIError::no_such_channel_for_peer(&channel_id, &node_id_1)),
+		Err(SpliceContributionError::ChannelUnavailable),
 	);
 	let (discarded_inputs, discarded_outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
 	assert_eq!(discarded_inputs, fresh_inputs);
@@ -7555,7 +7543,7 @@ fn test_funding_contributed_retry_after_force_close_withholds_pending_splice_fun
 			failed_contribution.into_contribution(),
 			None
 		),
-		Err(APIError::no_such_channel_for_peer(&channel_id, &node_id_1)),
+		Err(SpliceContributionError::ChannelUnavailable),
 	);
 	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
@@ -7776,7 +7764,7 @@ fn do_test_funding_contributed_after_release_reports_reselected_inputs(
 			contribution.contributed_outputs().map(|script| script.to_owned()).collect::<Vec<_>>();
 		assert_eq!(
 			nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution, None),
-			Err(APIError::no_such_channel_for_peer(&channel_id, &node_id_0)),
+			Err(SpliceContributionError::ChannelUnavailable),
 		);
 		let (discarded_inputs, discarded_outputs) =
 			expect_rejected_rbf_event(&nodes[1], &channel_id);
@@ -7840,8 +7828,8 @@ fn test_stale_contribution_rejected_after_splice_locked() {
 		stale_template.with_prior_contribution(rbf_feerate, FeeRate::MAX).build().unwrap();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, stale_contribution, None),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::ContributionInvalid,
 		})
 	);
 	// Nothing is discarded: everything the stale contribution reused was spent by the locked
@@ -9140,8 +9128,8 @@ fn test_confirmed_splice_candidate_blocks_new_rbf() {
 	));
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, rbf_contribution.clone(), None,),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::CannotInitiateRbf,
 		}),
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -12718,8 +12706,8 @@ fn test_rejected_stale_rbf_discards_only_new_contribution() {
 				stale_contribution.clone(),
 				None,
 			),
-			Err(APIError::APIMisuseError {
-				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			Err(SpliceContributionError::NegotiationFailed {
+				reason: NegotiationFailureReason::FeeRateTooLow,
 			})
 		);
 	}
@@ -13345,7 +13333,12 @@ fn test_splice_rbf_rejects_own_low_feerate_after_several_attempts() {
 	for _ in 0..2 {
 		let result =
 			nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None);
-		assert!(result.is_err(), "Expected rejection for low feerate: {:?}", result);
+		assert_eq!(
+			result,
+			Err(SpliceContributionError::NegotiationFailed {
+				reason: NegotiationFailureReason::FeeRateTooLow,
+			}),
+		);
 	}
 
 	// Each attempt is rejected with an error and emits only a DiscardFunding event: the failure
@@ -14130,8 +14123,8 @@ fn do_test_splice_out_initiator_reserve_breach_zero_fee_commitments(
 		if matches!(validation_case, ValidationCase::FailsAtHolder) {
 			assert_eq!(
 				contribution.unwrap_err(),
-				APIError::APIMisuseError {
-					err: format!("Channel {channel_id} cannot accept funding contribution"),
+				SpliceContributionError::NegotiationFailed {
+					reason: NegotiationFailureReason::ContributionInvalid,
 				}
 			);
 			let splice_out_value = value + Amount::from_sat(183);
@@ -15171,8 +15164,8 @@ fn test_splice_rbf_does_not_queue_overlapping_contribution_zero_conf() {
 		.unwrap();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None,),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::CannotInitiateRbf,
 		})
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -15611,8 +15604,8 @@ fn test_acceptor_contribution_rejects_queued_rbf() {
 		.unwrap();
 	assert_eq!(
 		nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution.clone(), None,),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::CannotInitiateRbf,
 		})
 	);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -15810,9 +15803,7 @@ fn test_channel_details_acceptor_contribution_reaches_signing() {
 			colliding_contribution.clone(),
 			None,
 		),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} already has a pending funding contribution", channel_id),
-		})
+		Err(SpliceContributionError::ContributionPending)
 	);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	let (expected_inputs, expected_outputs) =
@@ -15904,8 +15895,8 @@ fn test_splice_rbf_does_not_queue_prior_contribution_during_negotiation() {
 		.unwrap();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None,),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::CannotInitiateRbf,
 		})
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -16292,8 +16283,8 @@ fn do_test_contribution_from_promoted_candidate_template(amend_prior: bool) {
 		// is released.
 		assert_eq!(
 			nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution, None),
-			Err(APIError::APIMisuseError {
-				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			Err(SpliceContributionError::NegotiationFailed {
+				reason: NegotiationFailureReason::ContributionInvalid,
 			}),
 		);
 		let events = nodes[0].node.get_and_clear_pending_events();
@@ -16479,8 +16470,8 @@ fn do_test_contribution_from_aborted_acceptor_rbf_template(amend_prior: bool) {
 		// input is released.
 		assert_eq!(
 			nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution, None),
-			Err(APIError::APIMisuseError {
-				err: format!("Channel {} cannot accept funding contribution", channel_id),
+			Err(SpliceContributionError::NegotiationFailed {
+				reason: NegotiationFailureReason::ContributionInvalid,
 			}),
 		);
 		let events = nodes[1].node.get_and_clear_pending_events();

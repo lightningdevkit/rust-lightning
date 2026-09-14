@@ -58,6 +58,7 @@ use lightning::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType, NegotiationFailureReason};
 use lightning::ln::channel_state::SpliceCandidateStatus;
+use lightning::ln::channelmanager::SpliceContributionError;
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::funding::FundingContribution;
 use lightning::ln::msgs;
@@ -68,7 +69,6 @@ use lightning::ln::splicing_tests::*;
 use lightning::ln::types::ChannelId;
 use lightning::onion_message::packet::Packet;
 use lightning::sign::OutputSpender;
-use lightning::util::errors::APIError;
 use lightning::util::ser::{MaybeReadable, Writeable};
 use lightning::util::wallet_utils::WalletSourceSync;
 
@@ -1549,8 +1549,8 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	.unwrap();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, overlapping_contribution, None),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::CannotInitiateRbf,
 		})
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
@@ -1590,9 +1590,7 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	assert!(!expected_inputs.is_empty());
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, committed_contribution, None,),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} already has a pending funding contribution", channel_id),
-		})
+		Err(SpliceContributionError::ContributionPending)
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	let (inputs, outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
