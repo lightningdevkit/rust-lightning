@@ -374,6 +374,10 @@ impl<L: Logger> ElectrumSyncClient<L> {
 						}
 
 						let txid = possible_output_spend.tx_hash;
+						if txid == watched_output.outpoint.txid {
+							// The transaction creating the watched output cannot spend it.
+							continue;
+						}
 						if confirmed_txs.iter().any(|ctx| ctx.txid == txid) {
 							continue;
 						}
