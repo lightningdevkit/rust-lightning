@@ -11,3 +11,6 @@
    is refused by `ChannelManager::funding_contributed` with
    `NegotiationFailureReason::ContributionInvalid`, whether or not it kept any of that attempt's
    inputs and outputs. A new contribution should be built from a fresh template (#4986).
+ * `FundingContribution::reserved_inputs` and `reserved_outputs` return the inputs and outputs the
+   contribution reserved for itself: what its failure releases through `Event::DiscardFunding` and
+   what must be reserved again before retrying with it (#4993).

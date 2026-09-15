@@ -139,14 +139,20 @@ impl FailedSpliceContribution {
 	/// call [`ChannelManager::splice_channel`] to obtain a fresh [`FundingTemplate`] and build a
 	/// new contribution.
 	///
-	/// The preceding [`Event::DiscardFunding`] lists the inputs and outputs this contribution
-	/// brought to the failed round, other than any it inherited from a splice attempt that remains
-	/// pending, which that attempt still uses. Before retrying, reserve the listed ones again,
-	/// confirming they are still free: that event released them, and
+	/// The [`Event::DiscardFunding`] for the failure releases the inputs and outputs this
+	/// contribution reserved for itself, [`FundingContribution::reserved_inputs`] and
+	/// [`FundingContribution::reserved_outputs`]. Anything else it holds was inherited from a
+	/// splice attempt that remains pending and stays reserved by that attempt. Before retrying,
+	/// reserve the released ones again, confirming they are still free:
 	/// [`ChannelManager::funding_contributed`] requires everything a contribution holds to be
-	/// reserved for it alone, other than what it inherited from a pending splice attempt. If the
-	/// channel has since closed, retrying is refused and the same inputs and outputs are reported
-	/// again.
+	/// reserved for it alone, other than what it inherited. If the channel has since closed,
+	/// retrying is refused and the same inputs and outputs are released again.
+	///
+	/// Check [`NegotiationFailureReason::is_retriable`] before retrying; it is `false` for
+	/// [`NegotiationFailureReason::ChannelClosing`]. If the counterparty had already signed the
+	/// splice transaction when the channel closed, it may still confirm. No
+	/// [`Event::DiscardFunding`] is emitted for it until the closing transaction confirms, and a
+	/// refused retry would release its inputs and outputs before then.
 	///
 	/// [`ChannelManager::funding_contributed`]: crate::ln::channelmanager::ChannelManager::funding_contributed
 	/// [`ChannelManager::splice_channel`]: crate::ln::channelmanager::ChannelManager::splice_channel
@@ -161,12 +167,12 @@ impl FailedSpliceContribution {
 		self.contribution
 	}
 
-	#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+	#[cfg(test)]
 	pub(crate) fn contributed_inputs(&self) -> &[OutPoint] {
 		&self.contributed_inputs
 	}
 
-	#[cfg(any(test, ldk_bench, feature = "_test_utils"))]
+	#[cfg(test)]
 	pub(crate) fn contributed_outputs(&self) -> &[TxOut] {
 		&self.contributed_outputs
 	}

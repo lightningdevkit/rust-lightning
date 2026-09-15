@@ -5387,7 +5387,14 @@ fn fail_folded_and_queued_splice_contributions_on_channel_close() {
 		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
 			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
-			assert_eq!(contribution.as_ref().unwrap().contributed_inputs(), &folded_inputs[..]);
+			let released_inputs = contribution
+				.as_ref()
+				.unwrap()
+				.contribution()
+				.reserved_inputs()
+				.map(|input| input.outpoint())
+				.collect::<Vec<_>>();
+			assert_eq!(released_inputs, folded_inputs);
 		},
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}
@@ -7468,8 +7475,8 @@ fn test_funding_contributed_retains_pending_components_in_channel_state() {
 				failed_contribution.contribution().pending_components(),
 				Some(&pending_components)
 			);
-			assert!(failed_contribution.contributed_inputs().is_empty());
-			assert!(failed_contribution.contributed_outputs().is_empty());
+			assert_eq!(failed_contribution.contribution().reserved_inputs().count(), 0);
+			assert_eq!(failed_contribution.contribution().reserved_outputs().count(), 0);
 		},
 		event => panic!("Unexpected event {event:?}"),
 	}
@@ -7530,8 +7537,8 @@ fn test_funding_contributed_retry_after_force_close_withholds_pending_splice_fun
 		.unwrap();
 	assert_eq!(failed_contribution.contribution(), &rbf_contribution);
 	assert_eq!(failed_contribution.contribution().pending_components(), Some(&pending_components));
-	assert!(failed_contribution.contributed_inputs().is_empty());
-	assert!(failed_contribution.contributed_outputs().is_empty());
+	assert_eq!(failed_contribution.contribution().reserved_inputs().count(), 0);
+	assert_eq!(failed_contribution.contribution().reserved_outputs().count(), 0);
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 

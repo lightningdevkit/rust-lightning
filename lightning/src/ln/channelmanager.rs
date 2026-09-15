@@ -3772,9 +3772,10 @@ fn create_htlc_intercepted_event(
 /// Error returned by [`ChannelManager::funding_contributed`] when it refuses a
 /// [`FundingContribution`].
 ///
-/// Whatever the variant, the inputs and outputs the contribution reserved for itself are released
-/// through an [`Event::DiscardFunding`]: everything it holds other than what it inherited from a
-/// splice attempt that remains pending, which stays reserved by that attempt. No
+/// Whatever the variant, the inputs and outputs the contribution reserved for itself,
+/// [`FundingContribution::reserved_inputs`] and [`FundingContribution::reserved_outputs`], are
+/// released through an [`Event::DiscardFunding`]: everything it holds other than what it inherited
+/// from a splice attempt that remains pending, which stays reserved by that attempt. No
 /// [`Event::SpliceNegotiationFailed`] is emitted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SpliceContributionError {

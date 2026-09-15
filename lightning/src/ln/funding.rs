@@ -684,6 +684,14 @@ impl PendingFundingComponents {
 		self.output_scripts.iter().map(|script| script.as_script())
 	}
 
+	fn contains_input(&self, outpoint: OutPoint) -> bool {
+		self.inputs.contains(&outpoint)
+	}
+
+	fn contains_output_script(&self, script: &bitcoin::Script) -> bool {
+		self.output_scripts.iter().any(|recorded| recorded.as_script() == script)
+	}
+
 	fn is_empty(&self) -> bool {
 		self.inputs.is_empty() && self.output_scripts.is_empty()
 	}
@@ -929,6 +937,32 @@ impl FundingContribution {
 		self.change_output.as_ref()
 	}
 
+	/// Returns the inputs this contribution reserved for itself: those included in it other than
+	/// any inherited from a splice attempt that remains pending. These are what a failure of this
+	/// contribution releases through [`Event::DiscardFunding`], and so what must be reserved again
+	/// before retrying with it.
+	///
+	/// [`Event::DiscardFunding`]: crate::events::Event::DiscardFunding
+	pub fn reserved_inputs(&self) -> impl Iterator<Item = &ConfirmedUtxo> + '_ {
+		let record = self.pending_components.as_ref();
+		self.inputs.iter().filter(move |input| {
+			!record.is_some_and(|record| record.contains_input(input.outpoint()))
+		})
+	}
+
+	/// Returns the outputs this contribution reserved for itself, including any change output:
+	/// those included in it other than any inherited from a splice attempt that remains pending.
+	/// These are what a failure of this contribution releases through [`Event::DiscardFunding`],
+	/// and so what must be reserved again before retrying with it.
+	///
+	/// [`Event::DiscardFunding`]: crate::events::Event::DiscardFunding
+	pub fn reserved_outputs(&self) -> impl Iterator<Item = &TxOut> + '_ {
+		let record = self.pending_components.as_ref();
+		self.outputs.iter().chain(self.change_output.iter()).filter(move |output| {
+			!record.is_some_and(|record| record.contains_output_script(&output.script_pubkey))
+		})
+	}
+
 	/// Returns the fee rate used to select `inputs` (the minimum feerate).
 	pub fn feerate(&self) -> FeeRate {
 		self.feerate
@@ -1092,24 +1126,18 @@ impl FundingContribution {
 		)
 	}
 
-	/// Returns this contribution's inputs and outputs after removing any recorded as committed to
-	/// another splice attempt: the funding to report as discarded when this contribution fails,
-	/// see [`PendingFundingComponents`].
+	/// Returns the outpoints of [`Self::reserved_inputs`] and the outputs of
+	/// [`Self::reserved_outputs`]: the funding to report as discarded when this contribution fails.
 	///
-	/// Returns `None` if every input and output is committed to another splice attempt.
+	/// Returns `None` if the contribution reserved nothing for itself.
 	pub(super) fn unique_contributions(&self) -> Option<(Vec<OutPoint>, Vec<&TxOut>)> {
-		let inputs: Vec<OutPoint> = self.contributed_inputs().collect();
-		let outputs: Vec<&TxOut> = self.outputs.iter().chain(self.change_output.iter()).collect();
-		filter_unique_contributions(
-			inputs,
-			outputs,
-			self.pending_components.iter().flat_map(|components| components.inputs()),
-			self.pending_components.iter().flat_map(|components| components.output_scripts()),
-		)
+		let inputs: Vec<OutPoint> = self.reserved_inputs().map(|input| input.outpoint()).collect();
+		let outputs: Vec<&TxOut> = self.reserved_outputs().collect();
+		(!inputs.is_empty() || !outputs.is_empty()).then_some((inputs, outputs))
 	}
 
 	/// Like [`Self::unique_contributions`] but returns owned output scripts.
-	#[cfg(any(test, feature = "_test_utils"))]
+	#[cfg(test)]
 	pub(super) fn to_unique_contributions(&self) -> Option<(Vec<OutPoint>, Vec<ScriptBuf>)> {
 		self.unique_contributions().map(|(inputs, outputs)| {
 			(inputs, outputs.into_iter().map(|output| output.script_pubkey.clone()).collect())
@@ -4395,5 +4423,51 @@ mod tests {
 		// A record naming an input or output script no longer committed anywhere is stale.
 		assert!(recorded.is_stale(&[], &[committed_script.as_script()]));
 		assert!(recorded.is_stale(&[committed_input], &[]));
+	}
+
+	#[test]
+	fn reserved_parts_exclude_what_was_inherited() {
+		let withdrawal = TxOut {
+			value: Amount::from_sat(777),
+			script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::all_zeros()),
+		};
+		let mut contribution = pending_round_contribution_with_outputs(vec![withdrawal.clone()]);
+		contribution.inputs.push(funding_input_sats(50_000));
+		let inherited_input = contribution.inputs[0].outpoint();
+		let own_input = contribution.inputs[1].outpoint();
+		assert_ne!(inherited_input, own_input);
+		let change = contribution.change_output.clone().unwrap();
+		let outpoints = |contribution: &FundingContribution| {
+			contribution.reserved_inputs().map(|input| input.outpoint()).collect::<Vec<_>>()
+		};
+
+		// Without a record, nothing was inherited: the contribution reserved everything it holds,
+		// change output included.
+		assert!(contribution.pending_components().is_none());
+		assert_eq!(outpoints(&contribution), vec![inherited_input, own_input]);
+		assert_eq!(contribution.reserved_outputs().collect::<Vec<_>>(), vec![&withdrawal, &change]);
+
+		// Inherited parts are excluded. Recorded parts the contribution no longer holds change
+		// nothing, as only what it holds can be reserved.
+		let unheld_input = bitcoin::OutPoint { txid: bitcoin::Txid::all_zeros(), vout: 7 };
+		let unheld_script = ScriptBuf::new_p2wsh(&WScriptHash::from_byte_array([1; 32]));
+		assert!(contribution
+			.reserved_outputs()
+			.all(|output| output.script_pubkey != unheld_script));
+		let recorded = contribution.clone().with_pending_components(PendingFundingComponents::new(
+			vec![inherited_input, unheld_input],
+			vec![change.script_pubkey.clone(), unheld_script],
+		));
+		assert_eq!(outpoints(&recorded), vec![own_input]);
+		assert_eq!(recorded.reserved_outputs().collect::<Vec<_>>(), vec![&withdrawal]);
+		assert_eq!(recorded.unique_contributions(), Some((vec![own_input], vec![&withdrawal])));
+
+		// Once everything is inherited, nothing is reserved, and a failure has nothing to release.
+		let all_inherited = contribution
+			.clone()
+			.with_pending_components(PendingFundingComponents::from_contribution(&contribution));
+		assert_eq!(all_inherited.reserved_inputs().count(), 0);
+		assert_eq!(all_inherited.reserved_outputs().count(), 0);
+		assert!(all_inherited.unique_contributions().is_none());
 	}
 }
