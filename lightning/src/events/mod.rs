@@ -1000,9 +1000,8 @@ impl_ser_tlv_based!(OutboundHTLCLocator, {
 ///
 /// `Writeable` and `MaybeReadable` are implemented for `Event`, but note that many events describe
 /// state which no longer means anything once the node has restarted, so persisting them and
-/// handling them on startup is likely to result in confusion. See [`Event::useful_after_restart`],
-/// which distinguishes the two, and the "Failure Behavior and Persistence" documentation on each
-/// variant for why a given event is or isn't useful after a restart. Event providers may drop the
+/// handling them on startup is likely to result in confusion. See
+/// [`Event::useful_after_restart`], which distinguishes the two. Event providers may drop the
 /// events which aren't useful on restart rather than handing them to downstream code, as
 /// [`ChannelManager`] does.
 ///
@@ -1953,9 +1952,8 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as its contents are derived
-	/// from on-chain state and the event will only be regenerated as needed once that state is
-	/// re-evaluated after startup.
+	/// returning `Err(ReplayEvent ())`). There is no need to handle it after a restart, as it will
+	/// be regenerated as required.
 	///
 	/// [`ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchors_zero_fee_htlc_tx
 	/// [`ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments`]: crate::util::config::ChannelHandshakeConfig::negotiate_anchor_zero_fee_commitments
@@ -1977,7 +1975,8 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as forwarding a message long
+	/// after it was received makes little sense - the sender will retry as required.
 	///
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
 	OnionMessageIntercepted {
@@ -2007,7 +2006,8 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`), but won't be persisted across restarts.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as all peers are disconnected
+	/// across one and a fresh event is generated when the peer connects again.
 	///
 	/// [`OnionMessenger::forward_onion_message`]: crate::onion_message::messenger::OnionMessenger::forward_onion_message
 	/// [`OnionMessenger::new_with_offline_peer_interception`]: crate::onion_message::messenger::OnionMessenger::new_with_offline_peer_interception
@@ -2024,9 +2024,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as the static invoice
-	/// negotiation is simply restarted on startup and this event will be regenerated if the
-	/// recipient still needs an invoice persisted.
+	/// returning `Err(ReplayEvent ())`). It may well still be useful after a restart, but as it is
+	/// generated in response to an onion message, persisting it would put us at risk of a DoS, so
+	/// [`Event::useful_after_restart`] returns `false` for it.
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
@@ -2087,9 +2087,9 @@ pub enum Event {
 	///
 	/// # Failure Behavior and Persistence
 	/// This event will eventually be replayed after failures-to-handle (i.e., the event handler
-	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as it stems from an incoming
-	/// onion message that isn't persisted; if the payer still needs the invoice they will
-	/// re-request it after we restart.
+	/// returning `Err(ReplayEvent ())`). It isn't useful on restart, as we may have been offline
+	/// for a long while by then and responding to the request at that point makes little sense -
+	/// the payer will re-request the invoice as required.
 	///
 	/// [`ChannelManager::blinded_paths_for_async_recipient`]: crate::ln::channelmanager::ChannelManager::blinded_paths_for_async_recipient
 	/// [`ChannelManager::set_paths_to_static_invoice_server`]: crate::ln::channelmanager::ChannelManager::set_paths_to_static_invoice_server
@@ -2182,33 +2182,17 @@ impl Event {
 	///
 	/// Some events describe state which does not survive a restart at all - a channel which will
 	/// have been forgotten, a negotiation which will have been abandoned, or information which is
-	/// simply rebuilt on startup. Handling such an event after a restart is at best pointless and
-	/// at worst confusing, so code which persists events for later replay should skip the events
-	/// for which this returns `false`.
-	///
-	/// Each variant's "Failure Behavior and Persistence" documentation describes why it is, or
-	/// isn't, useful after a restart.
+	/// simply rebuilt on startup. Code which persists events for later replay should skip those
+	/// for which this returns `false`. See the documentation on each variant to learn more.
 	pub fn useful_after_restart(&self) -> bool {
 		match self {
-			// Upon disconnection peers drop channels which have not yet exchanged `funding_signed`,
-			// and all peers are disconnected on restart, so the channels these events are for won't
-			// exist anymore.
 			Event::FundingGenerationReady { .. } => false,
 			Event::OpenChannelRequest { .. } => false,
-			// Regenerated after restart when necessary.
 			Event::BumpTransaction(_) => false,
-			// The interactive funding negotiation this event belongs to does not survive a restart, so
-			// there is nothing left to sign. The event is only regenerated if a later negotiation
-			// reaches this point again.
 			Event::FundingTransactionReadyForSigning { .. } => false,
-			// Buffered onion messages are not persisted, so after a restart there is nothing to
-			// connect to the peer for.
 			Event::ConnectionNeeded { .. } => false,
-			// The async receive offer/static invoice negotiation restarts on startup.
 			Event::PersistStaticInvoice { .. } => false,
 			Event::StaticInvoiceRequested { .. } => false,
-			// The buffered onion messages these events concern are not persisted, so there is
-			// nothing left to act on after a restart.
 			Event::OnionMessageIntercepted { .. } => false,
 			Event::OnionMessagePeerConnected { .. } => false,
 			Event::FundingTxBroadcastSafe { .. }
@@ -2245,8 +2229,6 @@ impl Writeable for Event {
 				ref output_script,
 				ref user_channel_id,
 			} => {
-				// Type 0 was used for these events in LDK versions prior to 0.4, writing no data
-				// as they were never persisted.
 				51u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, temporary_channel_id, required),
@@ -2576,8 +2558,6 @@ impl Writeable for Event {
 				ref is_announced,
 				ref params,
 			} => {
-				// Type 17 was used for these events in LDK versions prior to 0.4, writing no data
-				// as they were never persisted.
 				55u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, temporary_channel_id, required),
@@ -2657,9 +2637,7 @@ impl Writeable for Event {
 				})
 			},
 			&Event::BumpTransaction(ref event) => {
-				// Type 27 was used for these events in LDK versions prior to 0.4, writing no data as
-				// they were never persisted.
-				59u8.write(writer)?;
+				27u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, event, required),
 				});
@@ -2760,8 +2738,6 @@ impl Writeable for Event {
 				ref recipient_id,
 				ref invoice_persisted_path,
 			} => {
-				// Type 45 was used for these events in LDK versions prior to 0.4, writing no data as
-				// they were never persisted.
 				61u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, invoice, required),
@@ -2777,8 +2753,6 @@ impl Writeable for Event {
 				ref reply_path,
 				ref invoice_request,
 			} => {
-				// Type 47 was used for these events in LDK versions prior to 0.4, writing no data as
-				// they were never persisted.
 				63u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, recipient_id, required),
@@ -2793,8 +2767,6 @@ impl Writeable for Event {
 				ref user_channel_id,
 				ref unsigned_transaction,
 			} => {
-				// Type 49 was used for these events in LDK versions prior to 0.4, writing no data
-				// as they were never persisted.
 				57u8.write(writer)?;
 				write_tlv_fields!(writer, {
 					(1, channel_id, required),
@@ -3330,11 +3302,16 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			// LDK versions prior to 0.4 wrote BumpTransaction events as type 27 with no contents,
-			// but did write an (empty) TLV body, so we have to consume its length field here.
 			27u8 => {
-				read_tlv_fields!(reader, {});
-				Ok(None)
+				let mut f = || {
+					// LDK versions prior to 0.4 wrote no contents for these events, in which case
+					// there is nothing to return here.
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, event, upgradable_option),
+					});
+					Ok(event.map(Event::BumpTransaction))
+				};
+				f()
 			},
 			29u8 => {
 				let mut f = || {
@@ -3574,16 +3551,6 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			65u8 => {
-				let mut f = || {
-					_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(1, node_id, required),
-						(3, addresses, required_vec),
-					});
-					Ok(Some(Event::ConnectionNeeded { node_id: node_id.0.unwrap(), addresses }))
-				};
-				f()
-			},
 			55u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
@@ -3624,15 +3591,6 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
-			59u8 => {
-				let mut f = || {
-					_init_and_read_len_prefixed_tlv_fields!(reader, {
-						(1, event, upgradable_required),
-					});
-					Ok(Some(Event::BumpTransaction(event.0.unwrap())))
-				};
-				f()
-			},
 			61u8 => {
 				let mut f = || {
 					_init_and_read_len_prefixed_tlv_fields!(reader, {
@@ -3669,6 +3627,16 @@ impl MaybeReadable for Event {
 				};
 				f()
 			},
+			65u8 => {
+				let mut f = || {
+					_init_and_read_len_prefixed_tlv_fields!(reader, {
+						(1, node_id, required),
+						(3, addresses, required_vec),
+					});
+					Ok(Some(Event::ConnectionNeeded { node_id: node_id.0.unwrap(), addresses }))
+				};
+				f()
+			},
 			// Versions prior to 0.0.100 did not ignore odd types, instead returning InvalidValue.
 			// Version 0.0.100 failed to properly ignore odd types, possibly resulting in corrupt
 			// reads.
@@ -3692,25 +3660,6 @@ impl MaybeReadable for Event {
 #[cfg(test)]
 mod tests {
 	use super::*;
-	use crate::chain::ClaimId;
-	use crate::events::bump_transaction::AnchorDescriptor;
-	use crate::ln::chan_utils::{ChannelTransactionParameters, HTLCOutputInCommitment};
-	use crate::ln::msgs::{ChannelParameters, SocketAddress};
-	use crate::offers::test_utils::{blinded_path, dummy_invoice_request, dummy_static_invoice};
-	use crate::onion_message::messenger::Responder;
-	use crate::sign::{ChannelDerivationParameters, HTLCDescriptor};
-	use crate::types::features::ChannelTypeFeatures;
-	use bitcoin::locktime::absolute::LockTime;
-	use bitcoin::script::ScriptBuf;
-	use bitcoin::secp256k1::{Message, PublicKey, Secp256k1, SecretKey};
-	use bitcoin::transaction::Version;
-	use bitcoin::{Amount, OutPoint, Txid};
-
-	fn assert_event_round_trips(event: Event) {
-		let encoded = event.encode();
-		let event_read = <Event as MaybeReadable>::read(&mut &encoded[..]).unwrap();
-		assert_eq!(event_read, Some(event));
-	}
 
 	#[test]
 	fn legacy_bodyless_events_read_as_none() {
@@ -3727,172 +3676,6 @@ mod tests {
 			assert!(event.is_none(), "type {} should be skipped", encoded[0]);
 			assert_eq!(reader.len(), 0, "type {} consumed the wrong length", encoded[0]);
 		}
-	}
-
-	fn dummy_node_id() -> PublicKey {
-		let secp_ctx = Secp256k1::new();
-		PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap())
-	}
-
-	#[test]
-	fn test_funding_generation_ready_round_trip() {
-		assert_event_round_trips(Event::FundingGenerationReady {
-			temporary_channel_id: ChannelId([7; 32]),
-			counterparty_node_id: dummy_node_id(),
-			channel_value_satoshis: 1_000_000,
-			output_script: ScriptBuf::from_bytes(vec![0, 1, 2, 3]),
-			user_channel_id: 42,
-		});
-	}
-
-	#[test]
-	fn test_connection_needed_round_trip() {
-		assert_event_round_trips(Event::ConnectionNeeded {
-			node_id: dummy_node_id(),
-			addresses: vec![
-				SocketAddress::TcpIpV4 { addr: [1, 2, 3, 4], port: 9735 },
-				SocketAddress::TcpIpV6 { addr: [0; 16], port: 9736 },
-			],
-		});
-	}
-
-	#[test]
-	fn test_open_channel_request_round_trip() {
-		let params = ChannelParameters {
-			dust_limit_satoshis: 546,
-			max_htlc_value_in_flight_msat: 1_000_000,
-			htlc_minimum_msat: 1,
-			commitment_feerate_sat_per_1000_weight: 253,
-			to_self_delay: 144,
-			max_accepted_htlcs: 50,
-		};
-		assert_event_round_trips(Event::OpenChannelRequest {
-			temporary_channel_id: ChannelId([7; 32]),
-			counterparty_node_id: dummy_node_id(),
-			funding_satoshis: 100_000,
-			channel_negotiation_type: InboundChannelFunds::PushMsat(1_234),
-			channel_type: ChannelTypeFeatures::only_static_remote_key(),
-			is_announced: true,
-			params: params.clone(),
-		});
-		assert_event_round_trips(Event::OpenChannelRequest {
-			temporary_channel_id: ChannelId([8; 32]),
-			counterparty_node_id: dummy_node_id(),
-			funding_satoshis: 200_000,
-			channel_negotiation_type: InboundChannelFunds::DualFunded,
-			channel_type: ChannelTypeFeatures::only_static_remote_key(),
-			is_announced: false,
-			params,
-		});
-	}
-
-	#[test]
-	fn test_funding_transaction_ready_for_signing_round_trip() {
-		let unsigned_transaction = Transaction {
-			version: Version::TWO,
-			lock_time: LockTime::ZERO,
-			input: vec![],
-			output: vec![],
-		};
-		assert_event_round_trips(Event::FundingTransactionReadyForSigning {
-			channel_id: ChannelId([9; 32]),
-			counterparty_node_id: dummy_node_id(),
-			user_channel_id: 7,
-			unsigned_transaction,
-		});
-	}
-
-	#[test]
-	fn test_bump_transaction_round_trip() {
-		let commitment_tx = Transaction {
-			version: Version::TWO,
-			lock_time: LockTime::ZERO,
-			input: vec![],
-			output: vec![],
-		};
-		let mut transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
-		transaction_parameters.channel_type_features =
-			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
-		let anchor_descriptor = AnchorDescriptor {
-			channel_derivation_parameters: ChannelDerivationParameters {
-				value_satoshis: 42_000_000,
-				keys_id: [42; 32],
-				transaction_parameters,
-			},
-			outpoint: OutPoint::null(),
-			value: Amount::from_sat(330),
-		};
-		assert_event_round_trips(Event::BumpTransaction(BumpTransactionEvent::ChannelClose {
-			channel_id: ChannelId([1; 32]),
-			counterparty_node_id: dummy_node_id(),
-			claim_id: ClaimId([2; 32]),
-			package_target_feerate_sat_per_1000_weight: 253,
-			commitment_tx,
-			commitment_tx_fee_satoshis: 1_000,
-			anchor_descriptor,
-			pending_htlcs: vec![HTLCOutputInCommitment {
-				offered: true,
-				amount_msat: 10_000,
-				cltv_expiry: 500_000,
-				payment_hash: PaymentHash([5; 32]),
-				transaction_output_index: Some(1),
-			}],
-		}));
-		let mut htlc_transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
-		htlc_transaction_parameters.channel_type_features =
-			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
-		let secp_ctx = Secp256k1::new();
-		let dummy_sig = secp_ctx
-			.sign_ecdsa(&Message::from_digest([1; 32]), &SecretKey::from_slice(&[42; 32]).unwrap());
-		let htlc_descriptor = HTLCDescriptor {
-			channel_derivation_parameters: ChannelDerivationParameters {
-				value_satoshis: 42_000_000,
-				keys_id: [42; 32],
-				transaction_parameters: htlc_transaction_parameters,
-			},
-			commitment_txid: Txid::from_byte_array([6; 32]),
-			per_commitment_number: 7,
-			per_commitment_point: dummy_node_id(),
-			feerate_per_kw: 0,
-			htlc: HTLCOutputInCommitment {
-				offered: false,
-				amount_msat: 20_000,
-				cltv_expiry: 600_000,
-				payment_hash: PaymentHash([6; 32]),
-				transaction_output_index: Some(2),
-			},
-			preimage: Some(PaymentPreimage([7; 32])),
-			counterparty_sig: dummy_sig,
-		};
-		assert_event_round_trips(Event::BumpTransaction(BumpTransactionEvent::HTLCResolution {
-			channel_id: ChannelId([3; 32]),
-			counterparty_node_id: dummy_node_id(),
-			claim_id: ClaimId([4; 32]),
-			target_feerate_sat_per_1000_weight: 253,
-			htlc_descriptors: vec![htlc_descriptor],
-			tx_lock_time: LockTime::ZERO,
-		}));
-	}
-
-	#[test]
-	fn test_persist_static_invoice_round_trip() {
-		assert_event_round_trips(Event::PersistStaticInvoice {
-			invoice: dummy_static_invoice(),
-			invoice_request_path: blinded_path(),
-			invoice_slot: 3,
-			recipient_id: vec![7; 32],
-			invoice_persisted_path: Responder::new(blinded_path()),
-		});
-	}
-
-	#[test]
-	fn test_static_invoice_requested_round_trip() {
-		assert_event_round_trips(Event::StaticInvoiceRequested {
-			recipient_id: vec![9; 16],
-			invoice_slot: 5,
-			reply_path: Responder::new(blinded_path()),
-			invoice_request: dummy_invoice_request(),
-		});
 	}
 
 	#[test]

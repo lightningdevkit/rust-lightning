@@ -332,6 +332,57 @@ fn test_manager_serialize_deserialize_events() {
 }
 
 #[test]
+fn test_transient_events_not_serialized() {
+	// Events which aren't useful after a restart shouldn't be written as a part of the
+	// `ChannelManager`, while the events which are should be replayed after a reload.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	// Leave a `PaymentClaimable` pending on nodes[1], which is useful after a restart...
+	let amt_msat = 1_000_000;
+	let (route, payment_hash, _, payment_secret) = get_route_and_payment_hash!(nodes[0], nodes[1], amt_msat);
+	let onion = RecipientOnionFields::secret_only(payment_secret, amt_msat);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	let ev = remove_first_msg_event_to_node(&node_b_id, &mut msg_events);
+	do_pass_along_path(PassAlongPathArgs::new(&nodes[0], &[&nodes[1]], amt_msat, payment_hash, ev)
+		.with_payment_secret(payment_secret).without_clearing_recipient_events());
+
+	// ...and an `OpenChannelRequest`, which is not - the channel it refers to is forgotten when
+	// the peer disconnects on restart.
+	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+
+	let chanman_serialized = nodes[1].node.encode();
+	let monitor_serialized = get_monitor!(nodes[1], chan_id).encode();
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	assert!(matches!(events[0], Event::PaymentClaimable { .. }));
+	assert!(matches!(events[1], Event::OpenChannelRequest { .. }));
+
+	reload_node!(nodes[1], chanman_serialized, &[&monitor_serialized], persister, new_chain_monitor, nodes_1_deserialized);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	assert!(matches!(events[0], Event::PaymentClaimable { .. }));
+}
+
+#[test]
 fn test_simple_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
