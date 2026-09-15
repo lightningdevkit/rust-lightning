@@ -7471,9 +7471,9 @@ pub(super) struct SpliceRbfAbort {
 }
 
 impl SpliceFundingFailed {
-	/// Builds a failure for `contribution` that releases the inputs and outputs it reserved for
-	/// itself. Inputs and outputs it inherited from a pending splice attempt are not released, as
-	/// that attempt's transaction may still confirm.
+	/// Builds a failure for `contribution` that releases its [`FundingContribution::reserved_inputs`]
+	/// and [`FundingContribution::reserved_outputs`]. Inputs and outputs it inherited from a pending
+	/// splice attempt are not released, as that attempt's transaction may still confirm.
 	fn from_contribution(contribution: FundingContribution) -> Self {
 		let (contributed_inputs, contributed_outputs) = contribution
 			.unique_contributions()
