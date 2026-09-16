@@ -4652,6 +4652,22 @@ impl<
 				None,
 			));
 
+			if let Some(splice) = shutdown_res.splice_funding_negotiated {
+				if splice.has_local_contribution {
+					pending_events.push_back((
+						Event::SpliceNegotiated {
+							channel_id: shutdown_res.channel_id,
+							counterparty_node_id: shutdown_res.counterparty_node_id,
+							user_channel_id: shutdown_res.user_channel_id,
+							new_funding_txo: splice.funding_txo,
+							channel_type: splice.channel_type,
+							new_funding_redeem_script: splice.funding_redeem_script,
+						},
+						None,
+					));
+				}
+			}
+
 			for splice_funding_failed in shutdown_res.splice_funding_failed.drain(..) {
 				pending_events.extend(
 					splice_negotiation_failed_events(
@@ -19961,11 +19977,6 @@ impl<
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
-					// Freshly-read channels never restore a queued splice contribution or a
-					// resettable funding negotiation, so force-closing here cannot surface a
-					// splice failure; events for unpersisted splice state were synthesized
-					// when the manager was written.
-					debug_assert!(shutdown_result.splice_funding_failed.is_empty());
 					if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) =
 						shutdown_result.monitor_update
 					{
