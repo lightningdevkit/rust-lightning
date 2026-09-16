@@ -659,7 +659,7 @@ fn get_available_balances(
 	channel_constraints: ChannelConstraints, channel_type: &ChannelTypeFeatures,
 ) -> crate::ln::channel::AvailableBalances {
 	// When sizing the next HTLC add, we take the remote's view of the set of pending HTLCs in
-	// `ChannelContext::get_next_commitment_htlcs`, set this view to `pending_htlcs` here, and use this set of
+	// `ChannelContext::get_next_commitment_projection`, set this view to `pending_htlcs` here, and use this set of
 	// pending HTLCs to calculate stats on our own commitment below.
 	//
 	// This means we do *not* include `LocalRemoved` HTLCs. `LocalRemoved` and `LocalAnnounced` HTLCs are applied
