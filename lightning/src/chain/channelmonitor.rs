@@ -6462,6 +6462,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						},
 					});
 					self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
+					// We may have already queued a failure of this HTLC upstream because the upstream HTLC
+					// was about to expire while this one was still unresolved on chain. The counterparty
+					// has now revealed the preimage instead, and events still queued here have not been
+					// provided to anyone yet, so drop the failure in favor of claiming upstream.
+					self.pending_monitor_events.retain(|update| match update {
+						MonitorEvent::HTLCEvent(upd) => upd.source != source || upd.payment_preimage.is_some(),
+						_ => true,
+					});
 					if !self.pending_monitor_events.iter().any(
 						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {

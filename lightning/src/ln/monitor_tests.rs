@@ -13,7 +13,7 @@
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
 use crate::chain::{BlockLocator, Watch};
-use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitor, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitor, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, CLTV_CLAIM_BUFFER, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::BumpTransactionEvent;
@@ -21,7 +21,7 @@ use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManagerReadArgs, PaymentId};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::crypto::utils::sign;
@@ -4017,4 +4017,102 @@ fn test_ladder_preimage_htlc_claims() {
 
 	expect_payment_sent(&nodes[0], payment_preimage2, None, true, false);
 	check_added_monitors(&nodes[0], 1);
+}
+
+#[test]
+fn test_onchain_preimage_after_fail_back_before_backwards_timeout() {
+	// Test that if we queue a failure of an HTLC upstream because the upstream HTLC is about to
+	// expire while the downstream channel is on chain, and the downstream counterparty then
+	// reveals the preimage on chain before the `ChannelManager` has picked up the queued failure,
+	// we claim the HTLC upstream rather than failing it and losing the funds.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	// Start every node on the same block height to make reasoning about timeouts easier
+	connect_blocks(&nodes[0], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[0].best_block_info().1);
+	connect_blocks(&nodes[1], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[1].best_block_info().1);
+	connect_blocks(&nodes[2], 2 * CHAN_CONFIRM_DEPTH + 1 - nodes[2].best_block_info().1);
+
+	let (payment_preimage, payment_hash, ..) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
+
+	// Force close the B<->C channel by timing out the HTLC
+	let timeout_blocks = TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1;
+	connect_blocks(&nodes[1], timeout_blocks);
+	test_txn_broadcast(&nodes[1], &chan_2, None, HTLCType::TIMEOUT);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+	check_closed_event(&nodes[1], 1, reason, &[node_c_id], 100_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	// Have C claim the payment and go on chain with an HTLC-Success transaction.
+	nodes[2].node.claim_funds(payment_preimage);
+	expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
+	check_added_monitors(&nodes[2], 1);
+	let _ = get_htlc_update_msgs(&nodes[2], &node_b_id);
+
+	connect_blocks(&nodes[2], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
+	let node_2_txn = test_txn_broadcast(&nodes[2], &chan_2, None, HTLCType::SUCCESS);
+	check_closed_broadcast(&nodes[2], 1, true);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+	check_closed_event(&nodes[2], 1, reason, &[node_b_id], 100_000);
+	check_added_monitors(&nodes[2], 1);
+
+	// Once the A<->B HTLC gets within LATENCY_GRACE_PERIOD_BLOCKS of expiry, B's monitor queues a
+	// failure of the HTLC upstream to avoid A force-closing on us. Note that we already connected
+	// `TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS` blocks above, so we subtract that from the
+	// HTLC expiry (which is `TEST_FINAL_CLTV` + `MIN_CLTV_EXPIRY_DELTA`).
+	//
+	// Crucially, B's `ChannelManager` doesn't get a chance to process that failure before the
+	// next blocks arrive, as can happen when catching up on several blocks at once.
+	let upstream_timeout_blocks = MIN_CLTV_EXPIRY_DELTA as u32 - LATENCY_GRACE_PERIOD_BLOCKS * 2;
+	connect_blocks(&nodes[1], upstream_timeout_blocks);
+
+	// C's commitment and HTLC-Success transactions confirm, revealing the preimage to B while the
+	// A<->B HTLC still has a few blocks left before it expires.
+	mine_transaction(&nodes[1], &node_2_txn[0]); // Commitment
+	mine_transaction(&nodes[1], &node_2_txn[1]); // HTLC success
+
+	// B learned the preimage in time, so it should claim the HTLC upstream rather than failing it.
+	let mut events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match events.pop().unwrap() {
+		ev @ Event::PaymentForwarded { .. } => {
+			expect_payment_forwarded(
+				ev,
+				&nodes[1],
+				&nodes[0],
+				&nodes[2],
+				Some(1000),
+				None,
+				false,
+				true,
+				false,
+			);
+		},
+		ev => panic!("Expected PaymentForwarded after learning the preimage on chain, got {ev:?}"),
+	}
+	check_added_monitors(&nodes[1], 1);
+
+	let mut htlc_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	assert_eq!(htlc_updates.update_fulfill_htlcs.len(), 1);
+	assert!(htlc_updates.update_fail_htlcs.is_empty());
+	let update_fulfill = htlc_updates.update_fulfill_htlcs.remove(0);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &htlc_updates.commitment_signed, false, false);
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 }
