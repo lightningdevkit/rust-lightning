@@ -6446,7 +6446,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// Check that scan_commitment, above, decided there is some source worth relaying an
 			// HTLC resolution backwards to and figure out whether we learned a preimage from it.
 			if let Some((source, payment_hash, amount_msat)) = payment_data {
-				if accepted_preimage_claim {
+				if accepted_preimage_claim || offered_preimage_claim {
 					if !self.pending_monitor_events.iter().any(
 						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
 						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
@@ -6454,30 +6454,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							height,
 							block_hash: Some(*block_hash),
 							transaction: Some(tx.clone()),
-							event: OnchainEvent::HTLCSpendConfirmation {
-								commitment_tx_output_idx: input.previous_output.vout,
-								preimage: Some(payment_preimage),
-								on_to_local_output_csv: None,
-							},
-						});
-						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
-						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
-							source,
-							payment_preimage: Some(payment_preimage),
-							payment_hash,
-							htlc_value_satoshis: amount_msat / 1000,
-						}));
-					}
-				} else if offered_preimage_claim {
-					if !self.pending_monitor_events.iter().any(
-						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
-							upd.source == source
-						} else { false }) {
-						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-							txid: tx.compute_txid(),
-							transaction: Some(tx.clone()),
-							height,
-							block_hash: Some(*block_hash),
 							event: OnchainEvent::HTLCSpendConfirmation {
 								commitment_tx_output_idx: input.previous_output.vout,
 								preimage: Some(payment_preimage),
