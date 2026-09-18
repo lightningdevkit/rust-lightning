@@ -7159,9 +7159,6 @@ impl<
 	) -> Result<(), SpliceContributionError> {
 		let mut result = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			// A pushed event is the only unlock signal the caller will ever get for the released
-			// inputs, so the manager must be persisted with it lest a crash leave them reserved
-			// forever.
 			let push_discard_funding = |contribution: FundingContribution| -> NotifyOption {
 				let funding_info = contribution.unique_contributions().map(|(inputs, outputs)| {
 					FundingInfo::Contribution {
