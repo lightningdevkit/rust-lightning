@@ -843,8 +843,13 @@ where C::Target: chain::Filter,
 				};
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {
-						pending_monitor_updates.push(update_id);
-						log_debug!(logger,
+						// If the update was refused by the `ChannelMonitor`, then it was not individually
+						// persisted and it will never be marked as completed via `channel_monitor_updated`.
+						if update_res.is_ok() {
+							pending_monitor_updates.push(update_id);
+						}
+						log_debug!(
+							logger,
 							"Persistence of ChannelMonitorUpdate id {:?} for channel {} in progress",
 							update_id,
 							log_funding_info!(monitor)
