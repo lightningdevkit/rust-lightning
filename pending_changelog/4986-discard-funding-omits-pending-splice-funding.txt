@@ -1,0 +1,16 @@
+# API Updates
+
+ * When a `FundingContribution` fails or `ChannelManager::funding_contributed` refuses it, the
+   `Event::DiscardFunding` releases the inputs and outputs the contribution holds except those it
+   inherited, through a `FundingTemplate`, from a splice attempt that remains pending. Those stay
+   reserved by that attempt, so a fee bump refused because the channel has since closed never lists
+   the inputs of a splice that may still confirm. Everything a contribution holds must be reserved
+   for it alone, other than what it inherited, and what a failure released must be reserved again
+   before retrying with the contribution (#4986).
+ * A contribution built from a `FundingTemplate` tied to a splice attempt that is no longer pending
+   is refused by `ChannelManager::funding_contributed` with
+   `NegotiationFailureReason::ContributionInvalid`, whether or not it kept any of that attempt's
+   inputs and outputs. A new contribution should be built from a fresh template (#4986).
+ * `FundingContribution::reserved_inputs` and `reserved_outputs` return the inputs and outputs the
+   contribution reserved for itself: what its failure releases through `Event::DiscardFunding` and
+   what must be reserved again before retrying with it (#4993).
