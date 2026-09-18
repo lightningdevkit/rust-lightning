@@ -5473,17 +5473,21 @@ fn test_late_counterparty_commitment_update_after_holder_commitment_spend_dust()
 	do_test_late_counterparty_commitment_update_after_holder_commitment_spend(true);
 }
 
-#[test]
-fn test_monitor_update_after_funding_spend() {
+fn do_test_monitor_update_after_funding_spend(async_persist: bool) {
 	// Test that monitor updates still work after a funding spend is detected by the
 	// ChainMonitor but before ChannelManager has processed the corresponding block.
 	//
 	// When the counterparty commitment transaction confirms (funding spend), the
 	// ChannelMonitor sets funding_spend_seen and no_further_updates_allowed() returns
-	// true. ChainMonitor overrides all subsequent update_channel results to InProgress
-	// to freeze the channel. These overridden updates complete via deferred completions
-	// in release_pending_monitor_events, so that MonitorUpdateCompletionActions (like
-	// PaymentClaimed) can still fire.
+	// true. ChainMonitor returns InProgress for all subsequent update_channel calls to
+	// freeze the channel. Once those updates complete, MonitorUpdateCompletionActions
+	// (like PaymentClaimed) must still fire.
+	//
+	// With `async_persist`, the persister returns InProgress for every update and the test
+	// marks them complete via `channel_monitor_updated`, except for the full-monitor persist
+	// of the refused stale commitment update. Persists without a `ChannelMonitorUpdate` are
+	// never marked complete (see `Persist::update_persisted_channel`), so it must not hold up
+	// the completion of the updates that follow it.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5533,19 +5537,32 @@ fn test_monitor_update_after_funding_spend() {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 
 	// B processes commitment_signed. The monitor applies the update but returns Err
-	// because no_further_updates_allowed() is true. ChainMonitor overrides to InProgress,
-	// freezing the channel.
+	// because no_further_updates_allowed() is true, so the full monitor is persisted
+	// instead of the update. ChainMonitor returns InProgress, freezing the channel.
+	if async_persist {
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	}
 	nodes[1].node.handle_commitment_signed(node_a_id, &payment_event.commitment_msg[0]);
 	check_added_monitors(&nodes[1], 1);
 
 	// B claims payment 1. The preimage monitor update also returns InProgress (deferred),
 	// so no Completed-while-InProgress assertion fires.
+	if async_persist {
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	}
 	nodes[1].node.claim_funds(payment_preimage_1);
 	check_added_monitors(&nodes[1], 1);
+	if async_persist {
+		let update_id = get_monitor!(nodes[1], chan_id).get_latest_update_id();
+		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(chan_id, update_id).unwrap();
+	}
 
 	// First event cycle: the force-close MonitorEvent (CommitmentTxConfirmed) fires first,
-	// then the deferred completions resolve. The force-close generates a ChannelForceClosed
-	// update (also deferred), which blocks completion actions. So we only get ChannelClosed.
+	// then the completions resolve. The force-close generates a ChannelForceClosed update
+	// (also InProgress), which blocks completion actions. So we only get ChannelClosed.
+	if async_persist {
+		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	}
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
@@ -5554,9 +5571,13 @@ fn test_monitor_update_after_funding_spend() {
 	}
 	check_added_monitors(&nodes[1], 1);
 	nodes[1].node.get_and_clear_pending_msg_events();
+	if async_persist {
+		let update_id = get_monitor!(nodes[1], chan_id).get_latest_update_id();
+		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(chan_id, update_id).unwrap();
+	}
 
-	// Second event cycle: the ChannelForceClosed deferred completion resolves, unblocking
-	// the PaymentClaimed completion action.
+	// Second event cycle: the ChannelForceClosed completion resolves, unblocking the
+	// PaymentClaimed completion action.
 	let events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 1);
 	match &events[0] {
@@ -5566,4 +5587,10 @@ fn test_monitor_update_after_funding_spend() {
 		},
 		_ => panic!("Unexpected event: {:?}", events[0]),
 	}
+}
+
+#[test]
+fn test_monitor_update_after_funding_spend() {
+	do_test_monitor_update_after_funding_spend(false);
+	do_test_monitor_update_after_funding_spend(true);
 }
