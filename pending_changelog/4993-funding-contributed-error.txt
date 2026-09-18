@@ -1,9 +1,0 @@
-# API Updates
-
- * `ChannelManager::funding_contributed` returns a `SpliceContributionError`. `ChannelUnavailable`
-   means no funded channel matches the given ids, `ContributionPending` means a contribution of
-   ours is already queued or under negotiation, and `NegotiationFailed` carries the
-   `NegotiationFailureReason` for a contribution the channel refused, so a refusal that calls for
-   building a new contribution from a fresh `FundingTemplate` (e.g., `ContributionInvalid` for a
-   stale template or `FeeRateTooLow`) can be told apart from one that does not (e.g.,
-   `CannotInitiateRbf`) using `NegotiationFailureReason::is_retriable` (#4993).
