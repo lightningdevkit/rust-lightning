@@ -7052,6 +7052,12 @@ impl<
 	/// Expect an [`Event::DiscardFunding`] for such an input even though the confirmed splice
 	/// transaction spent it.
 	///
+	/// For example, an input reserved for a splice attempt A and dropped from an RBF attempt B
+	/// built on A's template stays with A: B failing does not release the input, and it is released
+	/// only once A fails or B confirms in A's place. Should a further attempt C built on B's
+	/// template add that input back, C reserved it, so C failing releases it -- even if A has
+	/// confirmed and spent it by then.
+	///
 	/// # Fee Estimation
 	///
 	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
