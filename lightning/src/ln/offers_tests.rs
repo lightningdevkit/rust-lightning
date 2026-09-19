@@ -2089,6 +2089,33 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 }
 
 #[test]
+fn fails_creating_invoice_request_with_insufficient_liquidity() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let (alice, bob) = (&nodes[0], &nodes[1]);
+	let available_liquidity_msat = bob.node.list_usable_channels().into_iter()
+		.fold(0u64, |total, channel| total.saturating_add(channel.next_outbound_htlc_limit_msat));
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.amount_msats(available_liquidity_msat + 1)
+		.build().unwrap();
+
+	let payment_id = PaymentId([1; 32]);
+	match bob.node.pay_for_offer(&offer, None, payment_id, Default::default()) {
+		Ok(_) => panic!("Expected error"),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientLiquidity),
+	}
+
+	assert!(bob.node.list_recent_payments().is_empty());
+	assert!(bob.onion_messenger.next_onion_message_for_peer(alice.node.get_our_node_id()).is_none());
+}
+
+#[test]
 fn fails_creating_invoice_request_with_duplicate_payment_id() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);

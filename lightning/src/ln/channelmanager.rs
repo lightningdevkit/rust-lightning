@@ -15621,6 +15621,7 @@ impl<
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
 	/// - the provided parameters are invalid for the offer,
 	/// - the offer is for an unsupported chain, or
+	/// - the requested amount exceeds currently available outbound liquidity, or
 	/// - the parameterized [`Router`] is unable to create a blinded reply path for the invoice
 	///   request.
 	///
@@ -15766,12 +15767,17 @@ impl<
 		};
 
 		let invoice_request = builder.build_and_sign()?;
+		let reply_paths = self.flow.create_invoice_request_reply_paths(
+			payment_id, self.get_peers_for_blinded_path(),
+		)?;
+		let available_liquidity_msat = self.list_usable_channels().into_iter()
+			.fold(0u64, |total, channel| total.saturating_add(channel.next_outbound_htlc_limit_msat));
+		if invoice_request.amount_msats().unwrap_or(0) > available_liquidity_msat {
+			return Err(Bolt12SemanticError::InsufficientLiquidity);
+		}
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
-		self.flow.enqueue_invoice_request(
-			invoice_request.clone(), payment_id,
-			self.get_peers_for_blinded_path()
-		)?;
+		self.flow.enqueue_invoice_request_with_reply_paths(invoice_request.clone(), reply_paths)?;
 
 		let retryable_invoice_request = RetryableInvoiceRequest {
 			invoice_request: invoice_request.clone(),
