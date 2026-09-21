@@ -1927,7 +1927,7 @@ fn fails_creating_or_paying_for_offer_without_connected_peers() {
 
 	match david.node.pay_for_offer(&offer, None, payment_id, Default::default()) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientLiquidity),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());
@@ -2056,9 +2056,9 @@ fn fails_sending_invoice_with_unsupported_chain_for_refund() {
 	}
 }
 
-/// Fails creating an invoice request when a blinded reply path cannot be created.
+/// Fails creating an invoice request when there is no usable outbound liquidity.
 #[test]
-fn fails_creating_invoice_request_without_blinded_reply_path() {
+fn fails_creating_invoice_request_without_usable_liquidity() {
 	let chanmon_cfgs = create_chanmon_cfgs(6);
 	let node_cfgs = create_node_cfgs(6, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(6, &node_cfgs, &[None, None, None, None, None, None]);
@@ -2082,7 +2082,7 @@ fn fails_creating_invoice_request_without_blinded_reply_path() {
 
 	match david.node.pay_for_offer(&offer, None, PaymentId([1; 32]), Default::default()) {
 		Ok(_) => panic!("Expected error"),
-		Err(e) => assert_eq!(e, Bolt12SemanticError::MissingPaths),
+		Err(e) => assert_eq!(e, Bolt12SemanticError::InsufficientLiquidity),
 	}
 
 	assert!(nodes[0].node.list_recent_payments().is_empty());

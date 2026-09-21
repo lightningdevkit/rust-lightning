@@ -1081,14 +1081,6 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		Ok((builder, context))
 	}
 
-	/// Creates blinded reply paths for an invoice request.
-	pub(crate) fn create_invoice_request_reply_paths(
-		&self, payment_id: PaymentId, peers: Vec<MessageForwardNode>,
-	) -> Result<Vec<BlindedMessagePath>, Bolt12SemanticError> {
-		let context = MessageContext::Offers(OffersContext::OutboundPaymentForOffer { payment_id });
-		self.create_blinded_paths(peers, context).map_err(|_| Bolt12SemanticError::MissingPaths)
-	}
-
 	/// Enqueues the created [`InvoiceRequest`] to be sent to the counterparty.
 	///
 	/// # Payment
@@ -1112,13 +1104,11 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 		&self, invoice_request: InvoiceRequest, payment_id: PaymentId,
 		peers: Vec<MessageForwardNode>,
 	) -> Result<(), Bolt12SemanticError> {
-		let reply_paths = self.create_invoice_request_reply_paths(payment_id, peers)?;
-		self.enqueue_invoice_request_with_reply_paths(invoice_request, reply_paths)
-	}
+		let context = MessageContext::Offers(OffersContext::OutboundPaymentForOffer { payment_id });
+		let reply_paths = self
+			.create_blinded_paths(peers, context)
+			.map_err(|_| Bolt12SemanticError::MissingPaths)?;
 
-	pub(crate) fn enqueue_invoice_request_with_reply_paths(
-		&self, invoice_request: InvoiceRequest, reply_paths: Vec<BlindedMessagePath>,
-	) -> Result<(), Bolt12SemanticError> {
 		let mut pending_offers_messages = self.pending_offers_messages.lock().unwrap();
 		if !invoice_request.paths().is_empty() {
 			let message = OffersMessage::InvoiceRequest(invoice_request.clone());
