@@ -2930,6 +2930,24 @@ mod tests {
 	}
 
 	#[test]
+	fn test_same_payment_hash_different_cltv_htlc_sorting() {
+		let builder = TestCommitmentTxBuilder::new();
+		let early_htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 10_000,
+			cltv_expiry: 123,
+			payment_hash: PaymentHash([0xbb; 32]),
+			transaction_output_index: None,
+		};
+		let mut late_htlc = early_htlc.clone();
+		late_htlc.cltv_expiry = 124;
+
+		let commitment_tx = builder.build(0, 0, vec![late_htlc, early_htlc]);
+		assert_eq!(commitment_tx.nondust_htlcs()[0].cltv_expiry, 123);
+		assert_eq!(commitment_tx.nondust_htlcs()[1].cltv_expiry, 124);
+	}
+
+	#[test]
 	fn test_verify_sorted_htlcs() {
 		// Assert that `CommitmentTransaction::verify` checks that the HTLCs are sorted
 
