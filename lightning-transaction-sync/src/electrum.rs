@@ -274,7 +274,7 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		);
 		let mut watched_txs = Vec::with_capacity(sync_state.watched_transactions.len());
 
-		for txid in &sync_state.watched_transactions {
+		for (txid, watch_script_pubkeys) in &sync_state.watched_transactions {
 			match self.client.transaction_get(&txid) {
 				Ok(tx) => {
 					if tx.compute_txid() != *txid {
@@ -282,7 +282,7 @@ impl<L: Logger> ElectrumSyncClient<L> {
 						return Err(InternalError::Failed);
 					}
 
-					// Skip before using an arbitrary returned output to look up the
+					// Skip before potentially using an arbitrary returned output to look up the
 					// transaction's script history.
 					if is_potentially_unsafe_merkle_leaf(&tx) {
 						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
@@ -290,10 +290,20 @@ impl<L: Logger> ElectrumSyncClient<L> {
 					}
 
 					watched_txs.push((txid, tx.clone()));
-					if let Some(tx_out) = tx.output.first() {
-						// We watch an arbitrary output of the transaction of interest in order to
-						// retrieve the associated script history, before narrowing down our search
-						// through `filter`ing by `txid` below.
+					// We watch an output's script_pubkey of the transaction of interest in order
+					// to retrieve the associated script history, before narrowing down our search
+					// through `filter`ing by `txid` below. Prefer a script_pubkey the transaction
+					// was registered with that actually appears in the transaction (as registered
+					// script_pubkeys may be bogus), and otherwise pick an arbitrary one, noting
+					// that electrum servers may not index OP_RETURN script_pubkeys at all.
+					let candidate_outputs =
+						tx.output.iter().filter(|output| !output.script_pubkey.is_op_return());
+					let watch_output = candidate_outputs
+						.clone()
+						.find(|output| watch_script_pubkeys.contains(&output.script_pubkey))
+						.or_else(|| candidate_outputs.clone().next())
+						.or_else(|| tx.output.iter().next());
+					if let Some(tx_out) = watch_output {
 						watched_script_pubkeys.push(tx_out.script_pubkey.clone());
 					} else {
 						debug_assert!(false, "Failed due to retrieving invalid tx data.");
@@ -529,9 +539,12 @@ impl<L: Logger> ElectrumSyncClient<L> {
 }
 
 impl<L: Logger> Filter for ElectrumSyncClient<L> {
-	fn register_tx(&self, txid: &Txid, _script_pubkey: &Script) {
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.transactions.insert(*txid);
+		let script_pubkeys = locked_queue.transactions.entry(*txid).or_default();
+		if script_pubkeys.iter().all(|spk| spk != script_pubkey) {
+			script_pubkeys.push(script_pubkey.to_owned());
+		}
 	}
 
 	fn register_output(&self, output: WatchedOutput) {

@@ -6,18 +6,21 @@
 // accordance with one or both of these licenses.
 
 use bitcoin::block::Header;
-use bitcoin::{BlockHash, OutPoint, Transaction, Txid};
+use bitcoin::{BlockHash, OutPoint, ScriptBuf, Transaction, Txid};
 use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
 use lightning::chain::{Confirm, WatchedOutput};
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ops::Deref;
 
 // Represents the current state.
 pub(crate) struct SyncState {
 	// Transactions that were previously processed, but must not be forgotten
-	// yet since they still need to be monitored for confirmation on-chain.
-	pub watched_transactions: HashSet<Txid>,
+	// yet since they still need to be monitored for confirmation on-chain,
+	// mapped to the list of `script_pubkey`s we might use to check for their
+	// confirmation status. Note a watcher may re-register a transaction with a
+	// bogus `script_pubkey` which must not override a previously-registered one.
+	pub watched_transactions: HashMap<Txid, Vec<ScriptBuf>>,
 	// Outputs that were previously processed, but must not be forgotten yet as
 	// as we still need to monitor any spends on-chain.
 	pub watched_outputs: HashMap<OutPoint, WatchedOutput>,
@@ -33,7 +36,7 @@ pub(crate) struct SyncState {
 impl SyncState {
 	pub fn new() -> Self {
 		Self {
-			watched_transactions: HashSet::new(),
+			watched_transactions: HashMap::new(),
 			watched_outputs: HashMap::new(),
 			outputs_spends_pending_threshold_conf: Vec::new(),
 			last_sync_hash: None,
@@ -50,7 +53,7 @@ impl SyncState {
 				c.transaction_unconfirmed(&txid);
 			}
 
-			self.watched_transactions.insert(txid);
+			self.watched_transactions.entry(txid).or_default();
 
 			// If a previously-confirmed output spend is unconfirmed, re-add the watched output to
 			// the tracking map.
@@ -81,12 +84,11 @@ impl SyncState {
 				);
 			}
 
-			self.watched_transactions.remove(&ctx.tx.compute_txid());
+			self.watched_transactions.remove(&ctx.txid);
 
 			for input in &ctx.tx.input {
 				if let Some(output) = self.watched_outputs.remove(&input.previous_output) {
-					let spent =
-						(ctx.tx.compute_txid(), ctx.block_height, input.previous_output, output);
+					let spent = (ctx.txid, ctx.block_height, input.previous_output, output);
 					self.outputs_spends_pending_threshold_conf.push(spent);
 				}
 			}
@@ -101,15 +103,18 @@ impl SyncState {
 
 // A queue that is to be filled by `Filter` and drained during the next syncing round.
 pub(crate) struct FilterQueue {
-	// Transactions that were registered via the `Filter` interface and have to be processed.
-	pub transactions: HashSet<Txid>,
+	// Transactions that were registered via the `Filter` interface and have to be processed,
+	// mapped to the `script_pubkey`s they were registered with. A transaction may be
+	// registered multiple times with different `script_pubkey`s, in which case we keep all of
+	// them, as some may be bogus.
+	pub transactions: HashMap<Txid, Vec<ScriptBuf>>,
 	// Outputs that were registered via the `Filter` interface and have to be processed.
 	pub outputs: HashMap<OutPoint, WatchedOutput>,
 }
 
 impl FilterQueue {
 	pub fn new() -> Self {
-		Self { transactions: HashSet::new(), outputs: HashMap::new() }
+		Self { transactions: HashMap::new(), outputs: HashMap::new() }
 	}
 
 	// Processes the transaction and output queues and adds them to the given [`SyncState`].
@@ -121,7 +126,14 @@ impl FilterQueue {
 		if !self.transactions.is_empty() {
 			pending_registrations = true;
 
-			sync_state.watched_transactions.extend(self.transactions.drain());
+			for (txid, script_pubkeys) in self.transactions.drain() {
+				let watched = sync_state.watched_transactions.entry(txid).or_default();
+				for script_pubkey in script_pubkeys {
+					if !watched.contains(&script_pubkey) {
+						watched.push(script_pubkey);
+					}
+				}
+			}
 		}
 
 		if !self.outputs.is_empty() {

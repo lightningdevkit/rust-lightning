@@ -3316,14 +3316,19 @@ pub fn expect_failed_rbf_events<'a, 'b, 'c>(
 			assert_eq!(*reason, expected_reason);
 			let contribution = contribution.as_ref().unwrap();
 			assert_eq!(contribution.contribution(), expected_contribution);
-			// The inputs and outputs released by the failure must match those discarded.
-			assert_eq!(contribution.contributed_inputs(), &discarded.0[..]);
-			let contributed_output_scripts = contribution
-				.contributed_outputs()
-				.iter()
+			// The failure must release exactly what the contribution reserved for itself.
+			let reserved_inputs = contribution
+				.contribution()
+				.reserved_inputs()
+				.map(|input| input.outpoint())
+				.collect::<Vec<_>>();
+			assert_eq!(reserved_inputs, discarded.0);
+			let reserved_output_scripts = contribution
+				.contribution()
+				.reserved_outputs()
 				.map(|output| output.script_pubkey.clone())
 				.collect::<Vec<_>>();
-			assert_eq!(contributed_output_scripts, discarded.1);
+			assert_eq!(reserved_output_scripts, discarded.1);
 		},
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}

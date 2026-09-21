@@ -58,6 +58,7 @@ use lightning::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType, NegotiationFailureReason};
 use lightning::ln::channel_state::SpliceCandidateStatus;
+use lightning::ln::channelmanager::SpliceContributionError;
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::funding::FundingContribution;
 use lightning::ln::msgs;
@@ -68,7 +69,6 @@ use lightning::ln::splicing_tests::*;
 use lightning::ln::types::ChannelId;
 use lightning::onion_message::packet::Packet;
 use lightning::sign::OutputSpender;
-use lightning::util::errors::APIError;
 use lightning::util::ser::{MaybeReadable, Writeable};
 use lightning::util::wallet_utils::WalletSourceSync;
 
@@ -1519,9 +1519,11 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 
 	// splice_channel returns a fresh template with no RBF feerate floor rather than refusing. Reuse
 	// an output from before the downgrade and add a unique output, verifying that the funding
-	// transaction catches the overlap and that only the unique output is discarded.
+	// transaction catches the overlap. The refusal reports both outputs: the contribution was built
+	// without a prior contribution and so inherited neither.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
 	assert!(funding_template.min_rbf_feerate().is_none());
+	let overlapping_script = overlapping_output.script_pubkey.clone();
 	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
 	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
 	let overlapping_contribution = build_splice_out_contribution(
@@ -1533,15 +1535,15 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	.unwrap();
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, overlapping_contribution, None),
-		Err(APIError::APIMisuseError {
-			err: format!("Channel {} cannot accept funding contribution", channel_id),
+		Err(SpliceContributionError::NegotiationFailed {
+			reason: NegotiationFailureReason::CannotInitiateRbf,
 		})
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 
 	let (inputs, outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
 	assert!(inputs.is_empty());
-	assert_eq!(outputs, vec![script_pubkey]);
+	assert_eq!(outputs, vec![overlapping_script, script_pubkey]);
 
 	// A distinct contribution has no overlap with the inherited funding transaction, so it is safe
 	// to retain until that transaction locks and then negotiate as a fresh splice.
@@ -1559,17 +1561,27 @@ fn splice_inherited_across_0_2_checks_funding_transaction_for_overlap() {
 	assert_eq!(splice.candidates[1].contribution, Some(unique_contribution));
 	assert_eq!(splice.candidates[1].status, SpliceCandidateStatus::WaitingOnLock);
 
-	// The original contribution remains committed to the inherited funding transaction. Even
-	// though its separately-persisted contribution metadata was stripped by LDK 0.2, submitting
-	// it again while the distinct contribution waits must not release any of its inputs or outputs.
+	// Submitting the original contribution again while the distinct contribution waits is refused.
+	// Like any refusal, it reports everything the contribution holds, although the inherited
+	// funding transaction still uses it: the contribution inherited nothing, and resubmitting a
+	// contribution already committed to a splice is the caller's mistake.
+	let expected_inputs: Vec<_> =
+		committed_contribution.inputs().iter().map(|utxo| utxo.outpoint()).collect();
+	let expected_outputs: Vec<_> = committed_contribution
+		.outputs()
+		.iter()
+		.chain(committed_contribution.change_output())
+		.map(|output| output.script_pubkey.clone())
+		.collect();
+	assert!(!expected_inputs.is_empty());
 	assert_eq!(
 		nodes[0].node.funding_contributed(&channel_id, &node_id_1, committed_contribution, None,),
-		Err(APIError::APIMisuseError {
-			err: format!("Duplicate funding contribution for channel {}", channel_id),
-		})
+		Err(SpliceContributionError::ContributionPending)
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	let (inputs, outputs) = expect_rejected_rbf_event(&nodes[0], &channel_id);
+	assert_eq!(inputs, expected_inputs);
+	assert_eq!(outputs, expected_outputs);
 }
 
 #[test]

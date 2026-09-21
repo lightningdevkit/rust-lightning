@@ -3659,6 +3659,51 @@ fn create_htlc_intercepted_event(
 	})
 }
 
+/// Error returned by [`ChannelManager::funding_contributed`] when it refuses a
+/// [`FundingContribution`].
+///
+/// Whatever the variant, the inputs and outputs the contribution reserved for itself,
+/// [`FundingContribution::reserved_inputs`] and [`FundingContribution::reserved_outputs`], are
+/// released through an [`Event::DiscardFunding`]: everything it holds other than what it inherited
+/// from a splice attempt that remains pending, which stays reserved by that attempt. No
+/// [`Event::SpliceNegotiationFailed`] is emitted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpliceContributionError {
+	/// No funded channel with the given `channel_id` exists with the given `counterparty_node_id`:
+	/// the channel was closed or never funded, or the ids are wrong. Nothing remains to splice.
+	ChannelUnavailable,
+	/// A contribution of ours is already queued or under negotiation on the channel. Wait for that
+	/// attempt to resolve, or cancel it with [`ChannelManager::cancel_funding_contributed`], before
+	/// obtaining a fresh [`FundingTemplate`].
+	ContributionPending,
+	/// The channel refused the contribution, ending the splice attempt before negotiation began.
+	/// The reason takes the place of the [`Event::SpliceNegotiationFailed`] emitted for attempts
+	/// that fail later; use [`NegotiationFailureReason::is_retriable`] to decide whether to build
+	/// a new contribution from a fresh [`FundingTemplate`].
+	///
+	/// [`NegotiationFailureReason::is_retriable`]: events::NegotiationFailureReason::is_retriable
+	NegotiationFailed {
+		/// Why the contribution was refused.
+		reason: events::NegotiationFailureReason,
+	},
+}
+
+impl core::fmt::Display for SpliceContributionError {
+	fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+		match self {
+			Self::ChannelUnavailable => {
+				f.write_str("no funded channel with the given id for the given peer")
+			},
+			Self::ContributionPending => {
+				f.write_str("a funding contribution is already pending on the channel")
+			},
+			Self::NegotiationFailed { reason } => {
+				write!(f, "splice negotiation failed: {}", reason)
+			},
+		}
+	}
+}
+
 /// Sets the features of the accepted channel in [`ChannelManager::accept_inbound_channel_from_trusted_peer`]
 #[derive(Clone, Copy)]
 pub enum TrustedChannelFeatures {
@@ -4541,6 +4586,22 @@ impl<
 				None,
 			));
 
+			if let Some(splice) = shutdown_res.splice_funding_negotiated {
+				if splice.has_local_contribution {
+					pending_events.push_back((
+						Event::SpliceNegotiated {
+							channel_id: shutdown_res.channel_id,
+							counterparty_node_id: shutdown_res.counterparty_node_id,
+							user_channel_id: shutdown_res.user_channel_id,
+							new_funding_txo: splice.funding_txo,
+							channel_type: splice.channel_type,
+							new_funding_redeem_script: splice.funding_redeem_script,
+						},
+						None,
+					));
+				}
+			}
+
 			for splice_funding_failed in shutdown_res.splice_funding_failed.drain(..) {
 				pending_events.extend(
 					splice_negotiation_failed_events(
@@ -4940,6 +5001,11 @@ impl<
 	/// a fresh contribution or reusing a prior one for RBF. Once a candidate confirms it can no
 	/// longer be replaced, and the returned template instead builds a fresh splice to be queued
 	/// behind it.
+	///
+	/// A template obtained while a splice attempt is pending starts from that attempt's
+	/// contribution and is tied to it: once the attempt is no longer pending, a contribution built
+	/// from the template is rejected by [`ChannelManager::funding_contributed`] as stale, even if
+	/// it kept none of the attempt's inputs and outputs, and a fresh template must be obtained.
 	#[rustfmt::skip]
 	pub fn splice_channel(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
@@ -6748,6 +6814,28 @@ impl<
 	/// An optional `locktime` for the funding transaction may be specified. If not given, the
 	/// current best block height is used.
 	///
+	/// # Inputs and Outputs
+	///
+	/// When submitted, the contribution's inputs and outputs must be reserved for it alone: none
+	/// may be in use by another splice attempt on the channel, whether a negotiated candidate
+	/// that may still confirm or a contribution of ours queued or under negotiation, except those
+	/// inherited from the prior contribution of the [`FundingTemplate`] it was built from, which
+	/// the pending attempt that contribution belongs to still holds. Building on that
+	/// contribution is how an RBF attempt reuses the attempt's funding.
+	///
+	/// A failure releases what the contribution reserved itself through an
+	/// [`Event::DiscardFunding`] preceding the [`Event::SpliceNegotiationFailed`] that carries the
+	/// contribution. Retrying with that contribution therefore requires reserving its released
+	/// inputs and outputs again first, confirming they are still free; otherwise, build a new
+	/// contribution from a fresh template.
+	///
+	/// Removing an inherited input or output does not release it: the attempt it was inherited
+	/// from still holds it, and it is released when that attempt fails or is replaced by one that
+	/// confirms. Adding it back in a later contribution reserves it for that contribution
+	/// alone, so a failure releases it even if the attempt it was inherited from has confirmed.
+	/// Expect an [`Event::DiscardFunding`] for such an input even though the confirmed splice
+	/// transaction spent it.
+	///
 	/// # Fee Estimation
 	///
 	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
@@ -6804,42 +6892,80 @@ impl<
 	///
 	/// # Errors
 	///
-	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
-	/// `counterparty_node_id` is provided.
+	/// Returns [`ChannelUnavailable`] when no funded channel with the given `channel_id` exists
+	/// with the given `counterparty_node_id`, e.g., because the channel was closed after the
+	/// [`FundingTemplate`] was obtained.
 	///
-	/// Returns [`APIMisuseError`] when a channel is not in a state where it is expecting funding
-	/// contribution.
+	/// Returns [`ContributionPending`] when a contribution of ours is already queued or under
+	/// negotiation on the channel.
+	///
+	/// Returns [`NegotiationFailed`] when the channel refuses the contribution, carrying the
+	/// [`NegotiationFailureReason`] that would otherwise have been reported through
+	/// [`Event::SpliceNegotiationFailed`]: [`ContributionInvalid`] for a stale [`FundingTemplate`]
+	/// or a splice-out above the channel's maximum, [`FeeRateTooLow`] for an RBF attempt below the
+	/// minimum feerate, [`CannotInitiateRbf`] when a pending splice can no longer be replaced, and
+	/// [`ChannelClosing`] when the channel is shutting down.
 	///
 	/// When an error is returned, the contribution has been rejected without emitting an
 	/// [`Event::SpliceNegotiationFailed`], as the failure is already reported through the error.
-	/// Any contributed inputs and outputs not committed to an existing splice attempt will be
-	/// included in an [`Event::DiscardFunding`] and thus can be re-spent.
+	/// Any contributed inputs and outputs will be included in an [`Event::DiscardFunding`] and
+	/// thus can be re-spent, except those the contribution inherited from the prior contribution
+	/// of its [`FundingTemplate`] (e.g., a fee bump reusing a pending splice's inputs), which are
+	/// withheld as that attempt's transaction may still confirm -- even if the channel is no
+	/// longer known (e.g., it was closed after the contribution was built). Everything else the
+	/// contribution holds is reported, as it was required to be reserved for the contribution
+	/// alone.
 	///
-	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
-	/// [`APIMisuseError`]: APIError::APIMisuseError
+	/// A contribution built from a [`FundingTemplate`] with a prior contribution is tied to the
+	/// pending splice attempt that contribution belongs to. It is rejected as stale, with
+	/// [`ContributionInvalid`], once that attempt has been resolved, whether it failed, releasing
+	/// its funding, or locked, spending it -- even if the contribution kept none of the attempt's
+	/// inputs and outputs. The channel's splice state has changed since the template was
+	/// obtained, so build a new contribution from a fresh template in that case.
+	///
+	/// [`ChannelUnavailable`]: SpliceContributionError::ChannelUnavailable
+	/// [`ContributionPending`]: SpliceContributionError::ContributionPending
+	/// [`NegotiationFailed`]: SpliceContributionError::NegotiationFailed
+	/// [`NegotiationFailureReason`]: events::NegotiationFailureReason
+	/// [`ContributionInvalid`]: events::NegotiationFailureReason::ContributionInvalid
+	/// [`FeeRateTooLow`]: events::NegotiationFailureReason::FeeRateTooLow
+	/// [`CannotInitiateRbf`]: events::NegotiationFailureReason::CannotInitiateRbf
+	/// [`ChannelClosing`]: events::NegotiationFailureReason::ChannelClosing
 	pub fn funding_contributed(
 		&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 		contribution: FundingContribution, locktime: Option<u32>,
-	) -> Result<(), APIError> {
+	) -> Result<(), SpliceContributionError> {
 		let mut result = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			let push_discard_funding = |contribution: FundingContribution| {
-				let (inputs, outputs) = contribution.into_contributed_inputs_and_outputs();
-				self.pending_events.lock().unwrap().push_back((
-					events::Event::DiscardFunding {
-						channel_id: *channel_id,
-						funding_info: FundingInfo::Contribution { inputs, outputs },
-					},
-					None,
-				));
+			// A pushed event is the only unlock signal the caller will ever get for the released
+			// inputs, so the manager must be persisted with it lest a crash leave them reserved
+			// forever.
+			let push_discard_funding = |contribution: FundingContribution| -> NotifyOption {
+				let funding_info = contribution.unique_contributions().map(|(inputs, outputs)| {
+					FundingInfo::Contribution {
+						inputs,
+						outputs: outputs
+							.into_iter()
+							.map(|output| output.script_pubkey.clone())
+							.collect(),
+					}
+				});
+				if let Some(funding_info) = funding_info {
+					self.pending_events.lock().unwrap().push_back((
+						events::Event::DiscardFunding { channel_id: *channel_id, funding_info },
+						None,
+					));
+					NotifyOption::DoPersist
+				} else {
+					NotifyOption::SkipPersistNoEvents
+				}
 			};
 
 			let per_peer_state = self.per_peer_state.read().unwrap();
 			let peer_state_mutex_opt = per_peer_state.get(counterparty_node_id);
 			if peer_state_mutex_opt.is_none() {
-				push_discard_funding(contribution);
-				result = Err(APIError::no_such_peer(counterparty_node_id));
-				return NotifyOption::SkipPersistNoEvents;
+				result = Err(SpliceContributionError::ChannelUnavailable);
+				return push_discard_funding(contribution);
 			}
 
 			let mut peer_state = peer_state_mutex_opt.unwrap().lock().unwrap();
@@ -6868,34 +6994,23 @@ impl<
 								}
 							},
 							Err(e) => {
-								result = Err(APIError::APIMisuseError {
-									err: match &e {
-										QuiescentError::DoNothing => format!(
-											"Duplicate funding contribution for channel {}",
-											channel_id,
-										),
-										QuiescentError::DiscardFunding { .. } => format!(
-											"Channel {} already has a pending funding contribution",
-											channel_id,
-										),
-										QuiescentError::FailSplice(..) => format!(
-											"Channel {} cannot accept funding contribution",
-											channel_id,
-										),
-									},
-								});
 								// The failure is already reported through the returned error, so
 								// don't emit `SpliceNegotiationFailed`; only surface any funding
 								// to discard so that wallet inputs can be released.
-								let funding_info = match e {
-									QuiescentError::DoNothing => None,
-									QuiescentError::DiscardFunding { inputs, outputs } => {
-										FundingInfo::contribution(inputs, outputs)
+								let (err, funding_info) = match e {
+									QuiescentError::DoNothing => {
+										(SpliceContributionError::ContributionPending, None)
 									},
-									QuiescentError::FailSplice(splice_funding_failed, _) => {
-										splice_funding_failed.into_parts().0
-									},
+									QuiescentError::DiscardFunding { inputs, outputs } => (
+										SpliceContributionError::ContributionPending,
+										FundingInfo::contribution(inputs, outputs),
+									),
+									QuiescentError::FailSplice(splice_funding_failed, reason) => (
+										SpliceContributionError::NegotiationFailed { reason },
+										splice_funding_failed.into_parts().0,
+									),
 								};
+								result = Err(err);
 								if let Some(funding_info) = funding_info {
 									self.pending_events.lock().unwrap().push_back((
 										events::Event::DiscardFunding {
@@ -6911,21 +7026,13 @@ impl<
 						return NotifyOption::DoPersist;
 					},
 					None => {
-						push_discard_funding(contribution);
-						result = Err(APIError::APIMisuseError {
-							err: format!(
-								"Channel with id {} not expecting funding contribution",
-								channel_id
-							),
-						});
-						return NotifyOption::SkipPersistNoEvents;
+						result = Err(SpliceContributionError::ChannelUnavailable);
+						return push_discard_funding(contribution);
 					},
 				},
 				None => {
-					push_discard_funding(contribution);
-					result =
-						Err(APIError::no_such_channel_for_peer(channel_id, counterparty_node_id));
-					return NotifyOption::SkipPersistNoEvents;
+					result = Err(SpliceContributionError::ChannelUnavailable);
+					return push_discard_funding(contribution);
 				},
 			}
 		});
@@ -18585,11 +18692,7 @@ impl<
 		let mut splice_failed_events: Vec<(Event, Option<EventCompletionAction>)> = Vec::new();
 		for peer_state in peer_states.iter() {
 			for chan in peer_state.channel_by_id.values().filter_map(Channel::as_funded) {
-				let failed_splices = chan
-					.maybe_splice_funding_failed()
-					.into_iter()
-					.chain(chan.maybe_queued_splice_funding_failed());
-				for splice_funding_failed in failed_splices {
+				for splice_funding_failed in chan.on_restart_splice_failures() {
 					splice_failed_events.extend(
 						splice_negotiation_failed_events(
 							chan.context.channel_id(),
@@ -19526,11 +19629,6 @@ impl<
 					if shutdown_result.unbroadcasted_batch_funding_txid.is_some() {
 						return Err(DecodeError::InvalidValue);
 					}
-					// Freshly-read channels never restore a queued splice contribution or a
-					// resettable funding negotiation, so force-closing here cannot surface a
-					// splice failure; events for unpersisted splice state were synthesized
-					// when the manager was written.
-					debug_assert!(shutdown_result.splice_funding_failed.is_empty());
 					if let Some((counterparty_node_id, funding_txo, channel_id, mut update)) =
 						shutdown_result.monitor_update
 					{

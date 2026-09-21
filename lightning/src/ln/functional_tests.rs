@@ -571,6 +571,63 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 	};
 }
 
+#[test]
+fn test_preimage_claim_reconfirmed_before_event_handled() {
+	// Test that if the counterparty's on-chain preimage claim of an HTLC we offered is reorged out
+	// and reconfirmed before the `ChannelManager` has processed the resulting claim event, we
+	// still track the reconfirmed spend as resolving the HTLC rather than reporting the HTLC as
+	// claimable via timeout forever.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+
+	// B claims the payment but A never receives the off-chain fulfill. B then goes on chain with an
+	// HTLC-Success transaction as the HTLC nears expiry.
+	nodes[1].node.claim_funds(payment_preimage);
+	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
+	check_added_monitors(&nodes[1], 1);
+	let _ = get_htlc_update_msgs(&nodes[1], &node_a_id);
+
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
+	let node_1_txn = test_txn_broadcast(&nodes[1], &chan, None, HTLCType::SUCCESS);
+	check_closed_broadcast(&nodes[1], 1, true);
+	let reason = ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) };
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100_000);
+	check_added_monitors(&nodes[1], 1);
+
+	// A sees B's commitment transaction confirm.
+	mine_transaction(&nodes[0], &node_1_txn[0]);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[node_b_id], 100_000);
+	check_added_monitors(&nodes[0], 1);
+
+	// A sees the HTLC-Success confirm, which queues a claim event for the `ChannelManager`. Before
+	// the manager gets to it, the block is reorged out and the HTLC-Success reconfirms.
+	mine_transaction(&nodes[0], &node_1_txn[1]);
+	disconnect_blocks(&nodes[0], 1);
+	mine_transaction(&nodes[0], &node_1_txn[1]);
+
+	// The manager should learn of the claim exactly once.
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+
+	// Once the reconfirmed HTLC-Success is irrevocably confirmed, A's balance in the channel
+	// should be fully resolved. In particular, the HTLC must not be reported as still claimable by
+	// A via timeout.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY);
+	let balances = get_monitor!(nodes[0], chan.2).get_claimable_balances();
+	assert!(balances.is_empty(), "{balances:?}");
+}
+
 #[xtest(feature = "_externalize_tests")]
 pub fn channel_monitor_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and

@@ -45,7 +45,8 @@ GitHub regularly.
    the added `FilesystemStoreV2` for pagination support (#4347).
  * Phantom nodes can now receive to BOLT 12 offers (#4335).
  * `Event::DiscardFunding` is now used to communicate inputs and outputs which
-   were not included in a splice, rather than `SpliceNegotiationFailed` (#4388).
+   were not included in a splice, rather than `SpliceNegotiationFailed`
+   (#4388, #4993).
  * Many bounds have been converted to being directly on a `Trait`, rather than a
    `Deref<Target = Trait>`, with a blanket `impl Trait` for `Deref` (#4311).
  * `ProbabilisticScoringFeeParameters::default()` had its penalties 5x'd, better
