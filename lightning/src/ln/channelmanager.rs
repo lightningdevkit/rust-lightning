@@ -15767,10 +15767,14 @@ impl<
 		};
 
 		let invoice_request = builder.build_and_sign()?;
-		let available_liquidity_msat = self.list_usable_channels().into_iter()
-			.fold(0u64, |total, channel| total.saturating_add(channel.next_outbound_htlc_limit_msat));
-		if invoice_request.amount_msats().unwrap_or(0) > available_liquidity_msat {
-			return Err(Bolt12SemanticError::InsufficientLiquidity);
+		let usable_channels = self.list_usable_channels();
+		if !usable_channels.is_empty() {
+			let available_liquidity_msat = usable_channels.into_iter().fold(0u64, |total, channel| {
+				total.saturating_add(channel.next_outbound_htlc_limit_msat)
+			});
+			if invoice_request.amount_msats().unwrap_or(0) > available_liquidity_msat {
+				return Err(Bolt12SemanticError::InsufficientLiquidity);
+			}
 		}
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
