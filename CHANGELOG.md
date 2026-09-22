@@ -1,3 +1,26 @@
+# 0.2.6 - Sep 9, 2026 - "The More You Dig"
+
+## Bug Fixes
+ * Stream write failures when serializing a `ChannelManager` no longer results
+   in spurious `Event::SpliceNegotiationFailed`s and `Event::DiscardFunding`s
+   for still-active splices (#4902).
+ * When closing a channel which never confirmed and never had any funds via the
+   `ChainMonitor`, if a crash immediately follows the closure, deserializing the
+   `ChannelManager` no longer fails on startup (#4983).
+
+## Security
+0.2.6 fixes a denial-of-service vulnerability when receiving bogus payments and
+a fee-inflation vulnerability which can allow a malicious counterparty to spend
+a small amount of our funds when we initate a splice.
+ * A malicious splice peer can no longer cause us to somewhat over-allocate fee
+   when we contribute to a splice, with the over-allocation going to their
+   output (#4905).
+ * When a bogus payment HTLC is received which is immediately rejected, after
+   a second HTLC with the same `payment_hash` has been successfully forwarded,
+   `ChannelManager` can no longer be left in a state where it would be rejected
+   on deserialization. Thanks to Erick Cestari for reporting this issue (#4982).
+
+
 # 0.2.5 - Aug 4, 2026 - "The MegaScan Project"
 
 ## Bug Fixes
