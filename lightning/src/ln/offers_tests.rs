@@ -2098,7 +2098,7 @@ fn fails_creating_invoice_request_with_insufficient_liquidity() {
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
 
 	let (alice, bob) = (&nodes[0], &nodes[1]);
-	let available_liquidity_msat = bob.node.list_usable_channels().into_iter()
+	let available_liquidity_msat = bob.node.list_channels().into_iter()
 		.fold(0u64, |total, channel| total.saturating_add(channel.next_outbound_htlc_limit_msat));
 	let offer = alice.node
 		.create_offer_builder().unwrap()
@@ -2113,6 +2113,79 @@ fn fails_creating_invoice_request_with_insufficient_liquidity() {
 
 	assert!(bob.node.list_recent_payments().is_empty());
 	assert!(bob.onion_messenger.next_onion_message_for_peer(alice.node.get_our_node_id()).is_none());
+}
+
+#[test]
+fn pays_for_offer_after_reconnecting_peer_with_outbound_liquidity() {
+	const ALICE: usize = 0;
+	const BOB: usize = 1;
+	const CAROL: usize = 2;
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, ALICE, BOB, 10_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, BOB, CAROL, 10_000_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, CAROL, ALICE, 10_000_000, 0);
+
+	let alice = &nodes[ALICE];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[BOB];
+	let bob_id = bob.node.get_our_node_id();
+	let carol = &nodes[CAROL];
+
+	disconnect_peers(bob, &[carol]);
+
+	let offer_amount_msat = 10_000_000;
+	let live_outbound_msat = bob.node.list_usable_channels().into_iter()
+		.fold(0u64, |total, channel| total.saturating_add(channel.next_outbound_htlc_limit_msat));
+	let funded_outbound_msat = bob.node.list_channels().into_iter()
+		.fold(0u64, |total, channel| total.saturating_add(channel.next_outbound_htlc_limit_msat));
+	assert!(live_outbound_msat < offer_amount_msat);
+	assert!(funded_outbound_msat >= offer_amount_msat);
+
+	let offer = alice.node
+		.create_offer_builder().unwrap()
+		.clear_paths()
+		.amount_msats(offer_amount_msat)
+		.build().unwrap();
+	assert_eq!(offer.issuer_signing_pubkey(), Some(alice_id));
+
+	let payment_id = PaymentId([1; 32]);
+	bob.node.pay_for_offer(&offer, None, payment_id, Default::default()).unwrap();
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	let onion_message = bob.onion_messenger.next_onion_message_for_peer(alice_id).unwrap();
+	alice.onion_messenger.handle_onion_message(bob_id, &onion_message);
+
+	let (invoice_request, _) = extract_invoice_request(alice, &onion_message);
+	let payment_context = PaymentContext::Bolt12Offer(Bolt12OfferContext {
+		offer_id: offer.id(),
+		invoice_request: PayerFields {
+			payer_signing_pubkey: invoice_request.payer_signing_pubkey(),
+			quantity: None,
+			payer_note_truncated: None,
+			human_readable_name: None,
+		},
+		payment_metadata: None,
+	});
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+
+	let mut args = ReconnectArgs::new(bob, carol);
+	args.send_channel_ready = (true, true);
+	args.send_announcement_sigs = (true, true);
+	reconnect_nodes(args);
+
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+	let (invoice, _) = extract_invoice(bob, &onion_message);
+	route_bolt12_payment(bob, &[carol, alice], &invoice);
+	expect_recent_payment!(bob, RecentPaymentDetails::Pending, payment_id);
+
+	claim_bolt12_payment(bob, &[carol, alice], payment_context, &invoice, Some(50));
+	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
 }
 
 #[test]

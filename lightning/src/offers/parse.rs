@@ -180,7 +180,7 @@ pub enum Bolt12SemanticError {
 	InvalidCurrencyCode,
 	/// An amount was provided but was not sufficient in value.
 	InsufficientAmount,
-	/// The requested amount exceeds the currently available outbound liquidity.
+	/// The requested amount exceeds the aggregate outbound capacity of open channels.
 	InsufficientLiquidity,
 	/// An amount was provided but was not expected.
 	UnexpectedAmount,

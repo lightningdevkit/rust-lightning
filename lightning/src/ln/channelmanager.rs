@@ -15621,7 +15621,7 @@ impl<
 	/// - a duplicate `payment_id` is provided given the caveats in the aforementioned link,
 	/// - the provided parameters are invalid for the offer,
 	/// - the offer is for an unsupported chain, or
-	/// - the requested amount exceeds currently available outbound liquidity, or
+	/// - the requested amount exceeds the aggregate outbound capacity of open channels, or
 	/// - the parameterized [`Router`] is unable to create a blinded reply path for the invoice
 	///   request.
 	///
@@ -15767,14 +15767,11 @@ impl<
 		};
 
 		let invoice_request = builder.build_and_sign()?;
-		let usable_channels = self.list_usable_channels();
-		if !usable_channels.is_empty() {
-			let available_liquidity_msat = usable_channels.into_iter().fold(0u64, |total, channel| {
-				total.saturating_add(channel.next_outbound_htlc_limit_msat)
-			});
-			if invoice_request.amount_msats().unwrap_or(0) > available_liquidity_msat {
-				return Err(Bolt12SemanticError::InsufficientLiquidity);
-			}
+		let available_liquidity_msat = self.list_channels().into_iter().fold(0u64, |total, channel| {
+			total.saturating_add(channel.next_outbound_htlc_limit_msat)
+		});
+		if invoice_request.amount_msats().unwrap_or(0) > available_liquidity_msat {
+			return Err(Bolt12SemanticError::InsufficientLiquidity);
 		}
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
 
