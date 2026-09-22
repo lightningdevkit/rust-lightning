@@ -10,6 +10,15 @@
 //! Tests which test upgrading from previous versions of LDK or downgrading to previous versions of
 //! LDK.
 
+use lightning_0_3::chain::ChannelMonitorUpdateStatus as ChannelMonitorUpdateStatus_0_3;
+use lightning_0_3::expect_payment_claimed as expect_payment_claimed_0_3;
+use lightning_0_3::get_monitor as get_monitor_0_3;
+use lightning_0_3::ln::functional_test_utils as lightning_0_3_utils;
+use lightning_0_3::ln::msgs::ChannelMessageHandler as _;
+use lightning_0_3::reload_node as reload_node_0_3;
+use lightning_0_3::types::payment::PaymentPreimage as PaymentPreimage_0_3;
+use lightning_0_3::util::ser::Writeable as _;
+
 use lightning_0_2::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW as FEERATE_FLOOR_0_2;
 use lightning_0_2::commitment_signed_dance as commitment_signed_dance_0_2;
 use lightning_0_2::events::bump_transaction::sync::WalletSourceSync as WalletSourceSync_0_2;
@@ -42,8 +51,12 @@ use lightning_0_1::util::ser::Writeable as _;
 use lightning::blinded_path::message::NextMessageHop;
 use lightning::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW;
 use lightning::chain::channelmonitor::{ANTI_REORG_DELAY, HTLC_FAIL_BACK_BUFFER};
-use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType, NegotiationFailureReason};
+use lightning::events::{
+	ClosureReason, Event, EventsProvider, HTLCHandlingFailureType, NegotiationFailureReason,
+	ReplayEvent,
+};
 use lightning::ln::channel_state::SpliceCandidateStatus;
+use lightning::ln::channelmanager::ClaimFundsOptions;
 use lightning::ln::channelmanager::SpliceContributionError;
 use lightning::ln::functional_test_utils::*;
 use lightning::ln::funding::FundingContribution;
@@ -113,6 +126,160 @@ fn simple_upgrade() {
 	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
 
 	claim_payment(&nodes[0], &[&nodes[1]], preimage);
+}
+
+#[test]
+fn test_0_3_pending_payment_sent_upgrade_replayed_claim() {
+	// A pending PaymentSent from 0.3 carries a legacy RAA-release action. Replaying an
+	// unfinished claim monitor update on upgrade must retain its MonitorEvent until the
+	// application accepts PaymentSent, including when the handler requests event replay.
+	let (manager_ser, monitor_ser, chan_id_bytes, preimage_bytes);
+	{
+		let chanmon_cfgs = lightning_0_3_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_3_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = lightning_0_3_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = lightning_0_3_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+		let chan_id = lightning_0_3_utils::create_announced_chan_between_nodes(&nodes, 0, 1).2;
+		chan_id_bytes = chan_id.0;
+
+		let (preimage, payment_hash, ..) =
+			lightning_0_3_utils::route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		preimage_bytes = preimage.0;
+		monitor_ser = get_monitor_0_3!(nodes[0], chan_id).encode();
+		nodes[1].node.claim_funds(preimage);
+		lightning_0_3_utils::check_added_monitors(&nodes[1], 1);
+		expect_payment_claimed_0_3!(nodes[1], payment_hash, 1_000_000);
+		let mut updates = lightning_0_3_utils::get_htlc_update_msgs(&nodes[1], &node_a_id);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
+
+		// Persist the manager while the claim's monitor update is still in progress. The
+		// monitor snapshot above predates that update, so it must be replayed after reload.
+		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus_0_3::InProgress);
+		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
+		lightning_0_3_utils::check_added_monitors(&nodes[0], 1);
+		manager_ser = nodes[0].node.encode();
+
+		// Finish the original nodes' claim flow so their end-of-scope checks pass.
+		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus_0_3::Completed);
+		let (_, update_id) = lightning_0_3_utils::get_latest_mon_update_id(&nodes[0], chan_id);
+		nodes[0].chain_monitor.chain_monitor.channel_monitor_updated(chan_id, update_id).unwrap();
+		let extra_msg = lightning_0_3_utils::commitment_signed_dance_through_cp_raa(
+			&nodes[0], &nodes[1], false, true,
+		);
+		assert!(extra_msg.is_none(), "{extra_msg:?}");
+		lightning_0_3_utils::expect_payment_sent(&nodes[0], preimage, Some(Some(0)), true, true);
+	}
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister, chain_monitor);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let channel_manager;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	reload_node!(nodes[0], manager_ser, &[&monitor_ser], persister, chain_monitor, channel_manager);
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+	let preimage = PaymentPreimage(preimage_bytes);
+	let saw_payment_sent = core::cell::Cell::new(false);
+	nodes[0].node.process_pending_events(&|event| {
+		assert!(
+			matches!(event, Event::PaymentSent { payment_preimage, .. } if payment_preimage == preimage),
+			"{event:?}",
+		);
+		assert!(!saw_payment_sent.replace(true));
+		Err(ReplayEvent())
+	});
+	assert!(saw_payment_sent.get());
+	check_added_monitors(&nodes[0], 1);
+
+	let chan_id = ChannelId(chan_id_bytes);
+	let pending = get_monitor!(nodes[0], chan_id).list_unacked_monitor_events();
+	assert_eq!(pending.len(), 1, "claim acknowledged before PaymentSent was handled: {pending:?}");
+
+	// Accepting the replayed PaymentSent must acknowledge its monitor event.
+	expect_payment_sent(&nodes[0], preimage, Some(Some(0)), false, false);
+	assert!(get_monitor!(nodes[0], chan_id).list_unacked_monitor_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	check_added_monitors(&nodes[0], 0);
+}
+
+#[test]
+fn test_0_3_pending_payment_sent_downgrade() {
+	// Test that an off-chain claim's `MonitorEvent` which 0.4 queued in a `ChannelMonitor` but whose
+	// `ChannelManager` never processed it is properly handled after a downgrade to LDK 0.3.
+	// 0.3 must ignore such events on monitor read.
+	let (mgr_ser, mon_ser);
+	let preimage_bytes;
+	{
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
+		let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+		let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+		preimage_bytes = preimage.0;
+
+		// Claim the payment and deliver B's `update_fulfill_htlc` and `commitment_signed` to A,
+		// queueing A's `PaymentSent` event and pushing the claim's `MonitorEvent` into the
+		// monitor, then serialize immediately: the state written below is that of a node which
+		// crashed right after persisting the `commitment_signed`'s `ChannelMonitorUpdate`,
+		// before the `ChannelManager` processed the `MonitorEvent`.
+		nodes[1].node.claim_funds(preimage, ClaimFundsOptions::default());
+		check_added_monitors(&nodes[1], 1);
+		expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
+
+		let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
+		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
+		check_added_monitors(&nodes[0], 1);
+
+		mgr_ser = nodes[0].node.encode();
+		mon_ser = {
+			let mon = get_monitor!(nodes[0], chan_id);
+			assert_eq!(mon.list_unacked_monitor_events().len(), 1);
+			mon.encode()
+		};
+
+		// Complete the commitment dance and process `PaymentSent` now so the end-of-scope test
+		// checks pass; the state serialized above still has the event pending and the
+		// `MonitorEvent` queued in the monitor. Passing `includes_claim` asserts that A's RAA
+		// `ChannelMonitorUpdate` is held until the `PaymentSent` event is processed.
+		let extra_msg = commitment_signed_dance_through_cp_raa(&nodes[0], &nodes[1], false, true);
+		assert!(extra_msg.is_none(), "{extra_msg:?}");
+		expect_payment_sent(&nodes[0], preimage, None, true, true);
+	}
+
+	// Downgrade node A to 0.3, reloading with the manager and monitor written by the current
+	// version while `PaymentSent` was pending.
+	let chanmon_cfgs = lightning_0_3_utils::create_chanmon_cfgs(2);
+	let node_cfgs = lightning_0_3_utils::create_node_cfgs(2, &chanmon_cfgs);
+	let (persister_1, chain_mon_1);
+	let node_chanmgrs = lightning_0_3_utils::create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let node_a_1;
+	let mut nodes = lightning_0_3_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let config = lightning_0_3_utils::test_default_channel_config();
+	let mons = &[&mon_ser[..]];
+	reload_node_0_3!(nodes[0], config, &mgr_ser, mons, persister_1, chain_mon_1, node_a_1);
+
+	// The channel is still open on 0.3.
+	assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+	// Processing the pending events must surface `PaymentSent` exactly once and must not panic
+	// on any startup `MonitorEvent`s re-delivered for the (open) channel.
+	let preimage = PaymentPreimage_0_3(preimage_bytes);
+	let (_, path_events) =
+		lightning_0_3_utils::expect_payment_sent(&nodes[0], preimage, None, false, false);
+	assert!(path_events.is_empty(), "{path_events:?}");
+
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 }
 
 #[test]

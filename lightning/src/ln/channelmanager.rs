@@ -1805,6 +1805,20 @@ impl_ser_tlv_based_enum!(EventCompletionAction,
 );
 
 impl EventCompletionAction {
+	fn channel_id(&self) -> ChannelId {
+		match self {
+			Self::ReleaseRAAChannelMonitorUpdate { channel_id, .. } => *channel_id,
+			Self::ReleasePaymentCompleteChannelMonitorUpdate(update) => update.channel_id,
+		}
+	}
+
+	fn htlc_id(&self) -> Option<SentHTLCId> {
+		match self {
+			Self::ReleaseRAAChannelMonitorUpdate { .. } => None,
+			Self::ReleasePaymentCompleteChannelMonitorUpdate(update) => Some(update.htlc_id),
+		}
+	}
+
 	/// The [`MonitorEvent`] to acknowledge once the event this action is attached to has been
 	/// handled, if any.
 	fn monitor_event_source(&self) -> Option<MonitorEventSource> {
@@ -14586,27 +14600,86 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Some(htlc_update.payment_hash),
 						);
 						if let Some(preimage) = htlc_update.payment_preimage {
-							log_trace!(
-								logger,
-								"Claiming HTLC with preimage {} from our monitor",
-								preimage
-							);
-							// Claim the funds from the previous hop, if there is one. Because this is in response to a
-							// chain event, no attribution data is available.
-							self.claim_funds_internal(
-								htlc_update.source,
-								preimage,
-								htlc_update.htlc_value_satoshis * 1000,
-								None,
-								htlc_update.from_onchain,
-								counterparty_node_id,
-								funding_outpoint,
-								channel_id,
-								None,
-								None,
-								None,
-								true,
-							);
+							let is_channel_closed = htlc_update.from_onchain
+								// This check is racy, but that's ok because the worst that can happen if the
+								// channel closes later on is that we've queued the wrong EventCompletionAction
+								// below, which could leave the payment dangling until the next restart.
+								|| self.channel_is_closed(&channel_id, &counterparty_node_id);
+							let htlc_id = SentHTLCId::from_source(&htlc_update.source);
+
+							if let HTLCSource::OutboundRoute { payment_id, .. } =
+								&htlc_update.source
+							{
+								// If this is a redundant claim of an outbound payment and an Event is already
+								// queued, refresh the Event's completion action in case it needs updating due to
+								// e.g. a channel closure or an upgrade/downgrade.
+								let mut pending_events = self.pending_events.lock().unwrap();
+								let pending_event_opt = pending_events.iter_mut().find(
+									|(event, _)| matches!(event, Event::PaymentSent { payment_id: Some(id), .. } if id == payment_id),
+								);
+								if let Some((_, action_opt)) = pending_event_opt {
+									let mut should_update_action = true;
+
+									// Avoid updating the completion action if it already corresponds to a different
+									// monitor event or HTLC.
+									if let Some(action) = action_opt {
+										if action
+											.monitor_event_source()
+											.is_some_and(|src| src != monitor_event_source)
+										{
+											should_update_action = false;
+										}
+										if action.channel_id() != channel_id
+											|| action.htlc_id().is_some_and(|id| id != htlc_id)
+										{
+											should_update_action = false;
+										}
+									}
+
+									if should_update_action {
+										*action_opt =
+											Some(EventCompletionAction::for_outbound_claim(
+												htlc_id,
+												channel_id,
+												funding_outpoint,
+												counterparty_node_id,
+												is_channel_closed,
+												htlc_update.from_onchain,
+											));
+									}
+								}
+							}
+
+							if is_channel_closed {
+								log_trace!(
+									logger,
+									"Claiming HTLC with preimage {} from our monitor",
+									preimage
+								);
+								// Claim the funds from the previous hop, if there is one. Because this is in response to a
+								// chain event, no attribution data is available.
+								self.claim_funds_internal(
+									htlc_update.source,
+									preimage,
+									htlc_update.htlc_value_satoshis * 1000,
+									None,
+									htlc_update.from_onchain,
+									counterparty_node_id,
+									funding_outpoint,
+									channel_id,
+									None,
+									None,
+									None,
+									true,
+								);
+							}
+
+							if !self.pending_events.lock().unwrap().iter().any(|(_, action)| {
+								action.as_ref().and_then(|action| action.monitor_event_source())
+									== Some(monitor_event_source)
+							}) {
+								self.chain_monitor.ack_monitor_event(monitor_event_source);
+							}
 						} else {
 							log_trace!(logger, "Failing HTLC from our monitor");
 							let failure_reason = LocalHTLCFailureReason::OnChainTimeout;
@@ -14627,8 +14700,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								failure_type,
 								completion_update,
 							);
+							self.chain_monitor.ack_monitor_event(monitor_event_source);
 						}
-						self.chain_monitor.ack_monitor_event(monitor_event_source);
 					},
 					MonitorEvent::HolderForceClosed(_)
 					| MonitorEvent::HolderForceClosedWithInfo { .. } => {

@@ -1933,7 +1933,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	check_added_monitors(&nodes[1], 1);
 
 	let events = nodes[1].node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 3, "{events:?}");
+	assert_eq!(events.len(), 4, "{events:?}");
 	assert!(events.iter().any(|ev| {
 		if let Event::PaymentSent { payment_preimage: ev_preimage, .. } = ev {
 			assert_eq!(*ev_preimage, preimage_a);
@@ -1943,6 +1943,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 		}
 	}));
 	assert!(events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
+	assert!(events.iter().any(|ev| matches!(ev, Event::PaymentPathSuccessful { payment_hash: Some(hash), .. } if *hash == payment_hash_a)));
 	assert!(events.iter().any(|ev| {
 		if let Event::HTLCHandlingFailed { failure_type, failure_reason, .. } = ev {
 			assert!(matches!(failure_type, HTLCHandlingFailureType::Forward { .. }));
@@ -1956,6 +1957,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 			false
 		}
 	}));
+	check_added_monitors(&nodes[1], 2);
 
 	nodes[1].node.process_pending_htlc_forwards();
 	check_added_monitors(&nodes[1], 1);

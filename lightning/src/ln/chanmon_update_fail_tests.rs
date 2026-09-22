@@ -3803,6 +3803,9 @@ fn do_test_durable_preimages_on_closed_channel(
 	check_added_monitors(&nodes[1], 1);
 	let _ = get_revoke_commit_msgs(&nodes[1], &node_c_id);
 
+	// Process the off-chain claim while B<->C is open. The A<->B preimage update is
+	// still in flight, so `PaymentForwarded` must remain blocked.
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	let mon_bc = get_monitor!(nodes[1], chan_id_bc).encode();
 
 	if close_chans_before_reload {
@@ -5055,7 +5058,10 @@ fn native_async_persist() {
 	assert_eq!(update_status, ChannelMonitorUpdateStatus::InProgress);
 
 	persist_futures.poll_futures();
-	assert_eq!(async_chain_monitor.release_pending_monitor_events().len(), 0);
+	let mon_evs = async_chain_monitor.release_pending_monitor_events();
+	assert_eq!(mon_evs.len(), 1, "{mon_evs:?}");
+	assert_eq!(mon_evs[0].2.len(), 1);
+	assert!(matches!(mon_evs[0].2[0].1, MonitorEvent::HTLCEvent(..)));
 
 	let pending_writes = kv_store.list_pending_async_writes(
 		CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,

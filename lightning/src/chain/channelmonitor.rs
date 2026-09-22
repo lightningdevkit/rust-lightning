@@ -304,9 +304,9 @@ impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
 	// 6 was `UpdateFailed` until LDK 0.0.117
 );
 
-/// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
-/// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
-/// preimage claim backward will lead to loss of funds.
+/// Simple structure sent back by `chain::Watch` when an outbound HTLC is durably resolved. If the
+/// HTLC was a forward, use this to update the corresponding HTLC in the backward channel. Failing
+/// to pass the preimage claim backward will lead to loss of funds.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
@@ -3966,20 +3966,39 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.prev_holder_htlc_data = Some(htlc_data);
 
 		for (claimed_htlc_id, claimed_preimage) in claimed_htlcs {
-			#[cfg(debug_assertions)]
-			{
-				let cur_counterparty_htlcs = self
-					.funding
-					.counterparty_claimable_outpoints
-					.get(&self.funding.current_counterparty_commitment_txid.unwrap())
-					.unwrap();
-				assert!(cur_counterparty_htlcs.iter().any(|(_, source_opt)| {
+			let htlc_opt = self
+				.funding
+				.counterparty_claimable_outpoints
+				.get(&self.funding.current_counterparty_commitment_txid.unwrap())
+				.unwrap()
+				.iter()
+				.find_map(|(htlc, source_opt)| {
 					if let Some(source) = source_opt {
-						SentHTLCId::from_source(source) == *claimed_htlc_id
-					} else {
-						false
+						if SentHTLCId::from_source(source) == *claimed_htlc_id {
+							return Some((htlc, source));
+						}
 					}
-				}));
+					None
+				});
+			debug_assert!(htlc_opt.is_some());
+			if let Some((htlc, source)) = htlc_opt {
+				let event = MonitorEvent::HTLCEvent(HTLCUpdate {
+					payment_hash: htlc.payment_hash,
+					payment_preimage: Some(*claimed_preimage),
+					source: *source.clone(),
+					htlc_value_satoshis: htlc.amount_msat / 1000,
+					from_onchain: false,
+				});
+				let event_id = monitor_event_id(&event);
+				// A replayed update must not queue the same event twice.
+				let already_queued = self
+					.pending_monitor_events
+					.iter()
+					.chain(self.provided_monitor_events.iter())
+					.any(|(id, _)| *id == event_id);
+				if !already_queued {
+					self.pending_monitor_events.push((event_id, event));
+				}
 			}
 			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
 		}
