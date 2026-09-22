@@ -1514,13 +1514,16 @@ where
 			fork_point.height,
 			fork_point.block_hash,
 		);
-		for monitor_state in monitor_states.values() {
-			monitor_state.monitor.blocks_disconnected(
+		let disconnect_monitor = |monitor: &ChannelMonitor<ChannelSigner>| {
+			monitor.blocks_disconnected(
 				fork_point,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
 			);
+		};
+		for monitor_state in monitor_states.values() {
+			disconnect_monitor(&monitor_state.monitor);
 		}
 	}
 }
@@ -1562,13 +1565,16 @@ where
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		log_debug!(self.logger, "Transaction {} reorganized out of chain", txid);
 		let monitor_states = self.monitors.read().unwrap();
-		for monitor_state in monitor_states.values() {
-			monitor_state.monitor.transaction_unconfirmed(
+		let unconfirm_monitor = |monitor: &ChannelMonitor<ChannelSigner>| {
+			monitor.transaction_unconfirmed(
 				txid,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
 			);
+		};
+		for monitor_state in monitor_states.values() {
+			unconfirm_monitor(&monitor_state.monitor);
 		}
 	}
 
