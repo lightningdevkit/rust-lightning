@@ -50,7 +50,10 @@ use crate::io::{Cursor, Read};
 use crate::prelude::*;
 
 const DEFAULT_MIN_FAILURE_PACKET_LEN: usize = 256;
-
+const MAX_ATTRIBUTABLE_RETURN_FIELD_LEN: usize = 32 * 1024;
+// Failure packets contain a 32-byte HMAC, 2-byte failure length, 2-byte
+// failure code, and 2-byte padding length in addition to the failure data.
+const FAILURE_PACKET_BASE_LEN: usize = 32 + 2 + 2 + 2;
 /// The unit size of the hold time. This is used to reduce the hold time resolution to improve privacy.
 pub(crate) const HOLD_TIME_UNIT_MILLIS: u128 = 100;
 
@@ -957,6 +960,9 @@ fn build_unencrypted_failure_packet(
 	hold_time: u32, min_packet_len: usize,
 ) -> OnionErrorPacket {
 	assert_eq!(shared_secret.len(), 32);
+
+	let max_failure_data_len = MAX_ATTRIBUTABLE_RETURN_FIELD_LEN - FAILURE_PACKET_BASE_LEN;
+	let failure_data = &failure_data[..core::cmp::min(failure_data.len(), max_failure_data_len)];
 
 	// Failure len is 2 bytes type plus the data.
 	let failure_len = 2 + failure_data.len();
@@ -3196,6 +3202,8 @@ impl AttributionData {
 fn process_failure_packet(
 	onion_error: &mut OnionErrorPacket, shared_secret: &[u8], hold_time: u32,
 ) {
+	onion_error.data.truncate(MAX_ATTRIBUTABLE_RETURN_FIELD_LEN);
+
 	// Process received attribution data if present.
 	if let Some(ref mut attribution_data) = onion_error.attribution_data {
 		attribution_data.shift_right();
@@ -4514,7 +4522,8 @@ mod tests {
 		let reason = LocalHTLCFailureReason::TemporaryNodeFailure;
 
 		let empty = super::build_unencrypted_failure_packet(&shared_secret, reason, &[], 0, 0);
-		let failure_data = vec![0; LN_MAX_MSG_LEN - update_fail_htlc_wire_len(&empty)];
+		let max_failure_data_len = MAX_ATTRIBUTABLE_RETURN_FIELD_LEN - empty.data.len();
+		let failure_data = vec![0; max_failure_data_len + 1];
 
 		let onion_error = super::build_unencrypted_failure_packet(
 			&shared_secret,
@@ -4524,6 +4533,9 @@ mod tests {
 			DEFAULT_MIN_FAILURE_PACKET_LEN,
 		);
 		assert!(onion_error.attribution_data.is_some());
+		assert_eq!(onion_error.data.len(), MAX_ATTRIBUTABLE_RETURN_FIELD_LEN);
+		let failure_len = u16::from_be_bytes(onion_error.data[32..34].try_into().unwrap());
+		assert_eq!(failure_len as usize, 2 + max_failure_data_len);
 
 		let msg = UpdateFailHTLC {
 			channel_id: ChannelId([0; 32]),
@@ -4535,7 +4547,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		msgs::UpdateFailHTLC::TYPE.write(&mut buffer).unwrap();
 		msg.write(&mut buffer).unwrap();
-		assert_eq!(buffer.len(), LN_MAX_MSG_LEN);
+		assert!(buffer.len() < LN_MAX_MSG_LEN);
 		assert_eq!(update_fail_htlc_wire_len(&msg.into()), buffer.len());
 	}
 
@@ -4551,9 +4563,10 @@ mod tests {
 
 		let onion_error =
 			HTLCFailReason::from_msg(&msg).get_encrypted_failure_packet(&[1; 32], &None);
-		assert!(onion_error.attribution_data.is_none());
+		assert!(onion_error.attribution_data.is_some());
+		assert_eq!(onion_error.data.len(), MAX_ATTRIBUTABLE_RETURN_FIELD_LEN);
 
-		assert_eq!(update_fail_htlc_wire_len(&onion_error), LN_MAX_MSG_LEN);
+		assert!(update_fail_htlc_wire_len(&onion_error) < LN_MAX_MSG_LEN);
 	}
 
 	#[test]
