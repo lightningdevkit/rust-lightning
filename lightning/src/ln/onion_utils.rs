@@ -3059,6 +3059,8 @@ impl AttributionData {
 	/// Adds the current node's HMACs for all possible positions to this packet.
 	pub(crate) fn add_hmacs(&mut self, shared_secret: &[u8], message: &[u8]) {
 		let um: [u8; 32] = gen_um_from_shared_secret(&shared_secret);
+		let mut message_hmac = HmacEngine::<Sha256>::new(&um);
+		message_hmac.input(&message);
 
 		// Iterate over all possible positions that this hop could be on the path. An intermediate node does not have this
 		// information, so it is up to the sender to verify the HMAC that corresponds to the actual position.
@@ -3068,8 +3070,7 @@ impl AttributionData {
 
 			// The HMAC covers the original message and - for the assumed position - all the hold times and downstream
 			// HMACs. As position decreases, fewer downstream HMACs are included.
-			let mut hmac_engine = HmacEngine::<Sha256>::new(&um);
-			hmac_engine.input(&message);
+			let mut hmac_engine = message_hmac.clone();
 			hmac_engine.input(&self.hold_times[..(position + 1) * HOLD_TIME_LEN]);
 			self.write_downstream_hmacs(position, &mut hmac_engine);
 
