@@ -1473,7 +1473,7 @@ fn conditionally_round_fwd_amt() {
 	nodes[0].node.send_payment(payment_hash, RecipientOnionFields::spontaneous_empty(amt_msat), PaymentId(payment_hash.0), route_params, Retry::Attempts(0)).unwrap();
 	check_added_monitors(&nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2], &nodes[3], &nodes[4]]], amt_msat, payment_hash, payment_secret);
-	nodes[4].node.claim_funds(payment_preimage);
+	nodes[4].node.claim_funds(payment_preimage, Default::default());
 	let expected_path = &[&nodes[1], &nodes[2], &nodes[3], &nodes[4]];
 	let expected_route = &[&expected_path[..]];
 	let mut args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
@@ -2537,7 +2537,7 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], amt_msat, payment_hash, payment_secret);
 	if success {
-		nodes[2].node.claim_funds(payment_preimage);
+		nodes[2].node.claim_funds(payment_preimage, Default::default());
 		let expected_path = &[&nodes[1], &nodes[2]];
 		let expected_route = &[&expected_path[..]];
 		let expected_fee = pass_claimed_payment_along_route(ClaimAlongRouteArgs::new(

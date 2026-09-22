@@ -212,7 +212,7 @@ fn test_quiescence_waits_for_async_signer_and_monitor_update() {
 
 	let payment_amount = 1_000_000;
 	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
-	nodes[1].node.claim_funds(preimage);
+	nodes[1].node.claim_funds(preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(&nodes[1], payment_hash, payment_amount);
 
@@ -413,7 +413,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash2 };
 		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[failed_payment]);
 	} else {
-		nodes[1].node.claim_funds(payment_preimage2);
+		nodes[1].node.claim_funds(payment_preimage2, Default::default());
 		check_added_monitors(&nodes[1], 1);
 	}
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -459,7 +459,7 @@ fn quiescence_updates_go_to_holding_cell(fail_htlc: bool) {
 		let failed_payment = HTLCHandlingFailureType::Receive { payment_hash: payment_hash1 };
 		expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[0], &[failed_payment]);
 	} else {
-		nodes[0].node.claim_funds(payment_preimage1);
+		nodes[0].node.claim_funds(payment_preimage1, Default::default());
 	}
 	check_added_monitors(&nodes[0], 1);
 
@@ -627,7 +627,7 @@ fn do_test_quiescence_during_disconnection(with_pending_claim: bool, propose_dis
 	if with_pending_claim {
 		// Optionally reconnect with pending quiescence while there's some pending messages to
 		// deliver.
-		nodes[1].node.claim_funds(preimage);
+		nodes[1].node.claim_funds(preimage, Default::default());
 		check_added_monitors(&nodes[1], 1);
 		expect_payment_claimed!(nodes[1], payment_hash, 100_000);
 		let _ = get_htlc_update_msgs(&nodes[1], &node_a_id);

@@ -355,7 +355,7 @@ pub fn test_duplicate_htlc_different_direction_onchain() {
 	);
 
 	// Provide preimage to node 0 by claiming payment
-	nodes[0].node.claim_funds(payment_preimage);
+	nodes[0].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[0], payment_hash, payment_value_msats);
 	check_added_monitors(&nodes[0], 1);
 
@@ -572,7 +572,7 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		},
 		PostFailBackAction::ClaimOnChain => {
-			nodes[2].node.claim_funds(payment_preimage);
+			nodes[2].node.claim_funds(payment_preimage, Default::default());
 			expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
 			check_added_monitors(&nodes[2], 1);
 			get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -605,7 +605,7 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		},
 		PostFailBackAction::ClaimOffChain => {
-			nodes[2].node.claim_funds(payment_preimage);
+			nodes[2].node.claim_funds(payment_preimage, Default::default());
 			expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
 			check_added_monitors(&nodes[2], 1);
 			let mut commitment_update = get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -641,7 +641,7 @@ fn test_preimage_claim_reconfirmed_before_event_handled() {
 
 	// B claims the payment but A never receives the off-chain fulfill. B then goes on chain with an
 	// HTLC-Success transaction as the HTLC nears expiry.
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
 	check_added_monitors(&nodes[1], 1);
 	let _ = get_htlc_update_msgs(&nodes[1], &node_a_id);
@@ -784,7 +784,7 @@ pub fn channel_monitor_network_test() {
 
 	macro_rules! claim_funds {
 		($node: expr, $prev_node: expr, $preimage: expr, $payment_hash: expr) => {{
-			$node.node.claim_funds($preimage);
+			$node.node.claim_funds($preimage, Default::default());
 			expect_payment_claimed!($node, $payment_hash, 3_000_000);
 			check_added_monitors(&$node, 1);
 
@@ -1561,9 +1561,9 @@ pub fn test_htlc_on_chain_success() {
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	assert_eq!(commitment_tx.len(), 1);
 	check_spends!(commitment_tx[0], chan_2.3);
-	nodes[2].node.claim_funds(our_payment_preimage);
+	nodes[2].node.claim_funds(our_payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[2], payment_hash_1, 3_000_000);
-	nodes[2].node.claim_funds(our_payment_preimage_2);
+	nodes[2].node.claim_funds(our_payment_preimage_2, Default::default());
 	expect_payment_claimed!(nodes[2], payment_hash_2, 3_000_000);
 	check_added_monitors(&nodes[2], 2);
 	let updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -2625,7 +2625,7 @@ pub fn test_dup_events_on_peer_disconnect() {
 
 	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
 	check_added_monitors(&nodes[1], 1);
 	let mut claim_msgs = get_htlc_update_msgs(&nodes[1], &node_a_id);
@@ -2959,7 +2959,7 @@ fn do_test_drop_messages_peer_disconnect(messages_delivered: u8, simulate_broken
 		_ => panic!("Unexpected event"),
 	}
 
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 
@@ -3259,7 +3259,7 @@ pub fn test_drop_messages_peer_disconnect_dual_htlc() {
 		_ => panic!("Unexpected event"),
 	}
 
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors(&nodes[1], 1);
 
@@ -3803,7 +3803,7 @@ pub fn test_static_spendable_outputs_preimage_tx() {
 	assert_eq!(commitment_tx[0].input[0].previous_output.txid, chan_1.3.compute_txid());
 
 	// Settle A's commitment tx on B's chain
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
 	check_added_monitors(&nodes[1], 1);
 	mine_transaction(&nodes[1], &commitment_tx[0]);
@@ -4152,7 +4152,7 @@ pub fn test_onchain_to_onchain_claim() {
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 3_000_000);
 	let commitment_tx = get_local_commitment_txn!(nodes[2], chan_2.2);
 	check_spends!(commitment_tx[0], chan_2.3);
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
 	check_added_monitors(&nodes[2], 1);
 	let updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
@@ -4362,7 +4362,7 @@ pub fn test_duplicate_payment_hash_one_failure_one_success() {
 	};
 
 	// Now give node E the payment preimage and pass it back to C.
-	nodes[4].node.claim_funds(our_payment_preimage);
+	nodes[4].node.claim_funds(our_payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[4], dup_payment_hash, 800_000);
 	check_added_monitors(&nodes[4], 1);
 	let mut updates = get_htlc_update_msgs(&nodes[4], &node_c_id);
@@ -4473,7 +4473,7 @@ pub fn test_dynamic_spendable_outputs_local_htlc_success_tx() {
 	check_spends!(local_txn[0], chan_1.3);
 
 	// Give B knowledge of preimage to be able to generate a local HTLC-Success Tx
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash, 9_000_000);
 	check_added_monitors(&nodes[1], 1);
 
@@ -5177,7 +5177,7 @@ fn do_htlc_claim_local_commitment_only(use_dust: bool) {
 
 	// Claim the payment, but don't deliver A's commitment_signed, resulting in the HTLC only being
 	// present in B's local commitment transaction, but none of A's commitment transactions.
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, if use_dust { 50000 } else { 3_000_000 });
 
@@ -5574,7 +5574,7 @@ pub fn test_free_and_fail_holding_cell_htlcs() {
 		Event::PaymentClaimable { .. } => {},
 		_ => panic!("Unexpected event"),
 	}
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, amt_1);
 
@@ -6716,7 +6716,7 @@ pub fn test_bump_penalty_txn_on_remote_commitment() {
 		assert_eq!(remote_txn[0].input[0].previous_output.txid, chan.3.compute_txid());
 
 		// Claim a HTLC without revocation (provide B monitor with preimage)
-		nodes[1].node.claim_funds(payment_preimage);
+		nodes[1].node.claim_funds(payment_preimage, Default::default());
 		expect_payment_claimed!(nodes[1], payment_hash, htlc_value_a_msats);
 		let _ = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 		mine_transaction(&nodes[1], &remote_txn[0]);
@@ -7605,7 +7605,7 @@ pub fn test_update_err_monitor_lockdown() {
 	watchtower.chain_monitor.block_connected(&block, 200);
 
 	// Try to update ChannelMonitor
-	nodes[1].node.claim_funds(preimage);
+	nodes[1].node.claim_funds(preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 9_000_000);
 
@@ -8039,7 +8039,7 @@ fn do_test_onchain_htlc_settlement_after_close(
 	// Step (5):
 	// Carol then claims the funds and sends an update_fulfill message to Bob, and they go through the
 	// process of removing the HTLC from their commitment transactions.
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
 
@@ -8841,7 +8841,7 @@ pub fn test_double_partial_claim() {
 
 	// At this point nodes[3] has received one half of the payment, and the user goes to handle
 	// that PaymentClaimable event they got hours ago and never handled...we should refuse to claim.
-	nodes[3].node.claim_funds(payment_preimage);
+	nodes[3].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[3], 0);
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
 }
@@ -10157,11 +10157,11 @@ fn do_test_multi_post_event_actions(do_reload: bool) {
 	let (payment_preimage_2, payment_hash_2, ..) =
 		route_payment(&nodes[0], &[&nodes[2]], 1_000_000);
 
-	nodes[1].node.claim_funds(our_payment_preimage);
+	nodes[1].node.claim_funds(our_payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], our_payment_hash, 1_000_000);
 
-	nodes[2].node.claim_funds(payment_preimage_2);
+	nodes[2].node.claim_funds(payment_preimage_2, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_2, 1_000_000);
 
@@ -10414,7 +10414,7 @@ fn test_dup_htlc_claim_onchain_and_offchain() {
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
 	// C claims the payment.
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 	check_added_monitors(&nodes[2], 1);
 

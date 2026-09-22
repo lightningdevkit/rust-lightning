@@ -334,7 +334,7 @@ fn mpp_retry_overpay() {
 
 	// Can't use claim_payment_along_route as it doesn't support overpayment, so we break out the
 	// individual steps here.
-	nodes[3].node.claim_funds(payment_preimage);
+	nodes[3].node.claim_funds(payment_preimage, Default::default());
 	let extra_fees = vec![0, total_overpaid_amount];
 	let expected_route = &[&[&nodes[1], &nodes[3]][..], &[&nodes[2], &nodes[3]][..]];
 	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_route[..], payment_preimage)
@@ -962,7 +962,7 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 
 	// Now claim the first payment, which should allow nodes[1] to claim the payment on-chain when
 	// we close in a moment.
-	nodes[2].node.claim_funds(payment_preimage_1);
+	nodes[2].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_1, 1_000_000);
 
@@ -1351,7 +1351,7 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 		(txn.remove(0), txn.remove(0))
 	};
 
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
@@ -1512,7 +1512,7 @@ fn test_fulfill_restart_failure() {
 	let node_b_ser = nodes[1].node.encode();
 	let mon_ser = get_monitor!(nodes[1], chan_id).encode();
 
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 100_000);
 
@@ -2875,7 +2875,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	for i in 0..num_mpp_parts {
 		expected_paths.push(&expected_paths_vecs[i][..]);
 	}
-	expected_paths[0].last().unwrap().node.claim_funds(payment_preimage);
+	expected_paths[0].last().unwrap().node.claim_funds(payment_preimage, Default::default());
 	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_paths[..], payment_preimage)
 		.with_expected_extra_fees(vec![skimmed_fee_msat as u32; num_mpp_parts]);
 	let total_fee_msat = pass_claimed_payment_along_route(args);
@@ -3349,7 +3349,7 @@ fn auto_retry_partial_failure() {
 	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[]);
 	nodes[1].node.process_pending_htlc_forwards();
 	expect_payment_claimable!(nodes[1], payment_hash, payment_secret, amt_msat);
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash, amt_msat);
 	let mut bs_claim = get_htlc_update_msgs(&nodes[1], &node_a_id);
 	assert_eq!(bs_claim.update_fulfill_htlcs.len(), 1);
@@ -4436,7 +4436,7 @@ fn do_no_missing_sent_on_reload(persist_manager_with_payment: bool, at_midpoint:
 		node_a_ser = nodes[0].node.encode();
 	}
 
-	nodes[1].node.claim_funds(our_payment_preimage);
+	nodes[1].node.claim_funds(our_payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], our_payment_hash, 1_000_000);
 
@@ -4671,7 +4671,7 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		let reason = ClosureReason::CommitmentTxConfirmed;
 		check_closed_event(&nodes[3], 1, reason, &[node_b_id], 1000000);
 
-		nodes[3].node.claim_funds(payment_preimage);
+		nodes[3].node.claim_funds(payment_preimage, Default::default());
 		check_added_monitors(&nodes[3], 2);
 		expect_payment_claimed!(nodes[3], hash, 10_000_000);
 
@@ -4801,7 +4801,10 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 
 	match (known_tlvs, even_tlvs) {
 		(true, _) => {
-			nodes[1].node.claim_funds_with_known_custom_tlvs(preimage);
+			nodes[1].node.claim_funds(
+				preimage,
+				crate::ln::channelmanager::ClaimFundsOptions { custom_tlvs_known: true },
+			);
 			let expected_total_fee_msat = pass_claimed_payment_along_route(
 				ClaimAlongRouteArgs::new(&nodes[0], &[&[&nodes[1]]], preimage)
 					.with_custom_tlvs(custom_tlvs),
@@ -4815,7 +4818,7 @@ fn do_test_custom_tlvs(spontaneous: bool, even_tlvs: bool, known_tlvs: bool) {
 			);
 		},
 		(false, true) => {
-			nodes[1].node.claim_funds(preimage);
+			nodes[1].node.claim_funds(preimage, Default::default());
 			let fail_type = HTLCHandlingFailureType::Receive { payment_hash: hash };
 			expect_and_process_pending_htlcs_and_htlc_handling_failed(&nodes[1], &[fail_type]);
 			let reason = PaymentFailureReason::RecipientRejected;
@@ -5805,7 +5808,7 @@ fn do_bolt11_multi_node_mpp(use_bolt11_pay: bool) {
 		_ => panic!("Unexpected event: {:?}", events[0]),
 	};
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 
 	expect_payment_claimed!(nodes[2], invoice.payment_hash(), invoice_amt_msat);
 	check_added_monitors(&nodes[2], 2);
@@ -6070,7 +6073,7 @@ fn bolt11_multi_node_mpp_with_retry() {
 		_ => panic!("Unexpected event: {:?}", events[0]),
 	};
 
-	nodes[3].node.claim_funds(payment_preimage);
+	nodes[3].node.claim_funds(payment_preimage, Default::default());
 
 	expect_payment_claimed!(nodes[3], invoice.payment_hash(), invoice_amt_msat);
 	check_added_monitors(&nodes[3], 2);

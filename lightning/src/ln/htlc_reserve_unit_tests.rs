@@ -512,14 +512,14 @@ pub fn channel_reserve_in_flight_removes() {
 
 	// Now claim both of the first two HTLCs on B's end, putting B in AwaitingRAA and generating an
 	// initial fulfill/CS.
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash_1, payment_value_1);
 	check_added_monitors(&nodes[1], 1);
 	let mut bs_removes = get_htlc_update_msgs(&nodes[1], &node_a_id);
 
 	// This claim goes in B's holding cell, allowing us to have a pending B->A RAA which does not
 	// remove the second HTLC when we send the HTLC back from B to A.
-	nodes[1].node.claim_funds(payment_preimage_2);
+	nodes[1].node.claim_funds(payment_preimage_2, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash_2, 20_000);
 	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -1884,7 +1884,7 @@ pub fn test_update_fulfill_htlc_bolt2_incorrect_htlc_id() {
 	let (our_payment_preimage, our_payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
-	nodes[1].node.claim_funds(our_payment_preimage);
+	nodes[1].node.claim_funds(our_payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], our_payment_hash, 100_000);
 
@@ -1943,7 +1943,7 @@ pub fn test_update_fulfill_htlc_bolt2_wrong_preimage() {
 	let (our_payment_preimage, our_payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1]], 100_000);
 
-	nodes[1].node.claim_funds(our_payment_preimage);
+	nodes[1].node.claim_funds(our_payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], our_payment_hash, 100_000);
 

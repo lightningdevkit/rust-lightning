@@ -750,6 +750,18 @@ impl Readable for InterceptId {
 	}
 }
 
+/// Optional arguments to [`ChannelManager::claim_funds`].
+///
+/// These fields will often not need to be set, and the provided [`Self::default`] can be used.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClaimFundsOptions {
+	/// Whether custom TLVs with even type numbers in the received payment are known to you.
+	///
+	/// You MUST check you've understood all even TLVs before setting this to true, otherwise you may
+	/// unintentionally agree to some protocol you do not understand.
+	pub custom_tlvs_known: bool,
+}
+
 /// Optional arguments to [`ChannelManager::pay_for_bolt11_invoice`]
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
@@ -2550,7 +2562,7 @@ impl<
 ///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
 ///                 assert_eq!(payment_hash, invoice.payment_hash());
 ///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: None, .. } => {
 ///                 println!("Unknown payment hash: {}", payment_hash);
@@ -2558,7 +2570,7 @@ impl<
 ///             PaymentPurpose::SpontaneousPayment(payment_preimage) => {
 ///                 assert_ne!(payment_hash, invoice.payment_hash());
 ///                 println!("Claiming spontaneous payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             // ...
 /// #           _ => {},
@@ -2659,7 +2671,7 @@ impl<
 ///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
 ///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(payment_preimage), .. } => {
 ///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: None, .. } => {
 ///                 println!("Unknown payment hash: {}", payment_hash);
@@ -2819,7 +2831,7 @@ impl<
 ///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(payment_preimage), .. } => {
 ///                 assert_eq!(payment_hash, known_payment_hash);
 ///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: None, .. } => {
 ///                 println!("Unknown payment hash: {}", payment_hash);
@@ -10128,9 +10140,9 @@ impl<
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
-	/// This function will fail the payment if it has custom TLVs with even type numbers, as we
-	/// will assume they are unknown. If you intend to accept even custom TLVs, you should use
-	/// [`claim_funds_with_known_custom_tlvs`].
+	/// With default options, this function will fail the payment if it has custom TLVs with even
+	/// type numbers, as we will assume they are unknown. To accept even custom TLVs, set
+	/// [`ClaimFundsOptions::custom_tlvs_known`] to true after checking you've understood them all.
 	///
 	/// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
@@ -10138,25 +10150,7 @@ impl<
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	/// [`claim_funds_with_known_custom_tlvs`]: Self::claim_funds_with_known_custom_tlvs
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
-		self.claim_payment_internal(payment_preimage, false);
-	}
-
-	/// This is a variant of [`claim_funds`] that allows accepting a payment with custom TLVs with
-	/// even type numbers.
-	///
-	/// # Note
-	///
-	/// You MUST check you've understood all even TLVs before using this to
-	/// claim, otherwise you may unintentionally agree to some protocol you do not understand.
-	///
-	/// [`claim_funds`]: Self::claim_funds
-	pub fn claim_funds_with_known_custom_tlvs(&self, payment_preimage: PaymentPreimage) {
-		self.claim_payment_internal(payment_preimage, true);
-	}
-
-	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, options: ClaimFundsOptions) {
 		let payment_hash: PaymentHash = payment_preimage.into();
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -10167,7 +10161,7 @@ impl<
 				&self.node_signer,
 				&self.logger,
 				&self.inbound_payment_id_secret,
-				custom_tlvs_known,
+				options.custom_tlvs_known,
 			);
 
 			match res {
@@ -21914,7 +21908,7 @@ mod tests {
 		// claim_funds_along_route because the ordering of the messages causes the second half of the
 		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
 		// lightning messages manually.
-		nodes[1].node.claim_funds(payment_preimage);
+		nodes[1].node.claim_funds(payment_preimage, Default::default());
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
 		check_added_monitors(&nodes[1], 2);
 
@@ -23059,7 +23053,7 @@ pub mod bench {
 
 				$node_b.process_pending_htlc_forwards();
 				expect_payment_claimable!(ANodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
-				$node_b.claim_funds(payment_preimage);
+				$node_b.claim_funds(payment_preimage, Default::default());
 				expect_payment_claimed!(ANodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {

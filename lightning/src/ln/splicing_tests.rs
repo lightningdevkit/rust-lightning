@@ -1475,7 +1475,7 @@ fn test_queued_splice_contribution_fails_on_stale_reload() {
 	let encoded_node_0 = nodes[0].node.encode();
 
 	// Claiming the payment while disconnected persists the preimage to the monitor.
-	nodes[0].node.claim_funds(preimage);
+	nodes[0].node.claim_funds(preimage, Default::default());
 	expect_payment_claimed!(nodes[0], payment_hash, payment_amount);
 	check_added_monitors(&nodes[0], 1);
 
@@ -2557,9 +2557,9 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	if claim_htlcs {
 		// Claim both HTLCs, but don't do anything with the update message sent since we want to
 		// resolve the HTLCs onchain instead with a single transaction (thanks to anchors).
-		nodes[1].node.claim_funds(preimage1);
+		nodes[1].node.claim_funds(preimage1, Default::default());
 		expect_payment_claimed!(&nodes[1], payment_hash1, payment_amount);
-		nodes[1].node.claim_funds(preimage2);
+		nodes[1].node.claim_funds(preimage2, Default::default());
 		expect_payment_claimed!(&nodes[1], payment_hash2, payment_amount);
 		check_added_monitors(&nodes[1], 2);
 		let _ = get_htlc_update_msgs(&nodes[1], &node_id_0);
@@ -3698,7 +3698,7 @@ fn test_holding_cell_claim_freed_after_inferred_splice_locked() {
 	nodes[0].node.peer_disconnected(node_id_1);
 	nodes[1].node.peer_disconnected(node_id_0);
 
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 1_000_000);
 
@@ -14388,7 +14388,7 @@ fn test_splice_out_maximum_includes_pending_claimed_inbound_htlc() {
 	let (payment_preimage, payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1]], PENDING_CLAIMED_INBOUND_HTLC_MSAT);
 
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, PENDING_CLAIMED_INBOUND_HTLC_MSAT);
 
@@ -14513,7 +14513,7 @@ fn test_async_splice_receives_tx_signatures_while_unrelated_monitor_update_pendi
 
 	// Claiming the forwarded payment at C creates an HTLC fulfill that B must
 	// propagate backward over the same A-B channel that is being spliced.
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 

@@ -3986,7 +3986,11 @@ pub fn do_claim_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 			args.expected_paths[0].last().unwrap().node.get_our_node_id()
 		);
 	}
-	args.expected_paths[0].last().unwrap().node.claim_funds(args.payment_preimage);
+	args.expected_paths[0]
+		.last()
+		.unwrap()
+		.node
+		.claim_funds(args.payment_preimage, Default::default());
 	pass_claimed_payment_along_route(args)
 }
 
@@ -4348,7 +4352,7 @@ pub fn pass_claimed_payment_along_route_from_ev(
 	}
 
 	// Ensure that claim_funds is idempotent.
-	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage);
+	expected_paths[0].last().unwrap().node.claim_funds(our_payment_preimage, Default::default());
 	assert!(expected_paths[0].last().unwrap().node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&expected_paths[0].last().unwrap(), 0);
 

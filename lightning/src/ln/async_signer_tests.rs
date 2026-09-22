@@ -1022,7 +1022,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 	get_htlc_update_msgs(&nodes[0], &node_b_id);
 
 	// Send back update_fulfill_htlc + commitment_signed for the first payment.
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 	check_added_monitors(&nodes[1], 1);
 
@@ -1615,7 +1615,7 @@ fn test_no_disconnect_while_async_commitment_signed_expecting_remote_revoke_and_
 	// Route a payment and attempt to claim it.
 	let payment_amount = 1_000_000;
 	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], payment_amount);
-	nodes[1].node.claim_funds(preimage);
+	nodes[1].node.claim_funds(preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, payment_amount);
 
