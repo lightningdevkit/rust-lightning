@@ -10892,7 +10892,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					send_timestamp,
 				);
 			},
-			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+			HTLCSource::TrampolineForward { previous_hop_data, outbound_payment } => {
+				debug_assert!(outbound_payment.is_some());
 				// Only emit a single event for trampoline claims.
 				let mut event_prev_htlcs = Some(
 					previous_hop_data.iter().map(|hop| hop.htlc_locator(hop.amount_msat)).collect(),
@@ -10940,7 +10941,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						next_channel_outpoint,
 						next_channel_id,
 						current_previous_hop_data,
-						attribution_data.clone(),
+						// The upstream sender cannot verify an independently dispatched route.
+						None,
 						send_timestamp,
 					);
 				}
@@ -21691,7 +21693,7 @@ mod tests {
 	use crate::ln::outbound_payment::Retry;
 	use crate::ln::types::ChannelId;
 	use crate::prelude::*;
-	use crate::routing::router::{find_route, PaymentParameters, RouteParameters};
+	use crate::routing::router::{find_route, Path, PaymentParameters, RouteParameters};
 	use crate::sign::EntropySource;
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
@@ -21700,6 +21702,67 @@ mod tests {
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+
+	#[test]
+	fn delegated_trampoline_claim_starts_new_attribution() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		let (payment_preimage, payment_hash, _, _) =
+			route_payment(&nodes[0], &[&nodes[1]], 100_000);
+		let previous_hop = {
+			let claimable_payments = nodes[1].node.claimable_payments.lock().unwrap();
+			claimable_payments.claimable_payments.get(&payment_hash).unwrap().htlcs[0]
+				.mpp_part
+				.prev_hop
+				.clone()
+		};
+
+		let downstream_attribution =
+			onion_utils::process_fulfill_attribution_data(None, &[42; 32], 7);
+		let expected_attribution = onion_utils::process_fulfill_attribution_data(
+			None,
+			&previous_hop.incoming_packet_shared_secret,
+			0,
+		);
+		assert_ne!(downstream_attribution, expected_attribution);
+
+		// Delegated trampoline forwarding is not enabled yet, so construct its source manually
+		// and call the claim path directly to verify that downstream attribution is replaced.
+		let session_priv = SecretKey::from_slice(&[43; 32]).unwrap();
+		nodes[1].node.claim_funds_internal(
+			super::HTLCSource::TrampolineForward {
+				previous_hop_data: vec![previous_hop.clone()],
+				outbound_payment: Some(super::TrampolineDispatch {
+					payment_id: PaymentId([44; 32]),
+					path: Path { hops: Vec::new(), blinded_tail: None },
+					session_priv,
+				}),
+			},
+			payment_preimage,
+			100_000,
+			None,
+			false,
+			nodes[0].node.get_our_node_id(),
+			previous_hop.outpoint,
+			previous_hop.channel_id,
+			None,
+			Some(downstream_attribution),
+			None,
+		);
+		check_added_monitors(&nodes[1], 1);
+
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+		assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+		assert_eq!(updates.update_fulfill_htlcs[0].attribution_data, Some(expected_attribution));
+		assert!(matches!(
+			nodes[1].node.get_and_clear_pending_events().as_slice(),
+			[Event::PaymentForwarded { .. }]
+		));
+	}
 
 	#[test]
 	#[rustfmt::skip]
