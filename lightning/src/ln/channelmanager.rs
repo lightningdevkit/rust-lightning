@@ -44,8 +44,8 @@ use crate::chain::chaininterface::{
 };
 use crate::chain::chainmonitor::MonitorEventSource;
 use crate::chain::channelmonitor::{
-	ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep, MonitorEvent,
-	WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
+	htlc_monitor_event_id, ChannelMonitor, ChannelMonitorUpdate, ChannelMonitorUpdateStep,
+	MonitorEvent, WithChannelMonitor, ANTI_REORG_DELAY, CLTV_CLAIM_BUFFER, HTLC_FAIL_BACK_BUFFER,
 	LATENCY_GRACE_PERIOD_BLOCKS, MAX_BLOCKS_FOR_CONF,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
@@ -1758,6 +1758,9 @@ pub(crate) struct PaymentCompleteUpdate {
 	channel_funding_outpoint: OutPoint,
 	channel_id: ChannelId,
 	htlc_id: SentHTLCId,
+	/// The [`MonitorEvent`] which reported the HTLC resolution behind the event this action is
+	/// attached to, if any. It is acknowledged once the event has been handled.
+	monitor_event_source: Option<MonitorEventSource>,
 }
 
 impl_ser_tlv_based!(PaymentCompleteUpdate, {
@@ -1765,6 +1768,7 @@ impl_ser_tlv_based!(PaymentCompleteUpdate, {
 	(3, counterparty_node_id, required),
 	(5, channel_id, required),
 	(7, htlc_id, required),
+	(9, monitor_event_source, option),
 });
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1774,6 +1778,9 @@ pub(crate) enum EventCompletionAction {
 		// Was required until LDK 0.2. Always filled in as `Some`.
 		channel_funding_outpoint: Option<OutPoint>,
 		channel_id: ChannelId,
+		/// The [`MonitorEvent`] which reported the HTLC resolution behind the event this action
+		/// is attached to, if any. It is acknowledged once the event has been handled.
+		monitor_event_source: Option<MonitorEventSource>,
 	},
 
 	/// When a payment's resolution is communicated to the downstream logic via
@@ -1792,28 +1799,44 @@ impl_ser_tlv_based_enum!(EventCompletionAction,
 			}
 			ChannelId::v1_from_funding_outpoint(channel_funding_outpoint.unwrap())
 		})),
+		(5, monitor_event_source, option),
 	}
 	{1, ReleasePaymentCompleteChannelMonitorUpdate} => (),
 );
 
 impl EventCompletionAction {
+	/// The [`MonitorEvent`] to acknowledge once the event this action is attached to has been
+	/// handled, if any.
+	fn monitor_event_source(&self) -> Option<MonitorEventSource> {
+		match self {
+			Self::ReleaseRAAChannelMonitorUpdate { monitor_event_source, .. } => {
+				*monitor_event_source
+			},
+			Self::ReleasePaymentCompleteChannelMonitorUpdate(update) => update.monitor_event_source,
+		}
+	}
+
 	/// The action to attach to the [`Event`] resulting from a claim of an outbound HTLC.
 	fn for_outbound_claim(
 		htlc_id: SentHTLCId, channel_id: ChannelId, channel_funding_outpoint: OutPoint,
-		counterparty_node_id: PublicKey, channel_is_closed: bool,
+		counterparty_node_id: PublicKey, channel_is_closed: bool, from_onchain: bool,
 	) -> Self {
+		let event_id = htlc_monitor_event_id(htlc_id, true, from_onchain);
+		let monitor_event_source = Some(MonitorEventSource { event_id, channel_id });
 		if channel_is_closed {
 			Self::ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate {
 				counterparty_node_id,
 				channel_funding_outpoint,
 				channel_id,
 				htlc_id,
+				monitor_event_source,
 			})
 		} else {
 			Self::ReleaseRAAChannelMonitorUpdate {
 				counterparty_node_id,
 				channel_funding_outpoint: Some(channel_funding_outpoint),
 				channel_id,
+				monitor_event_source,
 			}
 		}
 	}
@@ -10892,6 +10915,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					next_channel_outpoint,
 					next_channel_counterparty_node_id,
 					channel_is_closed,
+					from_onchain,
 				));
 				let logger = WithContext::for_payment(
 					&self.logger,
@@ -11222,6 +11246,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_funding_outpoint: Some(outpoint),
 								counterparty_node_id,
 								channel_id,
+								monitor_event_source: None,
 							})
 						} else {
 							None
@@ -13743,7 +13768,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if let Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 				channel_funding_outpoint: _,
 				channel_id: ev_channel_id,
-				counterparty_node_id: ev_counterparty_node_id
+ 				counterparty_node_id: ev_counterparty_node_id,
+				monitor_event_source: _,
 			}) = action {
 				*ev_channel_id == channel_id && *ev_counterparty_node_id == counterparty_node_id
 			} else {
@@ -14592,6 +14618,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								channel_funding_outpoint: funding_outpoint,
 								channel_id,
 								htlc_id: SentHTLCId::from_source(&htlc_update.source),
+								monitor_event_source: None,
 							});
 							self.fail_htlc_backwards_internal(
 								&htlc_update.source,
@@ -16401,11 +16428,15 @@ impl<
 			LockHeldState::NotHeldByThread
 		);
 		for action in actions.into_iter() {
+			if let Some(source) = action.monitor_event_source() {
+				self.chain_monitor.ack_monitor_event(source);
+			}
 			match action {
 				EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 					channel_funding_outpoint: _,
 					channel_id,
 					counterparty_node_id,
+					monitor_event_source: _,
 				} => {
 					let startup_complete =
 						self.background_events_processed_since_startup.load(Ordering::Acquire);
@@ -16418,6 +16449,7 @@ impl<
 						channel_funding_outpoint,
 						channel_id,
 						htlc_id,
+						monitor_event_source: _,
 					},
 				) => {
 					let per_peer_state = self.per_peer_state.read().unwrap();
@@ -20873,11 +20905,22 @@ impl<
 							} => {
 								if let Some(preimage) = preimage_opt {
 									let pending_events = Mutex::new(pending_events_read);
+									// The preimage may have been learned either on- or off-chain, so use
+									// the ID of whichever claim event is pending, if any. Otherwise, as
+									// the channel is closed, any later claim event will be from on-chain.
+									let event_id =
+										monitor.pending_claim_event_id(htlc_id).unwrap_or_else(
+											|| htlc_monitor_event_id(htlc_id, true, true),
+										);
 									let update = PaymentCompleteUpdate {
 										counterparty_node_id: monitor.get_counterparty_node_id(),
 										channel_funding_outpoint: monitor.get_funding_txo(),
 										channel_id: monitor.channel_id(),
 										htlc_id,
+										monitor_event_source: Some(MonitorEventSource {
+											event_id,
+											channel_id: monitor.channel_id(),
+										}),
 									};
 									let mut compl_action = Some(
 									EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
@@ -20959,6 +21002,7 @@ impl<
 							channel_funding_outpoint: monitor.get_funding_txo(),
 							channel_id: monitor.channel_id(),
 							htlc_id: SentHTLCId::from_source(&htlc_source),
+							monitor_event_source: None,
 						});
 
 						failed_htlcs.push((

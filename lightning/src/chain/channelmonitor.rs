@@ -193,12 +193,12 @@ pub(super) fn monitor_event_id(event: &MonitorEvent) -> u128 {
 	let mut engine = Sha256::engine();
 	match event {
 		MonitorEvent::HTLCEvent(upd) => {
-			0u8.write(&mut engine).unwrap();
-			SentHTLCId::from_source(&upd.source).write(&mut engine).unwrap();
-			// A claim and a failure of the same HTLC, or an on-chain and an off-chain resolution of
-			// it, must not share an ID, so that acking one never removes the other.
-			engine.input(&[upd.payment_preimage.is_some() as u8]);
-			engine.input(&[upd.from_onchain as u8]);
+			let htlc_id = SentHTLCId::from_source(&upd.source);
+			return htlc_monitor_event_id(
+				htlc_id,
+				upd.payment_preimage.is_some(),
+				upd.from_onchain,
+			);
 		},
 		MonitorEvent::HolderForceClosed(outpoint)
 		| MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } => {
@@ -213,6 +213,25 @@ pub(super) fn monitor_event_id(event: &MonitorEvent) -> u128 {
 			engine.input(&monitor_update_id.to_be_bytes());
 		},
 	}
+	monitor_event_id_from_engine(engine)
+}
+
+/// Derives the [`monitor_event_id`] of the [`MonitorEvent::HTLCEvent`] that would be generated for
+/// the given HTLC.
+pub(crate) fn htlc_monitor_event_id(
+	htlc_id: SentHTLCId, is_claim: bool, from_onchain: bool,
+) -> u128 {
+	let mut engine = Sha256::engine();
+	0u8.write(&mut engine).unwrap();
+	htlc_id.write(&mut engine).unwrap();
+	// A claim and a failure of the same HTLC, or an on-chain and an off-chain resolution of it, must
+	// not share an ID, so that acking one never removes the other.
+	engine.input(&[is_claim as u8]);
+	engine.input(&[from_onchain as u8]);
+	monitor_event_id_from_engine(engine)
+}
+
+fn monitor_event_id_from_engine(engine: bitcoin::hashes::sha256::HashEngine) -> u128 {
 	let mut id_bytes = [0u8; 16];
 	id_bytes.copy_from_slice(&Sha256::from_engine(engine).to_byte_array()[..16]);
 	u128::from_be_bytes(id_bytes)
@@ -3329,6 +3348,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			walk_counterparty_commitment(txid);
 		}
 		res
+	}
+
+	/// Returns the ID of an unacked [`MonitorEvent`] that resolves the given outbound HTLC via claim,
+	/// if any.
+	pub(crate) fn pending_claim_event_id(&self, htlc_id: SentHTLCId) -> Option<u128> {
+		let us = self.inner.lock().unwrap();
+		us.pending_monitor_events.iter().chain(us.provided_monitor_events.iter()).find_map(
+			|(id, ev)| match ev {
+				MonitorEvent::HTLCEvent(upd)
+					if upd.payment_preimage.is_some()
+						&& htlc_id == SentHTLCId::from_source(&upd.source) =>
+				{
+					Some(*id)
+				},
+				_ => None,
+			},
+		)
 	}
 
 	/// Gets the set of outbound HTLCs which hit the chain and ultimately were claimed by us via
