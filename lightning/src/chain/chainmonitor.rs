@@ -560,7 +560,7 @@ where
 		let monitor = &monitor_state.monitor;
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 
-		let mut txn_outputs = process(monitor, txdata);
+		let txn_outputs = process(monitor, txdata);
 
 		let get_partition_key = |channel_id: &ChannelId| {
 			let channel_id_bytes = channel_id.0;
@@ -607,10 +607,18 @@ where
 			}
 		}
 
+		self.register_monitor_outputs(monitor, header.block_hash(), txn_outputs);
+		Ok(())
+	}
+
+	fn register_monitor_outputs(
+		&self, monitor: &ChannelMonitor<ChannelSigner>, block_hash: BlockHash,
+		mut txn_outputs: Vec<TransactionOutputs>,
+	) {
 		// Register any new outputs with the chain source for filtering, storing any dependent
 		// transactions from within the block that previously had not been included in txdata.
 		if let Some(ref chain_source) = self.chain_source {
-			let block_hash = header.block_hash();
+			let logger = WithChannelMonitor::from(&self.logger, monitor, None);
 			for (txid, mut outputs) in txn_outputs.drain(..) {
 				for (idx, output) in outputs.drain(..) {
 					// Register any new outputs with the chain source for filtering
@@ -628,7 +636,6 @@ where
 				}
 			}
 		}
-		Ok(())
 	}
 
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
