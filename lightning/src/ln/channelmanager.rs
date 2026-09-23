@@ -1796,6 +1796,29 @@ impl_ser_tlv_based_enum!(EventCompletionAction,
 	{1, ReleasePaymentCompleteChannelMonitorUpdate} => (),
 );
 
+impl EventCompletionAction {
+	/// The action to attach to the [`Event`] resulting from a claim of an outbound HTLC.
+	fn for_outbound_claim(
+		htlc_id: SentHTLCId, channel_id: ChannelId, channel_funding_outpoint: OutPoint,
+		counterparty_node_id: PublicKey, channel_is_closed: bool,
+	) -> Self {
+		if channel_is_closed {
+			Self::ReleasePaymentCompleteChannelMonitorUpdate(PaymentCompleteUpdate {
+				counterparty_node_id,
+				channel_funding_outpoint,
+				channel_id,
+				htlc_id,
+			})
+		} else {
+			Self::ReleaseRAAChannelMonitorUpdate {
+				counterparty_node_id,
+				channel_funding_outpoint: Some(channel_funding_outpoint),
+				channel_id,
+			}
+		}
+	}
+}
+
 /// The source argument which is passed to [`ChannelManager::claim_mpp_part`].
 ///
 /// This is identical to [`MPPClaimHTLCSource`] except that [`Self::counterparty_node_id`] is an
@@ -10860,21 +10883,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
 				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
 
-				let mut ev_completion_action = if from_onchain {
-					let release = PaymentCompleteUpdate {
-						counterparty_node_id: next_channel_counterparty_node_id,
-						channel_funding_outpoint: next_channel_outpoint,
-						channel_id: next_channel_id,
-						htlc_id,
-					};
-					Some(EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(release))
-				} else {
-					Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-						channel_funding_outpoint: Some(next_channel_outpoint),
-						channel_id: next_channel_id,
-						counterparty_node_id: path.hops[0].pubkey,
-					})
-				};
+				let mut ev_completion_action = Some(EventCompletionAction::for_outbound_claim(
+					htlc_id,
+					next_channel_id,
+					next_channel_outpoint,
+					next_channel_counterparty_node_id,
+					from_onchain,
+				));
 				let logger = WithContext::for_payment(
 					&self.logger,
 					path.hops.first().map(|hop| hop.pubkey),
