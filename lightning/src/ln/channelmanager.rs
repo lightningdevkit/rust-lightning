@@ -6842,6 +6842,16 @@ where
 		Ok(())
 	}
 
+	/// Returns the amount received for an intercepted HTLC while it is pending.
+	#[doc(hidden)]
+	pub fn intercepted_htlc_inbound_amount_msat(&self, intercept_id: InterceptId) -> Option<u64> {
+		self.pending_intercepted_htlcs
+			.lock()
+			.unwrap()
+			.get(&intercept_id)
+			.and_then(|payment| payment.forward_info.incoming_amt_msat)
+	}
+
 	/// Fails the intercepted HTLC indicated by intercept_id. Should only be called in response to
 	/// an [`HTLCIntercepted`] event. See [`ChannelManager::forward_intercepted_htlc`].
 	///

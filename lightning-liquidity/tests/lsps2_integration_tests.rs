@@ -37,7 +37,7 @@ use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
 use lightning_liquidity::{LiquidityClientConfig, LiquidityManagerSync, LiquidityServiceConfig};
 
 use lightning::chain::{BestBlock, Filter};
-use lightning::ln::channelmanager::{ChainParameters, InterceptId, MIN_FINAL_CLTV_EXPIRY_DELTA};
+use lightning::ln::channelmanager::{ChainParameters, MIN_FINAL_CLTV_EXPIRY_DELTA};
 use lightning::ln::functional_test_utils::{
 	create_chanmon_cfgs, create_node_cfgs, create_node_chanmgrs,
 };
@@ -333,87 +333,51 @@ fn invoice_generation_flow() {
 
 #[test]
 fn channel_open_failed() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
-	let LSPSNodes { service_node, client_node } = lsps_nodes;
+	do_channel_open_failed(false);
+}
 
-	let service_node_id = service_node.inner.node.get_our_node_id();
-	let client_node_id = client_node.inner.node.get_our_node_id();
+#[test]
+fn stale_intercept_cannot_open_channel() {
+	do_channel_open_failed(true);
+}
 
+fn do_channel_open_failed(stale_intercept: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_config = test_default_channel_config();
+	service_config.accept_intercept_htlcs = true;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[Some(service_config), None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+	let service_node_id = service_node.node.get_our_node_id();
+	let client_node_id = client_node.node.get_our_node_id();
+	let payer_node_id = payer_node.node.get_our_node_id();
 	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
-	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
-
-	let get_info_request_id = client_handler.request_opening_params(service_node_id, None);
-	let get_info_request = get_lsps_message!(client_node, service_node_id);
-	service_node.liquidity_manager.handle_custom_message(get_info_request, client_node_id).unwrap();
-
-	let _get_info_event = service_node.liquidity_manager.next_event().unwrap();
-
-	let raw_opening_params = LSPS2RawOpeningFeeParams {
-		min_fee_msat: 100,
-		proportional: 21,
-		valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
-		min_lifetime: 144,
-		max_client_to_self_delay: 128,
-		min_payment_size_msat: 1,
-		max_payment_size_msat: 100_000_000,
-	};
-	service_handler
-		.opening_fee_params_generated(
-			&client_node_id,
-			get_info_request_id.clone(),
-			vec![raw_opening_params],
-		)
-		.unwrap();
-
-	let get_info_response = get_lsps_message!(service_node, client_node_id);
-	client_node
-		.liquidity_manager
-		.handle_custom_message(get_info_response, service_node_id)
-		.unwrap();
-
-	let opening_fee_params = match client_node.liquidity_manager.next_event().unwrap() {
-		LiquidityEvent::LSPS2Client(LSPS2ClientEvent::OpeningParametersReady {
-			opening_fee_params_menu,
-			..
-		}) => opening_fee_params_menu.first().unwrap().clone(),
-		_ => panic!("Unexpected event"),
-	};
-
-	let payment_size_msat = Some(1_000_000);
-	let buy_request_id = client_handler
-		.select_opening_params(service_node_id, payment_size_msat, opening_fee_params.clone())
-		.unwrap();
-	let buy_request = get_lsps_message!(client_node, service_node_id);
-	service_node.liquidity_manager.handle_custom_message(buy_request, client_node_id).unwrap();
-
-	let _buy_event = service_node.liquidity_manager.next_event().unwrap();
-	let user_channel_id = 42;
-	let cltv_expiry_delta = 144;
+	create_chan_between_nodes_with_value(payer_node, &service_node.inner, 2_000_000, 100_000);
 	let intercept_scid = service_node.node.get_intercept_scid();
-	let client_trusts_lsp = true;
+	let user_channel_id = 42;
+	execute_lsps2_dance(
+		&lsps_nodes,
+		intercept_scid,
+		user_channel_id,
+		144,
+		promise_secret,
+		Some(1_000_000),
+		1_000,
+	);
+	let invoice = create_jit_invoice(
+		client_node,
+		service_node_id,
+		intercept_scid,
+		144,
+		Some(1_000_000),
+		"channel-open-failed",
+		3600,
+	)
+	.unwrap();
 
-	service_handler
-		.invoice_parameters_generated(
-			&client_node_id,
-			buy_request_id.clone(),
-			intercept_scid,
-			cltv_expiry_delta,
-			client_trusts_lsp,
-			user_channel_id,
-		)
-		.unwrap();
-
-	let buy_response = get_lsps_message!(service_node, client_node_id);
-	client_node.liquidity_manager.handle_custom_message(buy_response, service_node_id).unwrap();
-	let _invoice_params_event = client_node.liquidity_manager.next_event().unwrap();
-
-	// Test calling channel_open_failed in invalid state (before HTLC interception)
 	let result = service_handler.channel_open_failed(&client_node_id, user_channel_id);
-	assert!(result.is_err());
 	match result.unwrap_err() {
 		APIError::APIMisuseError { err } => {
 			assert!(err.contains("Channel is not in the PendingChannelOpen state."));
@@ -421,49 +385,88 @@ fn channel_open_failed() {
 		other => panic!("Unexpected error type: {:?}", other),
 	}
 
-	let htlc_amount_msat = 1_000_000;
-	let intercept_id = InterceptId([0; 32]);
-	let payment_hash = PaymentHash([1; 32]);
-
-	// This should trigger an OpenChannel event
-	service_handler
-		.htlc_intercepted(intercept_scid, intercept_id, htlc_amount_msat, payment_hash)
-		.unwrap();
-
-	let _ = match service_node.liquidity_manager.next_event().unwrap() {
+	let send_payment = |id| {
+		payer_node
+			.node
+			.pay_for_bolt11_invoice(
+				&invoice,
+				PaymentId([id; 32]),
+				None,
+				Default::default(),
+				Retry::Attempts(0),
+			)
+			.unwrap();
+		check_added_monitors!(payer_node, 1);
+		let events = payer_node.node.get_and_clear_pending_msg_events();
+		let ev = SendEvent::from_event(events[0].clone());
+		service_node.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+		do_commitment_signed_dance(
+			&service_node.inner,
+			payer_node,
+			&ev.commitment_msg,
+			false,
+			true,
+		);
+		service_node.node.process_pending_htlc_forwards();
+		let events = service_node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			Event::HTLCIntercepted {
+				intercept_id,
+				requested_next_hop_scid,
+				payment_hash,
+				expected_outbound_amount_msat,
+				..
+			} => {
+				assert_eq!(*requested_next_hop_scid, intercept_scid);
+				(*intercept_id, *payment_hash, *expected_outbound_amount_msat)
+			},
+			other => panic!("Expected HTLCIntercepted, got {:?}", other),
+		}
+	};
+	let (intercept_id, payment_hash, amount_msat) = send_payment(0);
+	let second_payment = if stale_intercept { None } else { Some(send_payment(1)) };
+	if stale_intercept {
+		service_node.node.fail_intercepted_htlc(intercept_id).unwrap();
+		assert!(matches!(
+			service_node.node.get_and_clear_pending_events().as_slice(),
+			[Event::HTLCHandlingFailed { .. }]
+		));
+		assert_eq!(service_node.node.intercepted_htlc_inbound_amount_msat(intercept_id), None);
+	}
+	let result =
+		service_handler.htlc_intercepted(intercept_scid, intercept_id, amount_msat, payment_hash);
+	if stale_intercept {
+		assert!(
+			result.is_err(),
+			"An intercept with no recorded inbound amount must not open a channel"
+		);
+		assert!(service_node.liquidity_manager.next_event().is_none());
+		return;
+	}
+	result.unwrap();
+	let assert_open = || match service_node.liquidity_manager.next_event().unwrap() {
 		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
-			user_channel_id: channel_id,
+			user_channel_id: id,
 			intercept_scid: scid,
 			..
 		}) => {
-			assert_eq!(channel_id, user_channel_id);
+			assert_eq!(id, user_channel_id);
 			assert_eq!(scid, intercept_scid);
-			true
 		},
-		_ => panic!("Expected OpenChannel event"),
+		other => panic!("Expected OpenChannel event, got {:?}", other),
 	};
-
+	assert_open();
 	service_handler.channel_open_failed(&client_node_id, user_channel_id).unwrap();
-
-	// Verify we can restart the flow with another HTLC
-	let new_intercept_id = InterceptId([1; 32]);
+	assert!(matches!(
+		service_node.node.get_and_clear_pending_events().as_slice(),
+		[Event::HTLCHandlingFailed { .. }]
+	));
+	let (intercept_id, payment_hash, amount_msat) = second_payment.unwrap();
 	service_handler
-		.htlc_intercepted(intercept_scid, new_intercept_id, htlc_amount_msat, payment_hash)
+		.htlc_intercepted(intercept_scid, intercept_id, amount_msat, payment_hash)
 		.unwrap();
-
-	// Should get another OpenChannel event which confirms the reset worked
-	let _ = match service_node.liquidity_manager.next_event().unwrap() {
-		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
-			user_channel_id: channel_id,
-			intercept_scid: scid,
-			..
-		}) => {
-			assert_eq!(channel_id, user_channel_id);
-			assert_eq!(scid, intercept_scid);
-			true
-		},
-		_ => panic!("Expected OpenChannel event after reset"),
-	};
+	assert_open();
 }
 
 #[test]
@@ -1184,8 +1187,8 @@ fn opening_fee_params_menu_is_sorted_by_spec() {
 
 #[test]
 fn lsps2_service_handler_persistence_across_restarts() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -1320,8 +1323,11 @@ fn lsps2_service_handler_persistence_across_restarts() {
 	// Second scope: Recovery from persisted store and verification
 	{
 		// Create fresh node configurations for restart to avoid connection conflicts
-		let node_chanmgrs_restart = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-		let nodes_restart = create_network(2, &node_cfgs, &node_chanmgrs_restart);
+		let mut node_config = test_default_channel_config();
+		node_config.accept_intercept_htlcs = true;
+		let node_chanmgrs_restart =
+			create_node_chanmgrs(3, &node_cfgs, &[Some(node_config), None, None]);
+		let nodes_restart = create_network(3, &node_cfgs, &node_chanmgrs_restart);
 
 		// Create a new LiquidityManager with the same configuration and KV store to simulate restart
 		let chain_params = ChainParameters {
@@ -1347,11 +1353,59 @@ fn lsps2_service_handler_persistence_across_restarts() {
 
 		let restarted_service_handler = restarted_service_lm.lsps2_service_handler().unwrap();
 
-		// Verify the state was properly restored by checking if the channel exists
-		// We can do this by trying to call htlc_intercepted which should succeed if state was restored
-		let htlc_amount_msat = 1_000_000;
-		let intercept_id = InterceptId([0; 32]);
-		let payment_hash = PaymentHash([1; 32]);
+		let (lsps_nodes, _) = setup_test_lsps2_nodes_with_payer(nodes_restart);
+		let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+		let service_node_id = service_node.node.get_our_node_id();
+		let payer_node_id = payer_node.node.get_our_node_id();
+		assert_eq!(client_node.node.get_our_node_id(), client_node_id);
+		create_chan_between_nodes_with_value(payer_node, &service_node.inner, 2_000_000, 100_000);
+		let invoice = create_jit_invoice(
+			client_node,
+			service_node_id,
+			intercept_scid,
+			cltv_expiry_delta,
+			Some(1_000_000),
+			"restored-jit-channel",
+			3600,
+		)
+		.unwrap();
+		payer_node
+			.node
+			.pay_for_bolt11_invoice(
+				&invoice,
+				PaymentId([42; 32]),
+				None,
+				Default::default(),
+				Retry::Attempts(0),
+			)
+			.unwrap();
+		check_added_monitors!(payer_node, 1);
+		let events = payer_node.node.get_and_clear_pending_msg_events();
+		let ev = SendEvent::from_event(events[0].clone());
+		service_node.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+		do_commitment_signed_dance(
+			&service_node.inner,
+			payer_node,
+			&ev.commitment_msg,
+			false,
+			true,
+		);
+		service_node.node.process_pending_htlc_forwards();
+		let events = service_node.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		let (intercept_id, payment_hash, htlc_amount_msat) = match &events[0] {
+			Event::HTLCIntercepted {
+				intercept_id,
+				requested_next_hop_scid,
+				payment_hash,
+				expected_outbound_amount_msat,
+				..
+			} => {
+				assert_eq!(*requested_next_hop_scid, intercept_scid);
+				(*intercept_id, *payment_hash, *expected_outbound_amount_msat)
+			},
+			other => panic!("Expected HTLCIntercepted, got {:?}", other),
+		};
 
 		let result = restarted_service_handler.htlc_intercepted(
 			intercept_scid,

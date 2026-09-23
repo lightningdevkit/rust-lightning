@@ -10,7 +10,7 @@ use common::{
 use lightning::chain::{BestBlock, Filter};
 use lightning::check_closed_event;
 use lightning::events::ClosureReason;
-use lightning::ln::channelmanager::{ChainParameters, InterceptId};
+use lightning::ln::channelmanager::ChainParameters;
 use lightning::ln::functional_test_utils::{
 	close_channel, create_chan_between_nodes, create_chanmon_cfgs, create_network,
 	create_node_cfgs, create_node_chanmgrs, Node,
@@ -41,8 +41,6 @@ use lightning_liquidity::lsps5::validator::{LSPS5Validator, MAX_RECENT_SIGNATURE
 use lightning_liquidity::utils::time::{DefaultTimeProvider, TimeProvider};
 use lightning_liquidity::LiquidityManagerSync;
 use lightning_liquidity::{LiquidityClientConfig, LiquidityServiceConfig};
-
-use lightning_types::payment::PaymentHash;
 
 use bitcoin::Network;
 
@@ -226,12 +224,6 @@ fn establish_lsps2_prior_interaction(lsps_nodes: &LSPSNodes) {
 	let buy_resp = get_lsps_message!(service_node, client_node_id);
 	client_node.liquidity_manager.handle_custom_message(buy_resp, service_node_id).unwrap();
 	let _ = client_node.liquidity_manager.next_event().unwrap();
-
-	let intercept_id = InterceptId([0; 32]);
-	let payment_hash = PaymentHash([1; 32]);
-	lsps2_service.htlc_intercepted(intercept_scid, intercept_id, 1_000_000, payment_hash).unwrap();
-
-	let _ = service_node.liquidity_manager.next_event().unwrap();
 }
 
 pub(crate) fn lsps5_lsps2_test_setup<'a, 'b, 'c>(
