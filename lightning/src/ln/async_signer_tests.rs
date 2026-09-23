@@ -1297,14 +1297,14 @@ fn do_test_async_holder_signatures(keyed_anchors: bool, p2a_anchor: bool, remote
 	nodes[0].disable_channel_signer_op(&node_b_id, &chan_id, sign_htlc_op);
 	mine_transaction(&nodes[0], &commitment_tx);
 
-	check_closed_broadcast(&nodes[0], 1, true);
-	check_added_monitors(&nodes[0], 1);
 	let closure_reason = if remote_commitment {
 		ClosureReason::CommitmentTxConfirmed
 	} else {
 		ClosureReason::HTLCsTimedOut { payment_hash: Some(payment_hash) }
 	};
 	check_closed_event(&nodes[0], 1, closure_reason, &[node_b_id], 100_000);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
 
 	// If the counterparty broadcast its latest commitment, we need to mine enough blocks for the
 	// HTLC timeout.

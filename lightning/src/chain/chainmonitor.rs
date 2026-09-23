@@ -2035,10 +2035,10 @@ mod tests {
 		assert_eq!(close_tx.len(), 1);
 
 		mine_transaction(&nodes[2], &close_tx[0]);
-		check_closed_broadcast(&nodes[2], 1, true);
-		check_added_monitors(&nodes[2], 1);
 		let closure_reason = ClosureReason::CommitmentTxConfirmed;
 		check_closed_event(&nodes[2], 1, closure_reason, &[node_a_id], 1000000);
+		check_closed_broadcast(&nodes[2], 1, true);
+		check_added_monitors(&nodes[2], 1);
 
 		chanmon_cfgs[0].persister.chain_sync_monitor_persistences.lock().unwrap().clear();
 		chanmon_cfgs[2].persister.chain_sync_monitor_persistences.lock().unwrap().clear();

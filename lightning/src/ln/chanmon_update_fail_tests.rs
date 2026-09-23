@@ -4510,10 +4510,10 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
-	check_closed_broadcast(&nodes[1], 1, true);
-	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
 
 	// Now that B has a pending forwarded payment across it with the inbound edge on-chain, claim
 	// the payment on C and give B the preimage for it.
@@ -4587,10 +4587,10 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	assert_eq!(as_commit_tx.len(), 1);
 
 	mine_transaction(&nodes[1], &as_commit_tx[0]);
-	check_closed_broadcast(&nodes[1], 1, true);
-	check_added_monitors(&nodes[1], 1);
 	let b_reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, b_reason, &[node_a_id], 1000000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
 
 	// Now that B has a pending payment with the inbound HTLC on a closed channel, claim the
 	// payment on disk, but don't let the `ChannelMonitorUpdate` complete. This should prevent the
