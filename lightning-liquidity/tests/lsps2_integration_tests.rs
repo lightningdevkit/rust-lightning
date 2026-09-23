@@ -414,7 +414,13 @@ fn channel_open_failed() {
 
 	// This should trigger an OpenChannel event
 	service_handler
-		.htlc_intercepted(intercept_scid, intercept_id, htlc_amount_msat, payment_hash)
+		.htlc_intercepted(
+			intercept_scid,
+			intercept_id,
+			htlc_amount_msat,
+			payment_hash,
+			htlc_amount_msat,
+		)
 		.unwrap();
 
 	let _ = match service_node.liquidity_manager.next_event().unwrap() {
@@ -435,7 +441,13 @@ fn channel_open_failed() {
 	// Verify we can restart the flow with another HTLC
 	let new_intercept_id = InterceptId([1; 32]);
 	service_handler
-		.htlc_intercepted(intercept_scid, new_intercept_id, htlc_amount_msat, payment_hash)
+		.htlc_intercepted(
+			intercept_scid,
+			new_intercept_id,
+			htlc_amount_msat,
+			payment_hash,
+			htlc_amount_msat,
+		)
 		.unwrap();
 
 	// Should get another OpenChannel event which confirms the reset worked
@@ -531,6 +543,7 @@ fn channel_open_failed_releases_intercepted_htlcs() {
 			requested_next_hop_scid,
 			payment_hash,
 			expected_outbound_amount_msat,
+			inbound_amount_msat,
 			..
 		} => {
 			assert_eq!(*requested_next_hop_scid, intercept_scid);
@@ -540,6 +553,7 @@ fn channel_open_failed_releases_intercepted_htlcs() {
 					*intercept_id,
 					*expected_outbound_amount_msat,
 					*payment_hash,
+					*inbound_amount_msat,
 				)
 				.unwrap();
 			*intercept_id
@@ -570,6 +584,142 @@ fn channel_open_failed_releases_intercepted_htlcs() {
 		} => assert_eq!(*requested_forward_scid, intercept_scid),
 		other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
 	}
+}
+
+/// An intercepted HTLC whose onion declares more than it delivered is failed back before
+/// the JIT channel's state machine sees it, and the client's intercept SCID survives the attempt.
+#[test]
+fn htlc_declaring_more_than_delivered_is_failed_back() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42u128;
+	let cltv_expiry_delta: u32 = 144;
+	let payment_size_msat = Some(1_000_000);
+	let fee_base_msat: u64 = 1_000;
+
+	execute_lsps2_dance(
+		&lsps_nodes,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+	);
+
+	let invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"declared-more-than-delivered",
+		3600,
+	)
+	.unwrap();
+
+	payer_node
+		.node
+		.pay_for_bolt11_invoice(
+			&invoice,
+			PaymentId(invoice.payment_hash().0),
+			None,
+			OptionalBolt11PaymentParams::default(),
+		)
+		.unwrap();
+
+	check_added_monitors(&payer_node, 1);
+	let events = payer_node.node.get_and_clear_pending_msg_events();
+	let ev = SendEvent::from_event(events[0].clone());
+	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+	do_commitment_signed_dance(&service_node.inner, &payer_node, &ev.commitment_msg, false, true);
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (intercept_id, payment_hash, expected_outbound_amount_msat) = match &events[0] {
+		Event::HTLCIntercepted {
+			intercept_id,
+			requested_next_hop_scid,
+			payment_hash,
+			expected_outbound_amount_msat,
+			..
+		} => {
+			assert_eq!(*requested_next_hop_scid, intercept_scid);
+			(*intercept_id, *payment_hash, *expected_outbound_amount_msat)
+		},
+		other => panic!("Expected HTLCIntercepted, got {:?}", other),
+	};
+
+	// Report the HTLC as having delivered one msat less than its onion declares.
+	let result = service_handler.htlc_intercepted(
+		intercept_scid,
+		intercept_id,
+		expected_outbound_amount_msat,
+		payment_hash,
+		expected_outbound_amount_msat - 1,
+	);
+	match result {
+		Err(APIError::APIMisuseError { err }) => {
+			assert!(err.contains("declares"), "unexpected error: {}", err)
+		},
+		other => panic!("Expected APIMisuseError, got {:?}", other),
+	}
+
+	// The HTLC was failed back to the payer ...
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::HTLCHandlingFailed {
+			failure_type: HTLCHandlingFailureType::InvalidForward { requested_forward_scid, .. },
+			..
+		} => assert_eq!(*requested_forward_scid, intercept_scid),
+		other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+	}
+	// ... and is no longer pending with the channel manager ...
+	assert!(service_node.inner.node.fail_intercepted_htlc(intercept_id).is_err());
+	// ... and no channel open was requested.
+	assert!(service_node.liquidity_manager.next_event().is_none());
+
+	// The client's intercept SCID is still live: an honest HTLC on it opens the channel.
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			InterceptId([7; 32]),
+			expected_outbound_amount_msat,
+			payment_hash,
+			expected_outbound_amount_msat,
+		)
+		.unwrap();
+	match service_node.liquidity_manager.next_event().unwrap() {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
+			intercept_scid: scid,
+			..
+		}) => assert_eq!(scid, intercept_scid),
+		other => panic!("Unexpected event: {:?}", other),
+	};
 }
 
 #[test]
@@ -760,6 +910,7 @@ fn channel_open_abandoned_releases_intercepted_htlcs() {
 			requested_next_hop_scid,
 			payment_hash,
 			expected_outbound_amount_msat,
+			inbound_amount_msat,
 			..
 		} => {
 			assert_eq!(*requested_next_hop_scid, intercept_scid);
@@ -769,6 +920,7 @@ fn channel_open_abandoned_releases_intercepted_htlcs() {
 					*intercept_id,
 					*expected_outbound_amount_msat,
 					*payment_hash,
+					*inbound_amount_msat,
 				)
 				.unwrap();
 			*intercept_id
@@ -1335,6 +1487,7 @@ fn lsps2_service_handler_persistence_across_restarts() {
 			intercept_id,
 			htlc_amount_msat,
 			payment_hash,
+			htlc_amount_msat,
 		);
 
 		// This should succeed if the channel state was properly restored
@@ -1456,6 +1609,7 @@ fn client_trusts_lsp_end_to_end_test() {
 			requested_next_hop_scid,
 			payment_hash,
 			expected_outbound_amount_msat,
+			inbound_amount_msat,
 			..
 		} => {
 			assert_eq!(*requested_next_hop_scid, intercept_scid);
@@ -1466,6 +1620,7 @@ fn client_trusts_lsp_end_to_end_test() {
 					*intercept_id,
 					*expected_outbound_amount_msat,
 					*payment_hash,
+					*inbound_amount_msat,
 				)
 				.unwrap();
 			(*payment_hash, expected_outbound_amount_msat)
@@ -1928,6 +2083,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 			requested_next_hop_scid,
 			payment_hash: _,
 			expected_outbound_amount_msat,
+			inbound_amount_msat,
 			..
 		} => {
 			assert_eq!(*requested_next_hop_scid, intercept_scid);
@@ -1937,6 +2093,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 					*intercept_id,
 					*expected_outbound_amount_msat,
 					invoice.payment_hash(),
+					*inbound_amount_msat,
 				)
 				.unwrap();
 		},
@@ -2117,6 +2274,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 			requested_next_hop_scid,
 			payment_hash: _,
 			expected_outbound_amount_msat,
+			inbound_amount_msat,
 			..
 		} => {
 			assert_eq!(*requested_next_hop_scid, intercept_scid);
@@ -2126,6 +2284,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 					*intercept_id,
 					*expected_outbound_amount_msat,
 					invoice.payment_hash(),
+					*inbound_amount_msat,
 				)
 				.unwrap();
 		},
@@ -2452,6 +2611,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 			requested_next_hop_scid,
 			payment_hash,
 			expected_outbound_amount_msat,
+			inbound_amount_msat,
 			..
 		} => {
 			assert_eq!(*requested_next_hop_scid, intercept_scid);
@@ -2461,6 +2621,7 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 					*intercept_id,
 					*expected_outbound_amount_msat,
 					*payment_hash,
+					*inbound_amount_msat,
 				)
 				.unwrap();
 			(*payment_hash, expected_outbound_amount_msat)

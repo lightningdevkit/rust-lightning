@@ -224,7 +224,9 @@ fn establish_lsps2_prior_interaction(lsps_nodes: &LSPSNodes) {
 
 	let intercept_id = InterceptId([0; 32]);
 	let payment_hash = PaymentHash([1; 32]);
-	lsps2_service.htlc_intercepted(intercept_scid, intercept_id, 1_000_000, payment_hash).unwrap();
+	lsps2_service
+		.htlc_intercepted(intercept_scid, intercept_id, 1_000_000, payment_hash, 1_000_000)
+		.unwrap();
 
 	let _ = service_node.liquidity_manager.next_event().unwrap();
 }
