@@ -4606,7 +4606,6 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 	nodes[0].node.send_payment(hash, onion, id, route_params, Retry::Attempts(1)).unwrap();
 
 	check_added_monitors(&nodes[0], 2);
-	nodes[0].node.process_monitor_events();
 	let mut send_msgs = nodes[0].node.get_and_clear_pending_msg_events();
 	send_msgs.sort_by(|a, _| {
 		let a_node_id =

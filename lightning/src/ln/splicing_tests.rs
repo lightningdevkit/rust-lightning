@@ -3880,7 +3880,7 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	nodes[1].node.process_monitor_events();
+	expect_channel_ready_event(&nodes[1], &node_id_0);
 
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert!(
@@ -3890,7 +3890,6 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 		)),
 		"stale monitor-pending resend leaked after reestablish: {msg_events:?}"
 	);
-	expect_channel_ready_event(&nodes[1], &node_id_0);
 
 	nodes[0].node.handle_channel_reestablish(node_id_1, reestablish_1.first().unwrap());
 	check_added_monitors(&nodes[0], 1);
@@ -3904,7 +3903,7 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 		check_added_monitors(&nodes[1], 1);
 		nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 		persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-		nodes[1].node.process_monitor_events();
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[1].node.process_pending_htlc_forwards();
@@ -6733,7 +6732,7 @@ fn retransmit_completed_tx_signatures_during_monitor_update_after_reestablish() 
 	// Once the monitor update completes, only the freed holding cell update remains to be sent.
 	initiator.chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
-	initiator.node.process_monitor_events();
+	assert!(initiator.node.get_and_clear_pending_events().is_empty());
 
 	let msg_events = initiator.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");

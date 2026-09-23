@@ -404,7 +404,10 @@ fn archive_monitor_with_pending_closure_event() {
 		MessageSendEvent::HandleError { ref node_id, .. } => assert_eq!(*node_id, node_a_id),
 		_ => panic!("Unexpected event"),
 	}
-	nodes[1].node.process_monitor_events();
+
+	// Applying our force-close `ChannelMonitorUpdate` caused the monitor to queue a redundant closure
+	// `MonitorEvent`, which must be processed before the monitor can be archived.
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	// Now that the `ChannelManager` knows the channel is closed, the monitor can be archived.
 	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
