@@ -2169,7 +2169,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
 	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(|_| true)
+	}
+
+	/// Returns only non-HTLC-failure monitor events, retaining HTLC failures until monitor
+	/// updates have been durably persisted.
+	pub(super) fn get_and_clear_pending_non_htlc_fail_events(&self) -> Vec<MonitorEvent> {
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(
+			|ev| !matches!(ev, MonitorEvent::HTLCEvent(upd) if upd.payment_preimage.is_none()),
+		)
 	}
 
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
@@ -4440,10 +4448,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&self.outputs_to_watch
 	}
 
-	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
-		let mut ret = Vec::new();
-		mem::swap(&mut ret, &mut self.pending_monitor_events);
-		ret
+	/// Drains and returns the pending monitor events for which `predicate` returns true. Events that
+	/// don't match the predicate stay in `pending_monitor_events` so they're eligible for release on
+	/// a later call.
+	fn get_and_clear_pending_monitor_events_filtered<F: FnMut(&MonitorEvent) -> bool>(
+		&mut self, mut predicate: F,
+	) -> Vec<MonitorEvent> {
+		let mut released = Vec::new();
+		let mut retained = Vec::new();
+		// Note: we can use Vec::extract_if here once MSRV reaches 1.87
+		for entry in self.pending_monitor_events.drain(..) {
+			if predicate(&entry) {
+				released.push(entry);
+			} else {
+				retained.push(entry);
+			}
+		}
+		self.pending_monitor_events = retained;
+		released
 	}
 
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump
