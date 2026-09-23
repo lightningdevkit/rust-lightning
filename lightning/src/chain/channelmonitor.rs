@@ -2232,7 +2232,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Returned events are retained internally until [Self::ack_monitor_event] is called with their
 	/// ID.
 	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<(u128, MonitorEvent)> {
-		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(|_| true)
+	}
+
+	/// Returns only non-HTLC-failure monitor events, retaining HTLC failures until monitor
+	/// updates have been durably persisted.
+	pub(super) fn get_and_clear_pending_non_htlc_fail_events(&self) -> Vec<(u128, MonitorEvent)> {
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(
+			|ev| !matches!(ev, MonitorEvent::HTLCEvent(upd) if upd.payment_preimage.is_none()),
+		)
 	}
 
 	/// Removes a [`MonitorEvent`] by its event ID, acknowledging that it has been processed.
@@ -4754,11 +4762,25 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.pending_monitor_events.retain(|(id, _)| *id != event_id);
 	}
 
-	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<(u128, MonitorEvent)> {
-		let mut ret = Vec::new();
-		mem::swap(&mut ret, &mut self.pending_monitor_events);
-		self.provided_monitor_events.extend(ret.iter().cloned());
-		ret
+	/// Drains and returns the pending monitor events for which `predicate` returns true. Events that
+	/// don't match the predicate stay in `pending_monitor_events` so they're eligible for release on
+	/// a later call.
+	fn get_and_clear_pending_monitor_events_filtered<F: FnMut(&MonitorEvent) -> bool>(
+		&mut self, mut predicate: F,
+	) -> Vec<(u128, MonitorEvent)> {
+		let mut released = Vec::new();
+		let mut retained = Vec::new();
+		// Note: we can use Vec::extract_if here once MSRV reaches 1.87
+		for entry in self.pending_monitor_events.drain(..) {
+			if predicate(&entry.1) {
+				released.push(entry);
+			} else {
+				retained.push(entry);
+			}
+		}
+		self.pending_monitor_events = retained;
+		self.provided_monitor_events.extend(released.iter().cloned());
+		released
 	}
 
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump

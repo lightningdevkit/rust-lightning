@@ -430,6 +430,9 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 	/// further events may be returned here until the [`ChannelMonitor`] has been fully persisted
 	/// to disk.
 	///
+	/// No [`MonitorEvent::HTLCEvent`]s for failing HTLCs may be returned for a [`ChannelMonitor`]
+	/// while any [`ChannelMonitorUpdate`] applied to it has not yet been fully persisted to disk.
+	///
 	/// For details on asynchronous [`ChannelMonitor`] updating and returning
 	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
 	fn release_pending_monitor_events(
