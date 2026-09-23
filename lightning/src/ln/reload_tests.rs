@@ -1867,6 +1867,7 @@ fn test_manager_persisted_post_outbound_edge_holding_cell() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 	let (latest_update, _) = get_latest_mon_update_id(&nodes[1], chan_id_2);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id_2, latest_update);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[0]));
 

@@ -663,7 +663,6 @@ fn test_set_outpoints_partial_claiming() {
 
 	// Connect blocks on node B
 	connect_blocks(&nodes[1], TEST_FINAL_CLTV + LATENCY_GRACE_PERIOD_BLOCKS + 1);
-	check_closed_broadcast(&nodes[1], 1, true);
 	let expected_close = ExpectedCloseEvent {
 		channel_capacity_sats: Some(1_000_000),
 		channel_id: Some(chan.2),
@@ -675,6 +674,7 @@ fn test_set_outpoints_partial_claiming() {
 		user_channel_id: None,
 	};
 	check_closed_events(&nodes[1], &[expected_close]);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 	// Verify node B broadcast 2 HTLC-timeout txn
 	let partial_claim_tx = {
@@ -750,14 +750,14 @@ fn do_test_to_remote_after_local_detection(style: ConnectStyle) {
 	mine_transaction(&nodes[0], &remote_txn_a[0]);
 	mine_transaction(&nodes[1], &remote_txn_a[0]);
 
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[node_id_1], 1000000);
 	check_closed_broadcast(&nodes[0], 1, true);
 	assert!(nodes[0].node.list_channels().is_empty());
 	check_added_monitors(&nodes[0], 1);
-	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, &[node_id_1], 1000000);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[node_id_0], 1000000);
 	check_closed_broadcast(&nodes[1], 1, true);
 	assert!(nodes[1].node.list_channels().is_empty());
 	check_added_monitors(&nodes[1], 1);
-	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[node_id_0], 1000000);
 
 	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());

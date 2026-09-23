@@ -14504,15 +14504,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		})
 	}
 
-	/// Processes any [`MonitorEvent`]s pending in our [`chain::Watch`]. Monitor events are
-	/// processed as a part of [`Self::process_pending_events`], but tests often poll message
-	/// events without processing user events, so this allows them to drive monitor event
-	/// processing explicitly.
-	#[cfg(any(test, feature = "_test_utils"))]
-	pub fn process_monitor_events(&self) {
-		PersistenceNotifierGuard::optionally_notify(self, || self.process_pending_monitor_events());
-	}
-
 	/// Process pending events from the [`chain::Watch`], returning the appropriate
 	/// [`NotifyOption`] for persistence and event handling.
 	fn process_pending_monitor_events(&self) -> NotifyOption {

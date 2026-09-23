@@ -1843,7 +1843,7 @@ mod tests {
 		TestBroadcaster, TestChainSource, TestFeeEstimator, TestKeysInterface, TestLogger,
 		TestPersister,
 	};
-	use crate::{expect_payment_path_successful, get_event_msg};
+	use crate::{expect_payment_claimed, expect_payment_path_successful, get_event_msg};
 	use bitcoin::Network;
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
@@ -2248,7 +2248,7 @@ mod tests {
 	/// Tests that `ChainMonitor` in deferred mode properly defers `watch_channel` and
 	/// `update_channel` operations, verifying correctness through a complete channel open
 	/// and payment flow. Operations are auto-flushed via the `TestChainMonitor`
-	/// `release_pending_monitor_events` helper.
+	/// `release_pending_monitor_events` helper whenever a node handles its events.
 	#[test]
 	fn test_deferred_monitor_payment() {
 		let chanmon_cfgs = create_chanmon_cfgs(2);
@@ -2256,13 +2256,37 @@ mod tests {
 		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
 		let chain_monitor_a = &nodes[0].chain_monitor.chain_monitor;
 		let chain_monitor_b = &nodes[1].chain_monitor.chain_monitor;
 
 		create_announced_chan_between_nodes(&nodes, 0, 1);
 
-		let (preimage, _hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000);
-		claim_payment(&nodes[0], &[&nodes[1]], preimage);
+		let (preimage, hash, ..) = route_payment_deferred(&nodes[0], &nodes[1], 10_000);
+
+		nodes[1].node.claim_funds(preimage, Default::default());
+		check_added_monitors(&nodes[1], 1);
+		expect_payment_claimed!(nodes[1], hash, 10_000);
+
+		let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+		nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
+		nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
+		check_added_monitors(&nodes[0], 1);
+		expect_payment_sent(&nodes[0], preimage, None, false, false);
+
+		let (raa, cs) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
+		nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
+		check_added_monitors(&nodes[1], 1);
+		nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &cs);
+		check_added_monitors(&nodes[1], 1);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+		let raa = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
+		nodes[0].node.handle_revoke_and_ack(node_b_id, &raa);
+		check_added_monitors(&nodes[0], 1);
+		expect_payment_path_successful!(nodes[0]);
 
 		assert_eq!(chain_monitor_a.list_monitors().len(), 1);
 		assert_eq!(chain_monitor_b.list_monitors().len(), 1);

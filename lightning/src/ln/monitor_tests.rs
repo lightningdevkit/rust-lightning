@@ -1539,10 +1539,10 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	let _b_htlc_msgs = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 
 	connect_blocks(&nodes[0], htlc_cltv_timeout + 1 - 10);
+	let mut events = nodes[0].node.get_and_clear_pending_events();
 	check_closed_broadcast(&nodes[0], 1, true);
 	check_added_monitors(&nodes[0], 1);
 
-	let mut events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(events.len(), 5);
 	let mut failed_payments: HashSet<_> =
 		[timeout_payment_hash, dust_payment_hash, live_payment_hash, missing_htlc_payment_hash]
@@ -1568,8 +1568,6 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	}
 
 	connect_blocks(&nodes[1], htlc_cltv_timeout + 1 - 10);
-	check_closed_broadcast(&nodes[1], 1, true);
-	check_added_monitors(&nodes[1], 1);
 	check_closed_events(&nodes[1], &[ExpectedCloseEvent {
 		channel_capacity_sats: Some(1_000_000),
 		channel_id: Some(chan_id),
@@ -1580,6 +1578,8 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 		channel_funding_txo: None,
 		user_channel_id: None,
 	}]);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
 
 	// Prior to channel closure, B considers the preimage HTLC as its own, and otherwise only
 	// lists the two on-chain timeout-able HTLCs as claimable balances.
@@ -2697,21 +2697,21 @@ fn do_test_yield_anchors_events(have_htlcs: bool, p2a_anchor: bool) {
 		nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), "".to_string()).unwrap();
 	}
 
-	check_closed_broadcast(&nodes[0], 1, true);
 	let a_events = nodes[0].node.get_and_clear_pending_events();
 	assert_eq!(a_events.len(), if have_htlcs { 2 } else { 1 });
 	if have_htlcs {
 		assert!(a_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
 	}
 	assert!(a_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
+	check_closed_broadcast(&nodes[0], 1, true);
 
-	check_closed_broadcast(&nodes[1], 1, true);
 	let b_events = nodes[1].node.get_and_clear_pending_events();
 	assert_eq!(b_events.len(), if have_htlcs { 2 } else { 1 });
 	if have_htlcs {
 		assert!(b_events.iter().any(|ev| matches!(ev, Event::HTLCHandlingFailed { .. })));
 	}
 	assert!(b_events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })));
+	check_closed_broadcast(&nodes[1], 1, true);
 
 	let mut holder_events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
 	assert_eq!(holder_events.len(), 1);
@@ -3184,6 +3184,7 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 		// with the incorrect P2WPKH script but reading it with the correct P2WSH script.
 		*nodes[1].chain_monitor.expect_monitor_round_trip_fail.lock().unwrap() = Some(chan_id);
 		let commitment_tx_conf_height = block_from_scid(mine_transaction(&nodes[1], &commitment_tx));
+		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 		check_closed_broadcast(&nodes[1], 1, true);
 		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
 		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
@@ -3192,11 +3193,11 @@ fn do_test_anchors_monitor_fixes_counterparty_payment_script_on_reload(confirm_c
 		let serialized_monitor = get_monitor!(nodes[1], chan_id).encode();
 		reload_node!(nodes[1], user_config, &nodes[1].node.encode(), &[&serialized_monitor], persister, chain_monitor, node_deserialized);
 		let commitment_tx_conf_height = block_from_scid(mine_transaction(&nodes[1], &commitment_tx));
+		check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 		check_closed_broadcast(&nodes[1], 1, false);
 		check_added_monitors(&nodes[1], 1);
 		commitment_tx_conf_height
 	};
-	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 	assert!(get_monitor!(nodes[1], chan_id).get_counterparty_payment_script().is_p2wsh());
 
 	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);

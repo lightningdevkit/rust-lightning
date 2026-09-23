@@ -617,6 +617,10 @@ fn test_signer_unblocked_clears_monitor_pending_raa_after_reestablish() {
 	let (latest_update, _) = nodes[1].chain_monitor.get_latest_mon_update_id(chan_bc.2);
 	nodes[1].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_bc.2, latest_update);
 	check_added_monitors(&nodes[1], 0);
+	expect_htlc_failure_conditions(
+		nodes[1].node.get_and_clear_pending_events(),
+		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_bc.2 }],
+	);
 	let (_, duplicate_revoke_and_ack, monitor_commitment_update, _, _, _, _, _, _) =
 		handle_chan_reestablish_msgs!(nodes[1], nodes[2]);
 	assert!(duplicate_revoke_and_ack.is_none());
@@ -696,10 +700,6 @@ fn test_signer_unblocked_clears_monitor_pending_raa_after_reestablish() {
 		100_000,
 		None,
 		node_c_id,
-	);
-	expect_htlc_failure_conditions(
-		nodes[1].node.get_and_clear_pending_events(),
-		&[HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_bc.2 }],
 	);
 }
 
@@ -798,6 +798,7 @@ fn do_test_async_raa_peer_disconnect(
 		}
 		dst.chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 		check_added_monitors(&dst, 0);
+		assert!(dst.node.get_and_clear_pending_events().is_empty());
 	}
 
 	// Expect the RAA
@@ -948,6 +949,7 @@ fn do_test_async_commitment_signature_peer_disconnect(
 		}
 		dst.chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 		check_added_monitors(&dst, 0);
+		assert!(dst.node.get_and_clear_pending_events().is_empty());
 	}
 
 	// Expect the RAA
@@ -1098,6 +1100,7 @@ fn do_test_async_commitment_signature_ordering(monitor_update_failure: bool) {
 		}
 		nodes[0].chain_monitor.chain_monitor.force_channel_monitor_updated(chan_id, latest_update);
 		check_added_monitors(&nodes[0], 0);
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
 	}
 
 	// Make sure that on signer_unblocked we have the same behavior (even though RAA is ready,
@@ -1935,6 +1938,7 @@ fn test_async_splice_initial_commit_sig_waits_for_monitor_before_tx_signatures()
 
 	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
 
 	let tx_signatures =
 		get_event_msg!(acceptor, MessageSendEvent::SendTxSignatures, initiator_node_id);

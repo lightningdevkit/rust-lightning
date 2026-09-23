@@ -2406,10 +2406,10 @@ mod tests {
 		let dummy_block = create_dummy_block(nodes[0].best_block_hash(), 42, txn);
 		connect_block(&nodes[1], &dummy_block);
 
-		check_closed_broadcast(&nodes[1], 1, true);
 		let reason = ClosureReason::CommitmentTxConfirmed;
 		let node_id_0 = nodes[0].node.get_our_node_id();
 		check_closed_event(&nodes[1], 1, reason, &[node_id_0], 100000);
+		check_closed_broadcast(&nodes[1], 1, true);
 		check_added_monitors(&nodes[1], 1);
 
 		// Make sure everything is persisted as expected after close.

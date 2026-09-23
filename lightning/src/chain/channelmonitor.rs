@@ -7538,7 +7538,6 @@ mod tests {
 		check_spends!(htlc_txn[0], broadcast_tx);
 		check_spends!(htlc_txn[1], broadcast_tx);
 
-		check_closed_broadcast(&nodes[1], 1, true);
 		if !use_local_txn {
 			// When the counterparty commitment confirms, FundingSpendConfirmation matures
 			// immediately (no CSV delay), so funding_spend_confirmed is set. The new payment's
@@ -7554,6 +7553,7 @@ mod tests {
 			check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 100000);
 			check_added_monitors(&nodes[1], 1);
 		}
+		check_closed_broadcast(&nodes[1], 1, true);
 	}
 
 	#[test]

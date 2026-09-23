@@ -970,8 +970,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, fulfill_msg);
 	check_added_monitors(&nodes[1], 1);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &htlc_fulfill.commitment_signed, false, false);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &htlc_fulfill.commitment_signed, false, false);
 
 	if confirm_before_reload {
 		let best_block = nodes[0].blocks.lock().unwrap().last().unwrap().clone();
@@ -1917,12 +1917,10 @@ fn onchain_failed_probe_yields_event() {
 	// Node A, which after 6 confirmations should result in a probe failure event.
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	confirm_transaction(&nodes[0], &bs_txn[0]);
-	check_closed_broadcast(&nodes[0], 1, true);
-	check_added_monitors(&nodes[0], 1);
-
 	check_added_monitors(&nodes[0], 0);
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 2);
 	assert_eq!(events.len(), 2);
 	let mut found_probe_failed = false;
 	for event in events.drain(..) {
