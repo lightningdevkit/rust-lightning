@@ -342,7 +342,9 @@ impl OutboundJITChannelState {
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
-				if let Some(entry) = payment_queue.pop_greater_than_msat(*opening_fee_msat) {
+				let required_payment_size_msat = (*payment_size_msat).unwrap_or(*opening_fee_msat);
+				if let Some(entry) = payment_queue.pop_greater_than_msat(required_payment_size_msat)
+				{
 					let forward_payment = HTLCInterceptedAction::ForwardPayment(
 						*channel_id,
 						FeePayment { htlcs: entry.htlcs, opening_fee_msat: *opening_fee_msat },
@@ -371,11 +373,13 @@ impl OutboundJITChannelState {
 	}
 
 	fn channel_ready(
-		&mut self, channel_id: ChannelId,
+		&mut self, channel_id: ChannelId, payment_size_msat: &Option<u64>,
 	) -> Result<ForwardPaymentAction, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
-				if let Some(entry) = payment_queue.pop_greater_than_msat(*opening_fee_msat) {
+				let required_payment_size_msat = (*payment_size_msat).unwrap_or(*opening_fee_msat);
+				if let Some(entry) = payment_queue.pop_greater_than_msat(required_payment_size_msat)
+				{
 					let forward_payment = ForwardPaymentAction(
 						channel_id,
 						FeePayment { htlcs: entry.htlcs, opening_fee_msat: *opening_fee_msat },
@@ -400,14 +404,18 @@ impl OutboundJITChannelState {
 		}
 	}
 
-	fn htlc_handling_failed(&mut self) -> Result<Option<ForwardPaymentAction>, ChannelStateError> {
+	fn htlc_handling_failed(
+		&mut self, payment_size_msat: &Option<u64>,
+	) -> Result<Option<ForwardPaymentAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingPaymentForward {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
 			} => {
-				if let Some(entry) = payment_queue.pop_greater_than_msat(*opening_fee_msat) {
+				let required_payment_size_msat = (*payment_size_msat).unwrap_or(*opening_fee_msat);
+				if let Some(entry) = payment_queue.pop_greater_than_msat(required_payment_size_msat)
+				{
 					let forward_payment = ForwardPaymentAction(
 						*channel_id,
 						FeePayment { htlcs: entry.htlcs, opening_fee_msat: *opening_fee_msat },
@@ -547,14 +555,14 @@ impl OutboundJITChannel {
 	}
 
 	fn htlc_handling_failed(&mut self) -> Result<Option<ForwardPaymentAction>, LightningError> {
-		let action = self.state.htlc_handling_failed()?;
+		let action = self.state.htlc_handling_failed(&self.payment_size_msat)?;
 		Ok(action)
 	}
 
 	fn channel_ready(
 		&mut self, channel_id: ChannelId,
 	) -> Result<ForwardPaymentAction, LightningError> {
-		let action = self.state.channel_ready(channel_id)?;
+		let action = self.state.channel_ready(channel_id, &self.payment_size_msat)?;
 		Ok(action)
 	}
 
@@ -2699,7 +2707,7 @@ mod tests {
 		// Channel opens, becomes ready, and multipart payment A gets forwarded.
 		{
 			let ForwardPaymentAction(channel_id, payment) =
-				state.channel_ready(ChannelId([200; 32])).unwrap();
+				state.channel_ready(ChannelId([200; 32]), &payment_size_msat).unwrap();
 			assert_eq!(channel_id, ChannelId([200; 32]));
 			assert_eq!(payment.opening_fee_msat, 10_000_000);
 			assert_eq!(
@@ -2736,7 +2744,7 @@ mod tests {
 		}
 		// Payment A fails.
 		{
-			let action = state.htlc_handling_failed().unwrap();
+			let action = state.htlc_handling_failed(&payment_size_msat).unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPayment { .. }));
 			// No payments have received sufficient HTLCs yet.
 			assert!(action.is_none());
@@ -2866,7 +2874,7 @@ mod tests {
 		// Channel opens, becomes ready, and payment A gets forwarded.
 		{
 			let ForwardPaymentAction(channel_id, payment) =
-				state.channel_ready(ChannelId([200; 32])).unwrap();
+				state.channel_ready(ChannelId([200; 32]), &payment_size_msat).unwrap();
 			assert_eq!(channel_id, ChannelId([200; 32]));
 			assert_eq!(payment.opening_fee_msat, 10_000_000);
 			assert_eq!(
@@ -2896,7 +2904,7 @@ mod tests {
 		}
 		// Payment A fails, and payment B is forwarded.
 		{
-			let action = state.htlc_handling_failed().unwrap();
+			let action = state.htlc_handling_failed(&payment_size_msat).unwrap();
 			assert!(matches!(state, OutboundJITChannelState::PendingPaymentForward { .. }));
 			match action {
 				Some(ForwardPaymentAction(channel_id, payment)) => {
@@ -3131,7 +3139,7 @@ mod tests {
 		let second_payment_hash = PaymentHash([99; 32]);
 		let second_htlc = InterceptedHTLC {
 			intercept_id: InterceptId([2; 32]),
-			expected_outbound_amount_msat: min_fee_msat,
+			expected_outbound_amount_msat: payment_size_msat.unwrap(),
 			payment_hash: second_payment_hash,
 		};
 		let action2 = jit_channel.htlc_intercepted(second_htlc).unwrap();
@@ -3180,5 +3188,51 @@ mod tests {
 		// Distinct secrets must get distinct fingerprints.
 		let other_config = LSPS2ServiceConfig { promise_secret: [43; 32] };
 		assert_ne!(debug_str, format!("{:?}", other_config));
+	}
+
+	fn test_opening_fee_params() -> LSPS2OpeningFeeParams {
+		LSPS2OpeningFeeParams {
+			min_fee_msat: 10_000_000,
+			proportional: 10_000,
+			valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+			min_lifetime: 4032,
+			max_client_to_self_delay: 2016,
+			min_payment_size_msat: 10_000_000,
+			max_payment_size_msat: 1_000_000_000,
+			promise: "ignore".to_string(),
+		}
+	}
+
+	#[test]
+	fn test_fixed_mpp_forwarding_requires_full_payment() {
+		let mut jit_channel =
+			OutboundJITChannel::new(Some(500_000_000), test_opening_fee_params(), 42, false);
+		let payment = |id, amount_msat, payment_hash| InterceptedHTLC {
+			intercept_id: InterceptId([id; 32]),
+			expected_outbound_amount_msat: amount_msat,
+			payment_hash: PaymentHash([payment_hash; 32]),
+		};
+
+		assert!(jit_channel.htlc_intercepted(payment(0, 20_000_000, 100)).unwrap().is_none());
+		assert!(matches!(
+			jit_channel.htlc_intercepted(payment(1, 500_000_000, 101)).unwrap(),
+			Some(HTLCInterceptedAction::OpenChannel(_))
+		));
+
+		let ForwardPaymentAction(_, fee_payment) =
+			jit_channel.channel_ready(ChannelId([200; 32])).unwrap();
+		assert_eq!(fee_payment.htlcs, vec![payment(1, 500_000_000, 101)]);
+		assert!(jit_channel.htlc_handling_failed().unwrap().is_none());
+
+		let action = jit_channel.htlc_intercepted(payment(2, 480_000_000, 100)).unwrap();
+		match action {
+			Some(HTLCInterceptedAction::ForwardPayment(_, fee_payment)) => {
+				assert_eq!(
+					fee_payment.htlcs,
+					vec![payment(0, 20_000_000, 100), payment(2, 480_000_000, 100)]
+				);
+			},
+			other => panic!("expected complete fixed-size MPP to forward, got {:?}", other),
+		}
 	}
 }
