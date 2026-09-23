@@ -35,18 +35,19 @@ use lightning::ln::functional_test_utils::{
 	create_chanmon_cfgs, create_node_cfgs, create_node_chanmgrs,
 };
 use lightning::ln::functional_test_utils::{create_network, Node};
+use lightning::ln::outbound_payment::{RecipientOnionFields, Retry};
 use lightning::ln::peer_handler::CustomMessageHandler;
 use lightning::log_error;
-use lightning::routing::router::{RouteHint, RouteHintHop};
+use lightning::routing::router::{PaymentParameters, RouteHint, RouteHintHop, RouteParameters};
 use lightning::sign::NodeSigner;
-use lightning::util::config::HTLCInterceptionFlags;
+use lightning::util::config::{HTLCInterceptionFlags, UserConfig};
 use lightning::util::errors::APIError;
 use lightning::util::logger::Logger;
 use lightning::util::test_utils::{TestBroadcaster, TestStore};
 
 use lightning_invoice::{Bolt11Invoice, InvoiceBuilder, RoutingFees};
 
-use lightning_types::payment::PaymentHash;
+use lightning_types::payment::{PaymentHash, PaymentSecret};
 
 use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use bitcoin::Network;
@@ -476,6 +477,197 @@ fn channel_open_failed() {
 		},
 		_ => panic!("Expected OpenChannel event after reset"),
 	};
+}
+
+/// Sends an HTLC of `amount_msat` from the payer to the intercept scid and returns its id once
+/// the service's channel manager intercepted it, leaving it to the caller to hand it to the LSPS2
+/// service.
+fn intercept_payer_htlc(
+	lsps_nodes: &LSPSNodesWithPayer, intercept_scid: u64, amount_msat: u64,
+	payment_hash: PaymentHash, payment_id: PaymentId,
+) -> InterceptId {
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = *lsps_nodes;
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let route_hint = RouteHint(vec![RouteHintHop {
+		src_node_id: service_node_id,
+		short_channel_id: intercept_scid,
+		fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
+		cltv_expiry_delta: 144,
+		htlc_minimum_msat: None,
+		htlc_maximum_msat: None,
+	}]);
+	let payment_params =
+		PaymentParameters::from_node_id(client_node.inner.node.get_our_node_id(), 144)
+			.with_route_hints(vec![route_hint])
+			.unwrap();
+	let route_params = RouteParameters::from_payment_params_and_value(payment_params, amount_msat);
+	let recipient_onion = RecipientOnionFields::secret_only(PaymentSecret([42; 32]), amount_msat);
+	payer_node
+		.node
+		.send_payment(payment_hash, recipient_onion, payment_id, route_params, Retry::Attempts(0))
+		.unwrap();
+	check_added_monitors(&payer_node, 1);
+	let events = payer_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = SendEvent::from_event(events[0].clone());
+	service_node.inner.node.handle_update_add_htlc(payer_node.node.get_our_node_id(), &ev.msgs[0]);
+	do_commitment_signed_dance(&service_node.inner, &payer_node, &ev.commitment_msg, false, true);
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::HTLCIntercepted { intercept_id, requested_next_hop_scid, .. } => {
+			assert_eq!(*requested_next_hop_scid, intercept_scid);
+			*intercept_id
+		},
+		other => panic!("Expected HTLCIntercepted, got {:?}", other),
+	}
+}
+
+/// Fails back the given intercepted HTLC and hands the resulting failure to the LSPS2 service, as
+/// happens when an intercepted HTLC times out.
+fn fail_intercepted_htlc(service_node: &LiquidityNode, intercept_id: InterceptId) {
+	service_node.inner.node.fail_intercepted_htlc(intercept_id).unwrap();
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::HTLCHandlingFailed { failure_type, .. } => {
+			let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+			service_handler.htlc_handling_failed(failure_type.clone()).unwrap();
+		},
+		other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+	}
+}
+
+fn setup_intercepting_lsps2_nodes_with_payer<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>,
+) -> (LSPSNodesWithPayer<'a, 'b, 'c>, [u8; 32]) {
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	create_chan_between_nodes_with_value(
+		&lsps_nodes.payer_node,
+		&lsps_nodes.service_node.inner,
+		2_000_000,
+		100_000,
+	);
+	(lsps_nodes, promise_secret)
+}
+
+fn intercepting_service_config() -> UserConfig {
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+	service_node_config
+}
+
+#[test]
+fn timed_out_part_does_not_count_towards_jit_open() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[Some(intercepting_service_config()), None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_intercepting_lsps2_nodes_with_payer(nodes);
+	let service_node = &lsps_nodes.service_node;
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let payment_hash = PaymentHash([42; 32]);
+	execute_lsps2_dance(
+		&lsps_nodes.service_node,
+		&lsps_nodes.client_node,
+		intercept_scid,
+		42,
+		144,
+		promise_secret,
+		Some(1_000_000),
+		1_000,
+		128,
+	);
+
+	let timed_out_part = intercept_payer_htlc(
+		&lsps_nodes,
+		intercept_scid,
+		400_000,
+		payment_hash,
+		PaymentId([1; 32]),
+	);
+	service_handler
+		.htlc_intercepted(intercept_scid, timed_out_part, 400_000, payment_hash, 400_000)
+		.unwrap();
+	assert!(service_node.liquidity_manager.next_event().is_none());
+	fail_intercepted_htlc(service_node, timed_out_part);
+
+	// Without the timed-out part, these only add up to the payment size once both arrived.
+	service_handler
+		.htlc_intercepted(intercept_scid, InterceptId([2; 32]), 600_000, payment_hash, 600_000)
+		.unwrap();
+	assert!(service_node.liquidity_manager.next_event().is_none());
+	service_handler
+		.htlc_intercepted(intercept_scid, InterceptId([3; 32]), 400_000, payment_hash, 400_000)
+		.unwrap();
+	assert!(matches!(
+		service_node.liquidity_manager.next_event(),
+		Some(LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel { .. }))
+	));
+}
+
+/// Several payments, each split over several HTLCs, share one intercept scid. A failure on that
+/// scid concerns exactly one HTLC, so the others -- including the parts of unrelated payments,
+/// which may belong to entirely different payers -- have to survive it.
+#[test]
+fn failed_part_preserves_other_queued_payments() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[Some(intercepting_service_config()), None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_intercepting_lsps2_nodes_with_payer(nodes);
+	let service_node = &lsps_nodes.service_node;
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let payment_size_msat = 1_000_000;
+	execute_lsps2_dance(
+		&lsps_nodes.service_node,
+		&lsps_nodes.client_node,
+		intercept_scid,
+		42,
+		144,
+		promise_secret,
+		Some(payment_size_msat),
+		1_000,
+		128,
+	);
+
+	// One part of the payment that is about to fail, and one part of an unrelated payment.
+	let doomed_hash = PaymentHash([42; 32]);
+	let other_hash = PaymentHash([43; 32]);
+	let doomed_part =
+		intercept_payer_htlc(&lsps_nodes, intercept_scid, 400_000, doomed_hash, PaymentId([1; 32]));
+	let other_part =
+		intercept_payer_htlc(&lsps_nodes, intercept_scid, 600_000, other_hash, PaymentId([2; 32]));
+	service_handler
+		.htlc_intercepted(intercept_scid, doomed_part, 400_000, doomed_hash, 400_000)
+		.unwrap();
+	service_handler
+		.htlc_intercepted(intercept_scid, other_part, 600_000, other_hash, 600_000)
+		.unwrap();
+	assert!(service_node.liquidity_manager.next_event().is_none());
+
+	// Only the HTLC that failed may be dropped.
+	fail_intercepted_htlc(service_node, doomed_part);
+	assert!(service_node.liquidity_manager.next_event().is_none());
+
+	// The unrelated payment kept its first part, so a second part completes it and opens the
+	// channel. Had the failure emptied the queue, 400,000msat would be all we had.
+	service_handler
+		.htlc_intercepted(intercept_scid, InterceptId([3; 32]), 400_000, other_hash, 400_000)
+		.unwrap();
+	assert!(
+		matches!(
+			service_node.liquidity_manager.next_event(),
+			Some(LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel { .. }))
+		),
+		"An unrelated payment must survive another HTLC's failure and still open the channel"
+	);
 }
 
 #[test]

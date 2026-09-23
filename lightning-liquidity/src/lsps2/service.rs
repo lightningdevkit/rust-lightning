@@ -374,7 +374,7 @@ impl OutboundJITChannelState {
 
 	fn channel_ready(
 		&mut self, channel_id: ChannelId, payment_size_msat: &Option<u64>,
-	) -> Result<ForwardPaymentAction, ChannelStateError> {
+	) -> Result<Option<ForwardPaymentAction>, ChannelStateError> {
 		match self {
 			OutboundJITChannelState::PendingChannelOpen { payment_queue, opening_fee_msat } => {
 				let required_payment_size_msat = (*payment_size_msat).unwrap_or(*opening_fee_msat);
@@ -389,12 +389,17 @@ impl OutboundJITChannelState {
 						opening_fee_msat: *opening_fee_msat,
 						channel_id,
 					};
-					Ok(forward_payment)
+					Ok(Some(forward_payment))
 				} else {
-					return Err(ChannelStateError(
-						"No forwardable payment available when moving to channel ready."
-							.to_string(),
-					));
+					// Parts can be lost while the channel is being opened. The fee is still owed
+					// and the channel is live, so keep both and wait for the payment to be
+					// completed rather than stranding it here.
+					*self = OutboundJITChannelState::PendingPayment {
+						payment_queue: core::mem::take(payment_queue),
+						opening_fee_msat: *opening_fee_msat,
+						channel_id,
+					};
+					Ok(None)
 				}
 			},
 			state => Err(ChannelStateError(format!(
@@ -561,7 +566,7 @@ impl OutboundJITChannel {
 
 	fn channel_ready(
 		&mut self, channel_id: ChannelId,
-	) -> Result<ForwardPaymentAction, LightningError> {
+	) -> Result<Option<ForwardPaymentAction>, LightningError> {
 		let action = self.state.channel_ready(channel_id, &self.payment_size_msat)?;
 		Ok(action)
 	}
@@ -571,6 +576,20 @@ impl OutboundJITChannel {
 	) -> Result<Option<ForwardHTLCsAction>, LightningError> {
 		let action = self.state.payment_forwarded(skimmed_fee_msat)?;
 		Ok(action)
+	}
+
+	/// Drops the queued HTLCs for which `keep` returns `false`, keeping the current state.
+	/// Returns whether anything was dropped.
+	fn retain_htlcs(&mut self, keep: impl FnMut(&InterceptedHTLC) -> bool) -> bool {
+		match &mut self.state {
+			OutboundJITChannelState::PendingInitialPayment { payment_queue }
+			| OutboundJITChannelState::PendingChannelOpen { payment_queue, .. }
+			| OutboundJITChannelState::PendingPaymentForward { payment_queue, .. }
+			| OutboundJITChannelState::PendingPayment { payment_queue, .. } => {
+				payment_queue.retain_htlcs(keep)
+			},
+			OutboundJITChannelState::PaymentForwarded { .. } => false,
+		}
 	}
 
 	fn is_pending_initial_payment(&self) -> bool {
@@ -1160,6 +1179,9 @@ where
 
 	/// Forward [`Event::HTLCHandlingFailed`] event parameter into this function.
 	///
+	/// Will drop any HTLC that failed from the payment it belongs to, leaving the other HTLCs of
+	/// that payment, and any other payment queued on the same intercept scid, in place.
+	///
 	/// Will attempt to forward the next payment in the queue if one is present.
 	/// Will do nothing if the intercept scid does not match any of the ones we gave out
 	/// or if the payment queue is empty
@@ -1169,6 +1191,32 @@ where
 		&self, failure_type: HTLCHandlingFailureType,
 	) -> Result<(), APIError> {
 		let mut should_persist = None;
+		// The failure names the intercept scid but not the HTLC, so only the HTLCs the channel
+		// manager no longer holds are dropped. Several payments, each split over several HTLCs,
+		// share one intercept scid, and a failure on that scid says nothing about the rest of them.
+		// The HTLC is already failed back by the time we see this, so there is nothing left for us
+		// to fail.
+		if let HTLCHandlingFailureType::InvalidForward { requested_forward_scid } = &failure_type {
+			let peer_by_intercept_scid = self.peer_by_intercept_scid.read().unwrap();
+			if let Some(counterparty_node_id) = peer_by_intercept_scid.get(requested_forward_scid) {
+				let outer_state_lock = self.per_peer_state.read().unwrap();
+				if let Some(inner_state_lock) = outer_state_lock.get(counterparty_node_id) {
+					let mut peer_state = inner_state_lock.lock().unwrap();
+					if let Some(jit_channel) = peer_state
+						.outbound_channels_by_intercept_scid
+						.get_mut(requested_forward_scid)
+					{
+						let channel_manager = self.channel_manager.get_cm();
+						if jit_channel.retain_htlcs(|htlc| {
+							channel_manager.is_intercepted_htlc_pending(htlc.intercept_id)
+						}) {
+							should_persist = Some(*counterparty_node_id);
+							peer_state.needs_persist = true;
+						}
+					}
+				}
+			}
+		}
 		if let HTLCHandlingFailureType::Forward { channel_id, .. } = failure_type {
 			let peer_by_channel_id = self.peer_by_channel_id.read().unwrap();
 			if let Some(counterparty_node_id) = peer_by_channel_id.get(&channel_id) {
@@ -1549,10 +1597,10 @@ where
 						peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
 					{
 						match jit_channel.channel_ready(*channel_id) {
-							Ok(ForwardPaymentAction(
+							Ok(Some(ForwardPaymentAction(
 								channel_id,
 								FeePayment { opening_fee_msat, htlcs },
-							)) => {
+							))) => {
 								let amounts_to_forward_msat =
 									calculate_amount_to_forward_per_htlc(&htlcs, opening_fee_msat);
 
@@ -1567,6 +1615,7 @@ where
 									)?;
 								}
 							},
+							Ok(None) => {},
 							Err(e) => {
 								return Err(APIError::APIMisuseError {
 									err: format!(
@@ -2707,7 +2756,7 @@ mod tests {
 		// Channel opens, becomes ready, and multipart payment A gets forwarded.
 		{
 			let ForwardPaymentAction(channel_id, payment) =
-				state.channel_ready(ChannelId([200; 32]), &payment_size_msat).unwrap();
+				state.channel_ready(ChannelId([200; 32]), &payment_size_msat).unwrap().unwrap();
 			assert_eq!(channel_id, ChannelId([200; 32]));
 			assert_eq!(payment.opening_fee_msat, 10_000_000);
 			assert_eq!(
@@ -2874,7 +2923,7 @@ mod tests {
 		// Channel opens, becomes ready, and payment A gets forwarded.
 		{
 			let ForwardPaymentAction(channel_id, payment) =
-				state.channel_ready(ChannelId([200; 32]), &payment_size_msat).unwrap();
+				state.channel_ready(ChannelId([200; 32]), &payment_size_msat).unwrap().unwrap();
 			assert_eq!(channel_id, ChannelId([200; 32]));
 			assert_eq!(payment.opening_fee_msat, 10_000_000);
 			assert_eq!(
@@ -3002,7 +3051,7 @@ mod tests {
 		assert!(decoded_jit_channel.htlc_intercepted(htlc).unwrap().is_none());
 
 		let ForwardPaymentAction(_, fee_payment) =
-			decoded_jit_channel.channel_ready(ChannelId([3; 32])).unwrap();
+			decoded_jit_channel.channel_ready(ChannelId([3; 32])).unwrap().unwrap();
 		assert_eq!(fee_payment.htlcs, vec![htlc]);
 	}
 
@@ -3117,7 +3166,8 @@ mod tests {
 		}
 
 		let channel_id = ChannelId([7; 32]);
-		let ForwardPaymentAction(_, fee_payment) = jit_channel.channel_ready(channel_id).unwrap();
+		let ForwardPaymentAction(_, fee_payment) =
+			jit_channel.channel_ready(channel_id).unwrap().unwrap();
 		assert_eq!(fee_payment.opening_fee_msat, min_fee_msat);
 
 		let followup = jit_channel.htlc_handling_failed().unwrap();
@@ -3220,7 +3270,7 @@ mod tests {
 		));
 
 		let ForwardPaymentAction(_, fee_payment) =
-			jit_channel.channel_ready(ChannelId([200; 32])).unwrap();
+			jit_channel.channel_ready(ChannelId([200; 32])).unwrap().unwrap();
 		assert_eq!(fee_payment.htlcs, vec![payment(1, 500_000_000, 101)]);
 		assert!(jit_channel.htlc_handling_failed().unwrap().is_none());
 
@@ -3233,6 +3283,104 @@ mod tests {
 				);
 			},
 			other => panic!("expected complete fixed-size MPP to forward, got {:?}", other),
+		}
+	}
+
+	/// Dropping the HTLC that failed must leave every other queued HTLC, and the state the JIT
+	/// channel is in, exactly as they were.
+	#[test]
+	fn test_retain_htlcs_preserves_other_payments_and_state() {
+		let htlc = |id, hash| InterceptedHTLC {
+			intercept_id: InterceptId([id; 32]),
+			expected_outbound_amount_msat: 100_000_000,
+			payment_hash: PaymentHash([hash; 32]),
+		};
+		let failed = htlc(0, 100);
+		let sibling = htlc(1, 100);
+		let other_payment = htlc(2, 101);
+		let mut payment_queue = PaymentQueue::new();
+		payment_queue.add_htlc(failed);
+		payment_queue.add_htlc(sibling);
+		payment_queue.add_htlc(other_payment);
+
+		let opening_fee_msat = 10_000_000;
+		let channel_id = ChannelId([42; 32]);
+		for state in [
+			OutboundJITChannelState::PendingInitialPayment { payment_queue: payment_queue.clone() },
+			OutboundJITChannelState::PendingChannelOpen {
+				payment_queue: payment_queue.clone(),
+				opening_fee_msat,
+			},
+			OutboundJITChannelState::PendingPaymentForward {
+				payment_queue: payment_queue.clone(),
+				opening_fee_msat,
+				channel_id,
+			},
+			OutboundJITChannelState::PendingPayment {
+				payment_queue: payment_queue.clone(),
+				opening_fee_msat,
+				channel_id,
+			},
+		] {
+			let mut jit_channel =
+				OutboundJITChannel::new(Some(500_000_000), test_opening_fee_params(), 42, false);
+			jit_channel.state = state;
+			assert!(
+				jit_channel.retain_htlcs(|htlc| htlc.intercept_id != failed.intercept_id),
+				"The failed HTLC must be dropped in every queued state"
+			);
+			assert!(
+				!jit_channel.retain_htlcs(|htlc| htlc.intercept_id != failed.intercept_id),
+				"A pass that drops nothing must not report a change"
+			);
+			let mut retained = match jit_channel.state {
+				OutboundJITChannelState::PendingInitialPayment { payment_queue }
+				| OutboundJITChannelState::PendingChannelOpen { payment_queue, .. }
+				| OutboundJITChannelState::PendingPaymentForward { payment_queue, .. }
+				| OutboundJITChannelState::PendingPayment { payment_queue, .. } => payment_queue,
+				state => panic!("Dropping an HTLC must preserve the state, got {:?}", state),
+			};
+			assert_eq!(retained.pop_greater_than_msat(0).unwrap().htlcs, vec![sibling]);
+			assert_eq!(retained.pop_greater_than_msat(0).unwrap().htlcs, vec![other_payment]);
+			assert!(retained.pop_greater_than_msat(0).is_none());
+		}
+	}
+
+	/// A payment that loses a part while the channel is being opened must not strand the channel:
+	/// the fee is still owed and a replacement part has to be able to complete the payment.
+	#[test]
+	fn test_channel_ready_waits_for_a_drained_opening_payment() {
+		let payment_size_msat = 500_000_000;
+		let mut jit_channel =
+			OutboundJITChannel::new(Some(payment_size_msat), test_opening_fee_params(), 42, false);
+		let part = |id, amount_msat| InterceptedHTLC {
+			intercept_id: InterceptId([id; 32]),
+			expected_outbound_amount_msat: amount_msat,
+			payment_hash: PaymentHash([100; 32]),
+		};
+
+		assert!(jit_channel.htlc_intercepted(part(0, 200_000_000)).unwrap().is_none());
+		assert!(matches!(
+			jit_channel.htlc_intercepted(part(1, 300_000_000)).unwrap(),
+			Some(HTLCInterceptedAction::OpenChannel(_))
+		));
+
+		// One part is lost while the channel is opening, leaving the payment short.
+		assert!(jit_channel.retain_htlcs(|htlc| htlc.intercept_id != InterceptId([0; 32])));
+
+		let channel_id = ChannelId([200; 32]);
+		assert!(
+			jit_channel.channel_ready(channel_id).unwrap().is_none(),
+			"A short opening payment must wait rather than fail the channel"
+		);
+
+		// The replacement part completes the payment on the channel that is already open.
+		match jit_channel.htlc_intercepted(part(2, 200_000_000)).unwrap() {
+			Some(HTLCInterceptedAction::ForwardPayment(forwarded_channel_id, fee_payment)) => {
+				assert_eq!(forwarded_channel_id, channel_id);
+				assert_eq!(fee_payment.htlcs, vec![part(1, 300_000_000), part(2, 200_000_000)]);
+			},
+			other => panic!("Expected the completed payment to forward, got {:?}", other),
 		}
 	}
 }
