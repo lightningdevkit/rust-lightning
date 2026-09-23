@@ -1001,11 +1001,14 @@ where
 	///
 	/// Will return an error if the intercept scid does not match any of the ones we gave out.
 	///
+	/// Will fail the intercepted HTLC if its `expected_outbound_amount_msat` exceeds
+	/// `inbound_amount_msat`, i.e., if the payer asked us to forward more than it delivered.
+	///
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
 	pub async fn htlc_intercepted(
 		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
-		payment_hash: PaymentHash,
+		payment_hash: PaymentHash, inbound_amount_msat: u64,
 	) -> Result<(), APIError> {
 		let event_queue_notifier = self.pending_events.notifier();
 		let mut should_persist = None;
@@ -1020,6 +1023,22 @@ where
 					if let Some(jit_channel) =
 						peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
 					{
+						// `expected_outbound_amount_msat` is the `amt_to_forward` of the payer's
+						// own onion, so it says nothing about what actually arrived. Everything
+						// below sizes channel opens and forwards from it, which would let a payer
+						// have us spend our own funds. Reject the HTLC here, before the state
+						// machine sees it, so neither the client's JIT channel nor anything
+						// already queued on it is disturbed -- the `Err` arm below would retire
+						// the intercept scid.
+						if expected_outbound_amount_msat > inbound_amount_msat {
+							self.channel_manager.get_cm().fail_intercepted_htlc(intercept_id)?;
+							return Err(APIError::APIMisuseError {
+								err: format!(
+									"Intercepted HTLC {} declares {}msat to forward but delivered {}msat; failed back",
+									intercept_id, expected_outbound_amount_msat, inbound_amount_msat
+								),
+							});
+						}
 						should_persist = Some(*counterparty_node_id);
 						let htlc = InterceptedHTLC {
 							intercept_id,
@@ -2270,13 +2289,14 @@ where
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	pub fn htlc_intercepted(
 		&self, intercept_scid: u64, intercept_id: InterceptId, expected_outbound_amount_msat: u64,
-		payment_hash: PaymentHash,
+		payment_hash: PaymentHash, inbound_amount_msat: u64,
 	) -> Result<(), APIError> {
 		let mut fut = pin!(self.inner.htlc_intercepted(
 			intercept_scid,
 			intercept_id,
 			expected_outbound_amount_msat,
 			payment_hash,
+			inbound_amount_msat,
 		));
 
 		let mut waker = dummy_waker();
