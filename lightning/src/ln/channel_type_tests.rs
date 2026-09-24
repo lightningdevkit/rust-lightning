@@ -11,22 +11,21 @@ use lightning_types::features::{ChannelTypeFeatures, InitFeatures};
 
 #[test]
 fn test_option_scid_privacy_initial() {
-	let mut expected_type = ChannelTypeFeatures::only_static_remote_key();
-	expected_type.set_scid_privacy_required();
-
-	do_test_get_initial_channel_type(
-		UserConfig::default(),
-		InitFeatures::empty(),
-		ChannelTypeFeatures::only_static_remote_key(),
-		|cfg: &mut UserConfig| {
-			// announce_for_forwarding = false is required, but set by UserConfig::default().
-			cfg.channel_handshake_config.negotiate_scid_privacy = true;
-		},
-		|their_features: &mut InitFeatures| {
-			their_features.set_scid_privacy_optional();
-		},
-		expected_type,
-	)
+	for announced in [false, true] {
+		for peer_supports_scid_privacy in [false, true] {
+			let mut config = UserConfig::default();
+			config.channel_handshake_config.announce_for_forwarding = announced;
+			let mut their_features = InitFeatures::empty();
+			if peer_supports_scid_privacy {
+				their_features.set_scid_privacy_optional();
+			}
+			let mut expected_type = ChannelTypeFeatures::only_static_remote_key();
+			if !announced && peer_supports_scid_privacy {
+				expected_type.set_scid_privacy_required();
+			}
+			assert_eq!(get_initial_channel_type(&config, &their_features), expected_type);
+		}
+	}
 }
 
 #[test]
@@ -183,6 +182,7 @@ fn test_supports_anchors_zero_htlc_tx_fee() {
 	let mut expected_channel_type = ChannelTypeFeatures::empty();
 	expected_channel_type.set_static_remote_key_required();
 	expected_channel_type.set_anchors_zero_fee_htlc_tx_required();
+	expected_channel_type.set_scid_privacy_required();
 
 	do_test_supports_channel_type(config, expected_channel_type)
 }
@@ -196,6 +196,7 @@ fn test_supports_zero_fee_commitments() {
 
 	let mut expected_channel_type = ChannelTypeFeatures::empty();
 	expected_channel_type.set_anchor_zero_fee_commitments_required();
+	expected_channel_type.set_scid_privacy_required();
 
 	do_test_supports_channel_type(config, expected_channel_type)
 }
@@ -211,6 +212,7 @@ fn test_supports_zero_fee_commitments_and_htlc_tx_fee() {
 
 	let mut expected_channel_type = ChannelTypeFeatures::empty();
 	expected_channel_type.set_anchor_zero_fee_commitments_required();
+	expected_channel_type.set_scid_privacy_required();
 
 	do_test_supports_channel_type(config, expected_channel_type)
 }
@@ -230,7 +232,7 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 
 	let mut non_anchors_config = UserConfig::default();
 	non_anchors_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
-	// Assert that we get `static_remotekey` when no custom config is negotiated.
+	// Without anchor support, we negotiate `static_remotekey` with SCID privacy.
 	let channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 		&fee_estimator,
 		&&keys_provider,
@@ -248,10 +250,9 @@ fn do_test_supports_channel_type(config: UserConfig, expected_channel_type: Chan
 		None,
 	)
 	.unwrap();
-	assert_eq!(
-		channel_a.funding.get_channel_type(),
-		&ChannelTypeFeatures::only_static_remote_key()
-	);
+	let mut non_anchors_type = ChannelTypeFeatures::only_static_remote_key();
+	non_anchors_type.set_scid_privacy_required();
+	assert_eq!(channel_a.funding.get_channel_type(), &non_anchors_type);
 
 	let mut channel_a = OutboundV1Channel::<&TestKeysInterface>::new(
 		&fee_estimator,

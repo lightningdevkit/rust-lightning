@@ -1,0 +1,8 @@
+# API Updates
+
+ * `ChannelHandshakeConfig::negotiate_scid_privacy` has been removed.
+   New outbound unannounced channels always attempt to negotiate
+   `option_scid_alias`, preventing forwarding via their real on-chain SCIDs
+   when negotiated. Peers that do not support or accept the channel type
+   still use channels without this option. Existing channels retain their
+   negotiated channel types, and serialized-state compatibility is unchanged.

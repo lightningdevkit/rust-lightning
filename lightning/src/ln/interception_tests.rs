@@ -74,7 +74,7 @@ fn do_test_htlc_interception_flags(
 		| Flag::FromPublicToPrivateChannels => {
 			create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 100000, 0);
 			let chan_id = nodes[2].node.list_channels()[0].channel_id;
-			let scid = nodes[2].node.list_channels()[0].short_channel_id.unwrap();
+			let scid = nodes[2].node.list_channels()[0].inbound_scid_alias.unwrap();
 			if flag == Flag::ToOfflinePrivateChannels {
 				nodes[1].node.peer_disconnected(node_2_id);
 				nodes[2].node.peer_disconnected(node_1_id);

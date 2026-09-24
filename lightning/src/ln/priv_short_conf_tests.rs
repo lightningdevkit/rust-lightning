@@ -66,7 +66,7 @@ fn test_priv_forwarding_rejection() {
 	// to nodes[2], which should be rejected:
 	let route_hint = RouteHint(vec![RouteHintHop {
 		src_node_id: node_b_id,
-		short_channel_id: nodes[2].node.list_channels()[0].short_channel_id.unwrap(),
+		short_channel_id: nodes[2].node.list_channels()[0].inbound_scid_alias.unwrap(),
 		fees: RoutingFees { base_msat: 1000, proportional_millionths: 0 },
 		cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
 		htlc_minimum_msat: None,
@@ -106,7 +106,7 @@ fn test_priv_forwarding_rejection() {
 	let commitment = &htlc_fail_updates.commitment_signed;
 	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, true, true);
 
-	let chan_2_scid = nodes[2].node.list_channels()[0].short_channel_id.unwrap();
+	let chan_2_scid = nodes[2].node.list_channels()[0].inbound_scid_alias.unwrap();
 	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, chan_2_scid, true);
 
 	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
@@ -390,14 +390,13 @@ fn test_scid_privacy_on_pub_channel() {
 
 	let mut scid_privacy_cfg = test_default_channel_config();
 	scid_privacy_cfg.channel_handshake_config.announce_for_forwarding = true;
-	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[0]
 		.node
 		.create_channel(node_b_id, 100000, 10001, 42, None, Some(scid_privacy_cfg))
 		.unwrap();
 	let mut open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
 
-	assert!(!open_channel.common_fields.channel_type.as_ref().unwrap().supports_scid_privacy()); // we ignore `negotiate_scid_privacy` on pub channels
+	assert!(!open_channel.common_fields.channel_type.as_ref().unwrap().supports_scid_privacy());
 	open_channel.common_fields.channel_type.as_mut().unwrap().set_scid_privacy_required();
 	assert_eq!(open_channel.common_fields.channel_flags & 1, 1); // The `announce_channel` bit is set.
 
@@ -419,7 +418,6 @@ fn test_scid_privacy_negotiation() {
 
 	let mut scid_privacy_cfg = test_default_channel_config();
 	scid_privacy_cfg.channel_handshake_config.announce_for_forwarding = false;
-	scid_privacy_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[0]
 		.node
 		.create_channel(node_b_id, 100000, 10001, 42, None, Some(scid_privacy_cfg))
@@ -475,8 +473,8 @@ fn test_scid_privacy_negotiation() {
 
 #[test]
 fn test_inbound_scid_privacy() {
-	// Tests accepting channels with the scid_privacy feature and rejecting forwards using the
-	// channel's real SCID as required by the channel feature.
+	// Tests negotiating scid_privacy by default and rejecting forwards using the channel's real
+	// SCID as required by the channel feature.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let mut accept_forward_cfg = test_default_channel_config();
@@ -492,7 +490,6 @@ fn test_inbound_scid_privacy() {
 
 	let mut no_announce_cfg = test_default_channel_config();
 	no_announce_cfg.channel_handshake_config.announce_for_forwarding = false;
-	no_announce_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	nodes[1]
 		.node
 		.create_channel(node_c_id, 100_000, 10_000, 42, None, Some(no_announce_cfg))

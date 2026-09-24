@@ -342,13 +342,11 @@ fn test_scid_privacy_downgrade() {
 	let mut initiator_cfg = test_default_channel_config();
 	initiator_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	initiator_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	initiator_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 	initiator_cfg.channel_handshake_config.announce_for_forwarding = false;
 
 	let mut receiver_cfg = test_default_channel_config();
 	receiver_cfg.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
 	receiver_cfg.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
-	receiver_cfg.channel_handshake_config.negotiate_scid_privacy = true;
 
 	let mut start_type = ChannelTypeFeatures::anchors_zero_fee_commitments();
 	start_type.set_scid_privacy_required();
