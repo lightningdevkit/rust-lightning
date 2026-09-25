@@ -223,7 +223,7 @@ fn archive_fully_resolved_monitors() {
 	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
 
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 	let htlc_claim_tx = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
@@ -669,18 +669,18 @@ fn do_test_claim_value_force_close(keyed_anchors: bool, p2a_anchor: bool, prev_c
 		}, received_htlc_balance.clone(), received_htlc_timeout_balance.clone()]),
 		sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
 
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash, 3_000_100);
 
 	let mut b_htlc_msgs = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	// We claim the dust payment here as well, but it won't impact our claimable balances as its
 	// dust and thus doesn't appear on chain at all.
-	nodes[1].node.claim_funds(dust_payment_preimage);
+	nodes[1].node.claim_funds(dust_payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], dust_payment_hash, 3_000);
 
-	nodes[1].node.claim_funds(timeout_payment_preimage);
+	nodes[1].node.claim_funds(timeout_payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], timeout_payment_hash, 4_000_200);
 
@@ -1009,7 +1009,7 @@ fn do_test_balances_on_local_commitment_htlcs(keyed_anchors: bool, p2a_anchor: b
 
 	expect_and_process_pending_htlcs(&nodes[1], false);
 	expect_payment_claimable!(nodes[1], payment_hash_2, payment_secret_2, 20_000_000);
-	nodes[1].node.claim_funds(payment_preimage_2);
+	nodes[1].node.claim_funds(payment_preimage_2, Default::default());
 	get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_2, 20_000_000);
@@ -1529,7 +1529,7 @@ fn do_test_revoked_counterparty_commitment_balances(keyed_anchors: bool, p2a_anc
 	let missing_htlc_cltv_timeout = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1; // Note ChannelManager adds one to CLTV timeouts for safety
 	let missing_htlc_payment_hash = route_payment(&nodes[1], &[&nodes[0]], 2_000_000).1;
 
-	nodes[1].node.claim_funds(claimed_payment_preimage);
+	nodes[1].node.claim_funds(claimed_payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[1], claimed_payment_hash, 3_000_100);
 	check_added_monitors(&nodes[1], 1);
 	let _b_htlc_msgs = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
@@ -2120,7 +2120,7 @@ fn do_test_revoked_counterparty_aggregated_claims(keyed_anchors: bool, p2a_ancho
 	const DUMMY_HTLC_AMT: u64 = 1000;
 	route_payment(&nodes[0], &[&nodes[1]], DUMMY_HTLC_AMT);
 
-	nodes[0].node.claim_funds(claimed_payment_preimage);
+	nodes[0].node.claim_funds(claimed_payment_preimage, Default::default());
 	expect_payment_claimed!(nodes[0], claimed_payment_hash, 3_000_100);
 	check_added_monitors(&nodes[0], 1);
 	let _a_htlc_msgs = get_htlc_update_msgs(&nodes[0], &nodes[1].node.get_our_node_id());
@@ -3390,11 +3390,11 @@ fn test_update_replay_panics() {
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 
-	nodes[1].node.claim_funds(payment_preimage_2);
+	nodes[1].node.claim_funds(payment_preimage_2, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_2, 1_000_000);
 
@@ -3468,7 +3468,7 @@ fn test_claim_event_never_handled() {
 	// Send the payment we'll ultimately test the PaymentClaimed event for.
 	let (preimage_a, payment_hash_a, ..) = route_payment(&nodes[0], &[&nodes[1]], 1_000_000);
 
-	nodes[1].node.claim_funds(preimage_a);
+	nodes[1].node.claim_funds(preimage_a, Default::default());
 	check_added_monitors(&nodes[1], 1);
 
 	let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
@@ -3546,10 +3546,10 @@ fn do_test_lost_preimage_monitor_events(on_counterparty_tx: bool, p2a_anchor: bo
 	nodes[1].node.peer_disconnected(nodes[2].node.get_our_node_id());
 	nodes[2].node.peer_disconnected(nodes[1].node.get_our_node_id());
 
-	nodes[2].node.claim_funds(preimage_a);
+	nodes[2].node.claim_funds(preimage_a, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], hash_a, 1_000_000);
-	nodes[2].node.claim_funds(preimage_b);
+	nodes[2].node.claim_funds(preimage_b, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], hash_b, 1_000_000);
 
@@ -3974,7 +3974,7 @@ fn test_ladder_preimage_htlc_claims() {
 	check_added_monitors(&nodes[1], 1);
 	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[node_id_0], 1_000_000);
 
-	nodes[1].node.claim_funds(payment_preimage1);
+	nodes[1].node.claim_funds(payment_preimage1, Default::default());
 	expect_payment_claimed!(&nodes[1], payment_hash1, 1_000_000);
 	check_added_monitors(&nodes[1], 1);
 
@@ -3995,7 +3995,7 @@ fn test_ladder_preimage_htlc_claims() {
 	expect_payment_sent(&nodes[0], payment_preimage1, None, true, false);
 	check_added_monitors(&nodes[0], 1);
 
-	nodes[1].node.claim_funds(payment_preimage2);
+	nodes[1].node.claim_funds(payment_preimage2, Default::default());
 	expect_payment_claimed!(&nodes[1], payment_hash2, 1_000_000);
 	check_added_monitors(&nodes[1], 1);
 

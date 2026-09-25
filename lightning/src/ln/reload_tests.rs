@@ -851,7 +851,7 @@ fn do_test_partial_claim_before_restart(persist_both_monitors: bool, double_rest
 
 	expect_payment_claimable!(nodes[3], payment_hash, payment_secret, 15_000_000);
 
-	nodes[3].node.claim_funds(payment_preimage);
+	nodes[3].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[3], 2);
 	expect_payment_claimed!(nodes[3], payment_hash, 15_000_000);
 
@@ -1095,7 +1095,7 @@ fn test_mpp_claim_htlc_fulfills_unblocked_on_reload() {
 	// preimage durably persisted.
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 2);
 
 	// Complete only channel A's preimage update. Channel B will be reloaded from the stale snapshot
@@ -1886,7 +1886,7 @@ fn test_manager_persisted_post_outbound_edge_holding_cell() {
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 
 	// Claim the c->b payment on node_b.
-	nodes[1].node.claim_funds(payment_preimage_2);
+	nodes[1].node.claim_funds(payment_preimage_2, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash_2, amt_msat);
 	check_added_monitors(&nodes[1], 1);
 	let mut update = get_htlc_update_msgs(&nodes[1], &nodes[2].node.get_our_node_id());
@@ -2257,7 +2257,7 @@ fn outbound_removed_holding_cell_resolved_no_double_forward() {
 	);
 
 	// Claim the payment on nodes[2].
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
@@ -2350,7 +2350,7 @@ fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 	);
 
 	// Claim the payment on nodes[2].
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
@@ -2601,7 +2601,7 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 
 	// Claim the HTLCs such that they're fully removed from the outbound edge, but disconnect
 	// node_0<>node_1 so that they can't be claimed backwards by node_1.
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 2);
 	expect_payment_claimed!(nodes[2], payment_hash, amt_msat);
 

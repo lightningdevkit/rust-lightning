@@ -3164,7 +3164,7 @@ fn pay_for_bolt12_invoice_partial_amount_multi_payer() {
 	};
 
 	// Claiming releases a fulfill to each payer, and each payer sees PaymentSent.
-	alice.node.claim_funds(payment_preimage);
+	alice.node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(alice, 2);
 	expect_payment_claimed!(alice, payment_hash, invoice_amount + 20);
 

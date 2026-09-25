@@ -750,6 +750,18 @@ impl Readable for InterceptId {
 	}
 }
 
+/// Optional arguments to [`ChannelManager::claim_funds`].
+///
+/// These fields will often not need to be set, and the provided [`Self::default`] can be used.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ClaimFundsOptions {
+	/// Whether custom TLVs with even type numbers in the received payment are known to you.
+	///
+	/// You MUST check you've understood all even TLVs before setting this to true, otherwise you may
+	/// unintentionally agree to some protocol you do not understand.
+	pub custom_tlvs_known: bool,
+}
+
 /// Optional arguments to [`ChannelManager::pay_for_bolt11_invoice`]
 ///
 /// These fields will often not need to be set, and the provided [`Self::default`] can be used.
@@ -2550,7 +2562,7 @@ impl<
 ///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: Some(payment_preimage), .. } => {
 ///                 assert_eq!(payment_hash, invoice.payment_hash());
 ///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             PaymentPurpose::Bolt11InvoicePayment { payment_preimage: None, .. } => {
 ///                 println!("Unknown payment hash: {}", payment_hash);
@@ -2558,7 +2570,7 @@ impl<
 ///             PaymentPurpose::SpontaneousPayment(payment_preimage) => {
 ///                 assert_ne!(payment_hash, invoice.payment_hash());
 ///                 println!("Claiming spontaneous payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             // ...
 /// #           _ => {},
@@ -2659,7 +2671,7 @@ impl<
 ///         Event::PaymentClaimable { payment_hash, purpose, .. } => match purpose {
 ///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: Some(payment_preimage), .. } => {
 ///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             PaymentPurpose::Bolt12OfferPayment { payment_preimage: None, .. } => {
 ///                 println!("Unknown payment hash: {}", payment_hash);
@@ -2819,7 +2831,7 @@ impl<
 ///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: Some(payment_preimage), .. } => {
 ///                 assert_eq!(payment_hash, known_payment_hash);
 ///                 println!("Claiming payment {}", payment_hash);
-///                 channel_manager.claim_funds(payment_preimage);
+///                 channel_manager.claim_funds(payment_preimage, Default::default());
 ///             },
 ///             PaymentPurpose::Bolt12RefundPayment { payment_preimage: None, .. } => {
 ///                 println!("Unknown payment hash: {}", payment_hash);
@@ -10128,9 +10140,9 @@ impl<
 	/// event matches your expectation. If you fail to do so and call this method, you may provide
 	/// the sender "proof-of-payment" when they did not fulfill the full expected payment.
 	///
-	/// This function will fail the payment if it has custom TLVs with even type numbers, as we
-	/// will assume they are unknown. If you intend to accept even custom TLVs, you should use
-	/// [`claim_funds_with_known_custom_tlvs`].
+	/// With default options, this function will fail the payment if it has custom TLVs with even
+	/// type numbers, as we will assume they are unknown. To accept even custom TLVs, set
+	/// [`ClaimFundsOptions::custom_tlvs_known`] to true after checking you've understood them all.
 	///
 	/// [`Event::PaymentClaimable`]: crate::events::Event::PaymentClaimable
 	/// [`Event::PaymentClaimable::claim_deadline`]: crate::events::Event::PaymentClaimable::claim_deadline
@@ -10138,25 +10150,7 @@ impl<
 	/// [`process_pending_events`]: EventsProvider::process_pending_events
 	/// [`create_inbound_payment`]: Self::create_inbound_payment
 	/// [`create_inbound_payment_for_hash`]: Self::create_inbound_payment_for_hash
-	/// [`claim_funds_with_known_custom_tlvs`]: Self::claim_funds_with_known_custom_tlvs
-	pub fn claim_funds(&self, payment_preimage: PaymentPreimage) {
-		self.claim_payment_internal(payment_preimage, false);
-	}
-
-	/// This is a variant of [`claim_funds`] that allows accepting a payment with custom TLVs with
-	/// even type numbers.
-	///
-	/// # Note
-	///
-	/// You MUST check you've understood all even TLVs before using this to
-	/// claim, otherwise you may unintentionally agree to some protocol you do not understand.
-	///
-	/// [`claim_funds`]: Self::claim_funds
-	pub fn claim_funds_with_known_custom_tlvs(&self, payment_preimage: PaymentPreimage) {
-		self.claim_payment_internal(payment_preimage, true);
-	}
-
-	fn claim_payment_internal(&self, payment_preimage: PaymentPreimage, custom_tlvs_known: bool) {
+	pub fn claim_funds(&self, payment_preimage: PaymentPreimage, options: ClaimFundsOptions) {
 		let payment_hash: PaymentHash = payment_preimage.into();
 
 		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
@@ -10167,7 +10161,7 @@ impl<
 				&self.node_signer,
 				&self.logger,
 				&self.inbound_payment_id_secret,
-				custom_tlvs_known,
+				options.custom_tlvs_known,
 			);
 
 			match res {
@@ -10766,17 +10760,6 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		// Decode attribution data to hold times.
 		let hold_times = sources.into_iter().filter_map(|(source, attribution_data)| {
 			if let HTLCSource::OutboundRoute { ref session_priv, ref path, .. } = source {
-				// If the path has trampoline hops, we need to hash the session private key to get the outer session key.
-				let derived_key;
-				let session_priv = if path.has_trampoline_hops() {
-					let session_priv_hash =
-						<Sha256 as CryptoHash>::hash(&session_priv.secret_bytes()).to_byte_array();
-					derived_key = SecretKey::from_slice(&session_priv_hash[..]).unwrap();
-					&derived_key
-				} else {
-					session_priv
-				};
-
 				let hold_times = attribution_data.map_or(Vec::new(), |attribution_data| {
 					decode_fulfill_attribution_data(
 						&self.secp_ctx,
@@ -10903,7 +10886,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					send_timestamp,
 				);
 			},
-			HTLCSource::TrampolineForward { previous_hop_data, .. } => {
+			HTLCSource::TrampolineForward { previous_hop_data, outbound_payment } => {
+				debug_assert!(outbound_payment.is_some());
 				// Only emit a single event for trampoline claims.
 				let mut event_prev_htlcs = Some(
 					previous_hop_data.iter().map(|hop| hop.htlc_locator(hop.amount_msat)).collect(),
@@ -10951,7 +10935,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						next_channel_outpoint,
 						next_channel_id,
 						current_previous_hop_data,
-						attribution_data.clone(),
+						// The upstream sender cannot verify an independently dispatched route.
+						None,
 						send_timestamp,
 					);
 				}
@@ -21702,7 +21687,7 @@ mod tests {
 	use crate::ln::outbound_payment::Retry;
 	use crate::ln::types::ChannelId;
 	use crate::prelude::*;
-	use crate::routing::router::{find_route, PaymentParameters, RouteParameters};
+	use crate::routing::router::{find_route, Path, PaymentParameters, RouteParameters};
 	use crate::sign::EntropySource;
 	use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 	use crate::util::config::{ChannelConfig, ChannelConfigUpdate};
@@ -21711,6 +21696,67 @@ mod tests {
 	use bitcoin::secp256k1::ecdh::SharedSecret;
 	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 	use core::sync::atomic::Ordering;
+
+	#[test]
+	fn delegated_trampoline_claim_starts_new_attribution() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		let (payment_preimage, payment_hash, _, _) =
+			route_payment(&nodes[0], &[&nodes[1]], 100_000);
+		let previous_hop = {
+			let claimable_payments = nodes[1].node.claimable_payments.lock().unwrap();
+			claimable_payments.claimable_payments.get(&payment_hash).unwrap().htlcs[0]
+				.mpp_part
+				.prev_hop
+				.clone()
+		};
+
+		let downstream_attribution =
+			onion_utils::process_fulfill_attribution_data(None, &[42; 32], 7);
+		let expected_attribution = onion_utils::process_fulfill_attribution_data(
+			None,
+			&previous_hop.incoming_packet_shared_secret,
+			0,
+		);
+		assert_ne!(downstream_attribution, expected_attribution);
+
+		// Delegated trampoline forwarding is not enabled yet, so construct its source manually
+		// and call the claim path directly to verify that downstream attribution is replaced.
+		let session_priv = SecretKey::from_slice(&[43; 32]).unwrap();
+		nodes[1].node.claim_funds_internal(
+			super::HTLCSource::TrampolineForward {
+				previous_hop_data: vec![previous_hop.clone()],
+				outbound_payment: Some(super::TrampolineDispatch {
+					payment_id: PaymentId([44; 32]),
+					path: Path { hops: Vec::new(), blinded_tail: None },
+					session_priv,
+				}),
+			},
+			payment_preimage,
+			100_000,
+			None,
+			false,
+			nodes[0].node.get_our_node_id(),
+			previous_hop.outpoint,
+			previous_hop.channel_id,
+			None,
+			Some(downstream_attribution),
+			None,
+		);
+		check_added_monitors(&nodes[1], 1);
+
+		let updates = get_htlc_update_msgs(&nodes[1], &nodes[0].node.get_our_node_id());
+		assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+		assert_eq!(updates.update_fulfill_htlcs[0].attribution_data, Some(expected_attribution));
+		assert!(matches!(
+			nodes[1].node.get_and_clear_pending_events().as_slice(),
+			[Event::PaymentForwarded { .. }]
+		));
+	}
 
 	#[test]
 	#[rustfmt::skip]
@@ -21862,7 +21908,7 @@ mod tests {
 		// claim_funds_along_route because the ordering of the messages causes the second half of the
 		// payment to be put in the holding cell, which confuses the test utilities. So we exchange the
 		// lightning messages manually.
-		nodes[1].node.claim_funds(payment_preimage);
+		nodes[1].node.claim_funds(payment_preimage, Default::default());
 		expect_payment_claimed!(nodes[1], our_payment_hash, 200_000);
 		check_added_monitors(&nodes[1], 2);
 
@@ -23007,7 +23053,7 @@ pub mod bench {
 
 				$node_b.process_pending_htlc_forwards();
 				expect_payment_claimable!(ANodeHolder { node: &$node_b }, payment_hash, payment_secret, 10_000);
-				$node_b.claim_funds(payment_preimage);
+				$node_b.claim_funds(payment_preimage, Default::default());
 				expect_payment_claimed!(ANodeHolder { node: &$node_b }, payment_hash, 10_000);
 
 				match $node_b.get_and_clear_pending_msg_events().pop().unwrap() {

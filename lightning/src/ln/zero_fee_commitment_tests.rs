@@ -155,7 +155,7 @@ fn test_htlc_claim_chunking() {
 	assert_eq!(node_1_commit_tx[0].output.len(), 75 + 2 + 1);
 
 	for (preimage, payment_hash) in node_1_preimages {
-		nodes[1].node.claim_funds(preimage);
+		nodes[1].node.claim_funds(preimage, Default::default());
 		check_added_monitors(&nodes[1], 1);
 		expect_payment_claimed!(nodes[1], payment_hash, NONDUST_HTLC_AMT_MSAT);
 	}

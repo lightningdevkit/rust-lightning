@@ -2671,7 +2671,7 @@ impl PaymentTracker {
 				.payment_preimages
 				.get(&payment_hash)
 				.expect("PaymentClaimable for unknown payment hash");
-			node.claim_funds(payment_preimage);
+			node.claim_funds(payment_preimage, Default::default());
 			self.claimed_payment_hashes.insert(payment_hash);
 		}
 	}

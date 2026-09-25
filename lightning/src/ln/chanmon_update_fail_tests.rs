@@ -117,7 +117,7 @@ fn test_monitor_and_persister_update_fail() {
 		.block_connected(&create_dummy_block(BlockHash::all_zeros(), 42, Vec::new()), 200);
 
 	// Try to update ChannelMonitor
-	nodes[1].node.claim_funds(preimage);
+	nodes[1].node.claim_funds(preimage, Default::default());
 	expect_payment_claimed!(nodes[1], payment_hash, 9_000_000);
 	check_added_monitors(&nodes[1], 1);
 
@@ -344,7 +344,7 @@ fn do_test_monitor_temporary_update_fail(disconnect_count: usize) {
 
 	// Claim the previous payment, which will result in a update_fulfill_htlc/CS from nodes[1]
 	// but nodes[0] won't respond since it is frozen.
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 
@@ -1290,7 +1290,7 @@ fn test_monitor_update_fail_reestablish() {
 	nodes[1].node.peer_disconnected(node_a_id);
 	nodes[0].node.peer_disconnected(node_b_id);
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
@@ -1518,7 +1518,7 @@ fn claim_while_disconnected_monitor_update_fail() {
 	nodes[0].node.peer_disconnected(node_b_id);
 	nodes[1].node.peer_disconnected(node_a_id);
 
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	expect_payment_claimed!(nodes[1], payment_hash_1, 1_000_000);
 
@@ -1848,7 +1848,7 @@ fn test_monitor_update_fail_claim() {
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	// As long as the preimage isn't on-chain, we shouldn't expose the `PaymentClaimed` event to
 	// users nor send the preimage to peers in the new commitment update.
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	check_added_monitors(&nodes[1], 1);
@@ -2088,7 +2088,7 @@ fn monitor_update_claim_fail_no_response() {
 	let as_raa = commitment_signed_dance_return_raa(&nodes[1], &nodes[0], &commitment, false);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
@@ -2503,7 +2503,7 @@ fn test_fail_htlc_on_broadcast_after_claim() {
 	let bs_txn = get_local_commitment_txn!(nodes[2], chan_id_2);
 	assert_eq!(bs_txn.len(), 1);
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 2000);
 
@@ -2709,7 +2709,7 @@ fn do_channel_holding_cell_serialize(disconnect: bool, reload_a: bool) {
 	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[0].node.claim_funds(payment_preimage_0);
+	nodes[0].node.claim_funds(payment_preimage_0, Default::default());
 	check_added_monitors(&nodes[0], 1);
 
 	nodes[1].node.handle_update_add_htlc(node_a_id, &send.msgs[0]);
@@ -2915,7 +2915,7 @@ fn do_test_reconnect_dup_htlc_claims(htlc_status: HTLCStatusAtDupClaim, second_f
 	// Note that we don't populate fulfill_msg.attribution_data here, which will lead to hold times being
 	// unavailable.
 	} else {
-		nodes[2].node.claim_funds(payment_preimage);
+		nodes[2].node.claim_funds(payment_preimage, Default::default());
 		check_added_monitors(&nodes[2], 1);
 		expect_payment_claimed!(nodes[2], payment_hash, 100_000);
 
@@ -3092,14 +3092,14 @@ fn double_temp_error() {
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	// `claim_funds` results in a ChannelMonitorUpdate.
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	let (latest_update_1, _) = nodes[1].chain_monitor.get_latest_mon_update_id(channel_id);
 
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	// Previously, this would've panicked due to a double-call to `Channel::monitor_update_failed`,
 	// which had some asserts that prevented it from being called twice.
-	nodes[1].node.claim_funds(payment_preimage_2);
+	nodes[1].node.claim_funds(payment_preimage_2, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 
@@ -3471,7 +3471,7 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 		route_payment(&nodes[2], &[&nodes[1], &nodes[0]], 1_000_000);
 
 	// Claim the first payment to get a `PaymentSent` event (but don't handle it yet).
-	nodes[2].node.claim_funds(payment_preimage_1);
+	nodes[2].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_1, 1_000_000);
 
@@ -3486,7 +3486,7 @@ fn do_test_blocked_chan_preimage_release(completion_mode: BlockedUpdateComplMode
 	// Now claim the second payment on nodes[0], which will ultimately result in nodes[1] trying to
 	// claim an HTLC on its channel with nodes[2], but that channel is blocked on the above
 	// `PaymentSent` event.
-	nodes[0].node.claim_funds(payment_preimage_2);
+	nodes[0].node.claim_funds(payment_preimage_2, Default::default());
 	check_added_monitors(&nodes[0], 1);
 	expect_payment_claimed!(nodes[0], payment_hash_2, 1_000_000);
 
@@ -3623,7 +3623,7 @@ fn do_test_inverted_mon_completion_order(
 		manager_b = nodes[1].node.encode();
 	}
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 100_000);
 
@@ -3816,7 +3816,7 @@ fn do_test_durable_preimages_on_closed_channel(
 
 	let mon_ab = get_monitor!(nodes[1], chan_id_ab).encode();
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
@@ -4051,7 +4051,7 @@ fn do_test_reload_mon_update_completion_actions(close_during_reload: bool) {
 	let (payment_preimage, payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
@@ -4168,7 +4168,7 @@ fn do_test_glacial_peer_cant_hang(hold_chan_a: bool) {
 	let (payment_preimage, payment_hash, ..) =
 		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
@@ -4325,7 +4325,7 @@ fn do_test_partial_claim_mon_update_compl_actions(reload_a: bool, reload_b: bool
 	// Claim along both paths, but only complete one of the two monitor updates.
 	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[3].node.claim_funds(preimage);
+	nodes[3].node.claim_funds(preimage, Default::default());
 	assert_eq!(nodes[3].node.get_and_clear_pending_msg_events(), Vec::new());
 	assert_eq!(nodes[3].node.get_and_clear_pending_events(), Vec::new());
 	check_added_monitors(&nodes[3], 2);
@@ -4563,7 +4563,7 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 
 	// Now that B has a pending forwarded payment across it with the inbound edge on-chain, claim
 	// the payment on C and give B the preimage for it.
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
 
@@ -4643,7 +4643,7 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 	// payment on disk, but don't let the `ChannelMonitorUpdate` complete. This should prevent the
 	// `Event::PaymentClaimed` from being generated.
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[1].node.claim_funds(payment_preimage);
+	nodes[1].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[1], 1);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
@@ -4760,7 +4760,7 @@ fn test_single_channel_multiple_mpp() {
 	let thrd = std::thread::spawn(move || {
 		// Initiate the claim in a background thread as it will immediately block waiting on the
 		// `write_blocker` we set above.
-		claim_node.claim_funds(payment_preimage);
+		claim_node.claim_funds(payment_preimage, Default::default());
 	});
 
 	// First unlock one monitor so that we have a pending
@@ -5189,7 +5189,7 @@ fn test_mpp_claim_to_holding_cell() {
 	// improving coverage somewhat but it isn't strictly critical to the test.
 	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
-	nodes[3].node.claim_funds(preimage_1);
+	nodes[3].node.claim_funds(preimage_1, Default::default());
 	check_added_monitors(&nodes[3], 2);
 
 	// Complete the B <-> D monitor update, freeing the first fulfill.
@@ -5540,7 +5540,7 @@ fn test_monitor_update_after_funding_spend() {
 
 	// B claims payment 1. The preimage monitor update also returns InProgress (deferred),
 	// so no Completed-while-InProgress assertion fires.
-	nodes[1].node.claim_funds(payment_preimage_1);
+	nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 	check_added_monitors(&nodes[1], 1);
 
 	// First event cycle: the force-close MonitorEvent (CommitmentTxConfirmed) fires first,

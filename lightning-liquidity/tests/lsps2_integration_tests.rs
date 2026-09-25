@@ -1547,7 +1547,7 @@ fn client_trusts_lsp_end_to_end_test() {
 	assert!(broadcasted.is_empty(), "There should be no broadcasted txs yet");
 	drop(broadcasted);
 
-	client_node.inner.node.claim_funds(preimage.unwrap());
+	client_node.inner.node.claim_funds(preimage.unwrap(), Default::default());
 
 	claim_and_assert_forwarded_only(
 		&payer_node,
@@ -1987,7 +1987,7 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 		other => panic!("Expected PaymentClaimable, got {:?}", other),
 	};
 
-	client_node.inner.node.claim_funds(preimage);
+	client_node.inner.node.claim_funds(preimage, Default::default());
 	claim_and_assert_forwarded_only(&payer_node, &service_node.inner, &client_node.inner, preimage);
 
 	// Service now has PaymentForwarded. Record in JIT state but still not safe to broadcast.
@@ -2198,7 +2198,7 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 	assert!(closed_on_service, "Expected service->client channel to close due to HTLC timeout");
 
 	// Client tries to claim but should fail since HTLC timed out
-	client_node.inner.node.claim_funds(preimage);
+	client_node.inner.node.claim_funds(preimage, Default::default());
 	let client_events = client_node.inner.node.get_and_clear_pending_events();
 	assert_eq!(client_events.len(), 1);
 	match &client_events[0] {

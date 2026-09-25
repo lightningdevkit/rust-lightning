@@ -175,7 +175,7 @@ fn expect_channel_shutdown_state_with_htlc() {
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
 	// Claim Funds on Node2
-	nodes[2].node.claim_funds(payment_preimage_0);
+	nodes[2].node.claim_funds(payment_preimage_0, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
@@ -452,7 +452,7 @@ fn updates_shutdown_wait() {
 	let res = nodes[1].node.send_payment_with_route(route_2, payment_hash, onion, id);
 	unwrap_send_err!(nodes[1], res, true, APIError::ChannelUnavailable { .. }, {});
 
-	nodes[2].node.claim_funds(payment_preimage_0);
+	nodes[2].node.claim_funds(payment_preimage_0, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_0, 100_000);
 
@@ -718,7 +718,7 @@ fn do_test_shutdown_rebroadcast(recv_count: u8) {
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash, 100_000);
 
@@ -1878,7 +1878,7 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	// by not processing the `PaymentSent` event upon claim.
 	let (preimage_a, payment_hash_a, ..) = route_payment(&nodes[1], &[&nodes[2]], 500_000);
 
-	nodes[2].node.claim_funds(preimage_a);
+	nodes[2].node.claim_funds(preimage_a, Default::default());
 	check_added_monitors(&nodes[2], 1);
 	expect_payment_claimed!(nodes[2], payment_hash_a, 500_000);
 

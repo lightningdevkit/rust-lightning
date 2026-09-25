@@ -1818,9 +1818,9 @@ mod tests {
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 
-		nodes[1].node.claim_funds(payment_preimage_1);
+		nodes[1].node.claim_funds(payment_preimage_1, Default::default());
 		check_added_monitors(&nodes[1], 1);
-		nodes[1].node.claim_funds(payment_preimage_2);
+		nodes[1].node.claim_funds(payment_preimage_2, Default::default());
 		check_added_monitors(&nodes[1], 1);
 
 		let persistences =

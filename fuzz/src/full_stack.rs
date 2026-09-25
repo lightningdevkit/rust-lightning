@@ -845,7 +845,7 @@ pub fn do_test(mut data: &[u8], logger: &Arc<dyn Logger + MaybeSend + MaybeSync>
 					} else {
 						let mut payment_preimage = PaymentPreimage([0; 32]);
 						payment_preimage.0[0] = payment.0[0];
-						channelmanager.claim_funds(payment_preimage);
+						channelmanager.claim_funds(payment_preimage, Default::default());
 					}
 				}
 			},
