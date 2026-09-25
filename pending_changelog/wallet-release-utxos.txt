@@ -1,0 +1,6 @@
+# API Updates
+
+ * `Wallet` and `WalletSync` keep every UTXO they select reserved until it is released with the
+   new `Wallet::release_utxos` and `WalletSync::release_utxos`. Users of these wrappers must call
+   them with the inputs from `Event::DiscardFunding` once a transaction funded through the wallet
+   will no longer be broadcast, such as when a splice negotiation fails.
