@@ -544,6 +544,7 @@ where
 		let mut selected_amount;
 		let mut total_fees;
 		let mut selected_utxos;
+		let mut prev_locks = Vec::new();
 		{
 			let mut locked_utxos = self.locked_utxos.lock().unwrap();
 			let mut eligible_utxos = utxos
@@ -646,46 +647,62 @@ where
 				total_fees -= fee_to_spend_utxo;
 			}
 			for (utxo, _) in &selected_utxos {
-				locked_utxos.insert(utxo.outpoint, claim_id);
+				let prev = locked_utxos.insert(utxo.outpoint, claim_id);
+				if prev != Some(claim_id) {
+					prev_locks.push((utxo.outpoint, prev));
+				}
 			}
 		}
 
-		let remaining_amount = selected_amount - target_amount_sat - total_fees;
-		let change_script = self.source.get_change_script().await?;
-		let change_output_fee = fee_for_weight(
-			target_feerate_sat_per_1000_weight,
-			(8 /* value */ + change_script.consensus_encode(&mut sink()).unwrap() as u64)
-				* WITNESS_SCALE_FACTOR as u64,
-		);
-		let change_output_amount =
-			Amount::from_sat(remaining_amount.to_sat().saturating_sub(change_output_fee));
-		let change_output = if change_output_amount < change_script.minimal_non_dust() {
-			log_debug!(self.logger, "Coin selection attempt did not yield change output");
-			None
-		} else {
-			Some(TxOut { script_pubkey: change_script, value: change_output_amount })
-		};
+		let selection = async {
+			let remaining_amount = selected_amount - target_amount_sat - total_fees;
+			let change_script = self.source.get_change_script().await?;
+			let change_output_fee = fee_for_weight(
+				target_feerate_sat_per_1000_weight,
+				(8 /* value */ + change_script.consensus_encode(&mut sink()).unwrap() as u64)
+					* WITNESS_SCALE_FACTOR as u64,
+			);
+			let change_output_amount =
+				Amount::from_sat(remaining_amount.to_sat().saturating_sub(change_output_fee));
+			let change_output = if change_output_amount < change_script.minimal_non_dust() {
+				log_debug!(self.logger, "Coin selection attempt did not yield change output");
+				None
+			} else {
+				Some(TxOut { script_pubkey: change_script, value: change_output_amount })
+			};
 
-		let mut confirmed_utxos = Vec::with_capacity(selected_utxos.len());
-		for (utxo, _) in selected_utxos {
-			let prevtx = self.source.get_prevtx(utxo.outpoint).await?;
-			let prevtx_id = prevtx.compute_txid();
-			if prevtx_id != utxo.outpoint.txid
-				|| prevtx.output.get(utxo.outpoint.vout as usize).is_none()
-			{
-				log_error!(
-					self.logger,
-					"Tx {} from wallet source doesn't contain output referenced by outpoint: {}",
-					prevtx_id,
-					utxo.outpoint,
-				);
-				return Err(());
+			let mut confirmed_utxos = Vec::with_capacity(selected_utxos.len());
+			for (utxo, _) in selected_utxos {
+				let prevtx = self.source.get_prevtx(utxo.outpoint).await?;
+				let prevtx_id = prevtx.compute_txid();
+				if prevtx_id != utxo.outpoint.txid
+					|| prevtx.output.get(utxo.outpoint.vout as usize).is_none()
+				{
+					log_error!(
+						self.logger,
+						"Tx {} from wallet source doesn't contain output referenced by outpoint: {}",
+						prevtx_id,
+						utxo.outpoint,
+					);
+					return Err(());
+				}
+
+				confirmed_utxos.push(ConfirmedUtxo { utxo, prevtx });
 			}
 
-			confirmed_utxos.push(ConfirmedUtxo { utxo, prevtx });
+			Ok(CoinSelection { confirmed_utxos, change_output })
 		}
-
-		Ok(CoinSelection { confirmed_utxos, change_output })
+		.await;
+		if selection.is_err() {
+			let mut locked_utxos = self.locked_utxos.lock().unwrap();
+			for (outpoint, prev) in prev_locks {
+				match prev {
+					Some(prev_claim_id) => locked_utxos.insert(outpoint, prev_claim_id),
+					None => locked_utxos.remove(&outpoint),
+				};
+			}
+		}
+		selection
 	}
 }
 
@@ -1018,5 +1035,101 @@ impl<T: CoinSelectionSourceSync> CoinSelectionSource for CoinSelectionSourceSync
 	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a {
 		let psbt = self.0.sign_psbt(psbt);
 		async move { psbt }
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::util::test_utils::{TestLogger, TestWalletSource};
+
+	use bitcoin::absolute::LockTime;
+	use bitcoin::secp256k1::SecretKey;
+	use bitcoin::transaction::Version;
+	use bitcoin::TxIn;
+	use core::sync::atomic::{AtomicBool, Ordering};
+
+	/// A wallet source whose `get_prevtx` fails while `fail_prevtx` is set.
+	struct FailingPrevtxSource {
+		inner: TestWalletSource,
+		fail_prevtx: AtomicBool,
+	}
+
+	impl WalletSourceSync for FailingPrevtxSource {
+		fn list_confirmed_utxos(&self) -> Result<Vec<Utxo>, ()> {
+			self.inner.list_confirmed_utxos()
+		}
+		fn get_prevtx(&self, outpoint: OutPoint) -> Result<Transaction, ()> {
+			if self.fail_prevtx.load(Ordering::Acquire) {
+				return Err(());
+			}
+			self.inner.get_prevtx(outpoint)
+		}
+		fn get_change_script(&self) -> Result<ScriptBuf, ()> {
+			self.inner.get_change_script()
+		}
+		fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
+			self.inner.sign_psbt(psbt)
+		}
+	}
+
+	/// Returns a source holding a single UTXO, along with that UTXO's outpoint.
+	fn single_utxo_source() -> (FailingPrevtxSource, OutPoint) {
+		let inner = TestWalletSource::new(SecretKey::from_slice(&[1; 32]).unwrap());
+		let prevtx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::ZERO,
+			input: vec![TxIn::default()],
+			output: vec![TxOut {
+				value: Amount::from_sat(100_000),
+				script_pubkey: inner.get_change_script().unwrap(),
+			}],
+		};
+		let outpoint = OutPoint { txid: prevtx.compute_txid(), vout: 0 };
+		inner.add_utxo(prevtx, 0);
+		(FailingPrevtxSource { inner, fail_prevtx: AtomicBool::new(false) }, outpoint)
+	}
+
+	fn select(
+		wallet: &WalletSync<&FailingPrevtxSource, &TestLogger>, claim_id: Option<ClaimId>,
+	) -> Result<CoinSelection, ()> {
+		let must_pay_to = [TxOut {
+			value: Amount::from_sat(50_000),
+			script_pubkey: wallet.wallet.source.0.get_change_script().unwrap(),
+		}];
+		wallet.select_confirmed_utxos(claim_id, Vec::new(), &must_pay_to, 253, u64::MAX)
+	}
+
+	#[test]
+	fn failed_selection_releases_newly_locked_utxos() {
+		let (source, outpoint) = single_utxo_source();
+		let logger = TestLogger::new();
+		let wallet = WalletSync::new(&source, &logger);
+
+		source.fail_prevtx.store(true, Ordering::Release);
+		assert!(select(&wallet, None).is_err());
+
+		source.fail_prevtx.store(false, Ordering::Release);
+		let selection = select(&wallet, None).unwrap();
+		assert_eq!(selection.confirmed_utxos[0].outpoint(), outpoint);
+	}
+
+	#[test]
+	fn failed_forced_selection_restores_previous_claim() {
+		let (source, outpoint) = single_utxo_source();
+		let logger = TestLogger::new();
+		let wallet = WalletSync::new(&source, &logger);
+		let claim_a = Some(ClaimId([1; 32]));
+		let claim_b = Some(ClaimId([2; 32]));
+
+		select(&wallet, claim_a).unwrap();
+
+		// With the only UTXO locked to claim A, claim B reaches it only by forcing a conflicting
+		// spend, which then fails at `get_prevtx`.
+		source.fail_prevtx.store(true, Ordering::Release);
+		assert!(select(&wallet, claim_b).is_err());
+
+		let locked_utxos = wallet.wallet.locked_utxos.lock().unwrap();
+		assert_eq!(locked_utxos.get(&outpoint), Some(&claim_a));
 	}
 }
