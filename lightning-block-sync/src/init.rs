@@ -117,7 +117,8 @@ where
 /// 	};
 ///
 /// 	// Synchronize any channel monitors and the channel manager to be on the best block.
-/// 	let mut monitor_listener = (monitor, &*tx_broadcaster, &*fee_estimator, &*logger);
+/// 	let mut monitor_listener =
+/// 		(monitor, &*tx_broadcaster, &*fee_estimator, &*logger, &*entropy_source);
 /// 	let listeners = vec![
 /// 		(monitor_best_block, &monitor_listener as &dyn chain::Listen),
 /// 		(manager_best_block, &manager as &dyn chain::Listen),

@@ -5021,7 +5021,7 @@ fn native_async_persist() {
 	let completed_persist = async_chain_monitor.release_pending_monitor_events();
 	assert_eq!(completed_persist.len(), 1);
 	assert_eq!(completed_persist[0].2.len(), 1);
-	assert!(matches!(completed_persist[0].2[0], MonitorEvent::Completed { .. }));
+	assert!(matches!(completed_persist[0].2[0].1, MonitorEvent::Completed { .. }));
 
 	// Now test two async `ChannelMonitorUpdate`s in flight at once, completing them in-order but
 	// separately.
@@ -5069,7 +5069,7 @@ fn native_async_persist() {
 	let completed_persist = async_chain_monitor.release_pending_monitor_events();
 	assert_eq!(completed_persist.len(), 1);
 	assert_eq!(completed_persist[0].2.len(), 1);
-	assert!(matches!(completed_persist[0].2[0], MonitorEvent::Completed { .. }));
+	assert!(matches!(completed_persist[0].2[0].1, MonitorEvent::Completed { .. }));
 
 	// Finally, test two async `ChanelMonitorUpdate`s in flight at once, completing them
 	// out-of-order and ensuring that no `MonitorEvent::Completed` is generated until they are both
@@ -5115,7 +5115,7 @@ fn native_async_persist() {
 	let completed_persist = async_chain_monitor.release_pending_monitor_events();
 	assert_eq!(completed_persist.len(), 1);
 	assert_eq!(completed_persist[0].2.len(), 1);
-	if let MonitorEvent::Completed { monitor_update_id, .. } = &completed_persist[0].2[0] {
+	if let (_, MonitorEvent::Completed { monitor_update_id, .. }) = &completed_persist[0].2[0] {
 		assert_eq!(*monitor_update_id, 4);
 	} else {
 		panic!();

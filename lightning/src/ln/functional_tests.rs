@@ -10078,6 +10078,7 @@ fn do_test_manual_broadcast_skips_commitment_until_funding(
 			&nodes[0].tx_broadcaster,
 			&nodes[0].fee_estimator,
 			&nodes[0].logger,
+			&nodes[0].keys_manager,
 		);
 	} else {
 		mine_transaction(&nodes[0], &funding_tx);
