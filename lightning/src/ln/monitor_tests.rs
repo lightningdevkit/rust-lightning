@@ -21,7 +21,7 @@ use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
-use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManagerReadArgs, MIN_CLTV_EXPIRY_DELTA, PaymentId};
+use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManagerReadArgs, ClaimFundsOptions, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::crypto::utils::sign;
@@ -3801,7 +3801,7 @@ fn test_onchain_preimage_after_fail_back_before_backwards_timeout() {
 	check_added_monitors(&nodes[1], 1);
 
 	// Have C claim the payment and go on chain with an HTLC-Success transaction.
-	nodes[2].node.claim_funds(payment_preimage);
+	nodes[2].node.claim_funds(payment_preimage, ClaimFundsOptions::default());
 	expect_payment_claimed!(nodes[2], payment_hash, 3_000_000);
 	check_added_monitors(&nodes[2], 1);
 	let _ = get_htlc_update_msgs(&nodes[2], &node_b_id);
