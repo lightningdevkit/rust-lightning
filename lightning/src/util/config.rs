@@ -18,6 +18,11 @@ use crate::util::ser::Readable;
 /// Configuration we set when applicable.
 ///
 /// `Default::default()` provides sane defaults.
+///
+/// Outbound unannounced channels always attempt to negotiate `option_scid_alias` when supported by
+/// the counterparty. This avoids including the on-chain funding output in invoices and requires
+/// forwarding via SCID aliases. If the counterparty does not support or accept the channel type,
+/// we fall back to a channel without this option.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelHandshakeConfig {
 	/// Confirmations we will wait for before considering the channel locked in.
@@ -106,28 +111,6 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Maximum value: `100` (Any values larger will be treated as `100` instead.)
 	pub unannounced_channel_max_inbound_htlc_value_in_flight_percentage: u8,
-	/// If set, we attempt to negotiate the `scid_privacy` (referred to as `scid_alias` in the
-	/// BOLTs) option for outbound private channels. This provides better privacy by not including
-	/// our real on-chain channel UTXO in each invoice and requiring that our counterparty only
-	/// relay HTLCs to us using the channel's SCID alias.
-	///
-	/// If this option is set, channels may be created that will not be readable by LDK versions
-	/// prior to 0.0.106, causing [`ChannelManager`]'s read method to return a
-	/// [`DecodeError::InvalidValue`].
-	///
-	/// Note that setting this to true does *not* prevent us from opening channels with
-	/// counterparties that do not support the `scid_alias` option; we will simply fall back to a
-	/// private channel without that option.
-	///
-	/// Ignored if the channel is negotiated to be announced, see
-	/// [`ChannelHandshakeConfig::announce_for_forwarding`] and
-	/// [`ChannelHandshakeLimits::force_announced_channel_preference`] for more.
-	///
-	/// Default value: `false` (This value is likely to change to `true` in the future.)
-	///
-	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
-	/// [`DecodeError::InvalidValue`]: crate::ln::msgs::DecodeError::InvalidValue
-	pub negotiate_scid_privacy: bool,
 	/// Set to announce the channel publicly and notify all nodes that they can route via this
 	/// channel.
 	///
@@ -266,7 +249,6 @@ impl Default for ChannelHandshakeConfig {
 			our_htlc_minimum_msat: 1,
 			announced_channel_max_inbound_htlc_value_in_flight_percentage: 25,
 			unannounced_channel_max_inbound_htlc_value_in_flight_percentage: 100,
-			negotiate_scid_privacy: false,
 			announce_for_forwarding: false,
 			commit_upfront_shutdown_pubkey: true,
 			their_channel_reserve_proportional_millionths: 10_000,
@@ -289,6 +271,8 @@ impl Readable for ChannelHandshakeConfig {
 		// Apply the same byte to both the announced and the unannounced maximums so as to
 		// not invalidate the existing fuzz corpus
 		let max_inbound_htlc_value_in_flight_percentage = Readable::read(reader)?;
+		// The fuzz corpus reserves a byte for SCID privacy negotiation.
+		let _scid_privacy: bool = Readable::read(reader)?;
 
 		Ok(Self {
 			minimum_depth,
@@ -298,7 +282,6 @@ impl Readable for ChannelHandshakeConfig {
 				max_inbound_htlc_value_in_flight_percentage,
 			unannounced_channel_max_inbound_htlc_value_in_flight_percentage:
 				max_inbound_htlc_value_in_flight_percentage,
-			negotiate_scid_privacy: Readable::read(reader)?,
 			announce_for_forwarding: Readable::read(reader)?,
 			commit_upfront_shutdown_pubkey: Readable::read(reader)?,
 			their_channel_reserve_proportional_millionths: Readable::read(reader)?,

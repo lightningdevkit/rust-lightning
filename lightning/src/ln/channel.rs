@@ -16512,7 +16512,6 @@ pub(super) fn get_initial_channel_type(
 	// with no other changes, and fall back to `only_static_remotekey`.
 	let mut ret = ChannelTypeFeatures::only_static_remote_key();
 	if !config.channel_handshake_config.announce_for_forwarding
-		&& config.channel_handshake_config.negotiate_scid_privacy
 		&& their_features.supports_scid_privacy()
 	{
 		ret.set_scid_privacy_required();
