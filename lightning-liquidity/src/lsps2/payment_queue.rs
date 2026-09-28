@@ -69,6 +69,19 @@ impl PaymentQueue {
 	pub(crate) fn clear(&mut self) -> Vec<InterceptedHTLC> {
 		self.payments.drain(..).map(|entry| entry.htlcs).flatten().collect()
 	}
+
+	/// Drops the HTLCs for which `keep` returns `false`, discarding any payment left without
+	/// HTLCs. Returns whether anything was dropped.
+	pub(crate) fn retain_htlcs(&mut self, mut keep: impl FnMut(&InterceptedHTLC) -> bool) -> bool {
+		let mut changed = false;
+		self.payments.retain_mut(|entry| {
+			let previous_len = entry.htlcs.len();
+			entry.htlcs.retain(|htlc| keep(htlc));
+			changed |= entry.htlcs.len() != previous_len;
+			!entry.htlcs.is_empty()
+		});
+		changed
+	}
 }
 
 impl_ser_tlv_based!(PaymentQueue, {
@@ -168,5 +181,38 @@ mod tests {
 				payment_hash: PaymentHash([101; 32]),
 			}]
 		);
+	}
+
+	#[test]
+	fn test_retain_htlcs() {
+		let htlc = |id, hash| InterceptedHTLC {
+			intercept_id: InterceptId([id; 32]),
+			expected_outbound_amount_msat: 100_000_000,
+			payment_hash: PaymentHash([hash; 32]),
+		};
+		let mut payment_queue = PaymentQueue::new();
+		payment_queue.add_htlc(htlc(0, 100));
+		payment_queue.add_htlc(htlc(1, 100));
+		payment_queue.add_htlc(htlc(2, 101));
+
+		// Dropping one part of a payment leaves its siblings and other payments alone.
+		assert!(payment_queue.retain_htlcs(|htlc| htlc.intercept_id != InterceptId([0; 32])));
+		assert_eq!(payment_queue.pop_greater_than_msat(0).unwrap().htlcs, vec![htlc(1, 100)]);
+		assert_eq!(payment_queue.pop_greater_than_msat(0).unwrap().htlcs, vec![htlc(2, 101)]);
+		assert_eq!(payment_queue.pop_greater_than_msat(0), None);
+
+		// A pass that drops nothing reports no change.
+		let mut payment_queue = PaymentQueue::new();
+		payment_queue.add_htlc(htlc(0, 100));
+		assert!(!payment_queue.retain_htlcs(|htlc| htlc.intercept_id != InterceptId([1; 32])));
+		assert_eq!(payment_queue.pop_greater_than_msat(0).unwrap().htlcs, vec![htlc(0, 100)]);
+
+		// A payment left without HTLCs is discarded entirely.
+		let mut payment_queue = PaymentQueue::new();
+		payment_queue.add_htlc(htlc(0, 100));
+		payment_queue.add_htlc(htlc(1, 101));
+		assert!(payment_queue.retain_htlcs(|htlc| htlc.intercept_id != InterceptId([0; 32])));
+		assert_eq!(payment_queue.pop_greater_than_msat(0).unwrap().htlcs, vec![htlc(1, 101)]);
+		assert_eq!(payment_queue.pop_greater_than_msat(0), None);
 	}
 }
