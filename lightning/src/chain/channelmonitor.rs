@@ -7082,7 +7082,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		let mut current_funding_contribution = None;
 		let mut funding_tx_confirmed_in = None;
 		let mut alternative_funding_confirmed_block = None;
-		let mut pending_mon_evs_with_ids: Option<Vec<ReadableIdMonitorEvent>> = None;
+		let mut pending_mon_evs_with_ids: Option<Vec<(u128, MonitorEvent)>> = None;
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
@@ -7156,7 +7156,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 
 		let pending_monitor_events: Vec<(u128, MonitorEvent)> =
 			if let Some(pending_mon_evs_with_ids) = pending_mon_evs_with_ids {
-				pending_mon_evs_with_ids.into_iter().map(|ev| (ev.0, ev.1)).collect()
+				pending_mon_evs_with_ids
 			} else if let Some(events) = pending_monitor_events_legacy {
 				events.into_iter()
 					.map(|ev| (random_monitor_event_id(entropy_source), ev))
@@ -7334,19 +7334,11 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 	}
 }
 
-/// Deserialization wrapper for reading a `(u128, MonitorEvent)`.
-/// Necessary because we can't deserialize a `(Readable, MaybeReadable)` tuple due to trait
-/// conflicts.
-struct ReadableIdMonitorEvent(u128, MonitorEvent);
-
-impl MaybeReadable for ReadableIdMonitorEvent {
+impl MaybeReadable for (u128, MonitorEvent) {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Option<Self>, DecodeError> {
 		let id: u128 = Readable::read(reader)?;
 		let event_opt: Option<MonitorEvent> = MaybeReadable::read(reader)?;
-		match event_opt {
-			Some(ev) => Ok(Some(ReadableIdMonitorEvent(id, ev))),
-			None => Ok(None),
-		}
+		Ok(event_opt.map(|ev| (id, ev)))
 	}
 }
 
