@@ -1803,6 +1803,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	write_tlv_fields!(writer, {
 		(1, channel_monitor.funding_spend_confirmed, option),
 		(3, channel_monitor.htlcs_resolved_on_chain, required_vec),
+		// Superceded in 0.4 by pending_mon_evs_with_ids
 		(5, pending_monitor_events_legacy, option), // Equivalent to optional_vec because Iterable also writes as WithoutLength
 		(7, channel_monitor.funding_spend_seen, required),
 		(9, channel_monitor.counterparty_node_id, required),
@@ -1826,7 +1827,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		(41, channel_monitor.funding.contribution, option),
 		(43, channel_monitor.funding_tx_confirmed_in, option),
 		(45, alternative_funding_confirmed_block, option),
-		(47, pending_mon_evs_with_ids, option),
+		(47, pending_mon_evs_with_ids, option), // Added and always set in 0.4
 	});
 
 	Ok(())
@@ -7085,6 +7086,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 		read_tlv_fields!(reader, {
 			(1, funding_spend_confirmed, option),
 			(3, htlcs_resolved_on_chain, optional_vec),
+			// Superceded in 0.4 by pending_mon_evs_with_ids
 			(5, pending_monitor_events_legacy, optional_vec),
 			(7, funding_spend_seen, option),
 			(9, counterparty_node_id, option),
@@ -7108,7 +7110,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 			(41, current_funding_contribution, option),
 			(43, funding_tx_confirmed_in, option),
 			(45, alternative_funding_confirmed_block, option),
-			(47, pending_mon_evs_with_ids, optional_vec),
+			(47, pending_mon_evs_with_ids, optional_vec), // Added and always set in 0.4
 		});
 		if let Some(previous_blocks) = best_block_previous_blocks {
 			best_block.previous_blocks = previous_blocks;
