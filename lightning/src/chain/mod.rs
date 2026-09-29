@@ -419,22 +419,15 @@ pub trait Watch<ChannelSigner: EcdsaChannelSigner> {
 		&self, channel_id: ChannelId, update: &ChannelMonitorUpdate,
 	) -> ChannelMonitorUpdateStatus;
 
-	/// Returns any monitor events since the last call. Subsequent calls must only return new
-	/// events.
+	/// Returns the list of pending [`MonitorEvent`]s. When called repeatedly during runtime, only
+	/// new events since the last call are returned.
 	///
 	/// Each event comes with a corresponding id. Once the event is processed, call
 	/// [`Watch::ack_monitor_event`] with the corresponding id and channel id. Unacknowledged events
 	/// will be re-provided by this method after startup.
 	///
-	/// Note that after any block- or transaction-connection calls to a [`ChannelMonitor`], no
-	/// further events may be returned here until the [`ChannelMonitor`] has been fully persisted
-	/// to disk.
-	///
 	/// No [`MonitorEvent::HTLCEvent`]s for failing HTLCs may be returned for a [`ChannelMonitor`]
 	/// while any [`ChannelMonitorUpdate`] applied to it has not yet been fully persisted to disk.
-	///
-	/// For details on asynchronous [`ChannelMonitor`] updating and returning
-	/// [`MonitorEvent::Completed`] here, see [`ChannelMonitorUpdateStatus::InProgress`].
 	fn release_pending_monitor_events(
 		&self,
 	) -> Vec<(OutPoint, ChannelId, Vec<(u128, MonitorEvent)>, PublicKey)>;

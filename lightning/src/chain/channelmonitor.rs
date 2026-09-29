@@ -2232,8 +2232,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		}
 	}
 
-	/// Get the list of HTLCs whose status has been updated. This should be called by ChannelManager
-	/// via [`chain::Watch::release_pending_monitor_events`].
+	/// Get the list of pending [`MonitorEvent`]s for this monitor. This should be called by
+	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
 	///
 	/// Returned events are retained internally until [Self::ack_monitor_event] is called with their
 	/// ID.
