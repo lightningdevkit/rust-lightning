@@ -600,7 +600,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 				MessageSendEvent::SendChannelReestablish { msg, .. } => msg.clone(),
 				_ => panic!("Unexpected events: {:?}", warn_reestablish),
 			};
-		} else {
+		} else if not_stale {
 			let msgs = nodes[1].node.get_and_clear_pending_msg_events();
 			assert!(msgs.len() >= 4);
 			match msgs.last() {
@@ -613,12 +613,37 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 				MessageSendEvent::SendChannelReestablish { msg, .. } => msg.clone(),
 				_ => panic!("Unexpected events: {:?}", msgs),
 			};
+		} else {
+			// A has acknowledged B's commitment, so B must reject its rollback claim. B's
+			// reestablishment proof must still let A detect that its own state is stale.
+			let msgs = nodes[1].node.get_and_clear_pending_msg_events();
+			assert_eq!(msgs.len(), 3);
+			reestablish_msg = match &msgs[0] {
+				MessageSendEvent::SendChannelReestablish { msg, .. } => msg.clone(),
+				_ => panic!("Unexpected events: {:?}", msgs),
+			};
+			let err = "Peer attempted to reestablish channel with a very old remote commitment transaction: 1 (received) vs 2 (expected)".to_owned();
+			assert!(msgs.iter().any(|event| matches!(event,
+				MessageSendEvent::HandleError {
+					node_id, action: ErrorAction::SendErrorMessage { msg },
+				} if *node_id == nodes[0].node.get_our_node_id() && msg.channel_id == chan.2 && msg.data == err
+			)));
+			assert!(msgs.iter().any(|event| matches!(event,
+				MessageSendEvent::BroadcastChannelUpdate { msg, .. } if msg.contents.channel_flags & 2 == 2
+			)));
+			check_added_monitors(&nodes[1], 1);
+			check_closed_event(&nodes[1], 1, ClosureReason::ProcessingError { err }, false, &[nodes[0].node.get_our_node_id()], 1000000);
 		}
 
 		{
-			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-			// The node B should never force-close the channel.
-			assert!(node_txn.is_empty());
+			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+			if !substantially_old && !not_stale {
+				assert_eq!(node_txn.len(), 1);
+				assert_eq!(node_txn[0].compute_txid(), get_local_commitment_txn!(nodes[1], chan.2)[0].compute_txid());
+				check_spends!(node_txn[0], chan.3);
+			} else {
+				assert!(node_txn.is_empty());
+			}
 		}
 
 		// Check A panics upon seeing proof it has fallen behind.
@@ -1873,4 +1898,3 @@ fn test_hold_completed_inflight_monitor_updates_upon_manager_reload() {
 	reconnect_args.pending_htlc_adds = (0, 1);
 	reconnect_nodes(reconnect_args);
 }
-
