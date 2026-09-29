@@ -20019,6 +20019,14 @@ impl<
 			let channel_id = channel.context.channel_id();
 			channel_id_set.insert(channel_id);
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&channel_id) {
+				// Blocked updates the `ChannelMonitor` has since applied must be dropped before
+				// checking whether we're stale, as force-closing a stale channel fails back the
+				// HTLCs added in its blocked updates, which the counterparty is committed to if
+				// the update was applied.
+				channel.on_startup_drop_completed_blocked_mon_updates_through(
+					&logger,
+					monitor.get_latest_update_id(),
+				);
 				if channel.get_cur_holder_commitment_transaction_number()
 					> monitor.get_cur_holder_commitment_number()
 					|| channel.get_revoked_counterparty_commitment_transaction_number()
@@ -20140,10 +20148,6 @@ impl<
 						}
 					}
 				} else {
-					channel.on_startup_drop_completed_blocked_mon_updates_through(
-						&logger,
-						monitor.get_latest_update_id(),
-					);
 					log_info!(logger, "Successfully loaded at update_id {} against monitor at update id {} with {} blocked updates",
 						channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
