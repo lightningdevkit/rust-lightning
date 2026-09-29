@@ -5594,3 +5594,143 @@ fn test_monitor_update_after_funding_spend() {
 	do_test_monitor_update_after_funding_spend(false);
 	do_test_monitor_update_after_funding_spend(true);
 }
+
+#[test]
+fn test_stale_manager_with_since_applied_blocked_mon_update() {
+	// When a `ChannelManager` is stale compared to a `ChannelMonitor`, it force-closes the channel
+	// on startup and fails backwards any HTLCs the counterparty was never committed to, including
+	// HTLCs added in a blocked `ChannelMonitorUpdate`. A blocked update may have since been
+	// applied to the `ChannelMonitor` and its commitment transaction sent to the counterparty, in
+	// which case the HTLCs must not be failed backwards.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let nodes_1_deserialized;
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(legacy_cfg.clone()), Some(legacy_cfg.clone()), Some(legacy_cfg)],
+	);
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	let chan_id_ab = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let chan_id_bc = create_announced_chan_between_nodes(&nodes, 1, 2).2;
+
+	// B pays C so that, by not handling the `PaymentSent` event once C claims, we can block B's
+	// `ChannelMonitorUpdate` for C's next `revoke_and_ack`.
+	let (preimage_1, payment_hash_1, ..) = route_payment(&nodes[1], &[&nodes[2]], 500_000);
+	nodes[2].node.claim_funds(preimage_1);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash_1, 500_000);
+	let cs_claim = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, cs_claim.update_fulfill_htlcs[0].clone());
+	nodes[1].node.handle_commitment_signed_batch_test(node_c_id, &cs_claim.commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+	let (bs_raa, bs_cs) = get_revoke_commit_msgs(&nodes[1], &node_c_id);
+	nodes[2].node.handle_revoke_and_ack(node_b_id, &bs_raa);
+	check_added_monitors(&nodes[2], 1);
+	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &bs_cs);
+	check_added_monitors(&nodes[2], 1);
+	let cs_raa = get_event_msg!(nodes[2], MessageSendEvent::SendRevokeAndACK, node_b_id);
+
+	// Place payment 2's HTLC in the B <-> C holding cell, from which it is released into the
+	// blocked `ChannelMonitorUpdate` once B receives C's revocation.
+	let (route_2, payment_hash_2, preimage_2, payment_secret_2) =
+		get_route_and_payment_hash!(&nodes[0], nodes[2], 900_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret_2, 900_000);
+	let id = PaymentId(payment_hash_2.0);
+	nodes[0].node.send_payment_with_route(route_2, payment_hash_2, onion, id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let as_send = get_htlc_update_msgs(&nodes[0], &node_b_id);
+	nodes[1].node.handle_update_add_htlc(node_a_id, &as_send.update_add_htlcs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &as_send.commitment_signed, false, false);
+	nodes[1].node.process_pending_htlc_forwards();
+	check_added_monitors(&nodes[1], 0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa);
+	check_added_monitors(&nodes[1], 0);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	let stale_node_b_ser = nodes[1].node.encode();
+
+	// Handling the `PaymentSent` event releases the blocked `ChannelMonitorUpdate`, after which
+	// payment 2's HTLC is sent to C. Then move the `ChannelMonitor` beyond the stale
+	// `ChannelManager`.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert!(matches!(events[0], Event::PaymentSent { .. }), "{events:?}");
+	check_added_monitors(&nodes[1], 1);
+	let bs_add = get_htlc_update_msgs(&nodes[1], &node_c_id);
+	nodes[2].node.handle_update_add_htlc(node_b_id, &bs_add.update_add_htlcs[0]);
+	nodes[2].node.handle_commitment_signed_batch_test(node_b_id, &bs_add.commitment_signed);
+	check_added_monitors(&nodes[2], 1);
+	let (cs_raa_2, _) = get_revoke_commit_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_revoke_and_ack(node_c_id, &cs_raa_2);
+	check_added_monitors(&nodes[1], 1);
+
+	let mon_ab_ser = get_monitor!(nodes[1], chan_id_ab).encode();
+	let mon_bc_ser = get_monitor!(nodes[1], chan_id_bc).encode();
+	reload_node!(
+		nodes[1],
+		&stale_node_b_ser,
+		&[&mon_ab_ser, &mon_bc_ser],
+		persister,
+		new_chain_monitor,
+		nodes_1_deserialized
+	);
+	nodes[1].node.test_process_background_events();
+	check_added_monitors(&nodes[1], 1);
+
+	// Payment 2's HTLC is left for the `ChannelMonitor` to resolve as C has a commitment
+	// transaction including it.
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2, "{events:?}");
+	assert!(matches!(events[0], Event::PaymentSent { .. }), "{events:?}");
+	let reason = ClosureReason::OutdatedChannelManager;
+	assert!(matches!(&events[1], Event::ChannelClosed { reason: r, .. } if *r == reason));
+	assert!(!nodes[1].node.needs_pending_htlc_processing());
+	assert!(get_monitor!(nodes[1], chan_id_bc)
+		.get_all_current_outbound_htlcs()
+		.values()
+		.any(|(htlc, _)| htlc.payment_hash == payment_hash_2));
+
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[2].node.peer_disconnected(node_b_id);
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+
+	// C claims payment 2's HTLC on-chain with the preimage, from which B learns it and claims it
+	// from A.
+	get_monitor!(nodes[2], chan_id_bc).provide_payment_preimage_unsafe_legacy(
+		&payment_hash_2,
+		&preimage_2,
+		&nodes[2].tx_broadcaster,
+		&LowerBoundedFeeEstimator::new(nodes[2].fee_estimator),
+		&nodes[2].logger,
+	);
+	let message = "Channel force-closed".to_owned();
+	nodes[2]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_id_bc, &node_b_id, message.clone())
+		.unwrap();
+	check_added_monitors(&nodes[2], 1);
+	check_closed_broadcast(&nodes[2], 1, false);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event(&nodes[2], 1, reason, &[node_b_id], 100_000);
+	let cs_txn = nodes[2].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(cs_txn.len(), 2);
+	check_spends!(cs_txn[1], cs_txn[0]);
+
+	mine_transaction(&nodes[1], &cs_txn[0]);
+	mine_transaction(&nodes[1], &cs_txn[1]);
+	let bs_claim = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	check_added_monitors(&nodes[1], 1);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, bs_claim.update_fulfill_htlcs[0].clone());
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &bs_claim.commitment_signed, false, false);
+	expect_payment_sent(&nodes[0], preimage_2, None, true, true);
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, true);
+}
