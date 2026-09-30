@@ -10883,12 +10883,15 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					"We don't support claim_htlc claims during startup - monitors may not be available yet");
 				debug_assert_eq!(next_channel_counterparty_node_id, path.hops[0].pubkey);
 
+				let channel_is_closed = from_onchain || {
+					self.channel_is_closed(&next_channel_id, &next_channel_counterparty_node_id)
+				};
 				let mut ev_completion_action = Some(EventCompletionAction::for_outbound_claim(
 					htlc_id,
 					next_channel_id,
 					next_channel_outpoint,
 					next_channel_counterparty_node_id,
-					from_onchain,
+					channel_is_closed,
 				));
 				let logger = WithContext::for_payment(
 					&self.logger,
@@ -14522,6 +14525,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				monitor_update,
 			)
 		})
+	}
+
+	fn channel_is_closed(&self, channel_id: &ChannelId, counterparty_node_id: &PublicKey) -> bool {
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		per_peer_state
+			.get(counterparty_node_id)
+			.is_some_and(|peer| !peer.lock().unwrap().channel_by_id.contains_key(channel_id))
 	}
 
 	/// Process pending events from the [`chain::Watch`], returning the appropriate
