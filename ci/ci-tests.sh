@@ -71,6 +71,9 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # lock_api 0.4.13 requires rustc 1.64.0
 [ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p lock_api --precise "0.4.12" --verbose
 
+# rustix 1.1.5 requires rustc 1.65.0
+[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p rustix --precise "1.1.4" --verbose
+
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
