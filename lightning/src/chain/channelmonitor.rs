@@ -1340,7 +1340,7 @@ pub(crate) struct ChannelMonitorImpl<Signer: EcdsaChannelSigner> {
 	// we further MUST NOT generate events during block/transaction-disconnection.
 	pending_monitor_events: Vec<(u128, MonitorEvent)>,
 	// `MonitorEvent`s that have been provided to the `ChannelManager` via
-	// [`ChannelMonitor::get_and_clear_pending_monitor_events`] and are awaiting
+	// [`ChannelMonitor::release_pending_monitor_events`] and are awaiting
 	// [`ChannelMonitor::ack_monitor_event`] for removal. If an event in this queue is not acked, it
 	// will be re-provided to the `ChannelManager` on startup; this field is not persisted
 	// and any events here will move back to `pending_monitor_events` after a restart.
@@ -2254,14 +2254,14 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	///
 	/// Returned events are retained internally until [Self::ack_monitor_event] is called with their
 	/// ID.
-	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<(u128, MonitorEvent)> {
-		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(|_| true)
+	pub fn release_pending_monitor_events(&self) -> Vec<(u128, MonitorEvent)> {
+		self.inner.lock().unwrap().release_pending_monitor_events_filtered(|_| true)
 	}
 
 	/// Returns only non-HTLC-failure monitor events, retaining HTLC failures until monitor
 	/// updates have been durably persisted.
-	pub(super) fn get_and_clear_pending_non_htlc_fail_events(&self) -> Vec<(u128, MonitorEvent)> {
-		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(
+	pub(super) fn release_pending_non_htlc_fail_events(&self) -> Vec<(u128, MonitorEvent)> {
+		self.inner.lock().unwrap().release_pending_monitor_events_filtered(
 			|ev| !matches!(ev, MonitorEvent::HTLCEvent(upd) if upd.payment_preimage.is_none()),
 		)
 	}
@@ -4844,7 +4844,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	/// Drains and returns the pending monitor events for which `predicate` returns true. Events that
 	/// don't match the predicate stay in `pending_monitor_events` so they're eligible for release on
 	/// a later call.
-	fn get_and_clear_pending_monitor_events_filtered<F: FnMut(&MonitorEvent) -> bool>(
+	fn release_pending_monitor_events_filtered<F: FnMut(&MonitorEvent) -> bool>(
 		&mut self, mut predicate: F,
 	) -> Vec<(u128, MonitorEvent)> {
 		let mut released = Vec::new();

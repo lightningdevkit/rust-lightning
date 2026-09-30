@@ -1686,9 +1686,9 @@ where
 			let monitor_events = {
 				let pending_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 				if monitor_state.has_pending_updates(&pending_updates) {
-					monitor_state.monitor.get_and_clear_pending_non_htlc_fail_events()
+					monitor_state.monitor.release_pending_non_htlc_fail_events()
 				} else {
-					monitor_state.monitor.get_and_clear_pending_monitor_events()
+					monitor_state.monitor.release_pending_monitor_events()
 				}
 			};
 			if monitor_events.len() > 0 {
