@@ -33,7 +33,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 #[cfg(peer_storage)]
 use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
-	random_monitor_event_id, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
+	monitor_event_id, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
 	TransactionOutputs, WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
@@ -70,7 +70,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// [`chain::Watch::ack_monitor_event`] once the event has been processed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MonitorEventSource {
-	/// The randomly-generated event ID.
+	/// The event ID, derived from what the [`MonitorEvent`] describes.
 	pub event_id: u128,
 	/// The channel from which the [`MonitorEvent`] originated.
 	pub channel_id: ChannelId,
@@ -771,14 +771,11 @@ where
 		&self, funding_txo: OutPoint, channel_id: ChannelId, monitor_update_id: u64,
 		counterparty_node_id: PublicKey,
 	) {
-		let event_id = random_monitor_event_id(&self.entropy_source);
+		let event = MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id };
 		self.pending_monitor_events.lock().unwrap().push((
 			funding_txo,
 			channel_id,
-			vec![(
-				event_id,
-				MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id },
-			)],
+			vec![(monitor_event_id(&event), event)],
 			counterparty_node_id,
 		));
 	}

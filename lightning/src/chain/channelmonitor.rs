@@ -27,7 +27,7 @@ use bitcoin::transaction::{OutPoint as BitcoinOutPoint, Transaction, TxOut};
 
 use bitcoin::hash_types::{BlockHash, Txid};
 use bitcoin::hashes::sha256::Hash as Sha256;
-use bitcoin::hashes::Hash;
+use bitcoin::hashes::{Hash, HashEngine};
 
 use bitcoin::ecdsa::Signature as BitcoinSignature;
 use bitcoin::secp256k1::{self, ecdsa::Signature, PublicKey, Secp256k1, SecretKey};
@@ -184,18 +184,44 @@ impl Readable for ChannelMonitorUpdate {
 	}
 }
 
-/// Generates a random ID used to identify a [`MonitorEvent`] until it is acknowledged.
-pub(super) fn random_monitor_event_id<ES: EntropySource>(entropy_source: ES) -> u128 {
-	let mut random_bytes = [0u8; 16];
-	random_bytes.copy_from_slice(&entropy_source.get_secure_random_bytes()[..16]);
-	u128::from_be_bytes(random_bytes)
+/// Deterministically derives the ID used to identify a [`MonitorEvent`] until it is acknowledged.
+///
+/// The ID commits to the unique contents of the event, so it can be recomputed by anyone who knows
+/// what the event describes. Two events for the same occurrence, e.g. a claim of the same HTLC,
+/// will share an ID.
+pub(super) fn monitor_event_id(event: &MonitorEvent) -> u128 {
+	let mut engine = Sha256::engine();
+	match event {
+		MonitorEvent::HTLCEvent(upd) => {
+			0u8.write(&mut engine).unwrap();
+			SentHTLCId::from_source(&upd.source).write(&mut engine).unwrap();
+			// A claim and a failure of the same HTLC must not share an ID, so that acking one never
+			// removes the other.
+			engine.input(&[upd.payment_preimage.is_some() as u8]);
+		},
+		MonitorEvent::HolderForceClosed(outpoint)
+		| MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } => {
+			1u8.write(&mut engine).unwrap();
+			outpoint.write(&mut engine).unwrap();
+		},
+		MonitorEvent::CommitmentTxConfirmed(()) => {
+			2u8.write(&mut engine).unwrap();
+		},
+		MonitorEvent::Completed { monitor_update_id, .. } => {
+			3u8.write(&mut engine).unwrap();
+			engine.input(&monitor_update_id.to_be_bytes());
+		},
+	}
+	let mut id_bytes = [0u8; 16];
+	id_bytes.copy_from_slice(&Sha256::from_engine(engine).to_byte_array()[..16]);
+	u128::from_be_bytes(id_bytes)
 }
 
 fn push_monitor_event<ES: EntropySource>(
-	pending_monitor_events: &mut Vec<(u128, MonitorEvent)>, event: MonitorEvent, entropy_source: ES,
+	pending_monitor_events: &mut Vec<(u128, MonitorEvent)>, event: MonitorEvent,
+	_entropy_source: ES,
 ) {
-	let id = random_monitor_event_id(entropy_source);
-	pending_monitor_events.push((id, event));
+	pending_monitor_events.push((monitor_event_id(&event), event));
 }
 
 /// An event to be processed by the ChannelManager. Will be re-provided to the ChannelManager on
@@ -7159,7 +7185,7 @@ impl<'a, 'b, ES: EntropySource, SP: SignerProvider> ReadableArgs<(&'a ES, &'b SP
 				pending_mon_evs_with_ids
 			} else if let Some(events) = pending_monitor_events_legacy {
 				events.into_iter()
-					.map(|ev| (random_monitor_event_id(entropy_source), ev))
+					.map(|ev| (monitor_event_id(&ev), ev))
 					.collect()
 			} else {
 				Vec::new()
