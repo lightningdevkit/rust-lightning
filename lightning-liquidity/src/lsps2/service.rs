@@ -985,6 +985,9 @@ where
 	///
 	/// Will do nothing if the intercept scid does not match any of the ones we gave out.
 	///
+	/// Will fail the intercepted HTLC if the payer asked us to forward more than the HTLC
+	/// delivered, or if it is no longer pending and what it delivered is therefore unknown.
+	///
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
 	pub async fn htlc_intercepted(
@@ -992,6 +995,13 @@ where
 		payment_hash: PaymentHash,
 	) -> Result<(), APIError> {
 		let event_queue_notifier = self.pending_events.notifier();
+		// An intercept that is no longer pending has no recorded inbound amount. Counting it as
+		// zero keeps the check below fail-closed rather than trusting the payer's figure.
+		let inbound_amount_msat = self
+			.channel_manager
+			.get_cm()
+			.intercepted_htlc_inbound_amount_msat(intercept_id)
+			.unwrap_or(0);
 		let mut should_persist = None;
 
 		if let Some(counterparty_node_id) =
@@ -1004,6 +1014,22 @@ where
 					if let Some(jit_channel) =
 						peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
 					{
+						// `expected_outbound_amount_msat` is the `amt_to_forward` of the payer's
+						// own onion, so it says nothing about what actually arrived. Everything
+						// below sizes channel opens and forwards from it, which would let a payer
+						// have us spend our own funds. Reject the HTLC here, before the state
+						// machine sees it, so neither the client's JIT channel nor anything
+						// already queued on it is disturbed -- the `Err` arm below would retire
+						// the intercept scid.
+						if expected_outbound_amount_msat > inbound_amount_msat {
+							self.channel_manager.get_cm().fail_intercepted_htlc(intercept_id)?;
+							return Err(APIError::APIMisuseError {
+								err: format!(
+									"Intercepted HTLC {} declares {}msat to forward but delivered {}msat; failed back",
+									intercept_id, expected_outbound_amount_msat, inbound_amount_msat
+								),
+							});
+						}
 						should_persist = Some(*counterparty_node_id);
 						let htlc = InterceptedHTLC {
 							intercept_id,
