@@ -298,7 +298,7 @@ where
 
 		let mut confirmed_txs: Vec<ConfirmedTx> = Vec::new();
 
-		for txid in &sync_state.watched_transactions {
+		for txid in sync_state.watched_transactions.keys() {
 			if confirmed_txs.iter().any(|ctx| ctx.txid == *txid) {
 				continue;
 			}
@@ -481,9 +481,12 @@ impl<L: Deref> Filter for EsploraSyncClient<L>
 where
 	L::Target: Logger,
 {
-	fn register_tx(&self, txid: &Txid, _script_pubkey: &Script) {
+	fn register_tx(&self, txid: &Txid, script_pubkey: &Script) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.transactions.insert(*txid);
+		let script_pubkeys = locked_queue.transactions.entry(*txid).or_default();
+		if script_pubkeys.iter().all(|spk| spk != script_pubkey) {
+			script_pubkeys.push(script_pubkey.to_owned());
+		}
 	}
 
 	fn register_output(&self, output: WatchedOutput) {
