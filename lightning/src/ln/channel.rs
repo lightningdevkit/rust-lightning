@@ -2375,9 +2375,11 @@ where
 		Ok(funding_tx_signed)
 	}
 
-	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+	pub fn force_shutdown<'a, L: Logger>(
+		&mut self, closure_reason: ClosureReason, logger: &WithChannelContext<'a, L>,
+	) -> ShutdownResult {
 		let (funding, context) = self.funding_and_context_mut();
-		context.force_shutdown(funding, closure_reason)
+		context.force_shutdown(funding, closure_reason, logger)
 	}
 
 	#[rustfmt::skip]
@@ -6635,8 +6637,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 	/// Shuts down this Channel (no more calls into this Channel may be made afterwards except
 	/// those explicitly stated to be alowed after shutdown, e.g. some simple getters).
-	fn force_shutdown(
+	fn force_shutdown<'a, L: Logger>(
 		&mut self, funding: &FundingScope, mut closure_reason: ClosureReason,
+		logger: &WithChannelContext<'a, L>,
 	) -> ShutdownResult {
 		// Note that we MUST only generate a monitor update that indicates force-closure - we're
 		// called during initialization prior to the chain_monitor in the encompassing ChannelManager
@@ -6724,7 +6727,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 					.monitor_pending_failures
 					.drain(..)
 					.map(|(source, payment_hash, _)| (source, payment_hash))
-					.collect();
+					.collect::<Vec<_>>();
+				if !counterparty_failed_htlcs.is_empty() {
+					log_debug!(logger, "Force-closed with {} HTLC failure(s) awaiting a channel monitor update, passing them to the ChannelMonitor which will fail those no longer in a commitment transaction it tracks",
+						counterparty_failed_htlcs.len());
+				}
 				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
@@ -7440,11 +7447,14 @@ where
 		&self.context
 	}
 
-	pub fn force_shutdown(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
+	pub fn force_shutdown<'a, L: Logger>(
+		&mut self, closure_reason: ClosureReason, logger: &WithChannelContext<'a, L>,
+	) -> ShutdownResult {
 		let (splice_funding_failed, splice_funding_negotiated) =
 			self.resolve_pending_splice_on_close();
 
-		let mut shutdown_result = self.context.force_shutdown(&self.funding, closure_reason);
+		let mut shutdown_result =
+			self.context.force_shutdown(&self.funding, closure_reason, logger);
 		shutdown_result.splice_funding_failed = splice_funding_failed;
 		shutdown_result.splice_funding_negotiated = splice_funding_negotiated;
 		shutdown_result
@@ -10580,7 +10590,8 @@ where
 						(closing_signed, signed_tx, shutdown_result)
 					}
 					Err(err) => {
-						let shutdown = self.context.force_shutdown(&self.funding, ClosureReason::ProcessingError {err: err.to_string()});
+						let shutdown_logger = WithChannelContext::from(logger, &self.context, None);
+						let shutdown = self.context.force_shutdown(&self.funding, ClosureReason::ProcessingError {err: err.to_string()}, &shutdown_logger);
 						(None, None, Some(shutdown))
 					}
 				}
@@ -15444,8 +15455,10 @@ pub(super) struct OutboundV1Channel<SP: SignerProvider> {
 }
 
 impl<SP: SignerProvider> OutboundV1Channel<SP> {
-	pub fn abandon_unfunded_chan(&mut self, closure_reason: ClosureReason) -> ShutdownResult {
-		self.context.force_shutdown(&self.funding, closure_reason)
+	pub fn abandon_unfunded_chan<'a, L: Logger>(
+		&mut self, closure_reason: ClosureReason, logger: &WithChannelContext<'a, L>,
+	) -> ShutdownResult {
+		self.context.force_shutdown(&self.funding, closure_reason, logger)
 	}
 
 	#[allow(dead_code)] // TODO(dual_funding): Remove once opending V2 channels is enabled.
