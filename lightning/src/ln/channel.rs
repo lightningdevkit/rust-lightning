@@ -155,6 +155,17 @@ enum FeeUpdateState {
 	Outbound,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NextCommitmentView {
+	ValidatingPeerUpdate,
+	ValidatingOwnUpdate,
+}
+
+struct NextCommitmentProjection {
+	next_value_to_self_msat: u64,
+	next_commitment_htlcs: Vec<HTLCAmountDirection>,
+}
+
 #[derive(Debug)]
 enum InboundHTLCRemovalReason {
 	FailRelay(msgs::OnionErrorPacket),
@@ -3698,6 +3709,9 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 	// `holding_cell_htlc_updates` instead of `pending_outbound_htlcs`. It is released into
 	// `pending_update_fee` with the same criteria as outbound HTLC updates but can be updated by
 	// further `send_update_fee` calls, dropping the previous holding cell update entirely.
+	#[cfg(any(test, feature = "_test_utils"))]
+	pub(super) holding_cell_update_fee: Option<u32>,
+	#[cfg(not(any(test, feature = "_test_utils")))]
 	holding_cell_update_fee: Option<u32>,
 	next_holder_htlc_id: u64,
 	pub(super) next_counterparty_htlc_id: u64,
@@ -4602,7 +4616,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let funders_amount_msat =
 			funding.get_value_satoshis() * 1000 - funding.get_value_to_self_msat();
 		let htlc_candidate = None;
-		let include_counterparty_unknown_htlcs = false;
 		let addl_nondust_htlc_count = MIN_AFFORDABLE_HTLC_COUNT;
 		let dust_exposure_limiting_feerate = channel_context
 			.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
@@ -4610,7 +4623,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.get_next_remote_commitment_stats(
 				&funding,
 				htlc_candidate,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				addl_nondust_htlc_count,
 				channel_context.feerate_per_kw,
 				false,
@@ -4908,7 +4921,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		};
 
 		let htlc_candidate = None;
-		let include_counterparty_unknown_htlcs = false;
 		let addl_nondust_htlc_count = MIN_AFFORDABLE_HTLC_COUNT;
 		let dust_exposure_limiting_feerate = channel_context
 			.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
@@ -4916,7 +4928,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.get_next_local_commitment_stats(
 				&funding,
 				htlc_candidate,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				addl_nondust_htlc_count,
 				channel_context.feerate_per_kw,
 				false,
@@ -5574,129 +5586,82 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		);
 	}
 
-	/// Returns a best-effort guess of the set of HTLCs that will be present
-	/// on the next local or remote commitment. We cannot be certain as the
-	/// actual set of HTLCs present on the next commitment depends on the
-	/// ordering of commitment_signed and revoke_and_ack messages.
-	///
-	/// We take the conservative approach and only assume that a HTLC will
-	/// not be in the next commitment when it is guaranteed that it won't be.
-	fn get_next_commitment_htlcs(
-		&self, local: bool, htlc_candidate: Option<HTLCAmountDirection>,
-		include_counterparty_unknown_htlcs: bool,
-	) -> Vec<HTLCAmountDirection> {
-		let mut commitment_htlcs = Vec::with_capacity(
+	/// Returns the HTLCs and balance used to evaluate the next local or remote commitment,
+	/// accounting for when pending peer updates will be acknowledged. Successful HTLC removals
+	/// excluded from the projection are reflected in the balance.
+	fn get_next_commitment_projection(
+		&self, funding: &FundingScope, local: bool, htlc_candidate: Option<HTLCAmountDirection>,
+		commitment_view: NextCommitmentView,
+	) -> NextCommitmentProjection {
+		let mut next_commitment_htlcs = Vec::with_capacity(
 			1 + self.pending_inbound_htlcs.len()
 				+ self.pending_outbound_htlcs.len()
 				+ self.holding_cell_htlc_updates.len(),
 		);
-		// `LocalRemoved` HTLCs will certainly not be present on any future remote
-		// commitments, but they could be in a future local commitment as the remote has
-		// not yet acknowledged the removal.
-		let pending_inbound_htlcs = self
-			.pending_inbound_htlcs
-			.iter()
-			.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
+		next_commitment_htlcs.extend(htlc_candidate);
+
+		let mut inbound_claimed_htlc_msat = 0u64;
+		let mut outbound_claimed_htlc_msat = 0u64;
+
+		for htlc in self.pending_inbound_htlcs.iter() {
+			let included = match (&htlc.state, local) {
 				(InboundHTLCState::RemoteAnnounced(..), _) => true,
 				(InboundHTLCState::AwaitingRemoteRevokeToAnnounce(..), _) => true,
 				(InboundHTLCState::AwaitingAnnouncedRemoteRevoke(..), _) => true,
 				(InboundHTLCState::Committed { .. }, _) => true,
 				(InboundHTLCState::LocalRemoved(..), true) => true,
 				(InboundHTLCState::LocalRemoved(..), false) => false,
-			})
-			.map(|&InboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection {
-				outbound: false,
-				amount_msat,
-			});
-		// `RemoteRemoved` HTLCs can still be present on the next remote commitment if
-		// local produces a commitment before acknowledging the update. These HTLCs
-		// will for sure not be present on the next local commitment.
-		let pending_outbound_htlcs = self
-			.pending_outbound_htlcs
-			.iter()
-			.filter(|OutboundHTLCOutput { state, .. }| match (state, local) {
-				(OutboundHTLCState::LocalAnnounced(..), _) => include_counterparty_unknown_htlcs,
+			};
+			if included {
+				next_commitment_htlcs
+					.push(HTLCAmountDirection { outbound: false, amount_msat: htlc.amount_msat });
+			} else if htlc.state.preimage().is_some() {
+				inbound_claimed_htlc_msat += htlc.amount_msat;
+			}
+		}
+
+		for htlc in self.pending_outbound_htlcs.iter() {
+			let included = match (&htlc.state, local) {
+				(OutboundHTLCState::LocalAnnounced(..), _) => {
+					commitment_view == NextCommitmentView::ValidatingOwnUpdate
+				},
 				(OutboundHTLCState::Committed, _) => true,
 				(OutboundHTLCState::RemoteRemoved(..), true) => false,
-				(OutboundHTLCState::RemoteRemoved(..), false) => true,
+				(OutboundHTLCState::RemoteRemoved(..), false) => {
+					commitment_view == NextCommitmentView::ValidatingOwnUpdate
+				},
 				(OutboundHTLCState::AwaitingRemoteRevokeToRemove(..), _) => false,
 				(OutboundHTLCState::AwaitingRemovedRemoteRevoke(..), _) => false,
-			})
-			.map(|&OutboundHTLCOutput { amount_msat, .. }| HTLCAmountDirection {
-				outbound: true,
-				amount_msat,
-			});
+			};
+			if included {
+				next_commitment_htlcs
+					.push(HTLCAmountDirection { outbound: true, amount_msat: htlc.amount_msat });
+			} else if htlc.state.preimage().is_some() {
+				outbound_claimed_htlc_msat += htlc.amount_msat;
+			}
+		}
 
 		// TODO: HTLC removals are released from the holding cell at the same time
 		// as HTLC additions, so if HTLC additions are applied here, so should HTLC removals.
 		// This would allow us to make better use of channel liquidity.
-		let holding_cell_htlcs = self.holding_cell_htlc_updates.iter().filter_map(|htlc| {
-			if let &HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } = htlc {
-				Some(HTLCAmountDirection { outbound: true, amount_msat })
-			} else {
-				None
-			}
-		});
-
-		if include_counterparty_unknown_htlcs {
-			commitment_htlcs.extend(
-				htlc_candidate
-					.into_iter()
-					.chain(pending_inbound_htlcs)
-					.chain(pending_outbound_htlcs)
-					.chain(holding_cell_htlcs),
-			);
-		} else {
-			commitment_htlcs.extend(
-				htlc_candidate
-					.into_iter()
-					.chain(pending_inbound_htlcs)
-					.chain(pending_outbound_htlcs),
-			);
+		if let NextCommitmentView::ValidatingOwnUpdate = commitment_view {
+			next_commitment_htlcs.extend(self.holding_cell_htlc_updates.iter().filter_map(
+				|htlc| {
+					if let &HTLCUpdateAwaitingACK::AddHTLC { amount_msat, .. } = htlc {
+						Some(HTLCAmountDirection { outbound: true, amount_msat })
+					} else {
+						None
+					}
+				},
+			));
 		}
 
-		commitment_htlcs
-	}
-
-	/// This returns the value of `value_to_self_msat` after accounting for all the
-	/// successful inbound and outbound HTLCs that won't be present on the next
-	/// commitment.
-	///
-	/// To determine which HTLC claims to account for, we take the cases where a HTLC
-	/// will *not* be present on the next commitment from `next_commitment_htlcs`, and
-	/// check if their outcome is successful. If it is, we add the value of this claimed
-	/// HTLC to the balance of the claimer.
-	fn get_next_commitment_value_to_self_msat(&self, local: bool, funding: &FundingScope) -> u64 {
-		use InboundHTLCRemovalReason::Fulfill;
-		use OutboundHTLCOutcome::Success;
-
-		let inbound_claimed_htlc_msat: u64 = self
-			.pending_inbound_htlcs
-			.iter()
-			.filter(|InboundHTLCOutput { state, .. }| match (state, local) {
-				(InboundHTLCState::LocalRemoved(Fulfill { .. }), true) => false,
-				(InboundHTLCState::LocalRemoved(Fulfill { .. }), false) => true,
-				_ => false,
-			})
-			.map(|InboundHTLCOutput { amount_msat, .. }| amount_msat)
-			.sum();
-		let outbound_claimed_htlc_msat: u64 = self
-			.pending_outbound_htlcs
-			.iter()
-			.filter(|OutboundHTLCOutput { state, .. }| match (state, local) {
-				(OutboundHTLCState::RemoteRemoved(Success { .. }), true) => true,
-				(OutboundHTLCState::RemoteRemoved(Success { .. }), false) => false,
-				(OutboundHTLCState::AwaitingRemoteRevokeToRemove(Success { .. }), _) => true,
-				(OutboundHTLCState::AwaitingRemovedRemoteRevoke(Success { .. }), _) => true,
-				_ => false,
-			})
-			.map(|OutboundHTLCOutput { amount_msat, .. }| amount_msat)
-			.sum();
-
-		funding
+		let next_value_to_self_msat = funding
 			.value_to_self_msat
 			.saturating_sub(outbound_claimed_htlc_msat)
-			.saturating_add(inbound_claimed_htlc_msat)
+			.saturating_add(inbound_claimed_htlc_msat);
+
+		NextCommitmentProjection { next_value_to_self_msat, next_commitment_htlcs }
 	}
 
 	fn get_channel_constraints(&self, funding: &FundingScope) -> ChannelConstraints {
@@ -5717,15 +5682,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 	fn get_next_local_commitment_stats(
 		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
-		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
-		feerate_per_kw: u32, assume_fee_spike: bool, dust_exposure_limiting_feerate: Option<u32>,
+		commitment_view: NextCommitmentView, addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		assume_fee_spike: bool, dust_exposure_limiting_feerate: Option<u32>,
 	) -> Result<(ChannelStats, Vec<HTLCAmountDirection>), ()> {
-		let next_commitment_htlcs = self.get_next_commitment_htlcs(
-			true,
-			htlc_candidate,
-			include_counterparty_unknown_htlcs,
-		);
-		let next_value_to_self_msat = self.get_next_commitment_value_to_self_msat(true, funding);
+		let NextCommitmentProjection { next_value_to_self_msat, next_commitment_htlcs } =
+			self.get_next_commitment_projection(funding, true, htlc_candidate, commitment_view);
 
 		let max_dust_htlc_exposure_msat =
 			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
@@ -5786,15 +5747,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 	fn get_next_remote_commitment_stats(
 		&self, funding: &FundingScope, htlc_candidate: Option<HTLCAmountDirection>,
-		include_counterparty_unknown_htlcs: bool, addl_nondust_htlc_count: usize,
-		feerate_per_kw: u32, assume_fee_spike: bool, dust_exposure_limiting_feerate: Option<u32>,
+		commitment_view: NextCommitmentView, addl_nondust_htlc_count: usize, feerate_per_kw: u32,
+		assume_fee_spike: bool, dust_exposure_limiting_feerate: Option<u32>,
 	) -> Result<(ChannelStats, Vec<HTLCAmountDirection>), ()> {
-		let next_commitment_htlcs = self.get_next_commitment_htlcs(
-			false,
-			htlc_candidate,
-			include_counterparty_unknown_htlcs,
-		);
-		let next_value_to_self_msat = self.get_next_commitment_value_to_self_msat(false, funding);
+		let NextCommitmentProjection { next_value_to_self_msat, next_commitment_htlcs } =
+			self.get_next_commitment_projection(funding, false, htlc_candidate, commitment_view);
 
 		let max_dust_htlc_exposure_msat =
 			self.get_max_dust_htlc_exposure_msat(dust_exposure_limiting_feerate);
@@ -5867,14 +5824,13 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
 		// Don't include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed
 		// by the counterparty (ie. LocalAnnounced HTLCs)
-		let include_counterparty_unknown_htlcs = false;
 		// Don't include the extra fee spike buffer HTLC in calculations
 		let fee_spike_buffer_htlc = 0;
 		let (remote_stats, remote_htlcs) = self
 			.get_next_remote_commitment_stats(
 				funding,
 				Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingPeerUpdate,
 				fee_spike_buffer_htlc,
 				self.feerate_per_kw,
 				false,
@@ -5933,7 +5889,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.get_next_local_commitment_stats(
 				funding,
 				Some(HTLCAmountDirection { outbound: false, amount_msat: msg.amount_msat }),
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingPeerUpdate,
 				fee_spike_buffer_htlc,
 				self.feerate_per_kw,
 				false,
@@ -5955,12 +5911,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
 		// Do not include outbound update_add_htlc's in the holding cell, or those which haven't yet been ACK'ed
 		// by the counterparty (ie. LocalAnnounced HTLCs)
-		let include_counterparty_unknown_htlcs = false;
 		let (local_stats, _local_htlcs) = self
 			.get_next_local_commitment_stats(
 				funding,
 				None,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingPeerUpdate,
 				0,
 				new_feerate_per_kw,
 				false,
@@ -5982,7 +5937,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.get_next_remote_commitment_stats(
 				funding,
 				None,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingPeerUpdate,
 				0,
 				new_feerate_per_kw,
 				false,
@@ -6087,12 +6042,11 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
 		// Include outbound update_add_htlc's in the holding cell, and those which haven't yet been ACK'ed by
 		// the counterparty (ie. LocalAnnounced HTLCs)
-		let include_counterparty_unknown_htlcs = true;
 		let (remote_stats, _remote_htlcs) = if let Ok(stats) = self
 			.get_next_remote_commitment_stats(
 				funding,
 				None,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
 				feerate_per_kw,
 				false,
@@ -6132,7 +6086,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		let (local_stats, _local_htlcs) = if let Ok(stats) = self.get_next_local_commitment_stats(
 			funding,
 			None,
-			include_counterparty_unknown_htlcs,
+			NextCommitmentView::ValidatingOwnUpdate,
 			CONCURRENT_INBOUND_HTLC_FEE_BUFFER as usize,
 			feerate_per_kw,
 			false,
@@ -6170,7 +6124,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		// end up in commitments soon. Moreover, we are considering failing a
 		// single HTLC here, not the entire channel, so we opt to be conservative
 		// in what we accept to forward.
-		let include_counterparty_unknown_htlcs = true;
 		// Similar reasoning as above
 		let feerate =
 			cmp::max(self.feerate_per_kw, self.pending_update_fee.map(|(fee, _)| fee).unwrap_or(0));
@@ -6180,7 +6133,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.get_next_local_commitment_stats(
 				funding,
 				None,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				fee_spike_buffer_htlc,
 				feerate,
 				false,
@@ -6197,7 +6150,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.get_next_remote_commitment_stats(
 				funding,
 				None,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				fee_spike_buffer_htlc,
 				feerate,
 				false,
@@ -6241,7 +6194,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 				.get_next_remote_commitment_stats(
 					funding,
 					None,
-					include_counterparty_unknown_htlcs,
+					NextCommitmentView::ValidatingOwnUpdate,
 					fee_spike_buffer_htlc,
 					feerate,
 					true,
@@ -6589,7 +6542,6 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		&self, funding: &FundingScope, fee_estimator: &LowerBoundedFeeEstimator<F>,
 	) -> Result<AvailableBalances, ()> {
 		let htlc_candidate = None;
-		let include_counterparty_unknown_htlcs = true;
 		let addl_nondust_htlc_count = 0;
 		let dust_exposure_limiting_feerate =
 			self.get_dust_exposure_limiting_feerate(&fee_estimator, funding.get_channel_type());
@@ -6598,7 +6550,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.get_next_remote_commitment_stats(
 				funding,
 				htlc_candidate,
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				addl_nondust_htlc_count,
 				self.feerate_per_kw,
 				false,
@@ -6620,7 +6572,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 						// that case.
 						amount_msat: balances.next_outbound_htlc_limit_msat,
 					}),
-					include_counterparty_unknown_htlcs,
+					NextCommitmentView::ValidatingOwnUpdate,
 					addl_nondust_htlc_count,
 					self.feerate_per_kw,
 					false,
@@ -14379,7 +14331,6 @@ where
 	fn get_holder_counterparty_balances_floor_incl_fee(
 		&self, funding: &FundingScope,
 	) -> Result<(Amount, Amount), String> {
-		let include_counterparty_unknown_htlcs = true;
 		// Make sure that that the funder of the channel can pay the transaction fees for an additional
 		// nondust HTLC on the channel.
 		let addl_nondust_htlc_count = 1;
@@ -14401,7 +14352,7 @@ where
 			.get_next_local_commitment_stats(
 				funding,
 				None, // htlc_candidate
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				addl_nondust_htlc_count,
 				self.context.feerate_per_kw,
 				true,
@@ -14414,7 +14365,7 @@ where
 			.get_next_remote_commitment_stats(
 				funding,
 				None, // htlc_candidate
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				addl_nondust_htlc_count,
 				self.context.feerate_per_kw,
 				true,
@@ -14443,7 +14394,6 @@ where
 	/// commitment retains at least one output after the splice, which is particularly relevant
 	/// for zero-reserve channels.
 	fn get_next_splice_out_maximum(&self, funding: &FundingScope) -> Result<Amount, String> {
-		let include_counterparty_unknown_htlcs = true;
 		// We are not interested in dust exposure
 		let dust_exposure_limiting_feerate = None;
 
@@ -14454,7 +14404,7 @@ where
 			.get_next_remote_commitment_stats(
 				funding,
 				None, // htlc_candidate
-				include_counterparty_unknown_htlcs,
+				NextCommitmentView::ValidatingOwnUpdate,
 				0,
 				self.context.feerate_per_kw,
 				false,
@@ -18021,8 +17971,8 @@ mod tests {
 	use crate::ln::channel::{
 		AwaitingChannelReadyFlags, ChannelState, FundedChannel, HTLCUpdateAwaitingACK,
 		InboundHTLCOutput, InboundHTLCState, InboundUpdateAdd, InboundV1Channel,
-		OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel, WithChannelContext,
-		MIN_THEIR_CHAN_RESERVE_SATOSHIS,
+		NextCommitmentView, OutboundHTLCOutput, OutboundHTLCState, OutboundV1Channel,
+		WithChannelContext, MIN_THEIR_CHAN_RESERVE_SATOSHIS,
 	};
 	use crate::ln::channel_keys::{RevocationBasepoint, RevocationKey};
 	use crate::ln::channelmanager::{self, HTLCSource, PaymentId, TrustedChannelFeatures};
@@ -18066,6 +18016,252 @@ mod tests {
 
 	fn dummy_inbound_update_add() -> InboundUpdateAdd {
 		InboundUpdateAdd::Legacy
+	}
+
+	// Checks only fulfillments credit the peer for adds and fee increases before our acknowledgment.
+	// Rejects overspending and completes the commitment exchange for the accepted updates.
+	fn do_test_htlc_removal_credit_for_peer_updates_before_our_ack(
+		fulfill: bool, update_fee: bool,
+	) {
+		use crate::events::HTLCHandlingFailureType;
+		use crate::ln::functional_test_utils::*;
+		use crate::ln::msgs::ChannelMessageHandler;
+		use crate::ln::onion_utils::create_payment_onion;
+		use crate::ln::outbound_payment::RecipientOnionFields;
+
+		const NEW_FEERATE: u32 = 20_000;
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let legacy_cfg = test_legacy_channel_config();
+		let node_chanmgrs =
+			create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let (_, _, channel_id, _) = if update_fee {
+			create_announced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 90_000_000)
+		} else {
+			create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0)
+		};
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+		let (route, payment_hash, payment_preimage, payment_secret) =
+			get_route_and_payment_hash!(nodes[0], nodes[1], 10_000_000);
+		let onion = RecipientOnionFields::secret_only(payment_secret, 10_000_000);
+		nodes[0]
+			.node
+			.send_payment_with_route(route, payment_hash, onion, PaymentId(payment_hash.0))
+			.unwrap();
+		check_added_monitors(&nodes[0], 1);
+		let send_event = SendEvent::from_node(&nodes[0]);
+		nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
+		expect_and_process_pending_htlcs(&nodes[1], false);
+		expect_payment_claimable!(nodes[1], payment_hash, payment_secret, 10_000_000);
+
+		let fee_estimator = LowerBoundedFeeEstimator::new(&chanmon_cfgs[0].fee_estimator);
+		let assert_unaffordable = |updates: &msgs::CommitmentUpdate| {
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let channel =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id)
+					.as_funded_mut()
+					.unwrap();
+			if let Some(fee) = &updates.update_fee {
+				assert_eq!(
+					channel
+						.context
+						.validate_update_fee(&channel.funding, &fee_estimator, fee.feerate_per_kw)
+						.unwrap_err()
+						.to_string(),
+					"Funding remote cannot afford proposed new fee"
+				);
+			} else {
+				assert_eq!(
+					channel
+						.update_add_htlc(&updates.update_add_htlcs[0], &fee_estimator)
+						.unwrap_err()
+						.to_string(),
+					"Remote HTLC add would overdraw remaining funds"
+				);
+			}
+		};
+
+		if !fulfill {
+			nodes[1].node.fail_htlc_backwards(&payment_hash);
+			expect_and_process_pending_htlcs_and_htlc_handling_failed(
+				&nodes[1],
+				&[HTLCHandlingFailureType::Receive { payment_hash }],
+			);
+			check_added_monitors(&nodes[1], 1);
+			let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+			assert_eq!(updates.update_fail_htlcs.len(), 1);
+
+			// A failure returns the payment to us, so it cannot fund either peer update.
+			if update_fee {
+				updates.update_fee =
+					Some(msgs::UpdateFee { channel_id, feerate_per_kw: NEW_FEERATE });
+			} else {
+				let mut add = send_event.msgs[0].clone();
+				add.amount_msat = 5_000_000;
+				updates.update_add_htlcs.push(add);
+			}
+			assert_unaffordable(&updates);
+			nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
+			assert_unaffordable(&updates);
+			return;
+		}
+
+		let (_, peer_payment_hash, peer_payment_secret) =
+			get_payment_preimage_hash(&nodes[0], Some(5_000_000), None);
+
+		// Stage the peer's next update directly so claim_funds batches it with the fulfillment.
+		// The update is affordable only after accounting for the fulfillment's credit.
+		if update_fee {
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let channel =
+				get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id)
+					.as_funded_mut()
+					.unwrap();
+			let fee_msat =
+				commit_tx_fee_sat(NEW_FEERATE, 0, channel.funding.get_channel_type()) * 1000;
+			assert!(fee_msat > channel.funding.value_to_self_msat);
+			channel.context.pending_update_fee =
+				Some((NEW_FEERATE, super::FeeUpdateState::Outbound));
+		} else {
+			let mut htlc = {
+				let per_peer_lock;
+				let mut peer_state_lock;
+				let channel = get_channel_ref!(
+					nodes[0],
+					nodes[1],
+					per_peer_lock,
+					peer_state_lock,
+					channel_id
+				)
+				.as_funded()
+				.unwrap();
+				channel.context.pending_outbound_htlcs[0].clone()
+			};
+			htlc.amount_msat = 5_000_000;
+			htlc.payment_hash = peer_payment_hash;
+			if let HTLCSource::OutboundRoute {
+				path,
+				session_priv,
+				first_hop_htlc_msat,
+				payment_id,
+				..
+			} = &mut htlc.source
+			{
+				path.hops[0].pubkey = node_a_id;
+				path.hops[0].fee_msat = htlc.amount_msat;
+				*first_hop_htlc_msat = htlc.amount_msat;
+				*payment_id = PaymentId(htlc.payment_hash.0);
+				let onion =
+					RecipientOnionFields::secret_only(peer_payment_secret, htlc.amount_msat);
+				let (onion_packet, _, cltv_expiry) = create_payment_onion(
+					&Secp256k1::new(),
+					path,
+					session_priv,
+					&onion,
+					nodes[1].best_block_info().1 + 1,
+					&htlc.payment_hash,
+					&None,
+					None,
+					[0; 32],
+				)
+				.unwrap();
+				htlc.cltv_expiry = cltv_expiry;
+				htlc.state = OutboundHTLCState::LocalAnnounced(Box::new(onion_packet));
+			} else {
+				unreachable!();
+			}
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let channel =
+				get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, channel_id)
+					.as_funded_mut()
+					.unwrap();
+			assert_eq!(channel.context.next_holder_htlc_id, htlc.htlc_id);
+			channel.context.next_holder_htlc_id += 1;
+			channel.context.pending_outbound_htlcs.push(htlc);
+		}
+
+		nodes[1].node.claim_funds(payment_preimage, Default::default());
+		expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
+		check_added_monitors(&nodes[1], 1);
+		let updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+		assert_eq!(updates.update_fulfill_htlcs.len(), 1);
+		assert_eq!(updates.update_add_htlcs.len(), if update_fee { 0 } else { 1 });
+		assert_eq!(updates.update_fee.is_some(), update_fee);
+		assert_unaffordable(&updates);
+
+		nodes[0]
+			.node
+			.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs[0].clone());
+		let mut overspend = updates.clone();
+		if let Some(fee) = &mut overspend.update_fee {
+			assert_eq!(fee.feerate_per_kw, NEW_FEERATE);
+			nodes[0].node.handle_update_fee(node_b_id, fee);
+			fee.feerate_per_kw = 30_000;
+		} else {
+			let add = &mut overspend.update_add_htlcs[0];
+			nodes[0].node.handle_update_add_htlc(node_b_id, add);
+			add.htlc_id += 1;
+			add.amount_msat = 5_000_001;
+		}
+		assert_unaffordable(&overspend);
+
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates.commitment_signed, false, false);
+		expect_payment_sent!(nodes[0], payment_preimage, Some(0));
+		if !update_fee {
+			expect_and_process_pending_htlcs(&nodes[0], false);
+			expect_payment_claimable!(nodes[0], peer_payment_hash, peer_payment_secret, 5_000_000);
+			check_added_monitors(&nodes[0], 0);
+		}
+		for (local, remote) in [(0, 1), (1, 0)] {
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let channel = get_channel_ref!(
+				nodes[local],
+				nodes[remote],
+				per_peer_lock,
+				peer_state_lock,
+				channel_id
+			)
+			.as_funded()
+			.unwrap();
+			if update_fee {
+				assert_eq!(channel.context.feerate_per_kw, NEW_FEERATE);
+				assert!(channel.context.pending_inbound_htlcs.is_empty());
+				assert!(channel.context.pending_outbound_htlcs.is_empty());
+			} else if local == 0 {
+				assert!(channel.context.pending_outbound_htlcs.is_empty());
+				assert_eq!(channel.context.pending_inbound_htlcs.len(), 1);
+				assert!(matches!(
+					channel.context.pending_inbound_htlcs[0].state,
+					InboundHTLCState::Committed { .. }
+				));
+			} else {
+				assert!(channel.context.pending_inbound_htlcs.is_empty());
+				assert_eq!(channel.context.pending_outbound_htlcs.len(), 1);
+				assert!(matches!(
+					channel.context.pending_outbound_htlcs[0].state,
+					OutboundHTLCState::Committed
+				));
+			}
+		}
+	}
+
+	#[test]
+	fn test_peer_update_fail_htlc_does_not_fund_peer_updates() {
+		do_test_htlc_removal_credit_for_peer_updates_before_our_ack(false, false);
+		do_test_htlc_removal_credit_for_peer_updates_before_our_ack(false, true);
+	}
+
+	#[test]
+	fn test_update_fulfill_htlc_frees_liquidity_for_peer_updates_before_our_ack() {
+		do_test_htlc_removal_credit_for_peer_updates_before_our_ack(true, false);
+		do_test_htlc_removal_credit_for_peer_updates_before_our_ack(true, true);
 	}
 
 	#[test]
@@ -18287,7 +18483,7 @@ mod tests {
 		// Make sure when Node A calculates their local commitment transaction, none of the HTLCs pass
 		// the dust limit check.
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amount_msat, outbound: true };
-		let local_commit_tx_fee = node_a_chan.context.get_next_local_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), false, 0, node_a_chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let local_commit_tx_fee = node_a_chan.context.get_next_local_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), NextCommitmentView::ValidatingOwnUpdate, 0, node_a_chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		let local_commit_fee_0_htlcs = commit_tx_fee_sat(node_a_chan.context.feerate_per_kw, 0, node_a_chan.funding.get_channel_type()) * 1000;
 		assert_eq!(local_commit_tx_fee, local_commit_fee_0_htlcs);
 
@@ -18296,7 +18492,7 @@ mod tests {
 		node_a_chan.funding.channel_transaction_parameters.is_outbound_from_holder = false;
 		let remote_commit_fee_3_htlcs = commit_tx_fee_sat(node_a_chan.context.feerate_per_kw, 3, node_a_chan.funding.get_channel_type()) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amount_msat, outbound: true };
-		let remote_commit_tx_fee = node_a_chan.context.get_next_remote_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), false, 0, node_a_chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let remote_commit_tx_fee = node_a_chan.context.get_next_remote_commitment_stats(&node_a_chan.funding, Some(htlc_candidate), NextCommitmentView::ValidatingOwnUpdate, 0, node_a_chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(remote_commit_tx_fee, remote_commit_fee_3_htlcs);
 	}
 
@@ -18331,13 +18527,13 @@ mod tests {
 		// counted as dust when it shouldn't be.
 		let htlc_amt_above_timeout = (htlc_timeout_tx_fee_sat + chan.context.holder_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amt_above_timeout, outbound: true };
-		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), NextCommitmentView::ValidatingOwnUpdate, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
 		let dust_htlc_amt_below_success = (htlc_success_tx_fee_sat + chan.context.holder_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: dust_htlc_amt_below_success, outbound: false };
-		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_local_commitment_stats(&chan.funding, Some(htlc_candidate), NextCommitmentView::ValidatingOwnUpdate, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		chan.funding.channel_transaction_parameters.is_outbound_from_holder = false;
@@ -18345,13 +18541,13 @@ mod tests {
 		// If swapped: this HTLC would be counted as non-dust when it shouldn't be.
 		let dust_htlc_amt_above_timeout = (htlc_timeout_tx_fee_sat + chan.context.counterparty_dust_limit_satoshis + 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: dust_htlc_amt_above_timeout, outbound: true };
-		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), NextCommitmentView::ValidatingOwnUpdate, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_0_htlcs);
 
 		// If swapped: this HTLC would be counted as dust when it shouldn't be.
 		let htlc_amt_below_success = (htlc_success_tx_fee_sat + chan.context.counterparty_dust_limit_satoshis - 1) * 1000;
 		let htlc_candidate = HTLCAmountDirection { amount_msat: htlc_amt_below_success, outbound: false };
-		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), false, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
+		let commitment_tx_fee = chan.context.get_next_remote_commitment_stats(&chan.funding, Some(htlc_candidate), NextCommitmentView::ValidatingOwnUpdate, 0, chan.context.feerate_per_kw, false, None).unwrap().0.commitment_stats.commit_tx_fee_sat * 1000;
 		assert_eq!(commitment_tx_fee, commitment_tx_fee_1_htlc);
 	}
 
