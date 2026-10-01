@@ -10907,7 +10907,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 					bolt12_invoice,
 					session_priv,
 					path,
-					from_onchain,
+					channel_is_closed,
 					from_monitor_event,
 					best_block_height,
 					&mut ev_completion_action,

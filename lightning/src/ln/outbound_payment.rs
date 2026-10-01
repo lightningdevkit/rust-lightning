@@ -2411,7 +2411,7 @@ impl OutboundPayments {
 	pub(super) fn claim_htlc<L: Logger>(
 		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage,
 		bolt12_invoice: Option<PaidBolt12Invoice>, session_priv: SecretKey, path: Path,
-		from_onchain: bool, from_monitor_event: bool, best_block_height: u32,
+		channel_is_closed: bool, from_monitor_event: bool, best_block_height: u32,
 		ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
@@ -2465,8 +2465,8 @@ impl OutboundPayments {
 				payment.get_mut().mark_fulfilled();
 			}
 
-			if from_onchain {
-				// We currently immediately remove HTLCs which were fulfilled on-chain.
+			if channel_is_closed {
+				// We currently immediately remove HTLCs sent over closed channels.
 				// This could potentially lead to removing a pending payment too early,
 				// with a reorg of one block causing us to re-add the fulfilled payment on
 				// restart.
