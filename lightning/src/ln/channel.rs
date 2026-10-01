@@ -10109,7 +10109,9 @@ where
 				tx_abort,
 				inferred_splice_locked,
 			})
-		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
+		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1
+			&& is_awaiting_remote_revoke
+		{
 			debug_assert!(commitment_update.is_none());
 
 			// TODO(splicing): Assert in a test that we don't retransmit tx_signatures instead
