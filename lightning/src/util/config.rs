@@ -18,10 +18,6 @@ use crate::util::ser::Readable;
 /// Configuration we set when applicable.
 ///
 /// `Default::default()` provides sane defaults.
-///
-/// Outbound unannounced channels always attempt to negotiate `option_scid_alias` when supported by
-/// the counterparty. This avoids including the on-chain funding output in invoices and requires
-/// forwarding via SCID aliases.
 #[derive(Copy, Clone, Debug)]
 pub struct ChannelHandshakeConfig {
 	/// Confirmations we will wait for before considering the channel locked in.
