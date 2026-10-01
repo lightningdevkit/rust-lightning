@@ -2935,8 +2935,9 @@ where
 
 	// TODO: If a channel is drop'd, we don't know whether the `ChannelMonitor` is ultimately
 	// responsible for some of the HTLCs here or not - we don't know whether the update in question
-	// completed or not. We currently ignore these fields entirely when force-closing a channel,
-	// but need to handle this somehow or we run the risk of losing HTLCs!
+	// completed or not. Other than `monitor_pending_failures`, which are handed to the
+	// `ChannelMonitor` when force-closing, we currently ignore these fields entirely when
+	// force-closing a channel, but need to handle this somehow or we run the risk of losing HTLCs!
 	monitor_pending_forwards: Vec<(PendingHTLCInfo, u64)>,
 	monitor_pending_failures: Vec<(HTLCSource, PaymentHash, HTLCFailReason)>,
 	monitor_pending_finalized_fulfills: Vec<(HTLCSource, Option<AttributionData>)>,
@@ -6069,10 +6070,20 @@ where
 			if self.counterparty_next_commitment_transaction_number != INITIAL_COMMITMENT_NUMBER {
 				self.latest_monitor_update_id = self.get_latest_unblocked_monitor_update_id() + 1;
 
+				// HTLC failures are held until the `ChannelMonitorUpdate` for the counterparty's
+				// `revoke_and_ack` completes. As they can no longer be released, hand them to the
+				// `ChannelMonitor` to fail. It may already have been given the revocation, in
+				// which case it no longer tracks the HTLCs and wouldn't resolve them otherwise.
+				let counterparty_failed_htlcs = self
+					.monitor_pending_failures
+					.drain(..)
+					.map(|(source, payment_hash, _)| (source, payment_hash))
+					.collect();
 				let update = ChannelMonitorUpdate {
 					update_id: self.latest_monitor_update_id,
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
 						should_broadcast: broadcast,
+						counterparty_failed_htlcs,
 					}],
 					channel_id: Some(self.channel_id()),
 				};

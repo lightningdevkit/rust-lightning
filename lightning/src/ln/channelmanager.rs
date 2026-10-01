@@ -17071,6 +17071,7 @@ where
 					update_id: monitor.get_latest_update_id().saturating_add(1),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
 						should_broadcast: true,
+						counterparty_failed_htlcs: Vec::new(),
 					}],
 					channel_id: Some(monitor.channel_id()),
 				};
