@@ -2628,7 +2628,10 @@ mod tests {
 
 		let legacy_update = ChannelMonitorUpdate {
 			update_id: u64::MAX,
-			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast: true }],
+			updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
+				should_broadcast: true,
+				counterparty_failed_htlcs: Vec::new(),
+			}],
 			channel_id: Some(monitor.channel_id()),
 		};
 

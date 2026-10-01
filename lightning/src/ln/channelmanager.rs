@@ -1124,6 +1124,16 @@ impl HTLCSource {
 		}
 	}
 
+	/// Returns the total amount of the inbound HTLC(s) (i.e. the source(s) referred to by this
+	/// object), if the source was a forwarded HTLC and all inbound HTLCs were first forwarded on
+	/// LDK 0.0.117 or later.
+	pub(crate) fn inbound_htlc_amount_msat(&self) -> Option<u64> {
+		match self {
+			Self::OutboundRoute { .. } => None,
+			_ => self.previous_hop_data().iter().map(|hop| hop.amount_msat).sum(),
+		}
+	}
+
 	pub(crate) fn static_invoice(&self) -> Option<StaticInvoice> {
 		match self {
 			Self::OutboundRoute {
@@ -20249,6 +20259,7 @@ impl<
 					update_id: monitor.get_latest_update_id().saturating_add(1),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
 						should_broadcast: true,
+						counterparty_failed_htlcs: Vec::new(),
 					}],
 					channel_id: Some(monitor.channel_id()),
 				};

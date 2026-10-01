@@ -699,7 +699,7 @@ impl<'a> chain::Watch<TestChannelSigner> for TestChainMonitor<'a> {
 			assert_eq!(channel_id, exp.0);
 			assert_eq!(update.updates.len(), 1);
 			let update = &update.updates[0];
-			if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } = update {
+			if let ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast, .. } = update {
 				assert_eq!(*should_broadcast, exp.1);
 			} else {
 				panic!();
