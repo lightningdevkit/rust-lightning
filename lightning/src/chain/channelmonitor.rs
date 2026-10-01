@@ -2082,10 +2082,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			&& is_all_funds_claimed
 			&& !inner.funding_spend_seen
 		{
-			// We closed the channel without ever advancing it and didn't have any funds in it.
-			// We should immediately archive this monitor as there's nothing for us to ever do with
-			// it.
-			return (true, false);
+			// We closed the channel without ever advancing it and didn't have any funds in it. There's
+			// nothing for us to ever do with this monitor, so we archive it as soon as any pending
+			// `MonitorEvent`s have been processed. This may be necessary in the case that the monitor
+			// initiated the channel close -- archiving now may leave the `ChannelManager` with a
+			// `Channel` that has no corresponding monitor, which is not allowed on restart.
+			return (inner.pending_monitor_events.is_empty(), false);
 		}
 
 		if is_all_funds_claimed && !inner.funding_spend_seen {
@@ -4841,45 +4843,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// Check that scan_commitment, above, decided there is some source worth relaying an
 			// HTLC resolution backwards to and figure out whether we learned a preimage from it.
 			if let Some((source, payment_hash, amount_msat)) = payment_data {
-				if accepted_preimage_claim {
+				if accepted_preimage_claim || offered_preimage_claim {
+					// Record the spend as resolving the HTLC output regardless of whether a claim event
+					// for this HTLC is still queued below, as a reorg may have removed a prior record of
+					// the spend while leaving that event queued.
+					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+						txid: tx.compute_txid(),
+						height,
+						block_hash: Some(*block_hash),
+						transaction: Some(tx.clone()),
+						event: OnchainEvent::HTLCSpendConfirmation {
+							commitment_tx_output_idx: input.previous_output.vout,
+							preimage: Some(payment_preimage),
+							on_to_local_output_csv: None,
+						},
+					});
+					self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
 					if !self.pending_monitor_events.iter().any(
 						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
-						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-							txid: tx.compute_txid(),
-							height,
-							block_hash: Some(*block_hash),
-							transaction: Some(tx.clone()),
-							event: OnchainEvent::HTLCSpendConfirmation {
-								commitment_tx_output_idx: input.previous_output.vout,
-								preimage: Some(payment_preimage),
-								on_to_local_output_csv: None,
-							},
-						});
-						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
-						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
-							source,
-							payment_preimage: Some(payment_preimage),
-							payment_hash,
-							htlc_value_satoshis: Some(amount_msat / 1000),
-						}));
-					}
-				} else if offered_preimage_claim {
-					if !self.pending_monitor_events.iter().any(
-						|update| if let &MonitorEvent::HTLCEvent(ref upd) = update {
-							upd.source == source
-						} else { false }) {
-						self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
-							txid: tx.compute_txid(),
-							transaction: Some(tx.clone()),
-							height,
-							block_hash: Some(*block_hash),
-							event: OnchainEvent::HTLCSpendConfirmation {
-								commitment_tx_output_idx: input.previous_output.vout,
-								preimage: Some(payment_preimage),
-								on_to_local_output_csv: None,
-							},
-						});
-						self.counterparty_fulfilled_htlcs.insert(SentHTLCId::from_source(&source), payment_preimage);
 						self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
 							source,
 							payment_preimage: Some(payment_preimage),

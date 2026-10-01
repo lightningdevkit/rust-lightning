@@ -6193,8 +6193,10 @@ where
 									counterparty_skimmed_fee_msat: skimmed_fee_msat,
 								};
 
+								let mut just_added = false;
 								let mut committed_to_claimable = false;
 
+								let mut claimable_payments = self.claimable_payments.lock().unwrap();
 								macro_rules! fail_htlc {
 									($htlc: expr, $payment_hash: expr) => {
 										debug_assert!(!committed_to_claimable);
@@ -6217,6 +6219,9 @@ where
 											HTLCFailReason::reason(0x4000 | 15, htlc_msat_height_data),
 											HTLCDestination::FailedPayment { payment_hash: $payment_hash },
 										));
+										if just_added {
+											claimable_payments.claimable_payments.remove(&payment_hash);
+										}
 										continue 'next_forwardable_htlc;
 									}
 								}
@@ -6231,15 +6236,13 @@ where
 									($purpose: expr) => {{
 										let mut payment_claimable_generated = false;
 										let is_keysend = $purpose.is_keysend();
-										let mut claimable_payments = self.claimable_payments.lock().unwrap();
 										if claimable_payments.pending_claiming_payments.contains_key(&payment_hash) {
 											fail_htlc!(claimable_htlc, payment_hash);
 										}
 										let ref mut claimable_payment = claimable_payments.claimable_payments
 											.entry(payment_hash)
-											// Note that if we insert here we MUST NOT fail_htlc!()
 											.or_insert_with(|| {
-												committed_to_claimable = true;
+												just_added = true;
 												ClaimablePayment {
 													purpose: $purpose.clone(), htlcs: Vec::new(), onion_fields: None,
 												}
@@ -11199,16 +11202,23 @@ where
 	L::Target: Logger,
 {
 	fn filtered_block_connected(&self, header: &Header, txdata: &TransactionData, height: u32) {
-		{
+		let is_rescan = {
 			let best_block = self.best_block.read().unwrap();
-			assert_eq!(best_block.block_hash, header.prev_blockhash,
-				"Blocks must be connected in chain-order - the connected header must build on the last connected header");
-			assert_eq!(best_block.height, height - 1,
-				"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
-		}
+			let is_rescan =
+				best_block.block_hash == header.block_hash() && best_block.height == height;
+			if !is_rescan {
+				assert_eq!(best_block.block_hash, header.prev_blockhash,
+					"Blocks must be connected in chain-order - the connected header must build on the last connected header");
+				assert_eq!(best_block.height, height - 1,
+					"Blocks must be connected in chain-order - the connected block height must be one greater than the previous height");
+			}
+			is_rescan
+		};
 
 		self.transactions_confirmed(header, txdata, height);
-		self.best_block_updated(header, height);
+		if !is_rescan {
+			self.best_block_updated(header, height);
+		}
 	}
 
 	fn block_disconnected(&self, header: &Header, height: u32) {
@@ -14486,6 +14496,9 @@ where
 				for (purpose, (onion, (payment_hash, htlcs))) in
 					purposes.into_iter().zip(onion_fields.into_iter().zip(claimable_htlcs_list.into_iter()))
 				{
+					if htlcs.is_empty() {
+						continue;
+					}
 					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
 						purpose, htlcs, onion_fields: onion,
 					});
@@ -14493,6 +14506,9 @@ where
 				}
 			} else {
 				for (purpose, (payment_hash, htlcs)) in purposes.into_iter().zip(claimable_htlcs_list.into_iter()) {
+					if htlcs.is_empty() {
+						continue;
+					}
 					let existing_payment = claimable_payments.insert(payment_hash, ClaimablePayment {
 						purpose, htlcs, onion_fields: None,
 					});

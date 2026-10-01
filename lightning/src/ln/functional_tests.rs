@@ -2439,6 +2439,63 @@ fn do_test_fail_back_before_backwards_timeout(post_fail_back_action: PostFailBac
 }
 
 #[test]
+fn test_preimage_claim_reconfirmed_before_event_handled() {
+	// Test that if the counterparty's on-chain preimage claim of an HTLC we offered is reorged out
+	// and reconfirmed before the `ChannelManager` has processed the resulting claim event, we
+	// still track the reconfirmed spend as resolving the HTLC rather than reporting the HTLC as
+	// claimable via timeout forever.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let legacy_cfg = test_default_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let chan = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let (payment_preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 3_000_000);
+
+	// B claims the payment but A never receives the off-chain fulfill. B then goes on chain with an
+	// HTLC-Success transaction as the HTLC nears expiry.
+	nodes[1].node.claim_funds(payment_preimage);
+	expect_payment_claimed!(nodes[1], payment_hash, 3_000_000);
+	check_added_monitors(&nodes[1], 1);
+	let _ = get_htlc_update_msgs(&nodes[1], &node_a_id);
+
+	connect_blocks(&nodes[1], TEST_FINAL_CLTV - CLTV_CLAIM_BUFFER + 2);
+	let node_1_txn = test_txn_broadcast(&nodes[1], &chan, None, HTLCType::SUCCESS);
+	check_closed_broadcast(&nodes[1], 1, true);
+	let reason = ClosureReason::HTLCsTimedOut { };
+	check_closed_event(&nodes[1], 1, reason, false, &[node_a_id], 100_000);
+	check_added_monitors(&nodes[1], 1);
+
+	// A sees B's commitment transaction confirm.
+	mine_transaction(&nodes[0], &node_1_txn[0]);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, &[node_b_id], 100_000);
+	check_added_monitors(&nodes[0], 1);
+
+	// A sees the HTLC-Success confirm, which queues a claim event for the `ChannelManager`. Before
+	// the manager gets to it, the block is reorged out and the HTLC-Success reconfirms.
+	mine_transaction(&nodes[0], &node_1_txn[1]);
+	disconnect_blocks(&nodes[0], 1);
+	mine_transaction(&nodes[0], &node_1_txn[1]);
+
+	// The manager should learn of the claim exactly once.
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+
+	// Once the reconfirmed HTLC-Success is irrevocably confirmed, A's balance in the channel
+	// should be fully resolved. In particular, the HTLC must not be reported as still claimable by
+	// A via timeout.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY);
+	let balances = get_monitor!(nodes[0], chan.2).get_claimable_balances();
+	assert!(balances.is_empty(), "{balances:?}");
+}
+
+#[test]
 fn channel_monitor_network_test() {
 	// Simple test which builds a network of ChannelManagers, connects them to each other, and
 	// tests that ChannelMonitor is able to recover from various states.
@@ -3939,12 +3996,7 @@ fn test_htlc_ignore_latest_remote_commitment() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
-	if *nodes[1].connect_style.borrow() == ConnectStyle::FullBlockViaListen {
-		// We rely on the ability to connect a block redundantly, which isn't allowed via
-		// `chain::Listen`, so we never run the test if we randomly get assigned that
-		// connect_style.
-		return;
-	}
+
 	let funding_tx = create_announced_chan_between_nodes(&nodes, 0, 1).3;
 	let error_message = "Channel force-closed";
 	route_payment(&nodes[0], &[&nodes[1]], 10000000);
@@ -4480,6 +4532,24 @@ fn test_drop_messages_peer_disconnect_b() {
 	do_test_drop_messages_peer_disconnect(4, false);
 	do_test_drop_messages_peer_disconnect(5, false);
 	do_test_drop_messages_peer_disconnect(6, false);
+}
+
+#[test]
+pub fn test_filtered_block_connected_allows_same_block_rescan() {
+	let chanmon_cfgs = create_chanmon_cfgs(1);
+	let node_cfgs = create_node_cfgs(1, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(1, &node_cfgs, &[None]);
+	let nodes = create_network(1, &node_cfgs, &node_chanmgrs);
+
+	let best_block = nodes[0].node.current_best_block();
+	let height = best_block.height + 1;
+	let header = create_dummy_header(best_block.block_hash, height);
+	nodes[0].node.filtered_block_connected(&header, &[], height);
+	nodes[0].node.filtered_block_connected(&header, &[], height);
+
+	let current_best_block = nodes[0].node.current_best_block();
+	assert_eq!(current_best_block.block_hash, header.block_hash());
+	assert_eq!(current_best_block.height, height);
 }
 
 #[test]
