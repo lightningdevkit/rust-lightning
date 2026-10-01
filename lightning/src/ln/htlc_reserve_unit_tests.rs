@@ -1,5 +1,6 @@
 //! Various unit tests covering HTLC handling as well as tests covering channel reserve tracking.
 
+use crate::chain::chaininterface::LowerBoundedFeeEstimator;
 use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PaymentPurpose};
 use crate::ln::chan_utils::{
 	self, commit_tx_fee_sat, commitment_tx_base_weight, second_stage_tx_fees_sat,
@@ -1536,6 +1537,163 @@ pub fn test_update_add_htlc_bolt2_receiver_sender_can_afford_amount_sent() {
 	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::ProcessingError { err: err_msg.data };
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fail_htlc_frees_liquidity_for_own_updates_after_our_ack() {
+	do_test_htlc_removal_frees_liquidity_for_own_updates_after_our_ack(false, false);
+	do_test_htlc_removal_frees_liquidity_for_own_updates_after_our_ack(false, true);
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_update_fulfill_htlc_frees_liquidity_for_own_updates_after_our_ack() {
+	do_test_htlc_removal_frees_liquidity_for_own_updates_after_our_ack(true, false);
+	do_test_htlc_removal_frees_liquidity_for_own_updates_after_our_ack(true, true);
+}
+
+// Checks our own adds and fee increases cannot use liquidity from unacknowledged removals from the peer.
+// Checks the update enters the holding cell after our RAA/CS, before the peer's RAA.
+fn do_test_htlc_removal_frees_liquidity_for_own_updates_after_our_ack(
+	fulfill: bool, update_fee: bool,
+) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 80_000_000);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (first_payment_preimage, first_payment_hash, ..) =
+		route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+	let limit_before_removal_msat = nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat;
+
+	if fulfill {
+		nodes[1].node.claim_funds(first_payment_preimage);
+		expect_payment_claimed!(nodes[1], first_payment_hash, 10_000_000);
+	} else {
+		nodes[1].node.fail_htlc_backwards(&first_payment_hash);
+		expect_and_process_pending_htlcs_and_htlc_handling_failed(
+			&nodes[1],
+			&[HTLCHandlingFailureType::Receive { payment_hash: first_payment_hash }],
+		);
+	}
+	check_added_monitors(&nodes[1], 1);
+	let updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	if fulfill {
+		nodes[0]
+			.node
+			.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs[0].clone());
+		expect_payment_sent(&nodes[0], first_payment_preimage, Some(Some(0)), false, false);
+	} else {
+		nodes[0].node.handle_update_fail_htlc(node_b_id, &updates.update_fail_htlcs[0]);
+	}
+	check_added_monitors(&nodes[0], 0);
+
+	// Withhold the peer's commitment_signed. A commitment we initiate must still include the HTLC.
+	assert_eq!(
+		nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat,
+		limit_before_removal_msat,
+	);
+	let amount_msat = limit_before_removal_msat + 1;
+	const NEW_FEERATE: u32 = 8_000;
+	let queue_fee = || {
+		let per_peer_lock;
+		let mut peer_state_lock;
+		let channel =
+			get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id)
+				.as_funded_mut()
+				.unwrap();
+		let fee_estimator = LowerBoundedFeeEstimator::new(&chanmon_cfgs[0].fee_estimator);
+		channel.queue_update_fee(NEW_FEERATE, &fee_estimator, nodes[0].logger);
+		channel.context.holding_cell_update_fee
+	};
+	if update_fee {
+		assert_eq!(queue_fee(), None);
+	} else {
+		let (mut route, payment_hash, _, payment_secret) =
+			get_route_and_payment_hash!(nodes[0], nodes[1], limit_before_removal_msat);
+		route.paths[0].hops[0].fee_msat += 1;
+		let onion = RecipientOnionFields::secret_only(payment_secret, amount_msat);
+		let result = nodes[0].node.send_payment_with_route(
+			route,
+			payment_hash,
+			onion,
+			PaymentId(payment_hash.0),
+		);
+		unwrap_send_err!(nodes[0], result, true, APIError::ChannelUnavailable { .. }, {});
+	}
+	check_added_monitors(&nodes[0], 0);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+	let (revoke, commitment_signed) = get_revoke_commit_msgs(&nodes[0], &node_b_id);
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &revoke);
+	check_added_monitors(&nodes[1], 1);
+
+	// Acknowledging the removal frees its commitment fee, even while our CS awaits an RAA.
+	// The previously unaffordable update must now be accepted into the holding cell.
+	let payment = if update_fee {
+		assert_eq!(queue_fee(), Some(NEW_FEERATE));
+		None
+	} else {
+		assert!(nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat >= amount_msat);
+		let (route, payment_hash, payment_preimage, payment_secret) =
+			get_route_and_payment_hash!(nodes[0], nodes[1], amount_msat);
+		let onion = RecipientOnionFields::secret_only(payment_secret, amount_msat);
+		nodes[0]
+			.node
+			.send_payment_with_route(route, payment_hash, onion, PaymentId(payment_hash.0))
+			.unwrap();
+		let channels = nodes[0].node.list_channels();
+		let queued_htlc = channels[0]
+			.pending_outbound_htlcs
+			.iter()
+			.find(|htlc| htlc.payment_hash == payment_hash)
+			.unwrap();
+		assert_eq!(queued_htlc.htlc_id, None);
+		assert_eq!(queued_htlc.amount_msat, amount_msat);
+		Some((payment_hash, payment_preimage, payment_secret))
+	};
+	check_added_monitors(&nodes[0], 0);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// Completing the exchange must release the queued update without another send or timer tick.
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+	let revoke = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
+	nodes[0].node.handle_revoke_and_ack(node_b_id, &revoke);
+	if fulfill {
+		expect_payment_path_successful!(nodes[0]);
+	} else {
+		expect_payment_failed!(nodes[0], first_payment_hash, true);
+	}
+	check_added_monitors(&nodes[0], 1);
+
+	if let Some((payment_hash, payment_preimage, payment_secret)) = payment {
+		pass_along_route(&nodes[0], &[&[&nodes[1]]], amount_msat, payment_hash, payment_secret);
+		claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+	} else {
+		let fee_updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
+		let fee = fee_updates.update_fee.as_ref().unwrap();
+		assert_eq!(fee.feerate_per_kw, NEW_FEERATE);
+		nodes[1].node.handle_update_fee(node_a_id, fee);
+		do_commitment_signed_dance(
+			&nodes[1],
+			&nodes[0],
+			&fee_updates.commitment_signed,
+			false,
+			false,
+		);
+		for (local, remote) in [(0, 1), (1, 0)] {
+			assert_eq!(get_feerate!(nodes[local], nodes[remote], channel_id), NEW_FEERATE);
+		}
+	}
 }
 
 #[xtest(feature = "_externalize_tests")]

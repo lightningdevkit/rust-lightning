@@ -1018,6 +1018,16 @@ impl HTLCSource {
 		}
 	}
 
+	/// Returns the total amount of the inbound HTLC(s) (i.e. the source(s) referred to by this
+	/// object), if the source was a forwarded HTLC and all inbound HTLCs were first forwarded on
+	/// LDK 0.0.117 or later.
+	pub(crate) fn inbound_htlc_amount_msat(&self) -> Option<u64> {
+		match self {
+			Self::OutboundRoute { .. } => None,
+			_ => self.previous_hop_data().iter().map(|hop| hop.amount_msat).sum(),
+		}
+	}
+
 	pub(crate) fn static_invoice(&self) -> Option<StaticInvoice> {
 		match self {
 			Self::OutboundRoute {
@@ -10413,12 +10423,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				self.claim_funds_from_htlc_forward_hop(
 					payment_preimage,
 					|htlc_claim_value_msat: Option<u64>| -> Option<events::Event> {
-						let total_fee_earned_msat =
-							if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-								Some(claimed_htlc_value - forwarded_htlc_value_msat)
-							} else {
-								None
-							};
+						let total_fee_earned_msat = htlc_claim_value_msat
+							.and_then(|claimed| claimed.checked_sub(forwarded_htlc_value_msat));
+						if htlc_claim_value_msat.is_some() && total_fee_earned_msat.is_none() {
+							log_warn!(self.logger, "Forwarded {}msat to {} but claimed only {}msat from {} - we paid out more than we took in. This is unexpected, though permitted when an intercepted HTLC is forwarded for more than it delivered",
+								forwarded_htlc_value_msat, next_channel_id,
+								htlc_claim_value_msat.unwrap(), event_prev_hop_data.channel_id);
+						}
 						debug_assert!(
 							skimmed_fee_msat <= total_fee_earned_msat,
 							"skimmed_fee_msat must always be included in total_fee_earned_msat"
@@ -19585,6 +19596,14 @@ impl<
 			let channel_id = channel.context.channel_id();
 			channel_id_set.insert(channel_id);
 			if let Some(ref mut monitor) = args.channel_monitors.get_mut(&channel_id) {
+				// Blocked updates the `ChannelMonitor` has since applied must be dropped before
+				// checking whether we're stale, as force-closing a stale channel fails back the
+				// HTLCs added in its blocked updates, which the counterparty is committed to if
+				// the update was applied.
+				channel.on_startup_drop_completed_blocked_mon_updates_through(
+					&logger,
+					monitor.get_latest_update_id(),
+				);
 				if channel.get_cur_holder_commitment_transaction_number()
 					> monitor.get_cur_holder_commitment_number()
 					|| channel.get_revoked_counterparty_commitment_transaction_number()
@@ -19706,10 +19725,6 @@ impl<
 						}
 					}
 				} else {
-					channel.on_startup_drop_completed_blocked_mon_updates_through(
-						&logger,
-						monitor.get_latest_update_id(),
-					);
 					log_info!(logger, "Successfully loaded at update_id {} against monitor at update id {} with {} blocked updates",
 						channel.context.get_latest_monitor_update_id(),
 						monitor.get_latest_update_id(), channel.blocked_monitor_updates_pending());
@@ -19810,6 +19825,7 @@ impl<
 					update_id: monitor.get_latest_update_id().saturating_add(1),
 					updates: vec![ChannelMonitorUpdateStep::ChannelForceClosed {
 						should_broadcast: true,
+						counterparty_failed_htlcs: Vec::new(),
 					}],
 					channel_id: Some(monitor.channel_id()),
 				};

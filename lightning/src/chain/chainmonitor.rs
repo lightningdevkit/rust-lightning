@@ -823,14 +823,16 @@ where
 	#[cfg(any(test, fuzzing))]
 	pub fn force_channel_monitor_updated(&self, channel_id: ChannelId, monitor_update_id: u64) {
 		let monitors = self.monitors.read().unwrap();
-		let monitor = &monitors.get(&channel_id).unwrap().monitor;
-		let counterparty_node_id = monitor.get_counterparty_node_id();
+		let monitor_state = monitors.get(&channel_id).unwrap();
+		let monitor = &monitor_state.monitor;
+		let mut pending_monitor_updates = monitor_state.pending_monitor_updates.lock().unwrap();
+		pending_monitor_updates.retain(|update_id| *update_id > monitor_update_id);
 		let funding_txo = monitor.get_funding_txo();
 		self.pending_monitor_events.lock().unwrap().push((
 			funding_txo,
 			channel_id,
 			vec![MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id }],
-			counterparty_node_id,
+			monitor.get_counterparty_node_id(),
 		));
 		self.event_notifier.notify();
 	}
@@ -1206,7 +1208,11 @@ where
 				};
 				match persist_res {
 					ChannelMonitorUpdateStatus::InProgress => {
-						pending_monitor_updates.push(update_id);
+						// If the update was refused by the `ChannelMonitor`, then it was not individually
+						// persisted and it will never be marked as completed via `channel_monitor_updated`.
+						if update_res.is_ok() {
+							pending_monitor_updates.push(update_id);
+						}
 						log_debug!(
 							logger,
 							"Persistence of ChannelMonitorUpdate id {:?} in progress",
@@ -1652,7 +1658,19 @@ where
 		let monitors = self.monitors.read().unwrap();
 		let mut pending_monitor_events = Vec::new();
 		for monitor_state in monitors.values() {
-			let monitor_events = monitor_state.monitor.get_and_clear_pending_monitor_events();
+			// Hold back HTLC-failed monitor events for channels with in-flight updates. The monitor may
+			// have queued an event based on in-memory state from an as-yet-unpersisted update; surfacing
+			// it before persistence would let us fail upstream based on state that could be lost on a
+			// crash + reconnect. Other monitor events (e.g., channel close) aren't subject to those
+			// restrictions and can be released immediately.
+			let monitor_events = {
+				let pending_updates = monitor_state.pending_monitor_updates.lock().unwrap();
+				if monitor_state.has_pending_updates(&pending_updates) {
+					monitor_state.monitor.get_and_clear_pending_non_htlc_fail_events()
+				} else {
+					monitor_state.monitor.get_and_clear_pending_monitor_events()
+				}
+			};
 			if monitor_events.len() > 0 {
 				let monitor_funding_txo = monitor_state.monitor.get_funding_txo();
 				let monitor_channel_id = monitor_state.monitor.channel_id();

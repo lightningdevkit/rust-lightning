@@ -681,6 +681,10 @@ pub(crate) enum ChannelMonitorUpdateStep {
 		/// If set to false, we shouldn't broadcast the latest holder commitment transaction as we
 		/// think we've fallen behind!
 		should_broadcast: bool,
+		/// HTLCs which the counterparty failed but whose failures had not been handled when the
+		/// channel was closed. Those which are no longer in any commitment transaction we track
+		/// are failed once this update is applied.
+		counterparty_failed_htlcs: Vec<(HTLCSource, PaymentHash)>,
 	},
 	ShutdownScript {
 		scriptpubkey: ScriptBuf,
@@ -755,6 +759,7 @@ impl_writeable_tlv_based_enum_upgradable!(ChannelMonitorUpdateStep,
 	},
 	(4, ChannelForceClosed) => {
 		(0, should_broadcast, required),
+		(1, counterparty_failed_htlcs, optional_vec),
 	},
 	(5, ShutdownScript) => {
 		(0, scriptpubkey, required),
@@ -2190,7 +2195,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	/// Get the list of HTLCs who's status has been updated on chain. This should be called by
 	/// ChannelManager via [`chain::Watch::release_pending_monitor_events`].
 	pub fn get_and_clear_pending_monitor_events(&self) -> Vec<MonitorEvent> {
-		self.inner.lock().unwrap().get_and_clear_pending_monitor_events()
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(|_| true)
+	}
+
+	/// Returns only non-HTLC-failure monitor events, retaining HTLC failures until monitor
+	/// updates have been durably persisted.
+	pub(super) fn get_and_clear_pending_non_htlc_fail_events(&self) -> Vec<MonitorEvent> {
+		self.inner.lock().unwrap().get_and_clear_pending_monitor_events_filtered(
+			|ev| !matches!(ev, MonitorEvent::HTLCEvent(upd) if upd.payment_preimage.is_none()),
+		)
 	}
 
 	/// Processes [`SpendableOutputs`] events produced from each [`ChannelMonitor`] upon maturity.
@@ -4349,9 +4362,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						ret = Err(());
 					}
 				},
-				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast } => {
+				ChannelMonitorUpdateStep::ChannelForceClosed { should_broadcast, counterparty_failed_htlcs } => {
 					log_trace!(logger, "Updating ChannelMonitor: channel force closed, should broadcast: {}", should_broadcast);
 					self.lockdown_from_offchain = true;
+					self.fail_counterparty_failed_htlcs(counterparty_failed_htlcs, logger);
 					if *should_broadcast {
 						// There's no need to broadcast our commitment transaction if we've seen one
 						// confirmed (even with 1 confirmation) as it'll be rejected as
@@ -4487,6 +4501,72 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 
 	fn no_further_updates_allowed(&self) -> bool {
 		self.funding_spend_seen || self.lockdown_from_offchain || self.holder_tx_signed
+	}
+
+	/// Fails HTLCs which the counterparty failed off-chain but whose failures were not handled
+	/// before the channel was closed.
+	///
+	/// HTLCs still in a commitment transaction we track are skipped: we may not have been given
+	/// the revocation of the counterparty commitment transaction containing them, in which case
+	/// the counterparty can still claim them on-chain. They are instead resolved on-chain or, for
+	/// forwarded HTLCs, failed backwards as the inbound HTLCs approach expiry, like any other HTLC
+	/// we track.
+	fn fail_counterparty_failed_htlcs<L: Logger>(
+		&mut self, htlcs: &[(HTLCSource, PaymentHash)], logger: &WithContext<L>,
+	) {
+		let in_counterparty_commitment = |source: &HTLCSource| {
+			[
+				self.funding.current_counterparty_commitment_txid,
+				self.funding.prev_counterparty_commitment_txid,
+			]
+			.into_iter()
+			.flatten()
+			.filter_map(|txid| self.funding.counterparty_claimable_outpoints.get(&txid))
+			.flatten()
+			.any(|(_, source_opt)| source_opt.as_deref() == Some(source))
+		};
+		for (source, payment_hash) in htlcs {
+			let logger = WithContext::from(logger, None, None, Some(*payment_hash));
+			if in_counterparty_commitment(source) {
+				log_trace!(
+					logger,
+					"Not failing HTLC as it is still in a counterparty commitment transaction"
+				);
+				continue;
+			}
+			// An HTLC the counterparty failed is removed from our commitment transaction before
+			// it is removed from theirs, so it can't be in ours if it is in neither of their
+			// unrevoked ones.
+			debug_assert!(!holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES)
+				.any(|(_, s)| s == Some(source)));
+			let duplicate_event =
+				self.pending_monitor_events.iter().any(
+					|event| match event {
+						MonitorEvent::HTLCEvent(upd) => upd.source == *source,
+						_ => false,
+					},
+				);
+			if duplicate_event {
+				continue;
+			}
+			// The HTLC can't have been failed on-chain, as the counterparty revoked the commitment
+			// transaction containing it and we'd have swept it ourselves had it been broadcast.
+			let newly_failed = self.failed_back_htlc_ids.insert(SentHTLCId::from_source(source));
+			debug_assert!(newly_failed);
+			log_trace!(logger, "Failing HTLC the counterparty failed before the channel closed");
+			// The value isn't used when failing HTLCs.
+			let htlc_value_msat = match source {
+				HTLCSource::OutboundRoute { first_hop_htlc_msat, .. } => Some(*first_hop_htlc_msat),
+				_ => source.inbound_htlc_amount_msat(),
+			};
+			let htlc_value_satoshis = htlc_value_msat.unwrap_or(0) / 1000;
+			self.pending_monitor_events.push(MonitorEvent::HTLCEvent(HTLCUpdate {
+				source: source.clone(),
+				payment_preimage: None,
+				payment_hash: *payment_hash,
+				htlc_value_satoshis,
+			}));
+		}
 	}
 
 	/// Given outbound HTLCs from a counterparty commitment update, checks if the funding output
@@ -4636,10 +4716,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		&self.outputs_to_watch
 	}
 
-	fn get_and_clear_pending_monitor_events(&mut self) -> Vec<MonitorEvent> {
-		let mut ret = Vec::new();
-		mem::swap(&mut ret, &mut self.pending_monitor_events);
-		ret
+	/// Drains and returns the pending monitor events for which `predicate` returns true. Events that
+	/// don't match the predicate stay in `pending_monitor_events` so they're eligible for release on
+	/// a later call.
+	fn get_and_clear_pending_monitor_events_filtered<F: FnMut(&MonitorEvent) -> bool>(
+		&mut self, mut predicate: F,
+	) -> Vec<MonitorEvent> {
+		let mut released = Vec::new();
+		let mut retained = Vec::new();
+		// Note: we can use Vec::extract_if here once MSRV reaches 1.87
+		for entry in self.pending_monitor_events.drain(..) {
+			if predicate(&entry) {
+				released.push(entry);
+			} else {
+				retained.push(entry);
+			}
+		}
+		self.pending_monitor_events = retained;
+		released
 	}
 
 	/// Gets the set of events that are repeated regularly (e.g. those which RBF bump
