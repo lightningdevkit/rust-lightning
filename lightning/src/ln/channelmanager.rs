@@ -10849,12 +10849,13 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				self.claim_funds_from_htlc_forward_hop(
 					payment_preimage,
 					|htlc_claim_value_msat: Option<u64>| -> Option<events::Event> {
-						let total_fee_earned_msat =
-							if let Some(claimed_htlc_value) = htlc_claim_value_msat {
-								Some(claimed_htlc_value - forwarded_htlc_value_msat)
-							} else {
-								None
-							};
+						let total_fee_earned_msat = htlc_claim_value_msat
+							.and_then(|claimed| claimed.checked_sub(forwarded_htlc_value_msat));
+						if htlc_claim_value_msat.is_some() && total_fee_earned_msat.is_none() {
+							log_warn!(self.logger, "Forwarded {}msat to {} but claimed only {}msat from {} - we paid out more than we took in. This is unexpected, though permitted when an intercepted HTLC is forwarded for more than it delivered",
+								forwarded_htlc_value_msat, next_channel_id,
+								htlc_claim_value_msat.unwrap(), event_prev_hop_data.channel_id);
+						}
 						debug_assert!(
 							skimmed_fee_msat <= total_fee_earned_msat,
 							"skimmed_fee_msat must always be included in total_fee_earned_msat"
