@@ -9,9 +9,13 @@
    `ChannelManager` no longer fails on startup (#4983).
 
 ## Security
-0.2.6 fixes a denial-of-service vulnerability when receiving bogus payments and
-a fee-inflation vulnerability which can allow a malicious counterparty to spend
-a small amount of our funds when we initate a splice.
+0.2.6 fixes a funds-theft vulnerability that can be exploited by a malicious
+channel counterparty, a denial-of-service vulnerability when receiving bogus
+payments and a fee-inflation vulnerability which can allow a malicious
+counterparty to spend a small amount of our funds when we initate a splice.
+ * A malicious peer can open a channel to us which can cause us to accept an
+   unbroadcastable commitment transaction, allowing for the theft of forwarded
+   HTLC values (#4976).
  * A malicious splice peer can no longer cause us to somewhat over-allocate fee
    when we contribute to a splice, with the over-allocation going to their
    output (#4905).
