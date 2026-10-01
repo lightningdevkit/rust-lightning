@@ -1,3 +1,35 @@
+# 0.1.13 - Oct 1, 2026 - "LLMs Fuzz"
+
+## Bug Fixes
+ * When closing a channel which never confirmed and never had any funds via the
+   `ChainMonitor`, if a crash immediately follows the closure, deserializing the
+   `ChannelManager` no longer fails on startup (#4983).
+ * A race no longer exists when a channel which was force-closed by discovering
+   a commitment transaction on-chain can lead to the force-closure of other
+   channels or `Event::PaymentSent` missing until restart (#5030).
+ * In rare cases where where a block is connected and immediately reorged out,
+   it is no longer possible for a phantom `Balance` to remain, preventing
+   `ChannelMonitor` archival (#5007).
+
+## Security
+0.1.13 fixes a funds-theft vulnerability that can be exploited by a malicious
+channel counterparty and two denial-of-service vulnerabilities that can be
+exploited by a malicious channel counterparty.
+ * If a counterparty acknowledges a channel state update then reconnects and
+   pretends not to have received it, they can no longer cause us to sign a
+   conflicting commitment transaction at the same index, avoiding a potential
+   avenue for funds-theft (#5057).
+   Thanks to both Project Loupe and Nishant Bansal for independently reporting
+   this issue.
+ * When accepting an inbound channel, our counterparty can no longer construct
+   the funding transaction to cause `lightning-transaction-sync`'s
+   Electrum-based sync to pull a substantial quantity of transactions (#4867).
+ * When a bogus payment HTLC is received which is immediately rejected, after
+   a second HTLC with the same `payment_hash` has been successfully forwarded,
+   `ChannelManager` can no longer be left in a state where it would be rejected
+   on deserialization. Thanks to Erick Cestari for reporting this issue (#4982).
+
+
 # 0.1.12 - Aug 4, 2026 - "Bitcoin's MegaScan"
 
 ## Bug Fixes

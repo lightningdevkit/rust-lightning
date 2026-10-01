@@ -6454,7 +6454,9 @@ impl<SP: Deref> Channel<SP> where
 				commitment_update: None,
 				order: self.context.resend_order.clone(),
 			})
-		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
+		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1
+			&& is_awaiting_remote_revoke
+		{
 			if required_revoke.is_some() || self.context.signer_pending_revoke_and_ack {
 				log_debug!(logger, "Reconnected channel {} with lost outbound RAA and lost remote commitment tx", &self.context.channel_id());
 			} else {
