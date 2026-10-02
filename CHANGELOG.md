@@ -24,6 +24,7 @@ exploited by a malicious channel counterparty.
  * When accepting an inbound channel, our counterparty can no longer construct
    the funding transaction to cause `lightning-transaction-sync`'s
    Electrum-based sync to pull a substantial quantity of transactions (#4867).
+   Thanks to Project Loupe for reporting this issue.
  * When a bogus payment HTLC is received which is immediately rejected, after
    a second HTLC with the same `payment_hash` has been successfully forwarded,
    `ChannelManager` can no longer be left in a state where it would be rejected
