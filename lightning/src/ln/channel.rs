@@ -11234,7 +11234,9 @@ where
 				splice_locked,
 				inferred_splice_locked,
 			})
-		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1 {
+		} else if msg.next_local_commitment_number == next_counterparty_commitment_number - 1
+			&& is_awaiting_remote_revoke
+		{
 			if retransmit_funding_commit_sig.is_some() {
 				return Err(ChannelError::close(
 					"Peer requested retransmission of an initial commitment_signed while claiming to have lost a later commitment_signed".to_owned(),
@@ -14845,7 +14847,7 @@ where
 	}
 
 	#[rustfmt::skip]
-	fn build_commitment_no_state_update<L: Logger>(
+	pub(super) fn build_commitment_no_state_update<L: Logger>(
 		&self, funding: &FundingScope, logger: &L,
 	) -> (Vec<(HTLCOutputInCommitment, Option<&HTLCSource>)>, CommitmentTransaction) {
 		let commitment_data = self.context.build_commitment_transaction(
