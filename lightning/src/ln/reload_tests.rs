@@ -655,7 +655,7 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 				MessageSendEvent::SendChannelReestablish { msg, .. } => msg.clone(),
 				_ => panic!("Unexpected events: {:?}", warn_reestablish),
 			};
-		} else {
+		} else if not_stale {
 			let msgs = nodes[1].node.get_and_clear_pending_msg_events();
 			assert!(msgs.len() >= 4);
 			match msgs.last() {
@@ -668,12 +668,37 @@ fn do_test_data_loss_protect(reconnect_panicing: bool, substantially_old: bool, 
 				MessageSendEvent::SendChannelReestablish { msg, .. } => msg.clone(),
 				_ => panic!("Unexpected events: {:?}", msgs),
 			};
+		} else {
+			// A has acknowledged B's commitment, so B must reject its rollback claim. B's
+			// reestablishment proof must still let A detect that its own state is stale.
+			let msgs = nodes[1].node.get_and_clear_pending_msg_events();
+			assert_eq!(msgs.len(), 3);
+			reestablish_msg = match &msgs[0] {
+				MessageSendEvent::SendChannelReestablish { msg, .. } => msg.clone(),
+				_ => panic!("Unexpected events: {:?}", msgs),
+			};
+			let err = "Peer attempted to reestablish channel with a very old remote commitment transaction: 1 (received) vs 2 (expected)".to_owned();
+			assert!(msgs.iter().any(|event| matches!(event,
+				MessageSendEvent::HandleError {
+					node_id, action: ErrorAction::SendErrorMessage { msg },
+				} if *node_id == nodes[0].node.get_our_node_id() && msg.channel_id == chan.2 && msg.data == err
+			)));
+			assert!(msgs.iter().any(|event| matches!(event,
+				MessageSendEvent::BroadcastChannelUpdate { msg, .. } if msg.contents.channel_flags & 2 == 2
+			)));
+			check_added_monitors(&nodes[1], 1);
+			check_closed_event(&nodes[1], 1, ClosureReason::ProcessingError { err }, &[nodes[0].node.get_our_node_id()], 1000000);
 		}
 
 		{
-			let mut node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap();
-			// The node B should never force-close the channel.
-			assert!(node_txn.is_empty());
+			let node_txn = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clone();
+			if !substantially_old && !not_stale {
+				assert_eq!(node_txn.len(), 1);
+				assert_eq!(node_txn[0].compute_txid(), get_local_commitment_txn!(nodes[1], chan.2)[0].compute_txid());
+				check_spends!(node_txn[0], chan.3);
+			} else {
+				assert!(node_txn.is_empty());
+			}
 		}
 
 		// Check A panics upon seeing proof it has fallen behind.
@@ -2670,4 +2695,250 @@ fn test_reload_with_mpp_claims_on_same_channel() {
 
 	// nodes[0] should now have received both fulfills and generate PaymentSent.
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+}
+
+#[test]
+fn test_reestablish_rollback_htlc_theft() {
+	use crate::ln::chan_utils::HolderCommitmentTransaction;
+	use crate::sign::ecdsa::EcdsaChannelSigner;
+	use crate::sign::{ChannelDerivationParameters, ChannelSigner, HTLCDescriptor};
+	use bitcoin::absolute::LockTime;
+	use bitcoin::secp256k1::Secp256k1;
+	use bitcoin::transaction::Version;
+	use bitcoin::Transaction;
+
+	// The sender routes an HTLC through the victim, then claims to have missed an already
+	// acknowledged commitment. Any signatures returned must not let it reclaim the incoming
+	// HTLC on chain after the victim has paid the downstream recipient.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let configs = vec![Some(test_legacy_channel_config()); 3];
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &configs);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let attacker_id = nodes[0].node.get_our_node_id();
+	let victim_id = nodes[1].node.get_our_node_id();
+	let recipient_id = nodes[2].node.get_our_node_id();
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+	let (preimage, payment_hash, ..) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 8_000_000);
+
+	let next_commitment = {
+		let per_peer_state = nodes[1].node.per_peer_state.read().unwrap();
+		let mut peer_state = per_peer_state.get(&attacker_id).unwrap().lock().unwrap();
+		let chan = peer_state.channel_by_id.get_mut(&chan_id).unwrap().as_funded_mut().unwrap();
+		assert!(!chan.is_awaiting_monitor_update());
+		let next_commitment = chan.build_commitment_no_state_update(&chan.funding, nodes[1].logger).1;
+		assert_eq!(chan.get_cur_counterparty_commitment_transaction_number(), next_commitment.commitment_number() + 1);
+		next_commitment
+	};
+	assert_eq!(next_commitment.nondust_htlcs().len(), 1);
+	assert_eq!(
+		get_monitor!(nodes[1], chan_id).get_cur_counterparty_commitment_number(),
+		next_commitment.commitment_number() + 1,
+	);
+	let monitor_before = get_monitor!(nodes[1], chan_id).encode();
+	let mut acknowledged_txn = get_local_commitment_txn!(nodes[0], chan_id);
+	assert_eq!(acknowledged_txn.len(), 2);
+
+	nodes[0].node.peer_disconnected(victim_id);
+	nodes[1].node.peer_disconnected(attacker_id);
+	nodes[0]
+		.node
+		.peer_connected(
+			victim_id,
+			&msgs::Init {
+				features: nodes[1].node.init_features(),
+				networks: None,
+				remote_network_address: None,
+			},
+			true,
+		)
+		.unwrap();
+	nodes[1]
+		.node
+		.peer_connected(
+			attacker_id,
+			&msgs::Init {
+				features: nodes[0].node.init_features(),
+				networks: None,
+				remote_network_address: None,
+			},
+			false,
+		)
+		.unwrap();
+	let mut forged = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
+	let _ = get_chan_reestablish_msgs!(nodes[1], nodes[0]);
+	assert!(forged.next_local_commitment_number > 1);
+	let expected_next_number = forged.next_local_commitment_number;
+	forged.next_local_commitment_number -= 1;
+	let rollback_error = format!(
+		"Peer attempted to reestablish channel with a very old remote commitment transaction: {} (received) vs {} (expected)",
+		forged.next_local_commitment_number, expected_next_number,
+	);
+	nodes[1].node.handle_channel_reestablish(attacker_id, &forged);
+
+	let mut signatures = None;
+	for event in nodes[1].node.get_and_clear_pending_msg_events() {
+		match event {
+			MessageSendEvent::UpdateHTLCs { node_id, mut updates, .. } => {
+				assert_eq!(node_id, attacker_id);
+				assert!(updates.update_add_htlcs.is_empty());
+				assert!(updates.update_fulfill_htlcs.is_empty());
+				assert!(updates.update_fail_htlcs.is_empty());
+				assert!(updates.update_fail_malformed_htlcs.is_empty());
+				assert!(updates.update_fee.is_none());
+				assert_eq!(updates.commitment_signed.len(), 1);
+				assert_eq!(updates.commitment_signed[0].htlc_signatures.len(), 1);
+				assert!(signatures.replace(updates.commitment_signed.remove(0)).is_none());
+			},
+			MessageSendEvent::SendChannelUpdate { node_id, .. } => {
+				assert_eq!(node_id, attacker_id);
+			},
+			MessageSendEvent::BroadcastChannelUpdate { msg, .. } => {
+				assert_eq!(msg.contents.channel_flags & 2, 2);
+			},
+			MessageSendEvent::HandleError {
+				node_id,
+				action: ErrorAction::SendErrorMessage { msg },
+			} => {
+				assert_eq!(node_id, attacker_id);
+				assert_eq!(msg.channel_id, chan_id);
+				assert_eq!(msg.data, rollback_error);
+			},
+			_ => panic!("Unexpected reestablishment response"),
+		}
+	}
+	let signed_next_commitment = signatures.is_some();
+	let (commitment_tx, timeout_tx) = if let Some(signatures) = signatures {
+		check_added_monitors(&nodes[1], 0);
+		assert_eq!(get_monitor!(nodes[1], chan_id).encode(), monitor_before);
+
+		// Only the attacker's own signer is used here. The victim's signatures come entirely
+		// from the normal channel_reestablish handler, including the HTLC-timeout signature.
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let mut peer_state = per_peer_state.get(&victim_id).unwrap().lock().unwrap();
+		let chan = peer_state.channel_by_id.get_mut(&chan_id).unwrap().as_funded_mut().unwrap();
+		let parameters = &chan.funding.channel_transaction_parameters;
+		let signer = &chan.get_signer().inner;
+		let secp_ctx = Secp256k1::new();
+		let holder_tx = HolderCommitmentTransaction::new(
+			next_commitment,
+			signatures.signature,
+			signatures.htlc_signatures,
+			&parameters.holder_pubkeys.funding_pubkey,
+			&parameters.counterparty_pubkeys().unwrap().funding_pubkey,
+		);
+		let holder_sig =
+			signer.sign_holder_commitment(parameters, &holder_tx, &secp_ctx).unwrap();
+		let commitment_tx =
+			holder_tx.add_holder_sig(&chan.funding.get_funding_redeemscript(), holder_sig);
+		let descriptor = HTLCDescriptor {
+			channel_derivation_parameters: ChannelDerivationParameters {
+				value_satoshis: chan.funding.get_value_satoshis(),
+				keys_id: signer.channel_keys_id(),
+				transaction_parameters: parameters.clone(),
+			},
+			commitment_txid: commitment_tx.compute_txid(),
+			per_commitment_number: holder_tx.commitment_number(),
+			per_commitment_point: holder_tx.trust().keys().per_commitment_point,
+			feerate_per_kw: holder_tx.negotiated_feerate_per_kw(),
+			htlc: holder_tx.nondust_htlcs()[0].clone(),
+			preimage: None,
+			counterparty_sig: holder_tx.counterparty_htlc_sigs[0],
+		};
+		assert!(descriptor.htlc.offered);
+		assert_eq!(descriptor.htlc.payment_hash, payment_hash);
+		let mut timeout_tx = Transaction {
+			version: Version::TWO,
+			lock_time: LockTime::from_consensus(descriptor.htlc.cltv_expiry),
+			input: vec![descriptor.unsigned_tx_input()],
+			output: vec![descriptor.tx_output(&secp_ctx)],
+		};
+		let sig = signer
+			.sign_holder_htlc_transaction(&timeout_tx, 0, &descriptor, &secp_ctx)
+			.unwrap();
+		timeout_tx.input[0].witness =
+			descriptor.tx_input_witness(&sig, &descriptor.witness_script(&secp_ctx));
+		(commitment_tx, timeout_tx)
+	} else {
+		check_added_monitors(&nodes[1], 1);
+		check_closed_event(
+			&nodes[1],
+			1,
+			ClosureReason::ProcessingError { err: rollback_error },
+			&[attacker_id],
+			100_000,
+		);
+		// Even after rejection, the attacker can publish its acknowledged commitment. The
+		// victim must still recover its incoming HTLC when the downstream preimage arrives.
+		(acknowledged_txn.remove(0), acknowledged_txn.remove(0))
+	};
+	check_spends!(commitment_tx, funding_tx);
+	check_spends!(timeout_tx, commitment_tx);
+	let htlc_outpoint = timeout_tx.input[0].previous_output;
+	assert!(commitment_tx.output[htlc_outpoint.vout as usize].value.to_sat() >= 8_000);
+
+	// Confirm before any further incoming-channel update could record the new transaction.
+	nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+	mine_transaction(&nodes[1], &commitment_tx);
+	if signed_next_commitment {
+		check_closed_broadcast(&nodes[1], 1, true);
+		check_added_monitors(&nodes[1], 1);
+		check_closed_event(
+			&nodes[1],
+			1,
+			ClosureReason::CommitmentTxConfirmed,
+			&[attacker_id],
+			100_000,
+		);
+	}
+	nodes[2].node.claim_funds(preimage, Default::default());
+	expect_payment_claimed!(nodes[2], payment_hash, 8_000_000);
+	check_added_monitors(&nodes[2], 1);
+	let mut fulfill = get_htlc_update_msgs(&nodes[2], &victim_id);
+	assert_eq!(fulfill.update_fulfill_htlcs.len(), 1);
+	nodes[1]
+		.node
+		.handle_update_fulfill_htlc(recipient_id, fulfill.update_fulfill_htlcs.remove(0));
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	check_added_monitors(&nodes[1], 1);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &fulfill.commitment_signed, false, false);
+	assert_eq!(
+		get_monitor!(nodes[1], chan_id).get_stored_preimages()[&payment_hash].0,
+		preimage
+	);
+
+	let claim = nodes[1]
+		.tx_broadcaster
+		.txn_broadcasted
+		.lock()
+		.unwrap()
+		.iter()
+		.find(|tx| tx.input.iter().any(|input| input.previous_output == htlc_outpoint))
+		.cloned();
+	if let Some(claim) = &claim {
+		check_spends!(claim, commitment_tx);
+		assert!(claim
+			.input
+			.iter()
+			.any(|input| input.witness.iter().any(|item| item == preimage.0)));
+		mine_transaction(&nodes[1], claim);
+	} else {
+		connect_blocks(
+			&nodes[1],
+			timeout_tx.lock_time.to_consensus_u32() + 1 - nodes[1].best_block_info().1,
+		);
+		assert!(nodes[1]
+			.tx_broadcaster
+			.txn_broadcasted
+			.lock()
+			.unwrap()
+			.iter()
+			.all(|tx| { tx.input.iter().all(|input| input.previous_output != htlc_outpoint) }));
+		mine_transaction(&nodes[1], &timeout_tx);
+	}
+	assert!(claim.is_some(),
+		"attacker reclaimed the incoming HTLC after the victim paid downstream, despite the victim knowing the preimage");
+	assert!(!signed_next_commitment, "reestablishment signed an unmonitored commitment");
 }
