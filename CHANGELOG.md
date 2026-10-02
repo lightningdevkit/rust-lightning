@@ -21,7 +21,7 @@
 ## Security
 0.2.7 fixes a funds-theft vulnerability that can be exploited by a malicious
 channel counterparty, a funds-theft vulnerability that can be exploited by an
-LSPS2 client, and two denial-of-service vulnerabilities that can be exploited by
+LSPS2 client, and a denial-of-service vulnerability that can be exploited by
 a malicious channel counterparty.
  * If a counterparty acknowledges a channel state update then reconnects and
    pretends not to have received it, they can no longer cause us to sign a
@@ -32,9 +32,11 @@ a malicious channel counterparty.
  * An HTLC intercepted for the LSPS2 JIT flow can no longer lie about its amount
    and cause us to open a channel and forward more than the inbound HTLC
    provided us (#5042).
+   Thanks to Aziz Pulatov from LQWD for reporting this issue.
  * When accepting an inbound channel, our counterparty can no longer construct
    the funding transaction to cause `lightning-transaction-sync`'s
    Electrum-based sync to pull a substantial quantity of transactions (#4867).
+   Thanks to Project Loupe for reporting this issue.
 
 
 # 0.2.6 - Sep 9, 2026 - "The More You Dig"
