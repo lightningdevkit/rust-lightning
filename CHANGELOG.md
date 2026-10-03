@@ -1,3 +1,77 @@
+# 0.2.7 - Oct 1, 2026 - "LLMs vs Fuzzers"
+
+## Bug Fixes
+ * Counterparties which both claim an HTLC and add a new HTLC in a single
+   commitment update are no longer at risk of a spurious force-close (#5043).
+ * When force-closing a channel which had an in-flight `ChannelMonitorUpdate`
+   from a counterparty's state revocation blocked by another action (pending
+   event, async `ChannelMonitorUpdate` on another channel, etc), we no longer
+   forget to fail HTLCs which were removed in the revocation back (#5050).
+ * When loading with a stale `ChannelManager` which had in-flight
+   `ChannelMonitorUpdate`s blocked by another action (pending event, async
+   `ChannelMonitorUpdate` on another channel, etc), we no longer fail an HTLC
+   backwards which could still be claimed on-chain by our counterparty (#5046).
+ * A race no longer exists when a channel which was force-closed by discovering
+   a commitment transaction on-chain can lead to the force-closure of other
+   channels or `Event::PaymentClaimed` missing until restart (#5030).
+ * In rare cases where a block is connected and immediately reorged out,
+   it is no longer possible for a phantom `Balance` to remain, preventing
+   `ChannelMonitor` archival (#5007).
+
+## Security
+0.2.7 fixes a funds-theft vulnerability that can be exploited by a malicious
+channel counterparty, a funds-theft vulnerability that can be exploited by an
+LSPS2 client, and a denial-of-service vulnerability that can be exploited by
+a malicious channel counterparty.
+ * If a counterparty acknowledges a channel state update then reconnects and
+   pretends not to have received it, they can no longer cause us to sign a
+   conflicting commitment transaction at the same index, avoiding a potential
+   avenue for funds-theft (#5057).
+   Thanks to both Project Loupe and Nishant Bansal for independently reporting
+   this issue.
+ * An HTLC intercepted for the LSPS2 JIT flow can no longer lie about its amount
+   and cause us to open a channel and forward more than the inbound HTLC
+   provided us (#5042).
+   Thanks to Aziz Pulatov from LQWD for reporting this issue.
+ * When accepting an inbound channel, our counterparty can no longer construct
+   the funding transaction to cause `lightning-transaction-sync`'s
+   Electrum-based sync to pull a substantial quantity of transactions (#4867).
+   Thanks to Project Loupe for reporting this issue.
+
+
+# 0.1.13 - Oct 1, 2026 - "LLMs Fuzz"
+
+## Bug Fixes
+ * When closing a channel which never confirmed and never had any funds via the
+   `ChainMonitor`, if a crash immediately follows the closure, deserializing the
+   `ChannelManager` no longer fails on startup (#4983).
+ * A race no longer exists when a channel which was force-closed by discovering
+   a commitment transaction on-chain can lead to the force-closure of other
+   channels or `Event::PaymentClaimed` missing until restart (#5030).
+ * In rare cases where a block is connected and immediately reorged out,
+   it is no longer possible for a phantom `Balance` to remain, preventing
+   `ChannelMonitor` archival (#5007).
+
+## Security
+0.1.13 fixes a funds-theft vulnerability that can be exploited by a malicious
+channel counterparty and two denial-of-service vulnerabilities that can be
+exploited by a malicious channel counterparty.
+ * If a counterparty acknowledges a channel state update then reconnects and
+   pretends not to have received it, they can no longer cause us to sign a
+   conflicting commitment transaction at the same index, avoiding a potential
+   avenue for funds-theft (#5057).
+   Thanks to both Project Loupe and Nishant Bansal for independently reporting
+   this issue.
+ * When accepting an inbound channel, our counterparty can no longer construct
+   the funding transaction to cause `lightning-transaction-sync`'s
+   Electrum-based sync to pull a substantial quantity of transactions (#4867).
+   Thanks to Project Loupe for reporting this issue.
+ * When a bogus payment HTLC is received which is immediately rejected, after
+   a second HTLC with the same `payment_hash` has been successfully forwarded,
+   `ChannelManager` can no longer be left in a state where it would be rejected
+   on deserialization. Thanks to Erick Cestari for reporting this issue (#4982).
+
+
 # 0.2.6 - Sep 9, 2026 - "The More You Dig"
 
 ## Bug Fixes
