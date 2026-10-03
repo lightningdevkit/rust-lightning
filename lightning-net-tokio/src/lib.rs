@@ -289,6 +289,9 @@ impl Connection {
 		// false.
 		let (read_waker, read_receiver) = mpsc::channel(1);
 		stream.set_nonblocking(true).unwrap();
+		// `PeerManager` already batches writes, so Nagle's algorithm only adds latency: it holds a
+		// small message until the peer ACKs our last one, which it may delay by ~40ms.
+		let _ = stream.set_nodelay(true);
 		let tokio_stream = Arc::new(TcpStream::from_std(stream).unwrap());
 
 		let id = ID_COUNTER.fetch_add(1, Ordering::AcqRel);
@@ -1025,9 +1028,14 @@ mod tests {
 		// failing for you check that you have a loopback interface and it is configured with
 		// 127.0.0.1.
 		let (conn_a, conn_b) = make_tcp_connection();
+		let (sock_a, sock_b) = (conn_a.try_clone().unwrap(), conn_b.try_clone().unwrap());
 
 		let fut_a = super::setup_outbound(Arc::clone(&a_manager), b_pub, conn_a);
 		let fut_b = super::setup_inbound(b_manager, conn_b);
+		assert!(sock_a.nodelay().unwrap());
+		assert!(sock_b.nodelay().unwrap());
+		// The clones share the sockets, so drop them or the disconnect below never closes them.
+		drop((sock_a, sock_b));
 
 		tokio::time::timeout(Duration::from_secs(10), a_connected.recv()).await.unwrap();
 		tokio::time::timeout(Duration::from_secs(1), b_connected.recv()).await.unwrap();
