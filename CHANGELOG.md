@@ -10,18 +10,18 @@
  * When loading with a stale `ChannelManager` which had in-flight
    `ChannelMonitorUpdate`s blocked by another action (pending event, async
    `ChannelMonitorUpdate` on another channel, etc), we no longer fail an HTLC
-   backwards which could still be claimed on-chain by out counterparty (#5046).
+   backwards which could still be claimed on-chain by our counterparty (#5046).
  * A race no longer exists when a channel which was force-closed by discovering
    a commitment transaction on-chain can lead to the force-closure of other
-   channels or `Event::PaymentSent` missing until restart (#5030).
- * In rare cases where where a block is connected and immediately reorged out,
+   channels or `Event::PaymentClaimed` missing until restart (#5030).
+ * In rare cases where a block is connected and immediately reorged out,
    it is no longer possible for a phantom `Balance` to remain, preventing
    `ChannelMonitor` archival (#5007).
 
 ## Security
 0.2.7 fixes a funds-theft vulnerability that can be exploited by a malicious
 channel counterparty, a funds-theft vulnerability that can be exploited by an
-LSPS2 client, and two denial-of-service vulnerabilities that can be exploited by
+LSPS2 client, and a denial-of-service vulnerability that can be exploited by
 a malicious channel counterparty.
  * If a counterparty acknowledges a channel state update then reconnects and
    pretends not to have received it, they can no longer cause us to sign a
@@ -32,9 +32,11 @@ a malicious channel counterparty.
  * An HTLC intercepted for the LSPS2 JIT flow can no longer lie about its amount
    and cause us to open a channel and forward more than the inbound HTLC
    provided us (#5042).
+   Thanks to Aziz Pulatov from LQWD for reporting this issue.
  * When accepting an inbound channel, our counterparty can no longer construct
    the funding transaction to cause `lightning-transaction-sync`'s
    Electrum-based sync to pull a substantial quantity of transactions (#4867).
+   Thanks to Project Loupe for reporting this issue.
 
 
 # 0.2.6 - Sep 9, 2026 - "The More You Dig"
