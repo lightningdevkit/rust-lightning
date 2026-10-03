@@ -6,8 +6,8 @@
    `ChannelManager` no longer fails on startup (#4983).
  * A race no longer exists when a channel which was force-closed by discovering
    a commitment transaction on-chain can lead to the force-closure of other
-   channels or `Event::PaymentSent` missing until restart (#5030).
- * In rare cases where where a block is connected and immediately reorged out,
+   channels or `Event::PaymentClaimed` missing until restart (#5030).
+ * In rare cases where a block is connected and immediately reorged out,
    it is no longer possible for a phantom `Balance` to remain, preventing
    `ChannelMonitor` archival (#5007).
 
@@ -24,6 +24,7 @@ exploited by a malicious channel counterparty.
  * When accepting an inbound channel, our counterparty can no longer construct
    the funding transaction to cause `lightning-transaction-sync`'s
    Electrum-based sync to pull a substantial quantity of transactions (#4867).
+   Thanks to Project Loupe for reporting this issue.
  * When a bogus payment HTLC is received which is immediately rejected, after
    a second HTLC with the same `payment_hash` has been successfully forwarded,
    `ChannelManager` can no longer be left in a state where it would be rejected
