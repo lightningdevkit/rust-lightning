@@ -289,8 +289,6 @@ impl Connection {
 		// false.
 		let (read_waker, read_receiver) = mpsc::channel(1);
 		stream.set_nonblocking(true).unwrap();
-		// `PeerManager` already batches writes, so Nagle's algorithm only adds latency: it holds a
-		// small message until the peer ACKs our last one, which it may delay by ~40ms.
 		let _ = stream.set_nodelay(true);
 		let tokio_stream = Arc::new(TcpStream::from_std(stream).unwrap());
 
