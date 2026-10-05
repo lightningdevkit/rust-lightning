@@ -857,14 +857,41 @@ pub struct Route {
 	/// The list of [`Path`]s taken for a single (potentially-)multi-part payment. If no
 	/// [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path must be
 	/// the same.
-	pub paths: Vec<Path>,
+	pub(crate) paths: Vec<Path>,
 	/// The `route_params` parameter passed to [`find_route`].
 	///
 	/// This is used by `ChannelManager` to track information which may be required for retries.
-	pub route_params: RouteParameters,
+	pub(crate) route_params: RouteParameters,
 }
 
 impl Route {
+	/// Constructs a new [`Route`] from the [`Path`]s it takes and the [`RouteParameters`] used to
+	/// find it.
+	///
+	/// If no [`BlindedTail`]s are present, then the pubkey of the last [`RouteHop`] in each path
+	/// must be the same.
+	///
+	/// Returns an error if `paths` is empty.
+	pub fn new(paths: Vec<Path>, route_params: RouteParameters) -> Result<Self, ()> {
+		if paths.is_empty() {
+			return Err(());
+		}
+		Ok(Self { paths, route_params })
+	}
+
+	/// The list of [`Path`]s taken for a single (potentially-)multi-part payment. Always contains
+	/// at least one [`Path`].
+	pub fn paths(&self) -> &[Path] {
+		&self.paths
+	}
+
+	/// The `route_params` parameter passed to [`find_route`].
+	///
+	/// This is used by `ChannelManager` to track information which may be required for retries.
+	pub fn route_params(&self) -> &RouteParameters {
+		&self.route_params
+	}
+
 	/// Returns the total amount of fees paid on this [`Route`].
 	///
 	/// For objects serialized with LDK 0.0.117 and after, this includes any extra payment made to
