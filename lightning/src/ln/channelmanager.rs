@@ -3772,10 +3772,11 @@ fn splice_negotiation_failed_events(
 		}))
 }
 
-/// Generates a new outbound SCID alias that doesn't conflict with an existing alias, and inserts it
-/// into `outbound_scid_aliases`.
+/// Generates a new outbound SCID alias that conflicts with neither an existing alias nor a real
+/// channel's SCID, and inserts it into `outbound_scid_aliases`.
 fn create_and_insert_outbound_scid_alias<ES: EntropySource>(
 	height: u32, chain_hash: &ChainHash, fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES,
+	short_to_chan_info: &HashMap<u64, (PublicKey, ChannelId)>,
 	outbound_scid_aliases: &mut HashSet<u64>,
 ) -> u64 {
 	let mut outbound_scid_alias = 0;
@@ -3792,7 +3793,10 @@ fn create_and_insert_outbound_scid_alias<ES: EntropySource>(
 				entropy_source,
 			);
 		}
-		if outbound_scid_alias != 0 && outbound_scid_aliases.insert(outbound_scid_alias) {
+		if outbound_scid_alias != 0
+			&& !short_to_chan_info.contains_key(&outbound_scid_alias)
+			&& outbound_scid_aliases.insert(outbound_scid_alias)
+		{
 			break;
 		}
 		i += 1;
@@ -4067,6 +4071,7 @@ impl<
 			&self.chain_hash,
 			&self.fake_scid_rand_bytes,
 			&self.entropy_source,
+			&self.short_to_chan_info.read().unwrap(),
 			&mut self.outbound_scid_aliases.lock().unwrap(),
 		)
 	}
@@ -21009,6 +21014,7 @@ impl<
 							&chain_hash,
 							fake_scid_rand_bytes.as_ref().unwrap(),
 							&args.entropy_source,
+							&short_to_chan_info,
 							&mut outbound_scid_aliases,
 						);
 						funded_chan.context.set_outbound_scid_alias(outbound_scid_alias);
