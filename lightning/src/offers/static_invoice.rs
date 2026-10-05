@@ -125,7 +125,7 @@ impl<'a> StaticInvoiceBuilder<'a> {
 		held_htlc_available_paths: Vec<BlindedMessagePath>, created_at: Duration,
 		expanded_key: &ExpandedKey, nonce: Nonce, secp_ctx: &Secp256k1<T>,
 	) -> Result<Self, Bolt12SemanticError> {
-		if offer.chains().len() > 1 {
+		if offer.chains().len() != 1 {
 			return Err(Bolt12SemanticError::UnexpectedChain);
 		}
 
@@ -720,7 +720,7 @@ impl TryFrom<PartialInvoiceTlvStream> for InvoiceContents {
 		if offer_tlv_stream.paths.is_none() {
 			return Err(Bolt12SemanticError::MissingPaths);
 		}
-		if offer_tlv_stream.chains.as_ref().map_or(0, |chains| chains.len()) > 1 {
+		if offer_tlv_stream.chains.as_ref().map_or(1, |chains| chains.len()) != 1 {
 			return Err(Bolt12SemanticError::UnexpectedChain);
 		}
 
@@ -1717,6 +1717,21 @@ mod tests {
 			ChainHash::using_genesis_block(Network::Testnet),
 		];
 		tlv_stream.0.chains = Some(&invalid_chains);
+		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
+			Ok(_) => panic!("expected error"),
+			Err(e) => {
+				assert_eq!(
+					e,
+					Bolt12ParseError::InvalidSemantics(Bolt12SemanticError::UnexpectedChain)
+				);
+			},
+		}
+
+		// Error if the offer has an explicitly empty list of chains.
+		let empty_offer_chains_invoice = invoice();
+		let mut tlv_stream = empty_offer_chains_invoice.as_tlv_stream();
+		let empty_chains = Vec::new();
+		tlv_stream.0.chains = Some(&empty_chains);
 		match StaticInvoice::try_from(tlv_stream_to_bytes(&tlv_stream)) {
 			Ok(_) => panic!("expected error"),
 			Err(e) => {
