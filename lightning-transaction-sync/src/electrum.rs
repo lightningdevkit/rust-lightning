@@ -324,12 +324,15 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		let num_tx_lookups = watched_script_pubkeys.len();
 		debug_assert_eq!(num_tx_lookups, watched_txs.len());
 
-		for output in sync_state.watched_outputs.values() {
-			watched_script_pubkeys.push(output.script_pubkey.clone());
+		for script_pubkey in sync_state.watched_outputs.values().flatten() {
+			watched_script_pubkeys.push(script_pubkey.clone());
 		}
 
 		let num_output_spend_lookups = watched_script_pubkeys.len() - num_tx_lookups;
-		debug_assert_eq!(num_output_spend_lookups, sync_state.watched_outputs.len());
+		debug_assert_eq!(
+			num_output_spend_lookups,
+			sync_state.watched_outputs.values().flatten().count()
+		);
 
 		match self.client.batch_script_get_history(watched_script_pubkeys.iter().map(|s| s.deref()))
 		{
@@ -364,9 +367,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 					}
 				}
 
-				for (watched_output, script_history) in
-					sync_state.watched_outputs.values().zip(output_results)
-				{
+				let watched_outpoints =
+					sync_state.watched_outputs.iter().flat_map(|(outpoint, script_pubkeys)| {
+						script_pubkeys.iter().map(move |_| outpoint)
+					});
+				for (watched_outpoint, script_history) in watched_outpoints.zip(output_results) {
 					for possible_output_spend in script_history {
 						if possible_output_spend.height <= 0 {
 							// Skip if it's a an unconfirmed entry.
@@ -387,9 +392,7 @@ impl<L: Logger> ElectrumSyncClient<L> {
 
 								let mut is_spend = false;
 								for txin in &tx.input {
-									let watched_outpoint =
-										watched_output.outpoint.into_bitcoin_outpoint();
-									if txin.previous_output == watched_outpoint {
+									if txin.previous_output == *watched_outpoint {
 										is_spend = true;
 										break;
 									}
@@ -549,7 +552,11 @@ impl<L: Logger> Filter for ElectrumSyncClient<L> {
 
 	fn register_output(&self, output: WatchedOutput) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.outputs.insert(output.outpoint.into_bitcoin_outpoint(), output);
+		locked_queue
+			.outputs
+			.entry(output.outpoint.into_bitcoin_outpoint())
+			.or_default()
+			.insert(output.script_pubkey);
 	}
 }
 

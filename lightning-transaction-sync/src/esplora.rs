@@ -307,10 +307,10 @@ impl<L: Logger> EsploraSyncClient<L> {
 			}
 		}
 
-		for (_, output) in &sync_state.watched_outputs {
+		for outpoint in sync_state.watched_outputs.keys() {
 			if let Some(output_status) = maybe_await!(self
 				.client
-				.get_output_status(&output.outpoint.txid, output.outpoint.index as u64))?
+				.get_output_status(&outpoint.txid, outpoint.index as u64))?
 			{
 				if let Some(spending_txid) = output_status.txid {
 					if let Some(spending_tx_status) = output_status.status {
@@ -488,6 +488,52 @@ impl<L: Logger> Filter for EsploraSyncClient<L> {
 
 	fn register_output(&self, output: WatchedOutput) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.outputs.insert(output.outpoint.into_bitcoin_outpoint(), output);
+		locked_queue
+			.outputs
+			.entry(output.outpoint.into_bitcoin_outpoint())
+			.or_default()
+			.insert(output.script_pubkey);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use bitcoin::hashes::Hash;
+	use bitcoin::{BlockHash, ScriptBuf, Txid};
+	use lightning::chain::transaction::OutPoint as LnOutPoint;
+	use lightning::util::test_utils::TestLogger;
+
+	#[test]
+	fn register_output_dedups_on_script_pubkey() {
+		let logger = TestLogger::new();
+		let tx_sync = EsploraSyncClient::new("http://localhost:3000".to_string(), &logger);
+
+		let outpoint = LnOutPoint { txid: Txid::all_zeros(), index: 0 };
+		let script_pubkey = ScriptBuf::from(vec![0x51]);
+		let other_script_pubkey = ScriptBuf::from(vec![0x52]);
+
+		// The same output may be registered with varying `block_hash`es, e.g., on restart.
+		tx_sync.register_output(WatchedOutput {
+			block_hash: None,
+			outpoint,
+			script_pubkey: script_pubkey.clone(),
+		});
+		tx_sync.register_output(WatchedOutput {
+			block_hash: Some(BlockHash::all_zeros()),
+			outpoint,
+			script_pubkey: script_pubkey.clone(),
+		});
+		tx_sync.register_output(WatchedOutput {
+			block_hash: None,
+			outpoint,
+			script_pubkey: other_script_pubkey.clone(),
+		});
+
+		let queue = tx_sync.queue.lock().unwrap();
+		let scripts = &queue.outputs[&outpoint.into_bitcoin_outpoint()];
+		assert_eq!(scripts.len(), 2);
+		assert!(scripts.contains(&script_pubkey));
+		assert!(scripts.contains(&other_script_pubkey));
 	}
 }
