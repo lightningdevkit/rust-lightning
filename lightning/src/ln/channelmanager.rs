@@ -3571,6 +3571,40 @@ macro_rules! process_events_body {
 	}
 }
 
+/// Generates a new outbound SCID alias that doesn't conflict with an existing alias, and inserts it
+/// into `outbound_scid_aliases`.
+fn create_and_insert_outbound_scid_alias<ES: Deref>(
+	height: u32, chain_hash: &ChainHash, fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES,
+	outbound_scid_aliases: &mut HashSet<u64>,
+) -> u64
+where
+	ES::Target: EntropySource,
+{
+	let mut outbound_scid_alias = 0;
+	let mut i = 0;
+	loop {
+		// fuzzing chacha20 doesn't use the key at all so we always get the same alias
+		if cfg!(fuzzing) {
+			outbound_scid_alias += 1;
+		} else {
+			outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(
+				height,
+				chain_hash,
+				fake_scid_rand_bytes,
+				entropy_source,
+			);
+		}
+		if outbound_scid_alias != 0 && outbound_scid_aliases.insert(outbound_scid_alias) {
+			break;
+		}
+		i += 1;
+		if i > 1_000_000 {
+			panic!("Your RNG is busted or we ran out of possible outbound SCID aliases (which should never happen before we run out of memory to store channels");
+		}
+	}
+	outbound_scid_alias
+}
+
 impl<M: Deref, T: Deref, ES: Deref, NS: Deref, SP: Deref, F: Deref, R: Deref, MR: Deref, L: Deref> ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 where
 	M::Target: chain::Watch<<SP::Target as SignerProvider>::EcdsaSigner>,
@@ -3684,21 +3718,13 @@ where
 
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
 		let height = self.best_block.read().unwrap().height;
-		let mut outbound_scid_alias = 0;
-		let mut i = 0;
-		loop {
-			if cfg!(fuzzing) { // fuzzing chacha20 doesn't use the key at all so we always get the same alias
-				outbound_scid_alias += 1;
-			} else {
-				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(height, &self.chain_hash, &self.fake_scid_rand_bytes, &self.entropy_source);
-			}
-			if outbound_scid_alias != 0 && self.outbound_scid_aliases.lock().unwrap().insert(outbound_scid_alias) {
-				break;
-			}
-			i += 1;
-			if i > 1_000_000 { panic!("Your RNG is busted or we ran out of possible outbound SCID aliases (which should never happen before we run out of memory to store channels"); }
-		}
-		outbound_scid_alias
+		create_and_insert_outbound_scid_alias(
+			height,
+			&self.chain_hash,
+			&self.fake_scid_rand_bytes,
+			&self.entropy_source,
+			&mut self.outbound_scid_aliases.lock().unwrap(),
+		)
 	}
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
@@ -14607,12 +14633,13 @@ where
 				if let ChannelPhase::Funded(chan) = phase {
 					let logger = WithChannelContext::from(&args.logger, &chan.context, None);
 					if chan.context.outbound_scid_alias() == 0 {
-						let mut outbound_scid_alias;
-						loop {
-							outbound_scid_alias = fake_scid::Namespace::OutboundAlias
-								.get_fake_scid(best_block_height, &chain_hash, fake_scid_rand_bytes.as_ref().unwrap(), &args.entropy_source);
-							if outbound_scid_aliases.insert(outbound_scid_alias) { break; }
-						}
+						let outbound_scid_alias = create_and_insert_outbound_scid_alias(
+							best_block_height,
+							&chain_hash,
+							fake_scid_rand_bytes.as_ref().unwrap(),
+							&args.entropy_source,
+							&mut outbound_scid_aliases,
+						);
 						chan.context.set_outbound_scid_alias(outbound_scid_alias);
 					} else if !outbound_scid_aliases.insert(chan.context.outbound_scid_alias()) {
 						// Note that in rare cases its possible to hit this while reading an older
