@@ -6143,6 +6143,24 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		let (closing_signed, signed_closing_tx, shutdown_result) = if self.context.signer_pending_closing {
+			if self.context.pending_update_fee.is_some() {
+				log_warn!(
+					logger,
+					"Peer {} sent bogus closing signature, channel {} is now hung. Please force-close.",
+					self.context.counterparty_node_id,
+					self.context.channel_id,
+				);
+				return SignerResumeUpdates {
+					commitment_update: None,
+					revoke_and_ack: None,
+					funding_signed: None,
+					channel_ready: None,
+					order: self.context.resend_order.clone(),
+					closing_signed: None,
+					signed_closing_tx: None,
+					shutdown_result: None,
+				};
+			}
 			debug_assert!(self.context.last_sent_closing_fee.is_some());
 			if let Some((fee, skip_remote_output, fee_range, holder_sig)) = self.context.last_sent_closing_fee.clone() {
 				debug_assert!(holder_sig.is_none());
@@ -6845,6 +6863,12 @@ impl<SP: Deref> Channel<SP> where
 		}
 		if !self.context.pending_inbound_htlcs.is_empty() || !self.context.pending_outbound_htlcs.is_empty() {
 			return Err(ChannelError::close("Remote end sent us a closing_signed while there were still pending HTLCs".to_owned()));
+		}
+		if self.context.pending_update_fee.is_some() {
+			return Err(ChannelError::close(
+				"Remote end sent us a closing_signed while there was still a pending fee update"
+					.to_owned(),
+			));
 		}
 		if msg.fee_satoshis > TOTAL_BITCOIN_SUPPLY_SATOSHIS { // this is required to stop potential overflow in build_closing_transaction
 			return Err(ChannelError::close("Remote tried to send us a closing tx with > 21 million BTC fee".to_owned()));
