@@ -12,6 +12,7 @@
 use bitcoin::constants::ChainHash;
 use bitcoin::hashes::sha256::Hash as Sha256;
 use bitcoin::hashes::Hash;
+use bitcoin::network::Network;
 use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
 use lightning_invoice::Bolt11Invoice;
 
@@ -672,6 +673,8 @@ pub enum Bolt11PaymentError {
 	/// [`Bolt11Invoice`]: lightning_invoice::Bolt11Invoice
 	/// [`ChannelManager::pay_for_bolt11_invoice`]: crate::ln::channelmanager::ChannelManager::pay_for_bolt11_invoice
 	InvalidAmount,
+	/// The invoice is for a network other than the one we are operating on.
+	UnsupportedChain,
 	/// The invoice was valid for the corresponding [`PaymentId`], but sending the payment failed.
 	SendingFailed(RetryableSendFailure),
 }
@@ -1088,6 +1091,11 @@ impl OutboundPayments {
 		IH: Fn() -> InFlightHtlcs,
 		SP: Fn(SendAlongPathArgs) -> Result<(), APIError>,
 	{
+		let network = Network::from_chain_hash(self.chain_hash);
+		if !network.is_some_and(|network| invoice.is_valid_for_network(network)) {
+			return Err(Bolt11PaymentError::UnsupportedChain);
+		}
+
 		let payment_hash = invoice.payment_hash();
 
 		let partial_payment = optional_params.declared_total_mpp_value_msat_override.is_some();

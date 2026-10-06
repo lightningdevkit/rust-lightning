@@ -36,7 +36,7 @@ fn payment_metadata_end_to_end_for_invoice_with_amount() {
 		.unwrap();
 
 	let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-	let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+	let invoice = InvoiceBuilder::new(Currency::BitcoinTestnet)
 		.description("test".into())
 		.payment_hash(payment_hash)
 		.payment_secret(payment_secret)
@@ -105,7 +105,7 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 		.unwrap();
 
 	let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
-	let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+	let invoice = InvoiceBuilder::new(Currency::BitcoinTestnet)
 		.description("test".into())
 		.payment_hash(payment_hash)
 		.payment_secret(payment_secret)
@@ -153,4 +153,45 @@ fn payment_metadata_end_to_end_for_invoice_with_no_amount() {
 		},
 		_ => panic!("Unexpected event"),
 	}
+}
+
+#[test]
+fn fails_paying_invoice_for_other_network() {
+	// Test that an invoice for a network other than ours is rejected before any payment state is
+	// stored.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	let (payment_hash, payment_secret, _) =
+		nodes[1].node.create_inbound_payment(Some(50_000), 7200, None, None).unwrap();
+
+	let timestamp = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).unwrap();
+	let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+		.description("test".into())
+		.payment_hash(payment_hash)
+		.payment_secret(payment_secret)
+		.duration_since_epoch(timestamp)
+		.min_final_cltv_expiry_delta(144)
+		.amount_milli_satoshis(50_000)
+		.build_raw()
+		.unwrap();
+	let sig = nodes[1].keys_manager.backing.sign_invoice(&invoice, Recipient::Node).unwrap();
+	let invoice = invoice.sign::<_, ()>(|_| Ok(sig)).unwrap();
+	let invoice = Bolt11Invoice::from_signed(invoice).unwrap();
+
+	match nodes[0].node.pay_for_bolt11_invoice(
+		&invoice,
+		PaymentId(payment_hash.0),
+		None,
+		OptionalBolt11PaymentParams::default(),
+	) {
+		Err(Bolt11PaymentError::UnsupportedChain) => (),
+		_ => panic!("Unexpected result"),
+	};
+
+	check_added_monitors(&nodes[0], 0);
+	assert!(nodes[0].node.list_recent_payments().is_empty());
 }

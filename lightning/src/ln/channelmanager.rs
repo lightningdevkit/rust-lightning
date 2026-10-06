@@ -6055,6 +6055,9 @@ impl<
 	///
 	/// If these conditions aren’t met, the function will return [`Bolt11PaymentError::InvalidAmount`].
 	///
+	/// If the invoice is for a network other than the one we are operating on, the function will
+	/// return [`Bolt11PaymentError::UnsupportedChain`].
+	///
 	/// # Custom Routing Parameters
 	/// Users can customize routing parameters via [`RouteParametersConfig`].
 	/// To use default settings, call the function with [`RouteParametersConfig::default`].

@@ -1645,6 +1645,19 @@ impl Bolt11Invoice {
 		self.signed_invoice.currency().into()
 	}
 
+	/// Returns whether the invoice is for the given network.
+	///
+	/// Unlike comparing against [`Self::network`], this correctly handles networks which share a
+	/// [`Currency`], such as [`Network::Testnet`] and [`Network::Testnet4`].
+	pub fn is_valid_for_network(&self, network: Network) -> bool {
+		match self.currency() {
+			Currency::Bitcoin => network == Network::Bitcoin,
+			Currency::BitcoinTestnet => matches!(network, Network::Testnet | Network::Testnet4),
+			Currency::Regtest | Currency::Simnet => network == Network::Regtest,
+			Currency::Signet => network == Network::Signet,
+		}
+	}
+
 	/// Returns the amount if specified in the invoice as millisatoshis.
 	pub fn amount_milli_satoshis(&self) -> Option<u64> {
 		self.signed_invoice.amount_pico_btc().map(|v| v / 10)
@@ -2464,6 +2477,51 @@ mod test {
 		assert_eq!(invoice.min_final_cltv_expiry_delta(), DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA);
 		assert_eq!(invoice.expiry_time(), Duration::from_secs(DEFAULT_EXPIRY_TIME));
 		assert!(!invoice.would_expire(Duration::from_secs(1234568)));
+	}
+
+	#[test]
+	fn test_is_valid_for_network() {
+		use crate::*;
+		use bitcoin::secp256k1::Secp256k1;
+		use bitcoin::secp256k1::SecretKey;
+
+		let networks = [
+			Network::Bitcoin,
+			Network::Testnet,
+			Network::Testnet4,
+			Network::Signet,
+			Network::Regtest,
+		];
+		let cases = [
+			(Currency::Bitcoin, vec![Network::Bitcoin]),
+			(Currency::BitcoinTestnet, vec![Network::Testnet, Network::Testnet4]),
+			(Currency::Regtest, vec![Network::Regtest]),
+			(Currency::Simnet, vec![Network::Regtest]),
+			(Currency::Signet, vec![Network::Signet]),
+		];
+		for (currency, valid_networks) in cases {
+			let signed_invoice = InvoiceBuilder::new(currency)
+				.description("Test".into())
+				.payment_hash(PaymentHash([0; 32]))
+				.payment_secret(PaymentSecret([0; 32]))
+				.duration_since_epoch(Duration::from_secs(1234567))
+				.build_raw()
+				.unwrap()
+				.sign::<_, ()>(|hash| {
+					let privkey = SecretKey::from_slice(&[41; 32]).unwrap();
+					let secp_ctx = Secp256k1::new();
+					Ok(secp_ctx.sign_ecdsa_recoverable(hash, &privkey))
+				})
+				.unwrap();
+			let invoice = Bolt11Invoice::from_signed(signed_invoice).unwrap();
+
+			for network in networks {
+				assert_eq!(
+					invoice.is_valid_for_network(network),
+					valid_networks.contains(&network)
+				);
+			}
+		}
 	}
 
 	#[test]
