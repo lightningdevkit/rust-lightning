@@ -33,7 +33,7 @@ use crate::chain::chaininterface::{BroadcasterInterface, FeeEstimator};
 #[cfg(peer_storage)]
 use crate::chain::channelmonitor::write_chanmon_internal;
 use crate::chain::channelmonitor::{
-	random_monitor_event_id, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
+	monitor_event_id, Balance, ChannelMonitor, ChannelMonitorUpdate, MonitorEvent,
 	TransactionOutputs, WithChannelMonitor,
 };
 use crate::chain::transaction::{OutPoint, TransactionData};
@@ -70,7 +70,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// [`chain::Watch::ack_monitor_event`] once the event has been processed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MonitorEventSource {
-	/// The randomly-generated event ID.
+	/// The event ID, derived from what the [`MonitorEvent`] describes.
 	pub event_id: u128,
 	/// The channel from which the [`MonitorEvent`] originated.
 	pub channel_id: ChannelId,
@@ -380,7 +380,7 @@ pub struct ChainMonitor<
 	logger: L,
 	fee_estimator: F,
 	persister: P,
-	entropy_source: ES,
+	_entropy_source: ES,
 	/// "User-provided" (ie persistence-completion/-failed) [`MonitorEvent`]s. These came directly
 	/// from the user and not from a [`ChannelMonitor`].
 	pending_monitor_events: Mutex<Vec<(OutPoint, ChannelId, Vec<(u128, MonitorEvent)>, PublicKey)>>,
@@ -440,7 +440,7 @@ where
 	/// This is not exported to bindings users as async is not supported outside of Rust.
 	pub fn new_async_beta(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F,
-		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, entropy_source: ES,
+		persister: MonitorUpdatingPersisterAsync<K, S, L, ES, SP, T, F>, _entropy_source: ES,
 		_our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
 	) -> Self {
 		let event_notifier = Arc::new(Notifier::new());
@@ -450,7 +450,7 @@ where
 			broadcaster,
 			logger,
 			fee_estimator: feeest,
-			entropy_source,
+			_entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Arc::clone(&event_notifier),
@@ -662,7 +662,7 @@ where
 	/// [`ChannelManager`]: crate::ln::channelmanager::ChannelManager
 	pub fn new(
 		chain_source: Option<C>, broadcaster: T, logger: L, feeest: F, persister: P,
-		entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
+		_entropy_source: ES, _our_peerstorage_encryption_key: PeerStorageKey, deferred: bool,
 	) -> Self {
 		Self {
 			monitors: RwLock::new(new_hash_map()),
@@ -671,7 +671,7 @@ where
 			logger,
 			fee_estimator: feeest,
 			persister,
-			entropy_source,
+			_entropy_source,
 			pending_monitor_events: Mutex::new(Vec::new()),
 			highest_chain_height: AtomicUsize::new(0),
 			event_notifier: Arc::new(Notifier::new()),
@@ -771,14 +771,11 @@ where
 		&self, funding_txo: OutPoint, channel_id: ChannelId, monitor_update_id: u64,
 		counterparty_node_id: PublicKey,
 	) {
-		let event_id = random_monitor_event_id(&self.entropy_source);
+		let event = MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id };
 		self.pending_monitor_events.lock().unwrap().push((
 			funding_txo,
 			channel_id,
-			vec![(
-				event_id,
-				MonitorEvent::Completed { funding_txo, channel_id, monitor_update_id },
-			)],
+			vec![(monitor_event_id(&event), event)],
 			counterparty_node_id,
 		));
 	}
@@ -1014,7 +1011,7 @@ where
 	#[cfg(peer_storage)]
 	fn send_peer_storage(&self, their_node_id: PublicKey) {
 		let mut monitors_list: Vec<PeerStorageMonitorHolder> = Vec::new();
-		let random_bytes = self.entropy_source.get_secure_random_bytes();
+		let random_bytes = self._entropy_source.get_secure_random_bytes();
 
 		const MAX_PEER_STORAGE_SIZE: usize = 65531;
 		const USIZE_LEN: usize = core::mem::size_of::<usize>();
@@ -1213,7 +1210,6 @@ where
 					&self.broadcaster,
 					&self.fee_estimator,
 					&self.logger,
-					&self.entropy_source,
 				);
 
 				let update_id = update.update_id;
@@ -1490,7 +1486,6 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self.entropy_source,
 			)
 		});
 
@@ -1518,7 +1513,6 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self.entropy_source,
 			);
 		}
 	}
@@ -1552,7 +1546,6 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self.entropy_source,
 			)
 		});
 		// Assume we may have some new events and wake the event processor
@@ -1568,7 +1561,6 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self.entropy_source,
 			);
 		}
 	}
@@ -1590,7 +1582,6 @@ where
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
-				&self.entropy_source,
 			)
 		});
 
@@ -1695,9 +1686,9 @@ where
 			let monitor_events = {
 				let pending_updates = monitor_state.pending_monitor_updates.lock().unwrap();
 				if monitor_state.has_pending_updates(&pending_updates) {
-					monitor_state.monitor.get_and_clear_pending_non_htlc_fail_events()
+					monitor_state.monitor.release_pending_non_htlc_fail_events()
 				} else {
-					monitor_state.monitor.get_and_clear_pending_monitor_events()
+					monitor_state.monitor.release_pending_monitor_events()
 				}
 			};
 			if monitor_events.len() > 0 {
