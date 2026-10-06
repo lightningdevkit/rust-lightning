@@ -5736,6 +5736,12 @@ where
 				incoming_channel_details
 			} else {
 				// The incoming channel no longer exists, HTLCs should be resolved onchain instead.
+				log_debug!(
+					self.logger,
+					"Dropping {} undecoded HTLCs from unknown channel with short id {}",
+					update_add_htlcs.len(),
+					incoming_scid
+				);
 				continue;
 			};
 
@@ -5954,11 +5960,14 @@ where
 											fail_forward!(format!("Unknown short channel id {} for forward HTLC", short_chan_id), 0x4000 | 10, Vec::new(), None);
 										}
 									},
-									HTLCForwardInfo::FailHTLC { .. } | HTLCForwardInfo::FailMalformedHTLC { .. } => {
+									HTLCForwardInfo::FailHTLC { htlc_id, .. } | HTLCForwardInfo::FailMalformedHTLC { htlc_id, .. } => {
 										// Channel went away before we could fail it. This implies
 										// the channel is now on chain and our counterparty is
 										// trying to broadcast the HTLC-Timeout, but that's their
 										// problem, not ours.
+										let logger = WithContext::from(&self.logger, forwarding_counterparty, None, None);
+										log_debug!(logger, "Dropping fail-back of HTLC {} to unknown channel with short id {}",
+											htlc_id, short_chan_id);
 									}
 								}
 							}
@@ -14611,7 +14620,7 @@ where
 						log_error!(logger, "Got duplicate outbound SCID alias; {}", chan.context.outbound_scid_alias());
 						return Err(DecodeError::InvalidValue);
 					}
-					if chan.context.is_usable() {
+					if chan.context.is_ready_ignoring_shutdown() {
 						if short_to_chan_info.insert(chan.context.outbound_scid_alias(), (chan.context.get_counterparty_node_id(), *chan_id)).is_some() {
 							// Note that in rare cases its possible to hit this while reading an older
 							// channel if we just happened to pick a colliding outbound alias above.
