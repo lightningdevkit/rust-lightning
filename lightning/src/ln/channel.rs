@@ -4980,9 +4980,15 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 	/// Returns true if this channel is fully established and not known to be closing.
 	/// Allowed in any state (including after shutdown)
 	pub fn is_usable(&self) -> bool {
-		matches!(self.channel_state, ChannelState::ChannelReady(_))
+		self.is_ready_ignoring_shutdown()
 			&& !self.channel_state.is_local_shutdown_sent()
 			&& !self.channel_state.is_remote_shutdown_sent()
+	}
+
+	/// Returns true if this channel is fully established, even if a shutdown is in progress.
+	/// HTLCs can still be failed or claimed while the channel is shutting down.
+	pub fn is_ready_ignoring_shutdown(&self) -> bool {
+		matches!(self.channel_state, ChannelState::ChannelReady(_))
 			&& !self.monitor_pending_channel_ready
 	}
 
