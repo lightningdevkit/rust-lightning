@@ -3925,15 +3925,16 @@ impl<
 		let expanded_inbound_key = node_signer.get_expanded_key();
 		let our_network_pubkey = node_signer.get_node_id(Recipient::Node).unwrap();
 
+		let chain_hash = ChainHash::using_genesis_block(params.network);
 		let flow = OffersMessageFlow::new(
-			ChainHash::using_genesis_block(params.network), params.best_block,
+			chain_hash, params.best_block,
 			our_network_pubkey, current_timestamp, expanded_inbound_key,
 			node_signer.get_receive_auth_key(), secp_ctx.clone(), message_router, logger.clone(),
 		);
 
 		ChannelManager {
 			config: RwLock::new(config),
-			chain_hash: ChainHash::using_genesis_block(params.network),
+			chain_hash,
 			fee_estimator: LowerBoundedFeeEstimator::new(fee_est),
 			chain_monitor,
 			tx_broadcaster,
@@ -3943,7 +3944,7 @@ impl<
 			best_block: RwLock::new(params.best_block),
 
 			outbound_scid_aliases: Mutex::new(new_hash_set()),
-			pending_outbound_payments: OutboundPayments::new(new_hash_map()),
+			pending_outbound_payments: OutboundPayments::new(chain_hash, new_hash_map()),
 			forward_htlcs: Mutex::new(new_hash_map()),
 			decode_update_add_htlcs: Mutex::new(new_hash_map()),
 			claimable_payments: Mutex::new(ClaimablePayments { claimable_payments: new_hash_map(), pending_claiming_payments: new_hash_map() }),
@@ -6168,9 +6169,10 @@ impl<
 	/// [`Bolt12PaymentError::DuplicateInvoice`].
 	///
 	/// Returns [`Bolt12PaymentError::DuplicateInvoice`] if a payment with the given `payment_id`
-	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if the requested amount is
-	/// zero, exceeds the invoice amount, or is below the invoice amount on an invoice that does
-	/// not support basic MPP.
+	/// is already pending, [`Bolt12PaymentError::UnsupportedChain`] if the invoice is for a chain
+	/// other than the one this node operates on, or [`Bolt12PaymentError::InvalidAmount`] if the
+	/// requested amount is zero, exceeds the invoice amount, or is below the invoice amount on an
+	/// invoice that does not support basic MPP.
 	///
 	/// Either [`Event::PaymentSent`] or [`Event::PaymentFailed`] will be generated once the
 	/// payment completes.
@@ -18053,9 +18055,10 @@ impl<
 						log_trace!($logger, "{}", err_msg);
 						InvoiceError::from_string(err_msg.to_string())
 					},
-					Err(Bolt12PaymentError::InvalidAmount) => {
-						debug_assert!(false, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
-						log_error!($logger, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
+					Err(e @ Bolt12PaymentError::InvalidAmount)
+						| Err(e @ Bolt12PaymentError::UnsupportedChain) => {
+						debug_assert!(false, "Got {:?} paying internally-sourced invoice; this shouldn't happen", e);
+						log_error!($logger, "Got {:?} paying internally-sourced invoice; this shouldn't happen", e);
 						return None
 					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
@@ -20304,7 +20307,7 @@ impl<
 			pending_events_read.append(&mut channel_closures);
 		}
 
-		let pending_outbounds = OutboundPayments::new(pending_outbound_payments);
+		let pending_outbounds = OutboundPayments::new(chain_hash, pending_outbound_payments);
 
 		for (peer_pubkey, peer_storage) in peer_storage_dir {
 			if let Some(peer_state) = per_peer_state.get_mut(&peer_pubkey) {
