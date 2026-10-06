@@ -10595,6 +10595,11 @@ where
 		}
 
 		let (closing_signed, signed_closing_tx, shutdown_result) = if self.context.signer_pending_closing {
+			if self.context.pending_update_fee.is_some() {
+				return Err(ChannelError::close(
+					"Cannot retry closing_signed while there is still a pending fee update".to_owned(),
+				));
+			}
 			debug_assert!(self.context.last_sent_closing_fee.is_some());
 			if let Some((fee, skip_remote_output, fee_range, holder_sig)) = self.context.last_sent_closing_fee.clone() {
 				debug_assert!(holder_sig.is_none());
@@ -11759,6 +11764,12 @@ where
 		{
 			return Err(ChannelError::close(
 				"Remote end sent us a closing_signed while there were still pending HTLCs"
+					.to_owned(),
+			));
+		}
+		if self.context.pending_update_fee.is_some() {
+			return Err(ChannelError::close(
+				"Remote end sent us a closing_signed while there was still a pending fee update"
 					.to_owned(),
 			));
 		}
