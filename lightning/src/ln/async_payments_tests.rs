@@ -1500,6 +1500,63 @@ fn async_receive_mpp() {
 }
 
 #[test]
+fn static_invoice_default_fee_limit() {
+	// Test that paying a static invoice with the default `RouteParametersConfig` respects the default
+	// routing fee limit rather than paying unlimited fees.
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	// The recipient's blinded payment path charges a fee above the default limit of 1% of the payment
+	// amount plus 50 sats.
+	let mut high_fee_cfg = test_default_channel_config();
+	high_fee_cfg.accept_forwards_to_priv_channels = true;
+	high_fee_cfg.channel_config.forwarding_fee_base_msat = 60_000;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, Some(high_fee_cfg), None]);
+
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		nodes[1].node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	nodes[2].node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(&nodes[2], &[&nodes[0], &nodes[1]]);
+
+	let invoice_flow_res =
+		pass_static_invoice_server_messages(&nodes[1], &nodes[2], recipient_id.clone());
+	let offer = nodes[2].node.get_async_receive_offer().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	nodes[0].node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
+	let release_held_htlc_om = pass_async_payments_oms(
+		invoice_flow_res.invoice,
+		&nodes[0],
+		&nodes[1],
+		&nodes[2],
+		recipient_id,
+		invoice_flow_res.invoice_request_path,
+	)
+	.1;
+	nodes[0]
+		.onion_messenger
+		.handle_onion_message(nodes[2].node.get_our_node_id(), &release_held_htlc_om);
+
+	// No route satisfies the fee limit, so no HTLC is sent and the payment fails.
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::PaymentFailed { payment_id: ev_id, reason, .. } => {
+			assert_eq!(*ev_id, payment_id);
+			assert_eq!(*reason, Some(PaymentFailureReason::RouteNotFound));
+		},
+		_ => panic!("Unexpected event: {:?}", events[0]),
+	}
+}
+
+#[test]
 fn amount_doesnt_match_invreq() {
 	// Ensure that we'll fail an async payment backwards if the amount in the HTLC is lower than the
 	// amount from the original invoice request.
