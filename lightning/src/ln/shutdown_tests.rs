@@ -27,6 +27,7 @@ use crate::sign::{EntropySource, SignerProvider};
 use crate::types::string::UntrustedString;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
+use crate::util::ser::Writeable;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
 
@@ -1962,4 +1963,170 @@ fn test_pending_htlcs_arent_lost_on_mon_delay() {
 	nodes[0].node.handle_update_fail_htlc(node_b_id, &failures.update_fail_htlcs[0]);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &failures.commitment_signed, false, false);
 	expect_payment_failed!(nodes[0], payment_hash_b, false);
+}
+
+#[derive(PartialEq)]
+enum ResolveAfterReload {
+	Claim,
+	FailBack,
+	FailUndecoded,
+}
+
+#[test]
+fn test_fail_back_after_reload_during_shutdown() {
+	do_test_resolve_after_reload_during_shutdown(ResolveAfterReload::FailBack);
+}
+
+#[test]
+fn test_claim_after_reload_during_shutdown() {
+	do_test_resolve_after_reload_during_shutdown(ResolveAfterReload::Claim);
+}
+
+#[test]
+fn test_fail_undecoded_htlc_after_reload_during_shutdown() {
+	do_test_resolve_after_reload_during_shutdown(ResolveAfterReload::FailUndecoded);
+}
+
+fn do_test_resolve_after_reload_during_shutdown(resolution: ResolveAfterReload) {
+	// If nodes[1] restarts while its channel with nodes[0] is shutting down and an HTLC from
+	// nodes[0] is still pending, nodes[1] must still resolve that HTLC with nodes[0]. Otherwise
+	// nodes[0] can only force-close the channel when the HTLC expires.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes_1_deserialized;
+	let mut nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+	let chan_1 = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let chan_2 = create_announced_chan_between_nodes(&nodes, 1, 2);
+
+	let (payment_preimage, payment_hash) = if resolution == ResolveAfterReload::FailUndecoded {
+		// nodes[1] commits the HTLC but does not decode it before the restart.
+		let (route, payment_hash, payment_preimage, payment_secret) =
+			get_route_and_payment_hash!(nodes[0], nodes[2], 100_000);
+		let onion = RecipientOnionFields::secret_only(payment_secret, 100_000);
+		let payment_id = PaymentId(payment_hash.0);
+		nodes[0].node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+		check_added_monitors(&nodes[0], 1);
+		let updates = get_htlc_update_msgs(&nodes[0], &node_b_id);
+		nodes[1].node.handle_update_add_htlc(node_a_id, &updates.update_add_htlcs[0]);
+		do_commitment_signed_dance(&nodes[1], &nodes[0], &updates.commitment_signed, false, false);
+		(payment_preimage, payment_hash)
+	} else {
+		let (payment_preimage, payment_hash, ..) =
+			route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 100_000);
+		(payment_preimage, payment_hash)
+	};
+
+	// nodes[0] starts a cooperative close while the HTLC is still pending.
+	nodes[0].node.close_channel(&chan_1.2, &node_b_id).unwrap();
+	let node_0_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_shutdown);
+	let node_1_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_shutdown);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// nodes[1] restarts with the shutdown in progress.
+	let node_encoded = nodes[1].node.encode();
+	let chan_1_monitor = get_monitor!(nodes[1], chan_1.2).encode();
+	let chan_2_monitor = get_monitor!(nodes[1], chan_2.2).encode();
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[2].node.peer_disconnected(node_b_id);
+	reload_node!(
+		nodes[1],
+		node_encoded,
+		&[&chan_1_monitor, &chan_2_monitor],
+		persister,
+		new_chain_monitor,
+		nodes_1_deserialized
+	);
+
+	// Reconnect nodes[0] and nodes[1]. Both sides send their shutdown again.
+	let init_msg = msgs::Init {
+		features: nodes[1].node.init_features(),
+		networks: None,
+		remote_network_address: None,
+	};
+	nodes[0].node.peer_connected(node_b_id, &init_msg, true).unwrap();
+	let node_0_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
+	nodes[1].node.peer_connected(node_a_id, &init_msg, false).unwrap();
+	let node_1_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
+	nodes[1].node.handle_channel_reestablish(node_a_id, &node_0_reestablish);
+	let node_1_2nd_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_channel_reestablish(node_b_id, &node_1_reestablish);
+	let node_0_2nd_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_1_2nd_shutdown);
+	nodes[1].node.handle_shutdown(node_a_id, &node_0_2nd_shutdown);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	if resolution != ResolveAfterReload::FailUndecoded {
+		reconnect_nodes(ReconnectArgs::new(&nodes[1], &nodes[2]));
+	}
+
+	// The HTLC is resolved, and nodes[1] must pass the result back to nodes[0].
+	if resolution == ResolveAfterReload::Claim {
+		nodes[2].node.claim_funds(payment_preimage, Default::default());
+		check_added_monitors(&nodes[2], 1);
+		expect_payment_claimed!(nodes[2], payment_hash, 100_000);
+		let mut updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+		nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
+		expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], Some(1000), false, false);
+		check_added_monitors(&nodes[1], 1);
+		let mut updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
+		do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
+		assert_eq!(updates_2.update_fulfill_htlcs.len(), 1);
+		nodes[0]
+			.node
+			.handle_update_fulfill_htlc(node_b_id, updates_2.update_fulfill_htlcs.remove(0));
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
+		expect_payment_sent!(nodes[0], payment_preimage);
+	} else {
+		if resolution == ResolveAfterReload::FailBack {
+			nodes[2].node.fail_htlc_backwards(&payment_hash);
+			expect_and_process_pending_htlcs_and_htlc_handling_failed(
+				&nodes[2],
+				&[HTLCHandlingFailureType::Receive { payment_hash }],
+			);
+			check_added_monitors(&nodes[2], 1);
+			let updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+			nodes[1].node.handle_update_fail_htlc(node_c_id, &updates.update_fail_htlcs[0]);
+			let commitment_signed = &updates.commitment_signed;
+			do_commitment_signed_dance(&nodes[1], &nodes[2], commitment_signed, true, false);
+		} else {
+			// nodes[1] has sent a shutdown, so it fails the HTLC back and does not forward it.
+			nodes[1].node.process_pending_htlc_forwards();
+			let failure =
+				HTLCHandlingFailureType::Forward { node_id: Some(node_c_id), channel_id: chan_2.2 };
+			expect_htlc_failure_conditions(
+				nodes[1].node.get_and_clear_pending_events(),
+				&[failure],
+			);
+			check_added_monitors(&nodes[1], 1);
+		}
+		let updates_2 = get_htlc_update_msgs(&nodes[1], &node_a_id);
+		nodes[0].node.handle_update_fail_htlc(node_b_id, &updates_2.update_fail_htlcs[0]);
+		do_commitment_signed_dance(&nodes[0], &nodes[1], &updates_2.commitment_signed, false, true);
+		expect_payment_failed!(nodes[0], payment_hash, resolution == ResolveAfterReload::FailBack);
+	}
+
+	// With no HTLC left, the cooperative close completes.
+	let node_0_closing_signed =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_closing_signed);
+	let node_1_closing_signed =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_1_closing_signed);
+	let (_, node_0_2nd_closing_signed) = get_closing_signed_broadcast(&nodes[0], node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_0_2nd_closing_signed.unwrap());
+	let (_, node_1_none) = get_closing_signed_broadcast(&nodes[1], node_a_id);
+	assert!(node_1_none.is_none());
+	let reason_a = ClosureReason::LocallyInitiatedCooperativeClosure;
+	check_closed_event(&nodes[0], 1, reason_a, &[node_b_id], 100000);
+	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
+	check_closed_event(&nodes[1], 1, reason_b, &[node_a_id], 100000);
 }
