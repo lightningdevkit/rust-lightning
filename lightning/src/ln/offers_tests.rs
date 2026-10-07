@@ -65,6 +65,7 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferBuilder;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::payer_proof::PayerProof;
+use crate::offers::test_utils::{recipient_pubkey, recipient_sign};
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
@@ -1004,6 +1005,67 @@ fn creates_and_pays_for_refund_using_one_hop_blinded_path() {
 	// Include the sender-paid dummy-hop fee when checking the final payment fee.
 	claim_bolt12_payment(bob, &[alice], payment_context, &invoice, Some(50));
 	expect_recent_payment!(bob, RecentPaymentDetails::Fulfilled, payment_id);
+}
+
+/// Checks that an invoice for a refund created on another chain is not paid.
+#[test]
+#[allow(deprecated)]
+fn fails_paying_invoice_for_refund_on_other_chain() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 10_000_000, 1_000_000_000);
+
+	let alice = &nodes[0];
+	let alice_id = alice.node.get_our_node_id();
+	let bob = &nodes[1];
+	let bob_id = bob.node.get_our_node_id();
+
+	let absolute_expiry = Duration::from_secs(u64::MAX);
+	let payment_id = PaymentId([1; 32]);
+	let refund = bob.node
+		.create_refund_builder(10_000_000, absolute_expiry, payment_id, Retry::Attempts(0), RouteParametersConfig::default())
+		.unwrap()
+		.chain(Network::Bitcoin)
+		.build().unwrap();
+
+	// Respond using a payment path and hash payable on our chain.
+	let local_refund = bob.node
+		.create_refund_builder(10_000_000, absolute_expiry, PaymentId([2; 32]), Retry::Attempts(0), RouteParametersConfig::default())
+		.unwrap()
+		.build().unwrap();
+	let local_invoice = alice.node.request_refund_payment(&local_refund).unwrap();
+	alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	let invoice = refund
+		.respond_with_no_std(
+			local_invoice.payment_paths().to_vec(), local_invoice.payment_hash(), recipient_pubkey(),
+			alice.node.duration_since_epoch(),
+		).unwrap()
+		.build().unwrap()
+		.sign(recipient_sign).unwrap();
+
+	// The invoice is ignored when received over the refund's blinded path.
+	let instructions = MessageSendInstructions::WithoutReplyPath {
+		destination: Destination::BlindedPath(refund.paths()[0].clone()),
+	};
+	let message = OffersMessage::Invoice(invoice.clone());
+	alice.node.flow.pending_offers_messages.lock().unwrap().push((message, instructions));
+
+	let onion_message = alice.onion_messenger.next_onion_message_for_peer(bob_id).unwrap();
+	bob.onion_messenger.handle_onion_message(alice_id, &onion_message);
+	check_added_monitors(bob, 0);
+	assert!(bob.node.get_and_clear_pending_msg_events().is_empty());
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
+
+	// It is also rejected when paid directly.
+	let context = OffersContext::OutboundPaymentForRefund { payment_id };
+	assert_eq!(
+		bob.node.send_payment_for_bolt12_invoice(&invoice, Some(&context)),
+		Err(Bolt12PaymentError::UnexpectedInvoice),
+	);
+	expect_recent_payment!(bob, RecentPaymentDetails::AwaitingInvoice, payment_id);
 }
 
 /// Checks that an invoice for an offer without any blinded paths can be requested. Note that while
@@ -2944,8 +3006,9 @@ fn pay_for_bolt12_invoice_with_fresh_payment_id() {
 }
 
 /// Checks error cases for [`ChannelManager::pay_for_bolt12_invoice`]:
-/// zero amount and overpaying return [`Bolt12PaymentError::InvalidAmount`], re-using a
-/// payment_id returns [`Bolt12PaymentError::DuplicateInvoice`].
+/// zero amount and overpaying return [`Bolt12PaymentError::InvalidAmount`], an invoice for
+/// another chain returns [`Bolt12PaymentError::UnsupportedChain`], re-using a payment_id
+/// returns [`Bolt12PaymentError::DuplicateInvoice`].
 #[test]
 #[allow(deprecated)]
 fn pay_for_bolt12_invoice_error_cases() {
@@ -2987,6 +3050,23 @@ fn pay_for_bolt12_invoice_error_cases() {
 		Err(Bolt12PaymentError::InvalidAmount),
 	);
 
+	// An invoice for another chain is rejected before any state is inserted.
+	let secp_ctx = Secp256k1::new();
+	let other_chain_invoice = OfferBuilder::new(recipient_pubkey())
+		.chain(Network::Regtest)
+		.amount_msats(invoice.amount_msats())
+		.build().unwrap()
+		.request_invoice(&bob.keys_manager.get_expanded_key(), Nonce([1; 16]), &secp_ctx, payment_id).unwrap()
+		.chain(Network::Regtest).unwrap()
+		.build_and_sign().unwrap()
+		.respond_with_no_std(invoice.payment_paths().to_vec(), invoice.payment_hash(), invoice.created_at()).unwrap()
+		.build().unwrap()
+		.sign(recipient_sign).unwrap();
+	assert_eq!(
+		bob.node.pay_for_bolt12_invoice(&other_chain_invoice, payment_id, Default::default()),
+		Err(Bolt12PaymentError::UnsupportedChain),
+	);
+
 	// First call succeeds and starts the payment.
 	bob.node.pay_for_bolt12_invoice(&invoice, payment_id, Default::default()).unwrap();
 
@@ -2998,7 +3078,6 @@ fn pay_for_bolt12_invoice_error_cases() {
 
 	// Creating an invoice with unknown required features should be rejected.
 	let expanded_key = alice.keys_manager.get_expanded_key();
-	let secp_ctx = Secp256k1::new();
 	let created_at = alice.node.duration_since_epoch();
 	let nonce = extract_offer_nonce(alice, &invoice_request_onion_message);
 	let (invoice_request, _) = extract_invoice_request(alice, &invoice_request_onion_message);

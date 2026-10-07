@@ -493,9 +493,15 @@ impl<MR: MessageRouter, L: Logger> OffersMessageFlow<MR, L> {
 	/// - If no context is provided, the invoice must correspond to a [`Refund`] without blinded
 	///   paths.
 	/// - If neither condition is met, verification fails.
+	///
+	/// Verification also fails if the invoice is for a chain other than the one we operate on.
 	pub fn verify_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<PaymentId, ()> {
+		if invoice.chain() != self.chain_hash {
+			return Err(());
+		}
+
 		let secp_ctx = &self.secp_ctx;
 		let expanded_key = &self.inbound_payment_key;
 

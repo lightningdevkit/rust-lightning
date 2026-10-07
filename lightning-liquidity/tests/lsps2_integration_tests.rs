@@ -136,7 +136,7 @@ fn create_jit_invoice(
 		htlc_maximum_msat: None,
 	}]);
 
-	let currency = Network::Bitcoin.into();
+	let currency = Network::Testnet.into();
 	let mut invoice_builder = InvoiceBuilder::new(currency)
 		.description(description.to_string())
 		.payment_hash(payment_hash)
