@@ -4,6 +4,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for build commands, testing, code style, and development workflow.
 
+## Review Guidance
+
+Only read [REVIEWERS.md](REVIEWERS.md) when reviewing code. Do not read it for other tasks, as unrelated guidance wastes context.
+
 ## Workspace Structure
 
 See [README.md](README.md) for the workspace layout and [ARCH.md](ARCH.md) for some additional remark regarding important parts of LDK's architecture.
