@@ -3772,6 +3772,41 @@ fn splice_negotiation_failed_events(
 		}))
 }
 
+/// Generates a new outbound SCID alias that conflicts with neither an existing alias nor a real
+/// channel's SCID, and inserts it into `outbound_scid_aliases`.
+fn create_and_insert_outbound_scid_alias<ES: EntropySource>(
+	height: u32, chain_hash: &ChainHash, fake_scid_rand_bytes: &[u8; 32], entropy_source: &ES,
+	short_to_chan_info: &HashMap<u64, (PublicKey, ChannelId)>,
+	outbound_scid_aliases: &mut HashSet<u64>,
+) -> u64 {
+	let mut outbound_scid_alias = 0;
+	let mut i = 0;
+	loop {
+		// fuzzing chacha20 doesn't use the key at all so we always get the same alias
+		if cfg!(fuzzing) {
+			outbound_scid_alias += 1;
+		} else {
+			outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(
+				height,
+				chain_hash,
+				fake_scid_rand_bytes,
+				entropy_source,
+			);
+		}
+		if outbound_scid_alias != 0
+			&& !short_to_chan_info.contains_key(&outbound_scid_alias)
+			&& outbound_scid_aliases.insert(outbound_scid_alias)
+		{
+			break;
+		}
+		i += 1;
+		if i > 1_000_000 {
+			panic!("Your RNG is busted or we ran out of possible outbound SCID aliases (which should never happen before we run out of memory to store channels");
+		}
+	}
+	outbound_scid_alias
+}
+
 /// Creates an [`Event::HTLCIntercepted`] from a [`PendingAddHTLCInfo`]. We generate this event in a
 /// few places so this DRYs the code.
 fn create_htlc_intercepted_event(
@@ -4032,31 +4067,14 @@ impl<
 
 	fn create_and_insert_outbound_scid_alias(&self) -> u64 {
 		let height = self.best_block.read().unwrap().height;
-		let mut outbound_scid_alias = 0;
-		let mut i = 0;
-		loop {
-			// fuzzing chacha20 doesn't use the key at all so we always get the same alias
-			if cfg!(fuzzing) {
-				outbound_scid_alias += 1;
-			} else {
-				outbound_scid_alias = fake_scid::Namespace::OutboundAlias.get_fake_scid(
-					height,
-					&self.chain_hash,
-					&self.fake_scid_rand_bytes,
-					&self.entropy_source,
-				);
-			}
-			if outbound_scid_alias != 0
-				&& self.outbound_scid_aliases.lock().unwrap().insert(outbound_scid_alias)
-			{
-				break;
-			}
-			i += 1;
-			if i > 1_000_000 {
-				panic!("Your RNG is busted or we ran out of possible outbound SCID aliases (which should never happen before we run out of memory to store channels");
-			}
-		}
-		outbound_scid_alias
+		create_and_insert_outbound_scid_alias(
+			height,
+			&self.chain_hash,
+			&self.fake_scid_rand_bytes,
+			&self.entropy_source,
+			&self.short_to_chan_info.read().unwrap(),
+			&mut self.outbound_scid_aliases.lock().unwrap(),
+		)
 	}
 
 	/// Creates a new outbound channel to the given remote node and with the given value.
@@ -21014,19 +21032,14 @@ impl<
 				if let Some(funded_chan) = chan.as_funded_mut() {
 					let logger = WithChannelContext::from(&args.logger, &funded_chan.context, None);
 					if funded_chan.context.outbound_scid_alias() == 0 {
-						let mut outbound_scid_alias;
-						loop {
-							outbound_scid_alias = fake_scid::Namespace::OutboundAlias
-								.get_fake_scid(
-									best_block.height,
-									&chain_hash,
-									fake_scid_rand_bytes.as_ref().unwrap(),
-									&args.entropy_source,
-								);
-							if outbound_scid_aliases.insert(outbound_scid_alias) {
-								break;
-							}
-						}
+						let outbound_scid_alias = create_and_insert_outbound_scid_alias(
+							best_block.height,
+							&chain_hash,
+							fake_scid_rand_bytes.as_ref().unwrap(),
+							&args.entropy_source,
+							&short_to_chan_info,
+							&mut outbound_scid_aliases,
+						);
 						funded_chan.context.set_outbound_scid_alias(outbound_scid_alias);
 					} else if !outbound_scid_aliases
 						.insert(funded_chan.context.outbound_scid_alias())
