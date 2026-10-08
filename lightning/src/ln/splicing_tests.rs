@@ -14975,6 +14975,108 @@ fn test_channel_details_first_contribution_on_rbf() {
 }
 
 #[test]
+fn test_zero_conf_splice_stays_locked_when_unconfirmed() {
+	do_test_zero_conf_splice_stays_locked_when_unconfirmed(false);
+	do_test_zero_conf_splice_stays_locked_when_unconfirmed(true);
+}
+
+fn do_test_zero_conf_splice_stays_locked_when_unconfirmed(reorg_via_block_disconnection: bool) {
+	// On a zero-conf channel we send `splice_locked` as soon as the splice is signed, without
+	// waiting for it to confirm. If the splice then confirms but is reorged out while the
+	// counterparty's `splice_locked` is still outstanding, our lock did not depend on that
+	// confirmation and must stay in effect: the unconfirmation must not re-send `splice_locked`,
+	// whether the reorg is reported through `Listen` block disconnection or through
+	// `Confirm::transaction_unconfirmed` (where generating one also panics). The counterparty's
+	// `splice_locked` must still promote the splice afterwards.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (funding_tx, channel_id) =
+		open_zero_conf_channel_with_value(&nodes[0], &nodes[1], None, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 1, added_value * 2);
+
+	let contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let new_funding_script = complete_splice_handshake(&nodes[0], &nodes[1]);
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		contribution,
+		new_funding_script,
+	);
+
+	// Node 0 sends `splice_locked` at signing. We hold it back from node 1 so that node 1's
+	// `splice_locked` is never sent and the splice stays pending on node 0.
+	let (splice_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.zero_conf()
+			.with_unconfirmed_funding(funding_tx.compute_txid()),
+	);
+	let (splice_locked_for_node_1, _) =
+		splice_locked.expect("a zero-conf splice sends splice_locked at signing");
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	let splice_details = |node: &Node<'_, '_, '_>| {
+		node.node
+			.list_channels()
+			.iter()
+			.find(|channel| channel.channel_id == channel_id)
+			.unwrap()
+			.splice_details
+			.clone()
+	};
+
+	// Confirm the original funding and then, in a later block, the splice.
+	if reorg_via_block_disconnection {
+		// Only the `Listen` styles report a reorg by disconnecting blocks; the others fall back to
+		// `transaction_unconfirmed`.
+		*nodes[0].connect_style.borrow_mut() = ConnectStyle::FullBlockViaListen;
+	}
+	mine_transaction(&nodes[0], &funding_tx);
+	mine_transaction(&nodes[0], &splice_tx);
+	let splice_txid = splice_tx.compute_txid();
+	assert!(nodes[0].node.get_relevant_txids().iter().any(|(txid, _, _)| *txid == splice_txid));
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	// The block confirming the splice is reorged out.
+	if reorg_via_block_disconnection {
+		disconnect_blocks(&nodes[0], 1);
+	} else {
+		nodes[0].chain_monitor.chain_monitor.transaction_unconfirmed(&splice_txid);
+		nodes[0].node.transaction_unconfirmed(&splice_txid);
+	}
+
+	// The splice is no longer confirmed, but we remain locked on it without re-sending
+	// `splice_locked`, including on the timer tick that would otherwise send a deferred lock.
+	assert!(!nodes[0].node.get_relevant_txids().iter().any(|(txid, _, _)| *txid == splice_txid));
+	nodes[0].node.timer_tick_occurred();
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	let details = splice_details(&nodes[0]).unwrap();
+	let confirmed =
+		details.confirmed_candidate.expect("the locked zero-conf candidate should be reported");
+	assert_eq!(confirmed.txid, splice_txid);
+	assert_eq!(confirmed.confirmations, 0);
+	assert!(confirmed.splice_locked_sent);
+	assert_eq!(details.received_splice_locked_txid, None);
+
+	// Exchanging `splice_locked` still promotes the splice on both sides.
+	lock_splice(&nodes[0], &nodes[1], &splice_locked_for_node_1, true, &[]);
+	assert_eq!(splice_details(&nodes[0]), None);
+	assert_eq!(splice_details(&nodes[1]), None);
+	assert_eq!(get_monitor!(nodes[0], channel_id).get_funding_txo().txid, splice_txid);
+}
+
+#[test]
 fn test_channel_details_zero_conf_splice() {
 	// On a zero-conf channel the splice is locked (we send `splice_locked`) before it has any
 	// confirmations, so `ChannelDetails::splice_details` must still report the locked candidate as
