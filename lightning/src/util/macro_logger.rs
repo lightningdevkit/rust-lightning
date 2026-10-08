@@ -64,7 +64,37 @@ impl<'a> core::fmt::Display for DebugRoute<'a> {
 					h.cltv_expiry_delta
 				)?;
 			}
-			writeln!(f, " blinded_tail: {:?}", p.blinded_tail)?;
+			// Blinded hops' encrypted payloads are recipient-provided and of unbounded size, so
+			// log only each hop's payload length rather than expanding the payload bytes.
+			match &p.blinded_tail {
+				Some(blinded_tail) => {
+					writeln!(
+						f,
+						" blinded_tail: blinding_point: {}, excess_final_cltv_expiry_delta: {}, final_value_msat: {}",
+						log_pubkey!(blinded_tail.blinding_point),
+						blinded_tail.excess_final_cltv_expiry_delta,
+						blinded_tail.final_value_msat
+					)?;
+					for h in blinded_tail.trampoline_hops.iter() {
+						writeln!(
+							f,
+							"  trampoline node_id: {}, fee_msat: {}, cltv_expiry_delta: {}",
+							log_pubkey!(h.pubkey),
+							h.fee_msat,
+							h.cltv_expiry_delta
+						)?;
+					}
+					for h in blinded_tail.hops.iter() {
+						writeln!(
+							f,
+							"  blinded node_id: {}, encrypted_payload_len: {}",
+							log_pubkey!(h.blinded_node_id),
+							h.encrypted_payload.len()
+						)?;
+					}
+				},
+				None => writeln!(f, " blinded_tail: None")?,
+			}
 		}
 		Ok(())
 	}
