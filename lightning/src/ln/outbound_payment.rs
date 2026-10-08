@@ -261,7 +261,8 @@ impl PendingOutboundPayment {
 	// invoice but have not locked in HTLCs for the payment yet.
 	fn is_pre_htlc_lock_in(&self) -> bool {
 		match self {
-			PendingOutboundPayment::AwaitingInvoice { .. }
+			PendingOutboundPayment::AwaitingOffer { .. }
+			| PendingOutboundPayment::AwaitingInvoice { .. }
 			| PendingOutboundPayment::InvoiceReceived { .. }
 			| PendingOutboundPayment::StaticInvoiceReceived { .. } => true,
 			_ => false,
