@@ -1108,7 +1108,7 @@ impl Readable for Vec<u8> {
 		let mut len: CollectionLength = Readable::read(r)?;
 		let mut ret = Vec::new();
 		while len.0 > 0 {
-			let readamt = cmp::min(len.0 as usize, MAX_BUF_SIZE);
+			let readamt = cmp::min(len.0, MAX_BUF_SIZE as u64) as usize;
 			let readstart = ret.len();
 			ret.resize(readstart + readamt, 0);
 			r.read_exact(&mut ret[readstart..])?;
