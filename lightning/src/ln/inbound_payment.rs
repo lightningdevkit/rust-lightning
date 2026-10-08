@@ -450,12 +450,11 @@ pub(super) fn verify<L: Logger>(
 				keys,
 			) {
 				Ok(preimage) => payment_preimage = Some(preimage),
-				Err(bad_preimage_bytes) => {
+				Err(_) => {
 					log_trace!(
 						logger,
-						"Failing HTLC with payment_hash {} due to mismatching preimage {}",
-						&payment_hash,
-						log_bytes!(bad_preimage_bytes)
+						"Failing HTLC with payment_hash {} due to mismatching preimage",
+						&payment_hash
 					);
 					return Err(());
 				},
