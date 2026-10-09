@@ -2236,8 +2236,8 @@ impl<
 		if let Message::StartBatch(msg) = message {
 			if peer_lock.message_batch.is_some() {
 				let error = format!(
-					"Peer {} sent start_batch for channel {} before previous batch completed",
-					their_node_id, &msg.channel_id
+					"Peer {their_node_id} sent start_batch for channel {} before previous batch completed",
+					msg.channel_id
 				);
 				log_debug!(logger, "{}", error);
 				return Err(LightningError {
@@ -2252,8 +2252,8 @@ impl<
 			let batch_size = msg.batch_size as usize;
 			if batch_size <= 1 {
 				let error = format!(
-					"Peer {} sent start_batch for channel {} not strictly greater than 1",
-					their_node_id, &msg.channel_id
+					"Peer {their_node_id} sent start_batch for channel {} not strictly greater than 1",
+					msg.channel_id
 				);
 				log_debug!(logger, "{}", error);
 				return Err(LightningError {
@@ -2269,8 +2269,8 @@ impl<
 			const BATCH_SIZE_LIMIT: usize = 20;
 			if batch_size > BATCH_SIZE_LIMIT {
 				let error = format!(
-					"Peer {} sent start_batch for channel {} exceeding the limit",
-					their_node_id, &msg.channel_id
+					"Peer {their_node_id} sent start_batch for channel {} exceeding the limit",
+					msg.channel_id
 				);
 				log_debug!(logger, "{}", error);
 				return Err(LightningError {
@@ -2310,7 +2310,7 @@ impl<
 					&mut message_batch.messages;
 
 				if msg.channel_id != message_batch.channel_id {
-					let error = format!("Peer {} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", their_node_id, message_batch.channel_id, &msg.channel_id);
+					let error = format!("Peer {their_node_id} sent batched commitment_signed for the wrong channel (expected: {}, actual: {})", message_batch.channel_id, msg.channel_id);
 					log_debug!(logger, "{}", error);
 					return Err(LightningError {
 						err: error.clone(),
