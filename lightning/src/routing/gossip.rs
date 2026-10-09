@@ -4443,7 +4443,7 @@ pub(crate) mod tests {
 	fn test_node_id_display() {
 		let node_id = NodeId([42; 33]);
 		assert_eq!(
-			format!("{}", &node_id),
+			format!("{node_id}"),
 			"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a"
 		);
 	}

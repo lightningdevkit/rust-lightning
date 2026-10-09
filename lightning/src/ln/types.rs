@@ -194,7 +194,7 @@ mod tests {
 	fn test_channel_id_display() {
 		let channel_id = ChannelId::v1_from_funding_txid(&[2; 32], 1);
 		let expected = "0202020202020202020202020202020202020202020202020202020202020203";
-		assert_eq!(format!("{}", &channel_id), expected);
+		assert_eq!(format!("{channel_id}"), expected);
 	}
 
 	#[test]
