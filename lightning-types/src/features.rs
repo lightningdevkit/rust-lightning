@@ -164,7 +164,7 @@ mod sealed {
 			// Byte 2
 			BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 			// Byte 3
-			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
+			RouteBlinding | ShutdownAnySegwit | DualFund,
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
@@ -173,8 +173,12 @@ mod sealed {
 			ZeroConf,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
-			// Byte 8 - 18
-			,,,,,,,,,,,
+			// Byte 8 - 9
+			,,
+			// Byte 10
+			Taproot,
+			// Byte 11 - 18
+			,,,,,,,,
 			// Byte 19
 			HtlcHold,
 		]
@@ -189,7 +193,7 @@ mod sealed {
 			// Byte 2
 			BasicMPP | Wumbo | AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 			// Byte 3
-			RouteBlinding | ShutdownAnySegwit | DualFund | Taproot,
+			RouteBlinding | ShutdownAnySegwit | DualFund,
 			// Byte 4
 			Quiescence | OnionMessages,
 			// Byte 5
@@ -198,8 +202,12 @@ mod sealed {
 			ZeroConf | Keysend,
 			// Byte 7
 			Trampoline | SimpleClose | Splice,
-			// Byte 8 - 18
-			,,,,,,,,,,,
+			// Byte 8 - 9
+			,,
+			// Byte 10
+			Taproot,
+			// Byte 11 - 18
+			,,,,,,,,
 			// Byte 19
 			HtlcHold,
 			// Byte 20 - 31
@@ -258,15 +266,19 @@ mod sealed {
 		// Byte 2
 		AnchorsNonzeroFeeHtlcTx | AnchorsZeroFeeHtlcTx,
 		// Byte 3
-		Taproot,
+		,
 		// Byte 4
 		,
 		// Byte 5
 		AnchorZeroFeeCommitments | SCIDPrivacy,
 		// Byte 6
 		ZeroConf,
-		// Byte 7 - 16
-		,,,,,,,,,,
+		// Byte 7 - 9
+		,,,
+		// Byte 10
+		Taproot,
+		// Byte 11 - 16
+		,,,,,,
 		// Byte 17
 		AnchorZeroFeeCommitmentsStaging,
 	]);
@@ -572,10 +584,10 @@ mod sealed {
 		requires_dual_fund
 	);
 	define_feature!(
-		31,
+		81,
 		Taproot,
 		[InitContext, NodeContext, ChannelTypeContext],
-		"Feature flags for `option_taproot`.",
+		"Feature flags for `option_simple_taproot`.",
 		set_taproot_optional,
 		set_taproot_required,
 		clear_taproot,
