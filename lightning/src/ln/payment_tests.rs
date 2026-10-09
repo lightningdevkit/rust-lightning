@@ -4302,7 +4302,7 @@ fn test_threaded_payment_retries() {
 	let mut send_msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(send_msg_events.len(), 2);
 	send_msg_events.retain(|msg| {
-		if let MessageSendEvent::UpdateHTLCs { node_id, channel_id: _, .. } = msg {
+		if let MessageSendEvent::UpdateHTLCs { node_id, .. } = msg {
 			// Drop the commitment update for nodes[2], we can just let that one sit pending
 			// forever.
 			*node_id == node_b_id

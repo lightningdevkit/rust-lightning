@@ -1895,7 +1895,7 @@ pub fn test_non_final_funding_tx() {
 	// Transaction should fail as it's evaluated as non-final for propagation.
 	match nodes[0].node.funding_transaction_generated(temp_channel_id, node_b_id, tx.clone()) {
 		Err(APIError::APIMisuseError { err }) => {
-			assert_eq!(format!("Funding transaction absolute timelock is non-final"), err);
+			assert_eq!(err, "Funding transaction absolute timelock is non-final".to_string());
 		},
 		_ => panic!(),
 	}
