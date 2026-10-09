@@ -15607,7 +15607,7 @@ impl<SP: SignerProvider> OutboundV1Channel<SP> {
 
 		debug_assert!(self.funding.funding_transaction.is_none());
 		self.funding.funding_transaction = Some(funding_transaction);
-		self.context.is_batch_funding = Some(()).filter(|_| is_batch_funding);
+		self.context.is_batch_funding = is_batch_funding.then_some(());
 
 		let funding_created = self.get_funding_created_msg(logger);
 		Ok(funding_created)
