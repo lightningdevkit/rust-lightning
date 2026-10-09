@@ -529,7 +529,7 @@ macro_rules! _decode_tlv {
 				// Thus, we consume everything left in the `$outer_reader` here, ensuring that if
 				// we're being read as a part of another TLV stream we don't spuriously fail to
 				// deserialize the outer object due to a TLV length mismatch.
-				$crate::io_extras::copy($outer_reader, &mut $crate::io_extras::sink()).unwrap();
+				$crate::io_extras::copy($outer_reader, &mut $crate::io_extras::sink())?;
 				return Ok(None)
 			},
 		};

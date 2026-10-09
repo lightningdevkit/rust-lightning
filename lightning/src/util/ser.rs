@@ -140,7 +140,7 @@ impl<'a, R: Read> FixedLengthReader<'a, R> {
 	/// Consumes the remaining bytes.
 	#[inline]
 	pub fn eat_remaining(&mut self) -> Result<(), DecodeError> {
-		copy(self, &mut sink()).unwrap();
+		copy(self, &mut sink())?;
 		if self.bytes_read != self.total_bytes {
 			Err(DecodeError::ShortRead)
 		} else {
@@ -1813,7 +1813,7 @@ impl Readable for ClaimId {
 #[cfg(test)]
 mod tests {
 	use crate::prelude::*;
-	use crate::util::ser::{Hostname, Readable, Writeable};
+	use crate::util::ser::{FixedLengthReader, Hostname, Readable, Writeable};
 	use bitcoin::hex::FromHex;
 	use bitcoin::secp256k1::ecdsa;
 
@@ -1900,5 +1900,21 @@ mod tests {
 				);
 			}
 		}
+	}
+
+	#[test]
+	fn fixed_length_reader_eat_remaining_propagates_io_errors() {
+		struct ErroringReader;
+		impl crate::io::Read for ErroringReader {
+			fn read(&mut self, _: &mut [u8]) -> Result<usize, crate::io::Error> {
+				Err(crate::io::Error::new(crate::io::ErrorKind::Other, "reader failure"))
+			}
+		}
+
+		let mut reader = ErroringReader;
+		assert_eq!(
+			FixedLengthReader::new(&mut reader, 1).eat_remaining(),
+			Err(crate::ln::msgs::DecodeError::Io(crate::io::ErrorKind::Other))
+		);
 	}
 }
