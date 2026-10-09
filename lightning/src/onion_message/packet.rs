@@ -345,6 +345,7 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 			Some(ChaChaTriPolyReadAdapter { readable: ControlTlvs::Forward(tlvs), used_aad }) => {
 				if used_aad != TriPolyAADUsed::None
 					|| message_type.is_some()
+					|| reply_path.is_some()
 					|| has_unknown_control_tlv
 				{
 					return Err(DecodeError::InvalidValue);
