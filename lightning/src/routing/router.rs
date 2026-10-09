@@ -3735,7 +3735,8 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 			// traversing the graph and arrange the path out of what we found.
 			if node_counter == payer_node_counter {
 				let mut new_entry = dist[payer_node_counter as usize].take().unwrap();
-				let mut ordered_hops: Vec<(PathBuildingHop, NodeFeatures)> = vec!((new_entry.clone(), default_node_features.clone()));
+				let mut ordered_hops: Vec<(PathBuildingHop, NodeFeatures)> =
+					vec![(new_entry.clone(), default_node_features.clone())];
 
 				'path_walk: loop {
 					let mut features_set = false;

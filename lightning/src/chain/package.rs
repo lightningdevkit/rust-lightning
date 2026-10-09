@@ -901,7 +901,7 @@ impl PackageSolvingData {
 					let mut ser_sig = sig.serialize_der().to_vec();
 					ser_sig.push(EcdsaSighashType::All as u8);
 					bumped_tx.input[i].witness.push(ser_sig);
-					bumped_tx.input[i].witness.push(vec!(1));
+					bumped_tx.input[i].witness.push(vec![1]);
 					bumped_tx.input[i].witness.push(witness_script.clone().into_bytes());
 				} else { return false; }
 			},

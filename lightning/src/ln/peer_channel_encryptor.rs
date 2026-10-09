@@ -261,7 +261,7 @@ impl PeerChannelEncryptor {
 		let their_pub = match PublicKey::from_slice(&act[1..34]) {
 			Err(_) => {
 				return Err(LightningError {
-					err: format!("Invalid public key {}", &act[1..34].as_hex()),
+					err: format!("Invalid public key {}", act[1..34].as_hex()),
 					action: msgs::ErrorAction::DisconnectPeer { msg: None },
 				})
 			},
@@ -472,7 +472,7 @@ impl PeerChannelEncryptor {
 						Ok(key) => key,
 						Err(_) => {
 							return Err(LightningError {
-								err: format!("Bad node_id from peer, {}", &their_node_id.as_hex()),
+								err: format!("Bad node_id from peer, {}", their_node_id.as_hex()),
 								action: msgs::ErrorAction::DisconnectPeer { msg: None },
 							})
 						},

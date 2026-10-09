@@ -1112,9 +1112,9 @@ impl fmt::Display for ChannelInfo {
 			f,
 			"features: {}, node_one: {}, one_to_two: {:?}, node_two: {}, two_to_one: {:?}",
 			log_bytes!(self.features.encode()),
-			&self.node_one,
+			self.node_one,
 			self.one_to_two,
-			&self.node_two,
+			self.node_two,
 			self.two_to_one
 		)?;
 		Ok(())
@@ -1730,11 +1730,11 @@ impl<L: Logger> fmt::Display for NetworkGraph<L> {
 	fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
 		writeln!(f, "Network map\n[Channels]")?;
 		for (key, val) in self.channels.read().unwrap().unordered_iter() {
-			writeln!(f, " {}: {}", key, val)?;
+			writeln!(f, " {key}: {val}")?;
 		}
 		writeln!(f, "[Nodes]")?;
 		for (&node_id, val) in self.nodes.read().unwrap().unordered_iter() {
-			writeln!(f, " {}: {}", &node_id, val)?;
+			writeln!(f, " {node_id}: {val}")?;
 		}
 		Ok(())
 	}
@@ -2193,7 +2193,7 @@ impl<L: Logger> NetworkGraph<L> {
 				|| removed_nodes.contains_key(&msg.node_id_2)
 			{
 				return Err(LightningError{
-					err: format!("Channel with SCID {} or one of its nodes was removed from our network graph recently", &msg.short_channel_id),
+					err: format!("Channel with SCID {} or one of its nodes was removed from our network graph recently", msg.short_channel_id),
 					action: ErrorAction::IgnoreAndLog(Level::Gossip)});
 			}
 		}

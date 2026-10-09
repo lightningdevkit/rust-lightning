@@ -7718,7 +7718,7 @@ mod tests {
 				let witness = $sighash_parts.witness_mut($idx).unwrap();
 				witness.push(ser_sig);
 				if *$weight == WEIGHT_REVOKED_OUTPUT {
-					witness.push(vec!(1));
+					witness.push(vec![1]);
 				} else if *$weight == weight_revoked_offered_htlc($opt_anchors) || *$weight == weight_revoked_received_htlc($opt_anchors) {
 					witness.push(pubkey.clone().serialize().to_vec());
 				} else if *$weight == weight_received_htlc($opt_anchors) {

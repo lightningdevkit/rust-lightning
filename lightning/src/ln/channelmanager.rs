@@ -12626,7 +12626,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								"Lost channel state for channel {}.\n\
 								Received peer storage with a more recent state than what our node had.\n\
 								Use the FundRecoverer to initiate a force close and sweep the funds.",
-								&mon_holder.channel_id
+								mon_holder.channel_id
 							);
 						}
 					}

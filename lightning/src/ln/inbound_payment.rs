@@ -534,8 +534,7 @@ pub(super) fn get_payment_preimage(
 			)
 			.map_err(|bad_preimage_bytes| APIError::APIMisuseError {
 				err: format!(
-					"Payment hash {} did not match decoded preimage {}",
-					&payment_hash,
+					"Payment hash {payment_hash} did not match decoded preimage {}",
 					log_bytes!(bad_preimage_bytes)
 				),
 			})?;

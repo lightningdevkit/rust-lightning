@@ -4664,6 +4664,8 @@ fn test_claim_to_closed_channel_blocks_claimed_event() {
 fn test_single_channel_multiple_mpp() {
 	use crate::util::config::UserConfig;
 	use std::sync::atomic::{AtomicBool, Ordering};
+	use std::sync::mpsc::{SyncSender, TrySendError};
+	use std::time::Duration;
 
 	// Test what happens when we attempt to claim an MPP with many parts that came to us through
 	// the same channel with a synchronous persistence interface which has very high latency.
@@ -4701,23 +4703,58 @@ fn test_single_channel_multiple_mpp() {
 	// robust is rather challenging. We rely on having the main test thread wait on locks held in
 	// the background `claim_funds` thread and unlocking when the `claim_funds` thread completes a
 	// single `ChannelMonitorUpdate`.
-	// This thread calls `get_and_clear_pending_msg_events()` and `handle_revoke_and_ack()`, both
-	// of which require `ChannelManager` locks, but we have to make sure this thread gets a chance
-	// to be blocked on the mutexes before we let the background thread wake `claim_funds` so that
-	// the mutex can switch to this main thread.
+	// This thread fetches pending messages and calls `handle_revoke_and_ack()`, both of which
+	// require `ChannelManager` locks, but we have to make sure this thread gets a chance to be
+	// blocked on the mutexes before we let the background thread wake `claim_funds` so that the
+	// mutex can switch to this main thread.
 	// This relies on our locks being fair, but also on our threads getting runtime during the test
 	// run, which can be pretty competitive. Thus we do a dumb dance to be as conservative as
-	// possible - we have a background thread which completes a `ChannelMonitorUpdate` (by sending
-	// into the `write_blocker` mpsc) but it doesn't run until a mpsc channel sends from this main
-	// thread to the background thread, and then we let it sleep a while before we send the
-	// `ChannelMonitorUpdate` unblocker.
-	// Further, we give ourselves two chances each time, needing 4 HTLCs just to unlock our two
-	// `ChannelManager` calls. We then need a few remaining HTLCs to actually trigger the bug, so
+	// possible - while this thread is in such a call, a background thread repeatedly sleeps a
+	// while and then completes a single `ChannelMonitorUpdate` (by sending into the
+	// `write_blocker` mpsc), until the call returns.
+	// Further, we complete at least two `ChannelMonitorUpdate`s while fetching the first
+	// `commitment_signed` so that some HTLC claims are in the holding cell when the
+	// `revoke_and_ack` arrives. We then need a few remaining HTLCs to actually trigger the bug, so
 	// we use 6 HTLCs.
 	// Finaly, we do not run this test on Winblowz because it, somehow, in 2025, does not implement
 	// actual preemptive multitasking and thinks that cooperative multitasking somehow is
 	// acceptable in the 21st century, let alone a quarter of the way into it.
-	const MAX_THREAD_INIT_TIME: std::time::Duration = std::time::Duration::from_secs(1);
+	const MAX_THREAD_INIT_TIME: Duration = Duration::from_secs(1);
+
+	// Runs `f` while completing blocked `ChannelMonitorUpdate`s one at a time from a background
+	// thread, sleeping for `delay` before each, until `f` has returned and at least `min_writes`
+	// have been completed.
+	fn release_writes_while<R>(
+		do_a_write: &SyncSender<()>, min_writes: usize, delay: Duration, f: impl FnOnce() -> R,
+	) -> R {
+		let done = Arc::new(AtomicBool::new(false));
+		let releaser = {
+			let (do_a_write, done) = (do_a_write.clone(), Arc::clone(&done));
+			std::thread::spawn(move || {
+				let mut writes = 0;
+				let keep_going = |writes| writes < min_writes || !done.load(Ordering::Acquire);
+				while keep_going(writes) {
+					std::thread::sleep(delay);
+					// Only complete a `ChannelMonitorUpdate` once one is waiting, rather than
+					// blocking in `send`, as `f` may return without needing any more.
+					while keep_going(writes) {
+						match do_a_write.try_send(()) {
+							Ok(()) => {
+								writes += 1;
+								break;
+							},
+							Err(TrySendError::Full(())) => std::thread::yield_now(),
+							Err(TrySendError::Disconnected(())) => panic!(),
+						}
+					}
+				}
+			})
+		};
+		let res = f();
+		done.store(true, Ordering::Release);
+		releaser.join().unwrap();
+		res
+	}
 
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
 	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0);
@@ -4793,30 +4830,31 @@ fn test_single_channel_multiple_mpp() {
 		}
 	});
 
-	// Then fetch the `update_fulfill_htlc`/`commitment_signed`. Note that the
-	// `get_and_clear_pending_msg_events` will immediately hang trying to take a peer lock which
-	// `claim_funds` is holding. Thus, we release a second write after a small sleep in the
-	// background to give `claim_funds` a chance to step forward, unblocking
-	// `get_and_clear_pending_msg_events`.
-	let do_a_write_background = do_a_write.clone();
-	let block_thrd2 = AtomicBool::new(true);
-	let block_thrd2_read: &'static AtomicBool = unsafe { std::mem::transmute(&block_thrd2) };
-	let thrd2 = std::thread::spawn(move || {
-		while block_thrd2_read.load(Ordering::Acquire) {
-			std::thread::yield_now();
-		}
-		std::thread::sleep(MAX_THREAD_INIT_TIME);
-		do_a_write_background.send(()).unwrap();
-		std::thread::sleep(MAX_THREAD_INIT_TIME);
-		do_a_write_background.send(()).unwrap();
+	// Then fetch the `update_fulfill_htlc`/`commitment_signed`. Note that this will immediately
+	// hang trying to take a peer lock which `claim_funds` is holding, so we have to release writes
+	// to give `claim_funds` a chance to step forward.
+	// We take the peer lock directly rather than calling `get_and_clear_pending_msg_events`, which
+	// takes it several times, as on a busy machine we may only get the lock once per
+	// `ChannelMonitorUpdate` and could run out of HTLC claims before getting the messages.
+	// The event thread may also be waiting on the peer lock to handle the `PaymentClaimed` event's
+	// completion action, so we wait for it before we stop releasing writes as well.
+	let mut msg_events = release_writes_while(&do_a_write, 2, MAX_THREAD_INIT_TIME, || {
+		let msg_events = {
+			let per_peer_state = nodes[8].node.per_peer_state.read().unwrap();
+			let mut peer_state = per_peer_state.get(&node_h_id).unwrap().lock().unwrap();
+			std::mem::take(&mut peer_state.pending_msg_events)
+		};
+		thrd_event.join().unwrap();
+		msg_events
 	});
-	block_thrd2.store(false, Ordering::Release);
-	let mut first_updates = get_htlc_update_msgs(&nodes[8], &node_h_id);
-
-	// Thread 2 could unblock first, or it could get blocked waiting on us to process a
-	// `PaymentClaimed` event. Either way, wait until both have finished.
-	thrd2.join().unwrap();
-	thrd_event.join().unwrap();
+	assert_eq!(msg_events.len(), 1);
+	let mut first_updates = match msg_events.pop().unwrap() {
+		MessageSendEvent::UpdateHTLCs { node_id, updates, .. } => {
+			assert_eq!(node_id, node_h_id);
+			updates
+		},
+		ev => panic!("Unexpected event {ev:?}"),
+	};
 
 	// Disconnect node 6 from all its peers so it doesn't bother to fail the HTLCs back
 	nodes[7].node.peer_disconnected(node_b_id);
@@ -4834,34 +4872,16 @@ fn test_single_channel_multiple_mpp() {
 	check_added_monitors(&nodes[7], 1);
 	let (raa, cs) = get_revoke_commit_msgs(&nodes[7], &node_i_id);
 
-	// Now, handle the `revoke_and_ack` from node 5. Note that `claim_funds` is still blocked on
-	// our peer lock, so we have to release a write to let it process.
+	// Now, handle the `revoke_and_ack` from node 7. Note that `claim_funds` is still blocked on
+	// our peer lock, so we have to release writes to let it process.
 	// After this call completes, the channel previously would be locked up and should not be able
 	// to make further progress.
-	let do_a_write_background = do_a_write.clone();
-	let block_thrd3 = AtomicBool::new(true);
-	let block_thrd3_read: &'static AtomicBool = unsafe { std::mem::transmute(&block_thrd3) };
-	let thrd3 = std::thread::spawn(move || {
-		while block_thrd3_read.load(Ordering::Acquire) {
-			std::thread::yield_now();
-		}
-		std::thread::sleep(MAX_THREAD_INIT_TIME);
-		do_a_write_background.send(()).unwrap();
-		std::thread::sleep(MAX_THREAD_INIT_TIME);
-		do_a_write_background.send(()).unwrap();
+	release_writes_while(&do_a_write, 0, MAX_THREAD_INIT_TIME, || {
+		nodes[8].node.handle_revoke_and_ack(node_h_id, &raa);
 	});
-	block_thrd3.store(false, Ordering::Release);
-	nodes[8].node.handle_revoke_and_ack(node_h_id, &raa);
-	thrd3.join().unwrap();
 	assert!(!thrd.is_finished());
 
-	let thrd4 = std::thread::spawn(move || {
-		do_a_write.send(()).unwrap();
-		do_a_write.send(()).unwrap();
-	});
-
-	thrd4.join().unwrap();
-	thrd.join().unwrap();
+	release_writes_while(&do_a_write, 0, Duration::ZERO, || thrd.join().unwrap());
 
 	// At the end, we should have 7 ChannelMonitorUpdates - 6 for HTLC claims, and one for the
 	// above `revoke_and_ack`.
@@ -4872,26 +4892,22 @@ fn test_single_channel_multiple_mpp() {
 	nodes[8].node.handle_commitment_signed_batch_test(node_h_id, &cs);
 	check_added_monitors(&nodes[8], 1);
 
-	let (mut updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
+	// The HTLC claims which were in the holding cell when the `revoke_and_ack` arrived come first,
+	// followed by the rest once node 7 revokes again. How many are in each depends on how far
+	// `claim_funds` got before the `revoke_and_ack` was handled.
+	let (updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
 
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
-	expect_payment_forwarded!(nodes[7], nodes[2], nodes[8], Some(1000), false, false);
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
-	expect_payment_forwarded!(nodes[7], nodes[3], nodes[8], Some(1000), false, false);
-	let mut next_source = 4;
-	if let Some(update) = updates.update_fulfill_htlcs.get(0) {
-		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update.clone());
-		expect_payment_forwarded!(nodes[7], nodes[4], nodes[8], Some(1000), false, false);
+	let mut next_source = 2;
+	let claims = updates.update_fulfill_htlcs.len();
+	for update in updates.update_fulfill_htlcs {
+		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update);
+		expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
 		next_source += 1;
 	}
 
 	nodes[7].node.handle_commitment_signed_batch_test(node_i_id, &updates.commitment_signed);
 	nodes[7].node.handle_revoke_and_ack(node_i_id, &raa);
-	if updates.update_fulfill_htlcs.get(0).is_some() {
-		check_added_monitors(&nodes[7], 5);
-	} else {
-		check_added_monitors(&nodes[7], 4);
-	}
+	check_added_monitors(&nodes[7], claims + 2);
 
 	let (raa, cs) = get_revoke_commit_msgs(&nodes[7], &node_i_id);
 
@@ -4899,26 +4915,19 @@ fn test_single_channel_multiple_mpp() {
 	nodes[8].node.handle_commitment_signed_batch_test(node_h_id, &cs);
 	check_added_monitors(&nodes[8], 2);
 
-	let (mut updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
+	let (updates, raa) = get_updates_and_revoke(&nodes[8], &node_h_id);
 
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
-	expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
-	next_source += 1;
-	nodes[7].node.handle_update_fulfill_htlc(node_i_id, updates.update_fulfill_htlcs.remove(0));
-	expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
-	next_source += 1;
-	if let Some(update) = updates.update_fulfill_htlcs.get(0) {
-		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update.clone());
+	let claims = updates.update_fulfill_htlcs.len();
+	for update in updates.update_fulfill_htlcs {
+		nodes[7].node.handle_update_fulfill_htlc(node_i_id, update);
 		expect_payment_forwarded!(nodes[7], nodes[next_source], nodes[8], Some(1000), false, false);
+		next_source += 1;
 	}
+	assert_eq!(next_source, 7);
 
 	nodes[7].node.handle_commitment_signed_batch_test(node_i_id, &updates.commitment_signed);
 	nodes[7].node.handle_revoke_and_ack(node_i_id, &raa);
-	if updates.update_fulfill_htlcs.get(0).is_some() {
-		check_added_monitors(&nodes[7], 5);
-	} else {
-		check_added_monitors(&nodes[7], 4);
-	}
+	check_added_monitors(&nodes[7], claims + 2);
 
 	let (raa, cs) = get_revoke_commit_msgs(&nodes[7], &node_i_id);
 	nodes[8].node.handle_revoke_and_ack(node_h_id, &raa);
