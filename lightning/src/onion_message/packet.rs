@@ -342,6 +342,9 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaTriPolyReadAdapter { readable: ControlTlvs::Dummy, used_aad }) => {
+				if message_type.is_some() {
+					return Err(DecodeError::InvalidValue);
+				}
 				Ok(Payload::Dummy { control_tlvs_authenticated: used_aad != TriPolyAADUsed::None })
 			},
 			Some(ChaChaTriPolyReadAdapter { readable: ControlTlvs::Receive(tlvs), used_aad }) => {
@@ -411,5 +414,49 @@ impl Writeable for ControlTlvs {
 			Self::Dummy => DummyTlv.write(w),
 			Self::Receive(tlvs) => tlvs.write(w),
 		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use crate::crypto::streams::chachapoly_encrypt_with_swapped_aad;
+	use crate::ln::peer_handler::IgnoringMessageHandler;
+	use crate::util::test_utils::TestLogger;
+	use core::convert::Infallible;
+
+	/// Dummy layers must reject message-content TLVs, just like forwarding layers,
+	/// so senders cannot distinguish them by adding message contents.
+	#[test]
+	fn dummy_payload_rejects_data_tlv() {
+		let shared_secret = SharedSecret::from_bytes([2; 32]);
+		let rho = onion_utils::gen_rho_from_shared_secret(&shared_secret.secret_bytes());
+		let receive_auth_key = ReceiveAuthKey([3; 32]);
+		let encrypted_control_tlvs =
+			chachapoly_encrypt_with_swapped_aad(DummyTlv.encode(), rho, receive_auth_key.0);
+
+		let mut payload_body = Vec::new();
+		BigSize(4).write(&mut payload_body).unwrap();
+		BigSize(encrypted_control_tlvs.len() as u64).write(&mut payload_body).unwrap();
+		payload_body.extend_from_slice(&encrypted_control_tlvs);
+		// Use an unknown odd message-content type to verify that rejection does not
+		// depend on the message type being recognized by the handler.
+		BigSize(65).write(&mut payload_body).unwrap();
+		BigSize(0).write(&mut payload_body).unwrap();
+
+		let mut encoded_payload = Vec::new();
+		BigSize(payload_body.len() as u64).write(&mut encoded_payload).unwrap();
+		encoded_payload.extend_from_slice(&payload_body);
+
+		let handler = IgnoringMessageHandler {};
+		let expanded_key = ExpandedKey::new([4; 32]);
+		let logger = TestLogger::new();
+		let decoded: Result<Payload<ParsedOnionMessageContents<Infallible>>, DecodeError> =
+			ReadableArgs::read(
+				&mut encoded_payload.as_slice(),
+				(shared_secret, &handler, receive_auth_key, &expanded_key, &logger),
+			);
+
+		assert!(matches!(decoded, Err(DecodeError::InvalidValue)));
 	}
 }
