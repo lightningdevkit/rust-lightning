@@ -3486,7 +3486,7 @@ mod tests {
 		// Note that we represent the test vector payloads 2 and 5 through RawOnionHopData::data
 		// with raw hex instead of our in-memory enums, as the payloads contains custom types, and
 		// we have no way of representing that with our enums.
-		let payloads = vec!(
+		let payloads = vec![
 			RawOnionHopData::new(msgs::OutboundOnionPayload::Forward {
 				short_channel_id: 1,
 				amt_to_forward: 15000,
@@ -3538,7 +3538,7 @@ mod tests {
 			RawOnionHopData {
 				data: <Vec<u8>>::from_hex("fd011002022710040203e8082224a33562c54507a9334e79f0dc4f17d407e6d7c61f0e2f3d0d38599502f617042710fd012de02a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a").unwrap(),
 			},
-		);
+		];
 
 		// Verify that the serialized OnionHopDataFormat::NonFinalNode tlv payloads matches the test vectors
 		let mut w = VecWriter(Vec::new());
