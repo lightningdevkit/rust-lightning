@@ -18455,9 +18455,22 @@ impl<
 				let mut htlc = {
 					let mut pending_intercept_htlcs =
 						self.pending_intercepted_htlcs.lock().unwrap();
-					match pending_intercept_htlcs.remove(&intercept_id) {
-						Some(htlc) => htlc,
-						None => {
+					// If the HTLC is tracked but is no longer held, an earlier release was already
+					// processed and the HTLC now awaits manual interception. Ignore the repeat
+					// release rather than surfacing a second `HTLCIntercepted` event for it.
+					match pending_intercept_htlcs.entry(intercept_id) {
+						hash_map::Entry::Occupied(entry) => {
+							if !entry.get().forward_info.routing.should_hold_htlc() {
+								log_trace!(
+									self.logger,
+									"Ignoring repeat release of HTLC with intercept_id {}",
+									intercept_id
+								);
+								return;
+							}
+							entry.remove()
+						},
+						hash_map::Entry::Vacant(_) => {
 							log_trace!(
 								self.logger,
 								"Failed to release HTLC with intercept_id {}: HTLC not found",

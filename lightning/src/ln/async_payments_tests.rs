@@ -3178,6 +3178,15 @@ fn held_htlc_timeout() {
 
 #[test]
 fn intercepted_hold_htlc() {
+	do_intercepted_hold_htlc(false);
+}
+
+#[test]
+fn replayed_held_htlc_release_is_ignored() {
+	do_intercepted_hold_htlc(true);
+}
+
+fn do_intercepted_hold_htlc(replay_release: bool) {
 	// Test a payment `sender --> LSP --> recipient` such that the HTLC is both a hold htlc and an
 	// intercept htlc, i.e. the HTLC needs be held until the recipient comes online *and* the LSP
 	// needs to open a JIT channel to the recipient for the payment to complete.
@@ -3282,6 +3291,12 @@ fn intercepted_hold_htlc() {
 	let (peer_id, release_htlc_om) =
 		extract_release_htlc_oms(recipient, &[sender, lsp]).pop().unwrap();
 	lsp.onion_messenger.handle_onion_message(peer_id, &release_htlc_om);
+	if replay_release {
+		// Repeat the authentic recipient release while the first release's `HTLCIntercepted`
+		// event still awaits the application's handler. The repeat should be ignored, leaving a
+		// single `HTLCIntercepted` event below.
+		lsp.onion_messenger.handle_onion_message(peer_id, &release_htlc_om);
+	}
 	lsp.node.process_pending_htlc_forwards();
 
 	// After the sender's LSP receives release_held_htlc from the recipient, the HTLC will be
