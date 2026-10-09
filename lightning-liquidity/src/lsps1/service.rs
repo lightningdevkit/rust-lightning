@@ -304,7 +304,7 @@ where
 			let response = LSPS1Response::CreateOrderError(LSPSResponseError {
 				code: LSPS1_CREATE_ORDER_REQUEST_OPTION_MISMATCH_ERROR_CODE,
 				message: "Order does not match options supported by LSP server".to_string(),
-				data: Some(format!("Supported options are {:?}", &self.config.supported_options)),
+				data: Some(format!("Supported options are {:?}", self.config.supported_options)),
 			});
 			let msg = LSPS1Message::Response(request_id, response).into();
 			message_queue_notifier.enqueue(counterparty_node_id, msg);

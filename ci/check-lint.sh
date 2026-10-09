@@ -109,7 +109,8 @@ CLIPPY() {
 		-A clippy::manual_repeat_n `# to be removed once we hit MSRV 1.86` \
 		-A clippy::manual_is_multiple_of `# to be removed once we hit MSRV 1.87` \
 		-A clippy::uninlined-format-args \
-		-A clippy::manual-async-fn # Not really sure why this is even a warning when there's a Send bound
+		-A clippy::manual-async-fn `# Not really sure why this is even a warning when there's a Send bound` \
+		-A deprecated # This ignores our MSRV so its not useful at all
 }
 
 CLIPPY
