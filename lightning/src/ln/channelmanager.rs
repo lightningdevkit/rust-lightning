@@ -16463,13 +16463,15 @@ impl<
 			let mut failed_channels: Vec<(Result<Infallible, _>, _)> = Vec::new();
 			let mut per_peer_state = self.per_peer_state.write().unwrap();
 			let remove_peer = {
-				log_debug!(
-					WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
-					"Marking channels disconnected and generating channel_updates.",
-				);
 				if let Some(peer_state_mutex) = per_peer_state.get(&counterparty_node_id) {
 					let mut peer_state_lock = peer_state_mutex.lock().unwrap();
 					let peer_state = &mut *peer_state_lock;
+					if !peer_state.channel_by_id.is_empty() {
+						log_debug!(
+							WithContext::from(&self.logger, Some(counterparty_node_id), None, None),
+							"Marking channels disconnected.",
+						);
+					}
 					let pending_msg_events = &mut peer_state.pending_msg_events;
 					peer_state.channel_by_id.retain(|_, chan| {
 						let logger = WithChannelContext::from(&self.logger, &chan.context(), None);
