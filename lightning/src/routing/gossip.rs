@@ -1598,7 +1598,7 @@ impl MaybeReadable for NodeAnnouncementInfoDeserWrapper {
 		match crate::util::ser::Readable::read(reader) {
 			Ok(node_announcement_info) => return Ok(Some(Self(node_announcement_info))),
 			Err(_) => {
-				copy(reader, &mut sink()).unwrap();
+				copy(reader, &mut sink())?;
 				return Ok(None);
 			},
 		};
