@@ -458,7 +458,20 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 	/// Notifies the chain listeners of disconnected blocks.
 	fn disconnect_blocks(&mut self, fork_point: ValidatedBlockHeader) {
 		self.header_cache.blocks_disconnected(&fork_point);
-		let best_block = BlockLocator::new(fork_point.block_hash, fork_point.height);
+		let mut best_block = BlockLocator::new(fork_point.block_hash, fork_point.height);
+		// Listeners replace their persisted chain position with the locator given here, so fill in
+		// any ancestors still held by the cache to preserve their history for locating the fork
+		// point of future reorgs.
+		let mut current = fork_point;
+		for previous_block in best_block.previous_blocks.iter_mut() {
+			match self.header_cache.look_up(&current.header.prev_blockhash) {
+				Some(previous_header) => {
+					*previous_block = Some(previous_header.block_hash);
+					current = *previous_header;
+				},
+				None => break,
+			}
+		}
 		self.chain_listener.blocks_disconnected(best_block);
 	}
 
@@ -720,6 +733,52 @@ mod chain_notifier_tests {
 			Err((e, _)) => panic!("Unexpected error: {:?}", e),
 			Ok(_) => {},
 		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_fork_preserves_ancestor_history() {
+		struct TrackingChainListener {
+			best_block: std::cell::RefCell<BlockLocator>,
+		}
+
+		impl chain::Listen for TrackingChainListener {
+			fn filtered_block_connected(
+				&self, header: &Header, _txdata: &chain::transaction::TransactionData, height: u32,
+			) {
+				self.best_block.borrow_mut().update_for_new_tip(header.block_hash(), height);
+			}
+
+			fn blocks_disconnected(&self, fork_point: BlockLocator) {
+				*self.best_block.borrow_mut() = fork_point;
+			}
+		}
+
+		let main_chain = Blockchain::default().with_height(3);
+		let mut fork_chain = main_chain.fork_at_height(1);
+
+		let new_tip = fork_chain.tip();
+		let old_tip = main_chain.tip();
+		let genesis_hash = main_chain.at_height(0).block_hash;
+		let chain_listener = TrackingChainListener {
+			best_block: std::cell::RefCell::new(main_chain.block_locator_at_height(3)),
+		};
+		let mut notifier = ChainNotifier {
+			header_cache: &mut main_chain.header_cache(0..=3),
+			chain_listener: &chain_listener,
+		};
+		let mut poller = poll::ChainPoller::new(&mut fork_chain, Network::Testnet);
+		match notifier.synchronize_listener(new_tip, &old_tip, &mut poller).await {
+			Err((e, _)) => panic!("Unexpected error: {:?}", e),
+			Ok(_) => {},
+		}
+
+		let best_block = chain_listener.best_block.borrow();
+		assert_eq!(best_block.block_hash, new_tip.block_hash);
+		assert_eq!(
+			best_block.get_hash_at_height(0),
+			Some(genesis_hash),
+			"disconnecting to a fork point must not erase its known ancestor history"
+		);
 	}
 
 	#[tokio::test]
