@@ -1260,9 +1260,11 @@ impl ChannelLiquidity {
 
 	#[rustfmt::skip]
 	fn merge(&mut self, other: &Self) {
-		// Take average for min/max liquidity offsets.
-		self.min_liquidity_offset_msat = (self.min_liquidity_offset_msat + other.min_liquidity_offset_msat) / 2;
-		self.max_liquidity_offset_msat = (self.max_liquidity_offset_msat + other.max_liquidity_offset_msat) / 2;
+		// Take average for min/max liquidity offsets, avoiding an addition that can
+		// overflow when the offsets are large.
+		let average = |a: u64, b: u64| a / 2 + b / 2 + ((a & 1) & (b & 1));
+		self.min_liquidity_offset_msat = average(self.min_liquidity_offset_msat, other.min_liquidity_offset_msat);
+		self.max_liquidity_offset_msat = average(self.max_liquidity_offset_msat, other.max_liquidity_offset_msat);
 
 		// Merge historical liquidity data.
 		self.liquidity_history.merge(&other.liquidity_history);
@@ -2923,6 +2925,41 @@ mod tests {
 			.as_directed(&recipient, &target, 1_000);
 		assert_eq!(liquidity.min_liquidity_msat(), 800);
 		assert_eq!(liquidity.max_liquidity_msat(), 1000);
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn merges_extreme_liquidity_offsets_without_overflow() {
+		// Offsets can be as large as `u64::MAX` when read back from a serialized
+		// scorer or taken from external sources.
+		let last_updated = Duration::ZERO;
+		let offset_history_last_updated = Duration::ZERO;
+		let last_datapoint_time = Duration::ZERO;
+		let mut liquidity = ChannelLiquidity {
+			min_liquidity_offset_msat: u64::MAX, max_liquidity_offset_msat: u64::MAX,
+			last_updated, offset_history_last_updated, last_datapoint_time,
+			liquidity_history: HistoricalLiquidityTracker::new(),
+		};
+		liquidity.merge(&ChannelLiquidity {
+			min_liquidity_offset_msat: u64::MAX, max_liquidity_offset_msat: u64::MAX,
+			last_updated, offset_history_last_updated, last_datapoint_time,
+			liquidity_history: HistoricalLiquidityTracker::new(),
+		});
+		assert_eq!(liquidity.min_liquidity_offset_msat, u64::MAX);
+		assert_eq!(liquidity.max_liquidity_offset_msat, u64::MAX);
+
+		let mut liquidity = ChannelLiquidity {
+			min_liquidity_offset_msat: u64::MAX, max_liquidity_offset_msat: u64::MAX,
+			last_updated, offset_history_last_updated, last_datapoint_time,
+			liquidity_history: HistoricalLiquidityTracker::new(),
+		};
+		liquidity.merge(&ChannelLiquidity {
+			min_liquidity_offset_msat: 1, max_liquidity_offset_msat: 1,
+			last_updated, offset_history_last_updated, last_datapoint_time,
+			liquidity_history: HistoricalLiquidityTracker::new(),
+		});
+		assert_eq!(liquidity.min_liquidity_offset_msat, u64::MAX / 2 + 1);
+		assert_eq!(liquidity.max_liquidity_offset_msat, u64::MAX / 2 + 1);
 	}
 
 	#[test]
