@@ -22812,11 +22812,11 @@ mod tests {
 	#[rustfmt::skip]
 	fn test_payment_display() {
 		let payment_id = PaymentId([42; 32]);
-		assert_eq!(format!("{}", &payment_id), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+		assert_eq!(format!("{payment_id}"), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 		let payment_hash = PaymentHash([42; 32]);
-		assert_eq!(format!("{}", &payment_hash), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+		assert_eq!(format!("{payment_hash}"), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 		let payment_preimage = PaymentPreimage([42; 32]);
-		assert_eq!(format!("{}", &payment_preimage), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
+		assert_eq!(format!("{payment_preimage}"), "2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a");
 	}
 
 	#[test]

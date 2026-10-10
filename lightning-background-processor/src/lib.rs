@@ -2488,8 +2488,7 @@ mod tests {
 				Arc::clone(&keys_manager),
 			));
 			let chain_source = Arc::new(test_utils::TestChainSource::new(Network::Bitcoin));
-			let kv_store =
-				Arc::new(Persister::new(format!("{}_persister_{}", &persist_dir, i).into()));
+			let kv_store = Arc::new(Persister::new(format!("{persist_dir}_persister_{i}").into()));
 			let now = Duration::from_secs(genesis_block.header.time as u64);
 			let keys_manager = Arc::new(KeysManager::new(
 				&seed,
@@ -2863,7 +2862,7 @@ mod tests {
 
 		// Check that the initial channel manager data is persisted as expected.
 		let filepath =
-			get_full_filepath(format!("{}_persister_0", &persist_dir), "manager".to_string());
+			get_full_filepath(format!("{persist_dir}_persister_0"), "manager".to_string());
 		check_persisted_data!(nodes[0].node, filepath.clone());
 
 		loop {
@@ -2896,12 +2895,12 @@ mod tests {
 
 		// Check network graph is persisted
 		let filepath =
-			get_full_filepath(format!("{}_persister_0", &persist_dir), "network_graph".to_string());
+			get_full_filepath(format!("{persist_dir}_persister_0"), "network_graph".to_string());
 		check_persisted_data!(nodes[0].network_graph, filepath.clone());
 
 		// Check scorer is persisted
 		let filepath =
-			get_full_filepath(format!("{}_persister_0", &persist_dir), "scorer".to_string());
+			get_full_filepath(format!("{persist_dir}_persister_0"), "scorer".to_string());
 		check_persisted_data!(nodes[0].scorer, filepath.clone());
 
 		if !std::thread::panicking() {
@@ -3897,7 +3896,7 @@ mod tests {
 			Some(Arc::clone(&nodes[1].scorer)),
 		);
 
-		let dir = format!("{}_persister_1/monitors", &persist_dir);
+		let dir = format!("{persist_dir}_persister_1/monitors");
 		let mut mons = list_monitor_files(&dir);
 		assert_eq!(mons.len(), 1);
 		let mon = mons.pop().unwrap();
@@ -3955,7 +3954,7 @@ mod tests {
 			|| Some(Duration::ZERO),
 		));
 
-		let dir = format!("{}_persister_1/monitors", &persist_dir);
+		let dir = format!("{persist_dir}_persister_1/monitors");
 		let mut mons = list_monitor_files(&dir);
 		assert_eq!(mons.len(), 1);
 		let mon = mons.pop().unwrap();

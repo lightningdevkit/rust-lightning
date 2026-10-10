@@ -3881,7 +3881,7 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 		nodes[1].node.process_pending_htlc_forwards();
 		expect_payment_claimable!(&nodes[1], payment_hash, payment_secret, payment_amount);
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
+		panic!("Unexpected event {:?}", msg_events[0]);
 	}
 
 	send_payment(&nodes[0], &[&nodes[1]], payment_amount);
@@ -4128,13 +4128,13 @@ fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 			mine_transaction(&nodes[1], &splice_tx);
 		}
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
+		panic!("Unexpected event {:?}", msg_events[0]);
 	}
 	if !use_0conf {
 		if let MessageSendEvent::SendAnnouncementSignatures { ref msg, .. } = &msg_events[1] {
 			nodes[0].node.handle_announcement_signatures(node_id_1, msg);
 		} else {
-			panic!("Unexpected event {:?}", &msg_events[1]);
+			panic!("Unexpected event {:?}", msg_events[1]);
 		}
 	}
 
@@ -4144,7 +4144,7 @@ fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 		if let MessageSendEvent::SendAnnouncementSignatures { ref msg, .. } = &msg_events[0] {
 			nodes[1].node.handle_announcement_signatures(node_id_0, msg);
 		} else {
-			panic!("Unexpected event {:?}", &msg_events[1]);
+			panic!("Unexpected event {:?}", msg_events[1]);
 		}
 		assert!(matches!(&msg_events[1], MessageSendEvent::BroadcastChannelAnnouncement { .. }));
 	}
@@ -5072,7 +5072,7 @@ fn do_test_free_holding_cell_on_tx_signatures_quiescence_exit(update_from_initia
 		initiator.node.handle_commitment_signed(node_id_acceptor, commitment_signed);
 		check_added_monitors(&initiator, 1);
 	} else {
-		panic!("Unexpected event {:?}", &acceptor_msg_events[0]);
+		panic!("Unexpected event {:?}", acceptor_msg_events[0]);
 	}
 
 	let expect_tx_signatures_then_htlc_update = |msg_events: &[MessageSendEvent]| match msg_events {
@@ -5088,7 +5088,7 @@ fn do_test_free_holding_cell_on_tx_signatures_quiescence_exit(update_from_initia
 			assert_eq!(*node_id, node_id_initiator);
 			initiator.node.handle_tx_signatures(node_id_acceptor, msg);
 		} else {
-			panic!("Unexpected event {:?}", &acceptor_msg_events[1]);
+			panic!("Unexpected event {:?}", acceptor_msg_events[1]);
 		}
 
 		// With `tx_signatures` exchanged, we've exited quiescence and should now see the outgoing
@@ -6654,7 +6654,7 @@ fn retransmit_completed_tx_signatures_during_monitor_update_after_reestablish() 
 		initiator.node.handle_commitment_signed(node_id_acceptor, commitment_signed);
 		check_added_monitors(&initiator, 1);
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
+		panic!("Unexpected event {:?}", msg_events[0]);
 	}
 	assert!(initiator.node.get_and_clear_pending_msg_events().is_empty());
 
@@ -6669,7 +6669,7 @@ fn retransmit_completed_tx_signatures_during_monitor_update_after_reestablish() 
 			initiator.node.handle_tx_signatures(node_id_acceptor, msg);
 			msg.tx_hash
 		} else {
-			panic!("Unexpected event {:?}", &msg_events[1]);
+			panic!("Unexpected event {:?}", msg_events[1]);
 		};
 	check_added_monitors(&initiator, 1);
 	expect_splice_pending_event(initiator, &node_id_acceptor);
@@ -6684,7 +6684,7 @@ fn retransmit_completed_tx_signatures_during_monitor_update_after_reestablish() 
 		assert_eq!(*node_id, node_id_acceptor);
 		assert_eq!(msg.tx_hash, splice_txid);
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
+		panic!("Unexpected event {:?}", msg_events[0]);
 	}
 
 	// Reconnect while the initiator's monitor update is still in flight. The acceptor's
@@ -6711,7 +6711,7 @@ fn retransmit_completed_tx_signatures_during_monitor_update_after_reestablish() 
 		acceptor.node.handle_update_add_htlc(node_id_initiator, &updates.update_add_htlcs[0]);
 		do_commitment_signed_dance(acceptor, initiator, &updates.commitment_signed, false, false);
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
+		panic!("Unexpected event {:?}", msg_events[0]);
 	}
 }
 
@@ -16013,12 +16013,12 @@ fn test_splice_locked_retransmitted_after_tx_signatures_on_reestablish() {
 	if let MessageSendEvent::UpdateHTLCs { ref updates, .. } = &msg_events[0] {
 		nodes[0].node.handle_commitment_signed(node_id_1, &updates.commitment_signed[0]);
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
+		panic!("Unexpected event {:?}", msg_events[0]);
 	}
 	if let MessageSendEvent::SendTxSignatures { ref msg, .. } = &msg_events[1] {
 		nodes[0].node.handle_tx_signatures(node_id_1, msg);
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[1]);
+		panic!("Unexpected event {:?}", msg_events[1]);
 	}
 	check_added_monitors(&nodes[0], 1);
 	check_added_monitors(&nodes[1], 1);
@@ -16032,7 +16032,7 @@ fn test_splice_locked_retransmitted_after_tx_signatures_on_reestablish() {
 	let splice_txid = if let MessageSendEvent::SendSpliceLocked { ref msg, .. } = &msg_events[1] {
 		msg.splice_txid
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[1]);
+		panic!("Unexpected event {:?}", msg_events[1]);
 	};
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 
