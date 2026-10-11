@@ -1365,7 +1365,7 @@ impl FromStr for SocketAddress {
 				let port: u16 = s[trimmed_input + 1..]
 					.parse()
 					.map_err(|_| SocketAddressParseError::InvalidPort)?;
-				if host.ends_with(".onion") {
+				if host.trim_end_matches('.').to_ascii_lowercase().ends_with(".onion") {
 					return parse_onion_address(host, port);
 				};
 				if let Ok(hostname) = Hostname::try_from(s[..trimmed_input].to_string()) {
@@ -6962,6 +6962,22 @@ mod tests {
 			"pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion.onion:1234"
 		)
 		.is_err());
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn test_socket_address_from_str_onion_alternate_spellings() {
+		// Alternate spellings of an `.onion` address must never be parsed as a
+		// hostname, which `ToSocketAddrs` would resolve via the system DNS
+		// resolver. Being rejected outright is fine, too.
+		let onion_host = "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd";
+		for suffix in [".ONION", ".OnIoN", ".onion.", ".ONION."] {
+			let address = format!("{}{}:9735", onion_host, suffix);
+			match SocketAddress::from_str(&address) {
+				Ok(SocketAddress::OnionV3 { .. }) | Err(_) => {},
+				other => panic!("onion address {} parsed as {:?}", address, other),
+			}
+		}
 	}
 
 	#[test]
