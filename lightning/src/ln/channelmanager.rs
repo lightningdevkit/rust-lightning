@@ -8560,6 +8560,11 @@ impl<
 					// applying non-strict forwarding.
 					// The channel with the least amount of outbound liquidity will be used to maximize the
 					// probability of being able to successfully forward a subsequent HTLC.
+					//
+					// Note that the selected channel may differ from the one the sender's onion
+					// names, and the forwarding checks applied to the named channel, including the
+					// private-channel forwarding policy and HTLC interception flags, are
+					// intentionally not re-applied here.
 					let maybe_optimal_channel = peer_state
 						.channel_by_id
 						.values_mut()

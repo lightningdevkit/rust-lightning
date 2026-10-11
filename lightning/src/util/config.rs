@@ -859,6 +859,12 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 /// [`Event::HTLCIntercepted`] instead of automatically forwarding the HTLC and allowing it to be
 /// forwarded or rejected manually.
 ///
+/// Note that which HTLCs are intercepted is determined based on the outbound channel named by the
+/// sender's onion, though the HTLC may be delivered over any usable channel to the same peer.
+/// Thus, if both public and private channels exist with a peer, HTLCs which name a public channel
+/// may be delivered over a private channel without being intercepted by the private-channel
+/// flags.
+///
 /// [`Event::HTLCIntercepted`]: crate::events::Event::HTLCIntercepted
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HTLCInterceptionFlags {
@@ -1019,6 +1025,13 @@ pub struct UserConfig {
 	/// If this is set to `false`, we will reject any HTLCs which were to be forwarded over private
 	/// channels. This prevents us from taking on HTLC-forwarding risk when we intend to run as a
 	/// node which is not online reliably.
+	///
+	/// Note that this policy is checked against the channel named by the sender's onion, though
+	/// the HTLC may be delivered over any usable channel we have with the same peer. Thus, if we
+	/// have both public and private channels with a peer, HTLCs which name a public channel may
+	/// still be forwarded over a private channel, even with this set to `false`. To ensure HTLCs
+	/// are never forwarded over private channels, do not maintain private channels with peers you
+	/// also have public channels with.
 	///
 	/// For nodes which are not online reliably, you should set all channels to *not* be announced
 	/// (using [`ChannelHandshakeConfig::announce_for_forwarding`] and
