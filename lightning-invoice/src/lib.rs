@@ -591,7 +591,9 @@ impl PartialOrd for Bolt11InvoiceSignature {
 
 impl Ord for Bolt11InvoiceSignature {
 	fn cmp(&self, other: &Self) -> Ordering {
-		self.0.serialize_compact().1.cmp(&other.0.serialize_compact().1)
+		let (self_recovery_id, self_signature) = self.0.serialize_compact();
+		let (other_recovery_id, other_signature) = other.0.serialize_compact();
+		self_signature.cmp(&other_signature).then(self_recovery_id.cmp(&other_recovery_id))
 	}
 }
 
@@ -2574,5 +2576,51 @@ mod test {
 
 		assert_eq!(field10.partial_cmp(&field11).unwrap(), std::cmp::Ordering::Less);
 		assert_eq!(field20.partial_cmp(&field21).unwrap(), std::cmp::Ordering::Less);
+	}
+
+	#[test]
+	fn invoice_signature_ordering_includes_recovery_id() {
+		use crate::{
+			Bolt11Invoice, Bolt11InvoiceSignature, Currency, InvoiceBuilder, PaymentHash,
+			PaymentSecret, SignedRawBolt11Invoice,
+		};
+		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+		use bitcoin::secp256k1::{Secp256k1, SecretKey};
+		use core::cmp::Ordering;
+		use core::time::Duration;
+
+		let secp_ctx = Secp256k1::new();
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+			.description("Test".to_string())
+			.payment_hash(PaymentHash([0; 32]))
+			.payment_secret(PaymentSecret([21; 32]))
+			.min_final_cltv_expiry_delta(144)
+			.duration_since_epoch(Duration::from_secs(1234567))
+			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
+			.unwrap();
+
+		let (raw_invoice, hash, signature) = invoice.into_signed_raw().into_parts();
+		let (recovery_id, signature_bytes) = signature.0.serialize_compact();
+		let alternate_recovery_id = RecoveryId::from_i32(recovery_id.to_i32() ^ 1).unwrap();
+		let alternate_signature =
+			RecoverableSignature::from_compact(&signature_bytes, alternate_recovery_id).unwrap();
+
+		let original = Bolt11Invoice::from_signed(SignedRawBolt11Invoice {
+			raw_invoice: raw_invoice.clone(),
+			hash,
+			signature,
+		})
+		.unwrap();
+		let alternate = Bolt11Invoice::from_signed(SignedRawBolt11Invoice {
+			raw_invoice,
+			hash,
+			signature: Bolt11InvoiceSignature(alternate_signature),
+		})
+		.unwrap();
+
+		assert_ne!(original.get_payee_pub_key(), alternate.get_payee_pub_key());
+		assert_ne!(original, alternate);
+		assert_ne!(original.cmp(&alternate), Ordering::Equal);
 	}
 }
