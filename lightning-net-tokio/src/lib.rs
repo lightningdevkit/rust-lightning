@@ -207,6 +207,11 @@ impl Connection {
 				if us_lock.rl_requested_disconnect {
 					break Disconnect::CloseConnection;
 				}
+				// send_data takes the writer when a write fails permanently, which we may
+				// otherwise never observe while reads are paused.
+				if us_lock.writer.is_none() {
+					break Disconnect::PeerDisconnected;
+				}
 				us_lock.read_paused
 			};
 			let select_result = if read_paused {
@@ -744,13 +749,21 @@ impl peer_handler::SocketDescriptor for SocketDescriptor {
 						Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
 							continue;
 						},
-						Err(_) => return written_len,
+						Err(_) => break,
 					}
 				},
-				task::Poll::Ready(Err(_)) => return written_len,
+				task::Poll::Ready(Err(_)) => break,
 				task::Poll::Pending => return written_len,
 			}
 		}
+
+		// A permanent write failure means the socket is dead, but the read future may be
+		// paused and thus never attempt another read or write to notice. Take the writer so
+		// no further writes are attempted and wake the read future so it can tear the
+		// connection down.
+		us.writer.take();
+		let _ = us.read_waker.try_send(());
+		written_len
 	}
 
 	fn disconnect_socket(&mut self) {
@@ -1113,6 +1126,96 @@ mod tests {
 	#[tokio::test]
 	async fn unthreaded_race_disconnect_accept() {
 		race_disconnect_accept().await;
+	}
+
+	#[tokio::test]
+	async fn fatal_write_error_while_reads_paused_disconnects() {
+		let secp_ctx = Secp256k1::new();
+		let a_key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let b_key = SecretKey::from_slice(&[2; 32]).unwrap();
+		let a_pub = PublicKey::from_secret_key(&secp_ctx, &a_key);
+		let b_pub = PublicKey::from_secret_key(&secp_ctx, &b_key);
+
+		let make_manager = |key: SecretKey, expected_pubkey: PublicKey| {
+			let (connected_sender, connected) = mpsc::channel(1);
+			let (disconnected_sender, _disconnected) = mpsc::channel(1);
+			let handler = Arc::new(MsgHandler {
+				expected_pubkey,
+				pubkey_connected: connected_sender,
+				pubkey_disconnected: disconnected_sender,
+				disconnected_flag: AtomicBool::new(false),
+				msg_events: Mutex::new(Vec::new()),
+			});
+			let manager = Arc::new(PeerManager::new(
+				MessageHandler {
+					chan_handler: Arc::clone(&handler),
+					route_handler: Arc::clone(&handler),
+					onion_message_handler: Arc::new(IgnoringMessageHandler {}),
+					custom_message_handler: Arc::new(IgnoringMessageHandler {}),
+					send_only_message_handler: Arc::new(IgnoringMessageHandler {}),
+				},
+				0,
+				&[42; 32],
+				Arc::new(TestLogger::new()),
+				Arc::new(TestNodeSigner::new(key)),
+			));
+			(manager, handler, connected)
+		};
+		let (a_manager, a_handler, mut a_connected) = make_manager(a_key, b_pub);
+		let (b_manager, _b_handler, mut b_connected) = make_manager(b_key, a_pub);
+
+		let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+		let conn_b = std::net::TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+		let (conn_a, _) = listener.accept().unwrap();
+		let write_control = conn_a.try_clone().unwrap();
+		let (reader, write_receiver, read_receiver, conn) = super::Connection::new(conn_a);
+		a_manager
+			.new_inbound_connection(super::SocketDescriptor::new(Arc::clone(&conn)), None)
+			.unwrap();
+		let a_task = tokio::spawn(super::Connection::schedule_read(
+			Arc::clone(&a_manager),
+			Arc::clone(&conn),
+			Arc::clone(&reader),
+			read_receiver,
+			write_receiver,
+		));
+		let b_task = super::setup_outbound(b_manager, a_pub, conn_b);
+		tokio::time::timeout(Duration::from_secs(10), a_connected.recv()).await.unwrap().unwrap();
+		tokio::time::timeout(Duration::from_secs(10), b_connected.recv()).await.unwrap().unwrap();
+
+		// Queue enough responses to put the peer over the read-pause threshold, but do not
+		// process them into the socket yet.
+		{
+			let mut events = a_handler.msg_events.lock().unwrap();
+			for _ in 0..13 {
+				events.push(MessageSendEvent::HandleError {
+					node_id: b_pub,
+					action: ErrorAction::SendWarningMessage {
+						msg: WarningMessage {
+							channel_id: ChannelId::from_bytes([0; 32]),
+							data: "pending response".to_owned(),
+						},
+						log_level: lightning::util::logger::Level::Debug,
+					},
+				});
+			}
+		}
+		// Shutting down the write half deterministically produces the permanent write error
+		// that a peer resetting its connection can cause, without depending on reset packet
+		// timing.
+		write_control.shutdown(std::net::Shutdown::Write).unwrap();
+		// Dispatch write-readiness so the read task calls write_buffer_space_avail, which
+		// attempts to write the queued responses and pauses reads. The writes fail
+		// permanently, and the connection must be torn down and the peer deregistered even
+		// though the socket never becomes readable (peer B stays connected) and no timer
+		// ticks are scheduled.
+		let _ = conn.lock().unwrap().write_avail.try_send(());
+		drop(write_control);
+
+		tokio::time::timeout(Duration::from_secs(5), a_task).await.unwrap().unwrap();
+		assert!(a_handler.disconnected_flag.load(Ordering::SeqCst));
+		assert!(a_manager.list_peers().is_empty());
+		b_task.await;
 	}
 
 	#[cfg(tor)]
