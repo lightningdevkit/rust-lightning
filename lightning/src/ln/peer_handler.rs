@@ -837,11 +837,11 @@ struct Peer {
 	received_message_since_timer_tick: bool,
 	sent_gossip_timestamp_filter: bool,
 
-	/// Indicates we've received a `channel_announcement` since the last time we had
-	/// [`PeerManager::gossip_processing_backlogged`] set (or, really, that we've received a
-	/// `channel_announcement` at all - we set this unconditionally but unset it every time we
-	/// check if we're gossip-processing-backlogged).
-	received_channel_announce_since_backlogged: bool,
+	/// Indicates we've received a `channel_announcement` or `channel_update` since the last time
+	/// we had [`PeerManager::gossip_processing_backlogged`] set (or, really, that we've received
+	/// one at all - we set this unconditionally but unset it every time we check if we're
+	/// gossip-processing-backlogged).
+	received_channel_gossip_since_backlogged: bool,
 
 	inbound_connection: bool,
 
@@ -901,12 +901,12 @@ impl Peer {
 	/// buffer still has space and we don't need to pause reads to get some writes out.
 	fn should_read(&mut self, gossip_processing_backlogged: bool) -> bool {
 		if !gossip_processing_backlogged {
-			self.received_channel_announce_since_backlogged = false;
+			self.received_channel_gossip_since_backlogged = false;
 		}
 		self.stashed_read_data.is_none()
 			&& !self.stashed_read_processing
 			&& self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
-			&& (!gossip_processing_backlogged || !self.received_channel_announce_since_backlogged)
+			&& (!gossip_processing_backlogged || !self.received_channel_gossip_since_backlogged)
 	}
 
 	/// Determines if we should push additional gossip background sync (aka "backfill") onto a peer's
@@ -1478,7 +1478,7 @@ impl<
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
-					received_channel_announce_since_backlogged: false,
+					received_channel_gossip_since_backlogged: false,
 					inbound_connection: false,
 
 					message_batch: None,
@@ -1542,7 +1542,7 @@ impl<
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
-					received_channel_announce_since_backlogged: false,
+					received_channel_gossip_since_backlogged: false,
 					inbound_connection: true,
 
 					message_batch: None,
@@ -2536,8 +2536,8 @@ impl<
 			return Ok(None);
 		}
 
-		if let Message::ChannelAnnouncement(ref _msg) = message {
-			peer_lock.received_channel_announce_since_backlogged = true;
+		if let Message::ChannelAnnouncement(_) | Message::ChannelUpdate(_) = message {
+			peer_lock.received_channel_gossip_since_backlogged = true;
 		}
 
 		Ok(Some(LogicalMessage::FromWire(message)))
@@ -3574,7 +3574,7 @@ impl<
 				for (descriptor, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
 					if flush_read_disabled {
-						peer.received_channel_announce_since_backlogged = false;
+						peer.received_channel_gossip_since_backlogged = false;
 					}
 					self.do_attempt_write_data(
 						&mut (*descriptor).clone(),
@@ -3776,7 +3776,7 @@ impl<
 			for (descriptor, peer_mutex) in peers_lock.iter() {
 				let mut peer = peer_mutex.lock().unwrap();
 				if flush_read_disabled {
-					peer.received_channel_announce_since_backlogged = false;
+					peer.received_channel_gossip_since_backlogged = false;
 				}
 
 				if !peer.handshake_complete() {
