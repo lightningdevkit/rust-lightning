@@ -783,6 +783,13 @@ const BUFFER_DRAIN_MSGS_PER_TICK: usize = 32;
 /// the equivalent maximum buffer size for gossip backfill is zero.
 const OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP: usize = 64 * 1024 * 2;
 
+/// The maximum number of bytes we'll buffer for a peer outbound before we stop processing
+/// messages from that peer, stashing any pending read bytes for later processing in
+/// `process_events`. This is intentionally far above `OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP`
+/// such that we should never hit it in practice, only in the case of a bug which would
+/// otherwise cause us to buffer an unbounded amount of data for a peer.
+const OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS: usize = OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP * 8;
+
 struct Peer {
 	channel_encryptor: PeerChannelEncryptor,
 	/// We cache a `NodeId` here to avoid serializing peers' keys every time we forward gossip
@@ -812,6 +819,10 @@ struct Peer {
 	pending_read_buffer: Vec<u8>,
 	pending_read_buffer_pos: usize,
 	pending_read_is_header: bool,
+	/// Bytes read from this peer which we have not yet processed because its outbound buffer
+	/// grew too large.
+	stashed_read_data: Option<Vec<u8>>,
+	stashed_read_processing: bool,
 
 	sync_status: InitSyncTracker,
 
@@ -886,7 +897,9 @@ impl Peer {
 		if !gossip_processing_backlogged {
 			self.received_channel_announce_since_backlogged = false;
 		}
-		self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
+		self.stashed_read_data.is_none()
+			&& !self.stashed_read_processing
+			&& self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
 			&& (!gossip_processing_backlogged || !self.received_channel_announce_since_backlogged)
 	}
 
@@ -1455,6 +1468,8 @@ impl<
 					pending_read_buffer,
 					pending_read_buffer_pos: 0,
 					pending_read_is_header: false,
+					stashed_read_data: None,
+					stashed_read_processing: false,
 
 					sync_status: InitSyncTracker::NoSyncRequested,
 
@@ -1515,6 +1530,8 @@ impl<
 					pending_read_buffer,
 					pending_read_buffer_pos: 0,
 					pending_read_is_header: false,
+					stashed_read_data: None,
+					stashed_read_processing: false,
 
 					sync_status: InitSyncTracker::NoSyncRequested,
 
@@ -1713,12 +1730,63 @@ impl<
 	pub fn read_event(
 		&self, peer_descriptor: &mut Descriptor, data: &[u8],
 	) -> Result<(), PeerHandleError> {
-		match self.do_read_event(peer_descriptor, data) {
+		let res = {
+			let peers = self.peers.read().unwrap();
+			if let Some(peer_mutex) = peers.get(peer_descriptor) {
+				let mut peer = peer_mutex.lock().unwrap();
+				if peer.stashed_read_processing || peer.stashed_read_data.is_some() {
+					match peer.stashed_read_data.as_mut() {
+						Some(stash) => stash.extend_from_slice(data),
+						None => peer.stashed_read_data = Some(data.to_vec()),
+					}
+					Ok(())
+				} else {
+					drop(peer);
+					drop(peers);
+					self.do_read_event(peer_descriptor, data)
+				}
+			} else {
+				Err(PeerHandleError {})
+			}
+		};
+		match res {
 			Ok(res) => Ok(res),
 			Err(e) => {
 				self.disconnect_event_internal(peer_descriptor, "of a protocol error");
 				Err(e)
 			},
+		}
+	}
+
+	/// Process bytes which were previously stashed for this peer because its outbound buffer
+	/// grew too large.
+	fn process_stashed_read_bytes(&self, peer_descriptor: &mut Descriptor) {
+		let stash = match self.peers.read().unwrap().get(peer_descriptor) {
+			Some(peer_mutex) => {
+				let mut peer = peer_mutex.lock().unwrap();
+				let stash = peer.stashed_read_data.take();
+				peer.stashed_read_processing = stash.is_some();
+				stash
+			},
+			None => return,
+		};
+		let Some(stash) = stash else { return };
+		let res = match self.do_read_event(peer_descriptor, &stash) {
+			Ok(res) => Ok(res),
+			Err(e) => {
+				self.disconnect_event_internal(peer_descriptor, "of a protocol error");
+				Err(e)
+			},
+		};
+		if let Some(peer_mutex) = self.peers.read().unwrap().get(peer_descriptor) {
+			let mut peer = peer_mutex.lock().unwrap();
+			peer.stashed_read_processing = false;
+			// Processing the stashed bytes may have re-stashed some, and either way the
+			// peer's `should_read` state may have changed, so make sure the socket driver
+			// is informed.
+			if res.is_ok() {
+				self.do_attempt_write_data(peer_descriptor, &mut *peer, false);
+			}
 		}
 	}
 
@@ -2054,6 +2122,22 @@ impl<
 							msgs_to_forward.push(msg);
 						},
 						Ok(None) => {},
+					}
+					let peer = &mut *peer_mutex.lock().unwrap();
+					if peer.total_outbound_buffered() > OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS {
+						let logger = WithContext::from(
+							&self.logger,
+							peer_node_id.as_ref().map(|(pk, _)| *pk),
+							None,
+							None,
+						);
+						log_trace!(logger, "Outbound buffer for peer exceeds the size limit, stashing remaining read bytes");
+						let mut remaining = data[read_pos..].to_vec();
+						if let Some(deferred) = peer.stashed_read_data.take() {
+							remaining.extend_from_slice(&deferred);
+						}
+						peer.stashed_read_data = Some(remaining);
+						break;
 					}
 				}
 			}
@@ -2827,6 +2911,7 @@ impl<
 				self.gossip_processing_backlog_lifted.swap(false, Ordering::Relaxed);
 
 			let mut peers_to_disconnect = new_hash_map();
+			let mut stashed_reads = Vec::new();
 
 			{
 				let peers_lock = self.peers.read().unwrap();
@@ -3428,6 +3513,16 @@ impl<
 						&mut *peer,
 						flush_read_disabled,
 					);
+					if let Some((node_id, _)) = peer.their_node_id {
+						if peers_to_disconnect.get(&node_id).is_some() {
+							continue;
+						}
+					}
+					if peer.total_outbound_buffered() < OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS
+						&& peer.stashed_read_data.is_some()
+					{
+						stashed_reads.push((*descriptor).clone());
+					}
 				}
 			}
 			if !peers_to_disconnect.is_empty() {
@@ -3456,6 +3551,10 @@ impl<
 						}
 					}
 				}
+			}
+
+			for mut descriptor in stashed_reads {
+				self.process_stashed_read_bytes(&mut descriptor);
 			}
 
 			if self.event_processing_state.fetch_sub(1, Ordering::AcqRel) != 1 {
@@ -4868,6 +4967,89 @@ mod tests {
 			cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Relaxed),
 			OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP / encoded_size + 1
 		);
+	}
+
+	#[test]
+	fn test_read_stash_when_outbound_buffer_full() {
+		use crate::routing::test_utils::channel_announcement;
+		use lightning_types::features::ChannelFeatures;
+
+		// Simple test which checks that if a peer's outbound buffer grows past
+		// `OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS` we stop processing messages from it,
+		// stashing the pending read bytes until `process_events` has space for them again.
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+		let (mut fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
+
+		macro_rules! drain_queues {
+			() => {
+				loop {
+					peers[0].process_events();
+					peers[1].process_events();
+
+					let msg = fd_a.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[1].read_event(&mut fd_b, &msg).unwrap();
+						continue;
+					}
+					let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[0].read_event(&mut fd_a, &msg).unwrap();
+						continue;
+					}
+					break;
+				}
+			};
+		}
+		drain_queues!();
+
+		let secp_ctx = Secp256k1::new();
+		let key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let msg = channel_announcement(&key, &key, ChannelFeatures::empty(), 42, &secp_ctx);
+		let msg_ev = MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg: None };
+
+		// Hang A's writes and queue enough messages for A that its outbound buffer for B
+		// exceeds the stash-reads limit. Note that broadcast messages sourced from the channel
+		// handler are queued regardless of the drop-gossip limit.
+		fd_a.hang_writes.store(true, Ordering::Relaxed);
+		let mut buf_len;
+		loop {
+			cfgs[0].chan_handler.pending_events.lock().unwrap().push(msg_ev.clone());
+			peers[0].process_events();
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			buf_len = peer_a_lock.get(&fd_a).unwrap().lock().unwrap().total_outbound_buffered();
+			if buf_len > OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS {
+				break;
+			}
+		}
+
+		// Now deliver two gossip broadcasts from B to A. The first one is processed, but then
+		// A's outbound buffer is already past the limit, so the second one should be stashed.
+		cfgs[1].chan_handler.pending_events.lock().unwrap().push(msg_ev.clone());
+		cfgs[1].chan_handler.pending_events.lock().unwrap().push(msg_ev);
+		peers[1].process_events();
+		let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
+		peers[0].read_event(&mut fd_a, &msg).unwrap();
+
+		{
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			let mut peer = peer_a_lock.get(&fd_a).unwrap().lock().unwrap();
+			assert!(peer.total_outbound_buffered() > OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS);
+			assert!(peer.stashed_read_data.is_some());
+			assert!(!peer.should_read(false));
+		}
+
+		// Once A's writes are un-hung and the buffer drains, `process_events` should process
+		// the stashed bytes and reads should resume.
+		fd_a.hang_writes.store(false, Ordering::Relaxed);
+		peers[0].process_events();
+		{
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			let peer = peer_a_lock.get(&fd_a).unwrap().lock().unwrap();
+			assert!(peer.stashed_read_data.is_none());
+			assert!(!peer.sent_pause_read);
+		}
+		drain_queues!();
 	}
 
 	#[test]
