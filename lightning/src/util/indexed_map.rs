@@ -26,17 +26,22 @@ use core::ops::{Bound, RangeBounds};
 pub struct IndexedMap<K: Hash + Ord, V> {
 	map: HashMap<K, V>,
 	keys: Vec<K>,
+	keys_sorted: bool,
 }
 
 impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	/// Constructs a new, empty map
 	pub fn new() -> Self {
-		Self { map: new_hash_map(), keys: Vec::new() }
+		Self { map: new_hash_map(), keys: Vec::new(), keys_sorted: true }
 	}
 
 	/// Constructs a new, empty map with the given capacity pre-allocated
 	pub fn with_capacity(capacity: usize) -> Self {
-		Self { map: hash_map_with_capacity(capacity), keys: Vec::with_capacity(capacity) }
+		Self {
+			map: hash_map_with_capacity(capacity),
+			keys: Vec::with_capacity(capacity),
+			keys_sorted: true,
+		}
 	}
 
 	#[inline(always)]
@@ -98,6 +103,7 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 		let ret = self.map.insert(key.clone(), value);
 		if ret.is_none() {
 			self.keys.push(key);
+			self.keys_sorted = false;
 		}
 		ret
 	}
@@ -105,9 +111,12 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 	/// Returns an [`Entry`] for the given `key` in the map, allowing access to the value.
 	pub fn entry(&mut self, key: K) -> Entry<'_, K, V> {
 		match self.map.entry(key.clone()) {
-			hash_map::Entry::Vacant(entry) => {
-				Entry::Vacant(VacantEntry { underlying_entry: entry, key, keys: &mut self.keys })
-			},
+			hash_map::Entry::Vacant(entry) => Entry::Vacant(VacantEntry {
+				underlying_entry: entry,
+				key,
+				keys: &mut self.keys,
+				keys_sorted: &mut self.keys_sorted,
+			}),
 			hash_map::Entry::Occupied(entry) => {
 				Entry::Occupied(OccupiedEntry { underlying_entry: entry, keys: &mut self.keys })
 			},
@@ -132,7 +141,10 @@ impl<K: Clone + Hash + Ord, V> IndexedMap<K, V> {
 
 	/// Returns an iterator which iterates over the `key`/`value` pairs in a given range.
 	pub fn range<R: RangeBounds<K>>(&mut self, range: R) -> Range<'_, K, V> {
-		self.keys.sort_unstable();
+		if !self.keys_sorted {
+			self.keys.sort_unstable();
+			self.keys_sorted = true;
+		}
 		let start = match range.start_bound() {
 			Bound::Unbounded => 0,
 			Bound::Included(key) => self.keys.binary_search(key).unwrap_or_else(|index| index),
@@ -191,6 +203,7 @@ pub struct VacantEntry<'a, K: Hash + Ord, V> {
 	underlying_entry: VacantHashMapEntry<'a, K, V>,
 	key: K,
 	keys: &'a mut Vec<K>,
+	keys_sorted: &'a mut bool,
 }
 
 /// An [`Entry`] for an existing key-value pair
@@ -215,6 +228,7 @@ pub enum Entry<'a, K: Hash + Ord, V> {
 impl<'a, K: Hash + Ord, V> VacantEntry<'a, K, V> {
 	/// Insert a value into the position described by this entry.
 	pub fn insert(self, value: V) -> &'a mut V {
+		*self.keys_sorted = false;
 		self.keys.push(self.key);
 		self.underlying_entry.insert(value)
 	}
