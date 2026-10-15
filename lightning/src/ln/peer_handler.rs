@@ -915,13 +915,16 @@ impl Peer {
 			&& self.msgs_sent_since_pong < BUFFER_DRAIN_MSGS_PER_TICK
 	}
 
+	/// Returns the total size (in bytes) of the messages currently buffered for this peer,
+	/// both the unencrypted gossip broadcast buffer and the encrypted outbound buffer.
+	fn total_outbound_buffered(&self) -> usize {
+		self.gossip_broadcast_buffer.iter().map(|m| m.capacity()).sum::<usize>()
+			+ self.pending_outbound_buffer.iter().map(|m| m.capacity()).sum::<usize>()
+	}
+
 	/// Returns whether this peer's outbound buffers are full and we should drop gossip broadcasts.
 	fn buffer_full_drop_gossip_broadcast(&self) -> bool {
-		let total_outbound_buffered: usize =
-			self.gossip_broadcast_buffer.iter().map(|m| m.capacity()).sum::<usize>()
-				+ self.pending_outbound_buffer.iter().map(|m| m.capacity()).sum::<usize>();
-
-		total_outbound_buffered > OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP
+		self.total_outbound_buffered() > OUTBOUND_BUFFER_SIZE_LIMIT_DROP_GOSSIP
 	}
 
 	fn set_their_node_id(&mut self, node_id: PublicKey) {
