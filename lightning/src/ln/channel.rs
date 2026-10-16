@@ -4356,7 +4356,9 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	#[inline]
-	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> Result<(ClosingTransaction, u64), ChannelError> {
+	pub(super) fn build_closing_transaction(
+		&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool,
+	) -> Result<(ClosingTransaction, u64), ChannelError> {
 		assert!(self.context.pending_inbound_htlcs.is_empty());
 		assert!(self.context.pending_outbound_htlcs.is_empty());
 		assert!(self.context.pending_update_fee.is_none());
@@ -6877,8 +6879,10 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
-		if let Some((last_fee, _, _, Some(sig))) = self.context.last_sent_closing_fee {
-			if last_fee == msg.fee_satoshis {
+		if let Some((last_fee, last_skip_remote_output, _, Some(sig))) =
+			self.context.last_sent_closing_fee
+		{
+			if last_fee == msg.fee_satoshis && last_skip_remote_output == skip_remote_output {
 				let shutdown_result = self.shutdown_result_coop_close();
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
@@ -6917,7 +6921,18 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
-		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) = msg.fee_range {
+		if let Some((last_fee, _, _, Some(_))) = self.context.last_sent_closing_fee {
+			if last_fee == msg.fee_satoshis {
+				// The fast path above didn't combine the signatures, which can only mean the
+				// counterparty signed a transaction with a different output set than the one we
+				// signed. Re-sign the transaction they signed instead of reusing our signature.
+				propose_fee!(msg.fee_satoshis);
+			}
+		}
+
+		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) =
+			msg.fee_range
+		{
 			if msg.fee_satoshis < min_fee_satoshis || msg.fee_satoshis > max_fee_satoshis {
 				return Err(ChannelError::close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in their desired range of {} sat - {} sat", msg.fee_satoshis, min_fee_satoshis, max_fee_satoshis)));
 			}
