@@ -317,7 +317,7 @@ jobs:
   rustfmt:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: 1.75.0
+      TOOLCHAIN: 1.85.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4

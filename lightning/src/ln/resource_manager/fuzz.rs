@@ -220,7 +220,8 @@ pub fn do_test(data: &[u8]) {
 
 				let expect_err =
 					outgoing_amount > incoming_amount
-						|| height >= cltv_expiry || (cltv_expiry - height) > CLTV_FAR_FAR_AWAY
+						|| height >= cltv_expiry
+						|| (cltv_expiry - height) > CLTV_FAR_FAR_AWAY
 						|| in_id == out_id || model.channels.get(&in_id).map_or(true, |c| c.closed)
 						|| model.channels.get(&out_id).map_or(true, |c| c.closed)
 						|| model.pending.iter().any(|p| {

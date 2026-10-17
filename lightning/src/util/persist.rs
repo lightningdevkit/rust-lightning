@@ -2140,7 +2140,8 @@ mod tests {
 		fn list_paginated(
 			&self, primary_namespace: &str, secondary_namespace: &str,
 			page_token: Option<PageToken>,
-		) -> impl Future<Output = Result<PaginatedListResponse, io::Error>> + 'static + MaybeSend {
+		) -> impl Future<Output = Result<PaginatedListResponse, io::Error>> + 'static + MaybeSend
+		{
 			let res = self.0.list_paginated(primary_namespace, secondary_namespace, page_token);
 			async move { res }
 		}

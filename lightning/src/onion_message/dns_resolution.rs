@@ -528,7 +528,8 @@ impl OMNameResolver {
 	/// considered failed.
 	pub fn handle_dnssec_proof_for_offer(
 		&self, msg: DNSSECProof, context: DNSResolverContext,
-	) -> Result<(Vec<(HumanReadableName, PaymentId)>, Offer), Vec<(HumanReadableName, PaymentId)>> {
+	) -> Result<(Vec<(HumanReadableName, PaymentId)>, Offer), Vec<(HumanReadableName, PaymentId)>>
+	{
 		let (completed_requests, uri) = self.handle_dnssec_proof_for_uri(msg, context)?;
 		if let Some((_onchain, params)) = uri.split_once('?') {
 			for param in params.split('&') {
