@@ -132,7 +132,7 @@ display fine at any tab-length display setting. We use `rustfmt` to establish
 uniform coding standards throughout the codebase. Please run
 
 ```bash
-cargo +1.75.0 fmt
+cargo +1.85.0 fmt
 ```
 
 before committing and pushing any changes, as compliance will also be checked
