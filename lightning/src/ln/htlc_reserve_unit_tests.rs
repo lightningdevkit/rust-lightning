@@ -294,7 +294,8 @@ pub fn test_channel_reserve_holding_cell_htlcs() {
 			stat.value_to_self_msat
 				- (stat.pending_outbound_htlcs_amount_msat
 					+ recv_value_21 + recv_value_22
-					+ total_fee_msat + total_fee_msat
+					+ total_fee_msat
+					+ total_fee_msat
 					+ commit_tx_fee_3_htlcs),
 			stat.channel_reserve_msat
 		);
@@ -2908,12 +2909,13 @@ fn manually_trigger_update_fail_htlc<'a, 'b, 'c, 'd>(
 		},
 		_ => panic!("Unexpected event"),
 	};
-	let log_string =
-		if can_afford_but_reserve_is_breached {
-			String::from("Attempting to fail HTLC due to fee spike buffer violation. Rebalancing is required.")
-		} else {
-			String::from("Attempting to fail HTLC due to balance exhausted on remote commitment")
-		};
+	let log_string = if can_afford_but_reserve_is_breached {
+		String::from(
+			"Attempting to fail HTLC due to fee spike buffer violation. Rebalancing is required.",
+		)
+	} else {
+		String::from("Attempting to fail HTLC due to balance exhausted on remote commitment")
+	};
 	nodes[1].logger.assert_log("lightning::ln::channel", log_string, 1);
 
 	check_added_monitors(&nodes[1], 3);
@@ -2942,7 +2944,8 @@ fn do_test_0reserve_no_outputs_keyed_anchors(payment_success: bool) {
 		// min opener balance is the fee for 4 HTLCs, the anchors, and the dust limit
 		let min_channel_size =
 			commit_tx_fee_sat(feerate_per_kw, MIN_AFFORDABLE_HTLC_COUNT, &channel_type)
-				+ anchors_sat + dust_limit_satoshis;
+				+ anchors_sat
+				+ dust_limit_satoshis;
 		assert!(min_channel_size > 1002);
 		min_channel_size
 	};

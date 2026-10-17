@@ -1971,7 +1971,7 @@ mod tests {
 			TestCase {
 				hold_time: slow_resolve,
 				settled: true,
-				expected_reputation: 0,              // effective_fee = 0 (slow unaccountable)
+				expected_reputation: 0, // effective_fee = 0 (slow unaccountable)
 				expected_revenue: FEE_AMOUNT as i64, // revenue increases regardless of speed
 			},
 			TestCase {
