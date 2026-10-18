@@ -462,6 +462,8 @@ impl CounterpartyCommitmentSecrets {
 
 	/// Inserts the `secret` at `idx`. Returns `Ok(())` if the secret
 	/// was generated in accordance with BOLT 3 and is consistent with previous secrets.
+	/// Secrets are expected to arrive in sequence, with `idx` decrementing by one for each
+	/// new secret; calls which would skip indices are rejected with `Err(())`.
 	pub fn provide_secret(&mut self, idx: u64, secret: [u8; 32]) -> Result<(), ()> {
 		let pos = Self::place_secret(idx);
 		for i in 0..pos {
@@ -470,8 +472,12 @@ impl CounterpartyCommitmentSecrets {
 				return Err(());
 			}
 		}
-		if self.get_min_seen_secret() <= idx {
+		let min_seen_secret = self.get_min_seen_secret();
+		if min_seen_secret <= idx {
 			return Ok(());
+		}
+		if idx != min_seen_secret - 1 {
+			return Err(());
 		}
 		self.old_secrets[pos as usize] = (secret, idx);
 		Ok(())
