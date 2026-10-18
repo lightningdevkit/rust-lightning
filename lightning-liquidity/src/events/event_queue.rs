@@ -86,7 +86,8 @@ impl<K: KVStore + Clone> EventQueue<K> {
 		drop(state_lock);
 
 		if should_notify {
-			if let Some(waker) = self.waker.lock().unwrap().take() {
+			let waker = self.waker.lock().unwrap().take();
+			if let Some(waker) = waker {
 				waker.wake();
 			}
 
@@ -179,7 +180,8 @@ impl<'a, K: KVStore + Clone> Drop for EventQueueNotifierGuard<'a, K> {
 		};
 
 		if should_notify {
-			if let Some(waker) = self.0.waker.lock().unwrap().take() {
+			let waker = self.0.waker.lock().unwrap().take();
+			if let Some(waker) = waker {
 				waker.wake();
 			}
 
