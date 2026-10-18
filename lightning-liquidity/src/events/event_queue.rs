@@ -307,10 +307,19 @@ impl Writeable for EventQueueSerWrapper<'_> {
 	}
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
+	use super::*;
+	use crate::sync::Condvar;
+	use core::pin::Pin;
+	use core::sync::atomic::{AtomicUsize, Ordering};
+	use core::task::Context;
+	use lightning::util::persist::KVStoreSyncWrapper;
+	use lightning::util::test_utils::TestStore;
+	use std::task::Wake;
+	use std::time::Duration;
+
 	#[tokio::test]
-	#[cfg(feature = "std")]
 	async fn event_queue_works() {
 		use super::*;
 		use crate::lsps0::event::LSPS0ClientEvent;
@@ -420,6 +429,222 @@ mod tests {
 		assert_eq!(e, expected_event.clone());
 
 		rx.changed().await.unwrap();
+		assert_eq!(event_queue.next_event(), None);
+	}
+
+	// Upper bound on waiting for another thread to make progress, so that a
+	// regression cannot hang the test suite indefinitely, no matter whether
+	// re-entrant locking deadlocks or is caught by lock instrumentation.
+	const TIMEOUT: Duration = Duration::from_secs(10);
+
+	type TestEventQueue = EventQueue<Arc<KVStoreSyncWrapper<Arc<TestStore>>>>;
+	type CompletionFlag = Arc<(Mutex<bool>, Condvar)>;
+
+	fn test_queue() -> Arc<TestEventQueue> {
+		let kv_store = Arc::new(KVStoreSyncWrapper(Arc::new(TestStore::new(false))));
+		let persist_notifier = Arc::new(Notifier::new());
+		Arc::new(EventQueue::new(VecDeque::new(), kv_store, persist_notifier))
+	}
+
+	fn test_event() -> LiquidityEvent {
+		use crate::lsps0::event::LSPS0ClientEvent;
+		use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+
+		let secp_ctx = Secp256k1::new();
+		let counterparty_node_id =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		LiquidityEvent::LSPS0Client(LSPS0ClientEvent::ListProtocolsResponse {
+			counterparty_node_id,
+			protocols: Vec::new(),
+		})
+	}
+
+	fn completion_flag() -> CompletionFlag {
+		Arc::new((Mutex::new(false), Condvar::new()))
+	}
+
+	fn mark_complete(flag: &CompletionFlag) {
+		let (lock, condvar) = &**flag;
+		*lock.lock().unwrap() = true;
+		condvar.notify_all();
+	}
+
+	fn wait_for_completion(flag: &CompletionFlag) {
+		let (lock, condvar) = &**flag;
+		let mut completed = lock.lock().unwrap();
+		while !*completed {
+			let (guard, wait_result) =
+				condvar.wait_timeout_while(completed, TIMEOUT, |completed| !*completed).unwrap();
+			assert!(
+				!wait_result.timed_out(),
+				"timed out waiting for a queue operation to complete"
+			);
+			completed = guard;
+		}
+	}
+
+	// Enqueues `event` via a notifier guard dropped on another thread, returning
+	// a flag that is set once the guard's notification completed.
+	fn enqueue_and_notify_on_thread(
+		queue: &Arc<TestEventQueue>, event: &LiquidityEvent,
+	) -> CompletionFlag {
+		let flag = completion_flag();
+		{
+			let thread_queue = Arc::clone(queue);
+			let thread_event = event.clone();
+			let thread_flag = Arc::clone(&flag);
+			std::thread::spawn(move || {
+				let guard = thread_queue.notifier();
+				guard.enqueue(thread_event);
+				drop(guard);
+				mark_complete(&thread_flag);
+			});
+		}
+		flag
+	}
+
+	// Polls the queue's event future once, expecting the consumer to park on the
+	// empty queue and register the waker in `cx`.
+	fn assert_consumer_parks(queue: &Arc<TestEventQueue>, cx: &mut Context<'_>) {
+		let mut fut = EventFuture(queue);
+		match Pin::new(&mut fut).poll(cx) {
+			Poll::Pending => {},
+			Poll::Ready(_) => panic!("expected the queue to be empty"),
+		}
+	}
+
+	// A waker acting as an inline executor: when woken, it polls the queue's
+	// event future until it parks again, delivering any events on the way and
+	// re-arming itself with the resulting pending poll.
+	struct InlinePollWaker {
+		queue: Arc<TestEventQueue>,
+		delivered: Arc<Mutex<Vec<LiquidityEvent>>>,
+	}
+
+	impl Wake for InlinePollWaker {
+		fn wake(self: Arc<Self>) {
+			let waker = Waker::from(Arc::clone(&self));
+			let mut cx = Context::from_waker(&waker);
+			loop {
+				let mut fut = EventFuture(&self.queue);
+				match Pin::new(&mut fut).poll(&mut cx) {
+					Poll::Ready(event) => self.delivered.lock().unwrap().push(event),
+					Poll::Pending => break,
+				}
+			}
+		}
+	}
+
+	// A waker only recording that it was woken, like an executor that schedules
+	// its task without polling it inline.
+	struct DeferredWaker(Arc<AtomicUsize>);
+
+	impl Wake for DeferredWaker {
+		fn wake(self: Arc<Self>) {
+			self.0.fetch_add(1, Ordering::SeqCst);
+		}
+	}
+
+	#[test]
+	fn event_queue_wakes_inline_consumer_from_notifier_guard() {
+		let event_queue = test_queue();
+		let expected_event = test_event();
+		let delivered = Arc::new(Mutex::new(Vec::new()));
+
+		let waker = Waker::from(Arc::new(InlinePollWaker {
+			queue: Arc::clone(&event_queue),
+			delivered: Arc::clone(&delivered),
+		}));
+		assert_consumer_parks(&event_queue, &mut Context::from_waker(&waker));
+
+		for _ in 0..2 {
+			let flag = enqueue_and_notify_on_thread(&event_queue, &expected_event);
+			wait_for_completion(&flag);
+			assert_eq!(*delivered.lock().unwrap(), vec![expected_event.clone()]);
+			delivered.lock().unwrap().clear();
+		}
+
+		assert_eq!(event_queue.next_event(), None);
+	}
+
+	#[test]
+	fn event_queue_wakes_inline_consumer_from_wait_next_event() {
+		let event_queue = test_queue();
+		let expected_event = test_event();
+		let delivered = Arc::new(Mutex::new(Vec::new()));
+
+		// Enqueue two events while no consumer is registered, so the notifier
+		// guards' notifications cannot deliver them to an inline consumer.
+		let flag = enqueue_and_notify_on_thread(&event_queue, &expected_event);
+		wait_for_completion(&flag);
+		let flag = enqueue_and_notify_on_thread(&event_queue, &expected_event);
+		wait_for_completion(&flag);
+
+		// `wait_next_event` only wakes a registered consumer if it leaves events
+		// queued, and a notifier guard's notification would deliver any queued
+		// events to an inline consumer before the blocking consumer gets to pop
+		// one, so the public API cannot produce that schedule on its own.
+		// Register the parked consumer's waker directly instead.
+		let waker = Waker::from(Arc::new(InlinePollWaker {
+			queue: Arc::clone(&event_queue),
+			delivered: Arc::clone(&delivered),
+		}));
+		*event_queue.waker.lock().unwrap() = Some(waker);
+
+		let waiter_flag = completion_flag();
+		let waiter_event = Arc::new(Mutex::new(None));
+		{
+			let thread_queue = Arc::clone(&event_queue);
+			let thread_event_slot = Arc::clone(&waiter_event);
+			let thread_flag = Arc::clone(&waiter_flag);
+			std::thread::spawn(move || {
+				let event = thread_queue.wait_next_event();
+				*thread_event_slot.lock().unwrap() = Some(event);
+				mark_complete(&thread_flag);
+			});
+		}
+		wait_for_completion(&waiter_flag);
+
+		assert_eq!(waiter_event.lock().unwrap().take(), Some(expected_event.clone()));
+		assert_eq!(*delivered.lock().unwrap(), vec![expected_event.clone()]);
+
+		// The woken consumer re-armed itself while parking, so a further event
+		// is delivered through the notifier guard's notification again.
+		let flag = enqueue_and_notify_on_thread(&event_queue, &expected_event);
+		wait_for_completion(&flag);
+		assert_eq!(*delivered.lock().unwrap(), vec![expected_event.clone(); 2]);
+
+		assert_eq!(event_queue.next_event(), None);
+	}
+
+	#[test]
+	fn event_queue_deferred_consumer_scheduling_works() {
+		let event_queue = test_queue();
+		let expected_event = test_event();
+		let delivered = Arc::new(Mutex::new(Vec::new()));
+		let wake_count = Arc::new(AtomicUsize::new(0));
+
+		let waker = Waker::from(Arc::new(DeferredWaker(Arc::clone(&wake_count))));
+		let mut cx = Context::from_waker(&waker);
+		assert_consumer_parks(&event_queue, &mut cx);
+
+		for expected_wake_count in 1..3 {
+			let guard = event_queue.notifier();
+			guard.enqueue(expected_event.clone());
+			drop(guard);
+			assert_eq!(wake_count.load(Ordering::SeqCst), expected_wake_count);
+
+			// Poll the scheduled consumer once to receive the event, then have
+			// it park and re-arm on the empty queue again.
+			let mut fut = EventFuture(&event_queue);
+			match Pin::new(&mut fut).poll(&mut cx) {
+				Poll::Ready(event) => delivered.lock().unwrap().push(event),
+				Poll::Pending => panic!("expected a queued event"),
+			}
+			assert_consumer_parks(&event_queue, &mut cx);
+		}
+
+		assert_eq!(*delivered.lock().unwrap(), vec![expected_event.clone(); 2]);
 		assert_eq!(event_queue.next_event(), None);
 	}
 }
