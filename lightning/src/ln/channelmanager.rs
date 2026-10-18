@@ -3659,6 +3659,25 @@ macro_rules! try_channel_entry {
 	};
 }
 
+/// Releases the event-processing flag when dropped, such that dropping the future driving an
+/// async handler mid-`await` cannot leave event processing disabled for the lifetime of the
+/// manager. The guard is disarmed once the flag is released normally, which happens with the
+/// `pending_events` lock acquired.
+struct EventProcessingGuard<'a> {
+	processor_flag: &'a AtomicBool,
+	event_persist_notifier: &'a Notifier,
+	armed: bool,
+}
+
+impl Drop for EventProcessingGuard<'_> {
+	fn drop(&mut self) {
+		if self.armed {
+			self.processor_flag.store(false, Ordering::Release);
+			self.event_persist_notifier.notify();
+		}
+	}
+}
+
 #[rustfmt::skip]
 macro_rules! process_events_body {
 	($self: expr, $event_to_handle: expr, $handle_event: expr) => {
@@ -3668,6 +3687,12 @@ macro_rules! process_events_body {
 			if $self.pending_events_processor.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
 				return;
 			}
+
+			let mut processor_guard = EventProcessingGuard {
+				processor_flag: &$self.pending_events_processor,
+				event_persist_notifier: &$self.event_persist_notifier,
+				armed: true,
+			};
 
 			let mut result;
 
@@ -3724,9 +3749,11 @@ macro_rules! process_events_body {
 				let mut pending_events = $self.pending_events.lock().unwrap();
 				pending_events.drain(..num_handled_events);
 				processed_all_events = pending_events.is_empty();
-				// Note that `push_pending_forwards_ev` relies on `pending_events_processor` being
-				// updated here with the `pending_events` lock acquired.
+				// Note that the flag is only released here with the `pending_events` lock acquired,
+				// ensuring another processor which acquires it cannot clone the queue until after
+				// the events we handled were drained.
 				$self.pending_events_processor.store(false, Ordering::Release);
+				processor_guard.armed = false;
 			}
 
 			if !post_event_actions.is_empty() {
@@ -22896,6 +22923,329 @@ mod tests {
 			assert_eq!(txn.len(), 1);
 			check_spends!(txn[0], funding_tx);
 		}
+	}
+
+	// Test that dropping the future driving `process_pending_events_async` while a handler is
+	// pending resets the processing flag, without which event delivery would be disabled for the
+	// lifetime of the manager.
+	#[test]
+	fn test_cancelled_async_event_processing_can_resume() {
+		use core::cell::Cell;
+		use core::future::Future;
+		use core::task::{Context, Poll};
+
+		use crate::events::ReplayEvent;
+		use crate::util::async_poll::dummy_waker;
+
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+		nodes[0].node.get_and_clear_pending_events();
+		nodes[1].node.get_and_clear_pending_events();
+
+		let mut waker = dummy_waker();
+		let mut context = Context::from_waker(&mut waker);
+
+		// Queue an `OpenChannelRequest` on `nodes[1]`. The inbound channel is only accepted once
+		// the event is handled, so a lost event would stall the channel open entirely.
+		nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, None, None).unwrap();
+		let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+		nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+
+		// Poll the async processing until its handler is pending on the event, then drop the
+		// future, as an integration would when aborting a background task.
+		let handler_invoked = Cell::new(false);
+		{
+			let blocked_handler = |_: Event| {
+				handler_invoked.set(true);
+				core::future::pending::<Result<(), ReplayEvent>>()
+			};
+			let mut processing =
+				Box::pin(nodes[1].node.process_pending_events_async(blocked_handler));
+			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
+			assert!(handler_invoked.get());
+			assert!(nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		}
+		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+
+		// A fresh processor, as a restarted background task would be, now delivers the event and
+		// can handle it successfully.
+		let accepted = Cell::new(false);
+		let node = nodes[1].node;
+		let retry_handler = |event: Event| match event {
+			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+				node.accept_inbound_channel(&temporary_channel_id, &counterparty_node_id, 43, None)
+					.unwrap();
+				accepted.set(true);
+				core::future::ready(Ok::<(), ReplayEvent>(()))
+			},
+			_ => panic!("Unexpected event: {:?}", event),
+		};
+		let mut retry = Box::pin(node.process_pending_events_async(retry_handler));
+		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
+		assert!(accepted.get());
+		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+
+		// The same recovery works through the synchronous processing interface.
+		use crate::events::EventsProvider;
+		nodes[0].node.create_channel(node_b_id, 100_000, 0, 44, None, None).unwrap();
+		let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+		nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+		let handler_invoked = Cell::new(false);
+		{
+			let blocked_handler = |_: Event| {
+				handler_invoked.set(true);
+				core::future::pending::<Result<(), ReplayEvent>>()
+			};
+			let mut processing =
+				Box::pin(nodes[1].node.process_pending_events_async(blocked_handler));
+			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
+			assert!(nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		}
+		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+
+		let accepted = Cell::new(false);
+		let node = nodes[1].node;
+		let retry_handler = |event: Event| match event {
+			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+				node.accept_inbound_channel(&temporary_channel_id, &counterparty_node_id, 45, None)
+					.unwrap();
+				accepted.set(true);
+				Ok(())
+			},
+			_ => panic!("Unexpected event: {:?}", event),
+		};
+		node.process_pending_events(&retry_handler);
+		assert!(accepted.get());
+		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+	}
+
+	// Test that events handled before a cancellation are replayed on the retry, and that events
+	// which were never handled are not lost.
+	#[test]
+	fn test_cancelled_async_event_processing_replays_handled_events() {
+		use core::cell::Cell;
+		use core::future::Future;
+		use core::task::{Context, Poll};
+
+		use crate::events::ReplayEvent;
+		use crate::util::async_poll::dummy_waker;
+
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+		nodes[0].node.get_and_clear_pending_events();
+		nodes[1].node.get_and_clear_pending_events();
+
+		// Queue two `OpenChannelRequest`s on `nodes[1]`.
+		for user_channel_id in [42, 44] {
+			nodes[0]
+				.node
+				.create_channel(node_b_id, 100_000, 0, user_channel_id, None, None)
+				.unwrap();
+			let open_channel =
+				get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+			nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+		}
+
+		let mut waker = dummy_waker();
+		let mut context = Context::from_waker(&mut waker);
+
+		// The handler completes the first event but never finishes handling the second one.
+		let events_handled = Cell::new(0);
+		{
+			let partially_blocking_handler = |_event: Event| {
+				let events_handled = &events_handled;
+				async move {
+					let num_handled = events_handled.get();
+					events_handled.set(num_handled + 1);
+					if num_handled == 0 {
+						Ok(())
+					} else {
+						core::future::pending::<()>().await;
+						Err(ReplayEvent())
+					}
+				}
+			};
+			let mut processing =
+				Box::pin(nodes[1].node.process_pending_events_async(partially_blocking_handler));
+			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
+			assert_eq!(events_handled.get(), 2);
+			assert!(nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		}
+		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+
+		// On the retry both events are delivered - the first one replayed, which handlers already
+		// have to tolerate - and both inbound channels are accepted successfully.
+		let accepted = Cell::new(0);
+		let node = nodes[1].node;
+		let retry_handler = |event: Event| match event {
+			Event::OpenChannelRequest { temporary_channel_id, counterparty_node_id, .. } => {
+				let user_channel_id = accepted.get() as u128 + 50;
+				node.accept_inbound_channel(
+					&temporary_channel_id,
+					&counterparty_node_id,
+					user_channel_id,
+					None,
+				)
+				.unwrap();
+				accepted.set(accepted.get() + 1);
+				core::future::ready(Ok::<(), ReplayEvent>(()))
+			},
+			_ => panic!("Unexpected event: {:?}", event),
+		};
+		let mut retry = Box::pin(node.process_pending_events_async(retry_handler));
+		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
+		assert_eq!(accepted.get(), 2);
+		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+	}
+
+	// Test that a cancellation does not lose or repeat an event's post-event actions, and that
+	// uninterrupted async processing is unaffected by the guard.
+	#[test]
+	fn test_cancelled_async_event_processing_runs_completion_actions_once() {
+		use core::cell::Cell;
+		use core::future::Future;
+		use core::task::{Context, Poll};
+
+		use crate::events::ReplayEvent;
+		use crate::util::async_poll::dummy_waker;
+
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		create_announced_chan_between_nodes(&nodes, 0, 1);
+		create_announced_chan_between_nodes(&nodes, 0, 2);
+
+		let mut waker = dummy_waker();
+		let mut context = Context::from_waker(&mut waker);
+
+		// Queue a `PaymentSent` event on the sender, which carries a monitor update release as a
+		// post-event action. Handling it also generates a `PaymentPathSuccessful` event.
+		macro_rules! queue_payment_sent {
+			($recipient: expr) => {{
+				let (payment_preimage, _, _, _) = route_payment(&nodes[0], &[$recipient], 100_000);
+				// Unlike `claim_payment`, this leaves the sender's events pending for us to
+				// process.
+				do_claim_payment_along_route(ClaimAlongRouteArgs::new(
+					&nodes[0],
+					&[&[$recipient]],
+					payment_preimage,
+				));
+			}};
+		}
+
+		// Cancel while the `PaymentSent` handler is pending: the post-event action must not run,
+		// and the retry must run it exactly once when the event is handled.
+		queue_payment_sent!(&nodes[1]);
+		{
+			let blocked_handler = |_: Event| core::future::pending::<Result<(), ReplayEvent>>();
+			let mut processing =
+				Box::pin(nodes[0].node.process_pending_events_async(blocked_handler));
+			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
+			assert!(nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		}
+		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		check_added_monitors(&nodes[0], 0);
+
+		let completing_handler = |event: Event| async move {
+			match event {
+				Event::PaymentSent { .. } | Event::PaymentPathSuccessful { .. } => Ok(()),
+				_ => panic!("Unexpected event: {:?}", event),
+			}
+		};
+		let mut retry = Box::pin(nodes[0].node.process_pending_events_async(completing_handler));
+		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
+		check_added_monitors(&nodes[0], 1);
+		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+
+		// Cancel after a `PaymentSent` was handled but before its queue entry was drained: the
+		// collected post-event action is dropped without running, and the retry must run it exactly
+		// once when the event is replayed. A second payment is routed across a second channel, as
+		// further claims on the first channel would stall on its held monitor update release.
+		queue_payment_sent!(&nodes[1]);
+		queue_payment_sent!(&nodes[2]);
+		{
+			let events_handled = Cell::new(0);
+			let partially_blocking_handler = |_: Event| {
+				let events_handled = &events_handled;
+				async move {
+					let num_handled = events_handled.get();
+					events_handled.set(num_handled + 1);
+					if num_handled == 0 {
+						Ok(())
+					} else {
+						core::future::pending::<()>().await;
+						Err(ReplayEvent())
+					}
+				}
+			};
+			let mut processing =
+				Box::pin(nodes[0].node.process_pending_events_async(partially_blocking_handler));
+			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
+			assert_eq!(events_handled.get(), 2);
+			assert!(nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		}
+		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		// The first `PaymentSent`'s completion action was collected but never ran, and both queued
+		// events remain undrained.
+		check_added_monitors(&nodes[0], 0);
+
+		let mut retry = Box::pin(nodes[0].node.process_pending_events_async(completing_handler));
+		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
+		// Each `PaymentSent` completion action ran exactly once.
+		check_added_monitors(&nodes[0], 2);
+		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+
+		// Cancel after the `PaymentSent` post-event action already ran: the retry must deliver the
+		// remaining event without repeating the action.
+		queue_payment_sent!(&nodes[1]);
+		{
+			let blocked_on_path_successful_handler = |event: Event| async move {
+				match event {
+					Event::PaymentSent { .. } => Ok(()),
+					Event::PaymentPathSuccessful { .. } => {
+						core::future::pending::<()>().await;
+						Err(ReplayEvent())
+					},
+					_ => panic!("Unexpected event: {:?}", event),
+				}
+			};
+			let mut processing = Box::pin(
+				nodes[0].node.process_pending_events_async(blocked_on_path_successful_handler),
+			);
+			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
+			assert!(nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		}
+		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		check_added_monitors(&nodes[0], 1);
+
+		let mut retry = Box::pin(nodes[0].node.process_pending_events_async(completing_handler));
+		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
+		// The already-run post-event action must not run again.
+		check_added_monitors(&nodes[0], 0);
+		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+
+		// Uninterrupted async processing handles a fresh set of events just like the synchronous
+		// interface does.
+		queue_payment_sent!(&nodes[1]);
+		let mut processing =
+			Box::pin(nodes[0].node.process_pending_events_async(completing_handler));
+		assert!(matches!(processing.as_mut().poll(&mut context), Poll::Ready(())));
+		check_added_monitors(&nodes[0], 1);
+		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
 	}
 }
 
