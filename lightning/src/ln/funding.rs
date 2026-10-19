@@ -988,7 +988,7 @@ impl FundingContribution {
 	/// requested feerate.
 	fn amend_without_coin_selection(
 		self, funding_inputs: Option<FundingInputs>, outputs: &[TxOut], target_feerate: FeeRate,
-		max_feerate: FeeRate, spliceable_balance: Amount,
+		spliceable_balance: Amount,
 	) -> Option<Self> {
 		// NOTE: The contribution returned is not guaranteed to be valid. We defer doing so until
 		// `compute_feerate_adjustment`.
@@ -1072,12 +1072,9 @@ impl FundingContribution {
 
 		let new_contribution_at_current_feerate =
 			adjust_for_inputs_and_outputs(self, funding_inputs, outputs)?;
-		let mut new_contribution_at_target_feerate = new_contribution_at_current_feerate
+		new_contribution_at_current_feerate
 			.at_feerate(target_feerate, spliceable_balance, true)
-			.ok()?;
-		new_contribution_at_target_feerate.max_feerate = max_feerate;
-
-		Some(new_contribution_at_target_feerate)
+			.ok()
 	}
 
 	pub(super) fn into_tx_parts(self) -> (Vec<ConfirmedUtxo>, Vec<TxOut>) {
@@ -1475,10 +1472,6 @@ impl<State> FundingBuilderInner<State> {
 			// to the new feerate if possible.
 			return contribution
 				.for_initiator_at_feerate(self.feerate, self.spliceable_balance)
-				.map(|mut adjusted| {
-					adjusted.max_feerate = self.max_feerate;
-					adjusted
-				})
 				.map_err(|_| {
 					if input_mode == Some(FundingInputMode::ManuallySelected) {
 						FundingContributionError::ManuallySelectedInputsInsufficient
@@ -1493,7 +1486,6 @@ impl<State> FundingBuilderInner<State> {
 				self.funding_inputs.clone(),
 				&self.outputs,
 				self.feerate,
-				self.max_feerate,
 				self.spliceable_balance,
 			)
 			.ok_or_else(|| {
@@ -1662,9 +1654,15 @@ impl FundingBuilder {
 		let FundingTemplate {
 			shared_input,
 			min_rbf_feerate,
-			prior_contribution,
+			mut prior_contribution,
 			spliceable_balance,
 		} = template;
+		// The prior contribution's `max_feerate` bounded an earlier attempt. The request now being
+		// built is bounded by the caller's, which `validate_contribution_parameters` checks against
+		// `feerate`, so adjusting the prior for this request must be bounded by it as well.
+		if let Some(prior_contribution) = prior_contribution.as_mut() {
+			prior_contribution.max_feerate = max_feerate;
+		}
 		let (funding_inputs, outputs) = match prior_contribution.as_ref() {
 			Some(prior_contribution) => {
 				let funding_inputs = match prior_contribution.input_mode {
@@ -4145,6 +4143,195 @@ mod tests {
 			contribution.max_feerate, callers_max_feerate,
 			"should use caller's max_feerate, not prior's"
 		);
+	}
+
+	/// A fee bump of a prior contribution is adjusted against the caller's `max_feerate`, not the
+	/// one chosen for the prior attempt: here the target exceeds the prior's maximum, and the
+	/// manually selected inputs pay the higher fee by adding less to the channel.
+	#[test]
+	fn test_rbf_adjusts_manual_input_prior_above_its_max_feerate() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let prior_max_feerate = FeeRate::from_sat_per_kwu(3000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
+		let target_feerate = FeeRate::from_sat_per_kwu(4000);
+		let max_feerate = FeeRate::from_sat_per_kwu(6000);
+
+		let inputs = vec![funding_input_sats(100_000)];
+		let estimated_fee = estimate_transaction_fee(&inputs, &[], None, true, true, prior_feerate);
+		let prior = FundingContribution {
+			estimated_fee,
+			inputs: inputs.clone(),
+			outputs: vec![],
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: prior_max_feerate,
+			is_splice: true,
+			input_mode: Some(FundingInputMode::ManuallySelected),
+			pending_components: Default::default(),
+		};
+		let prior_value_added = prior.value_added();
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(prior),
+			Amount::MAX_MONEY,
+		);
+		let contribution = template
+			.rbf_prior_contribution_sync(Some(target_feerate), max_feerate, UnreachableWallet)
+			.unwrap();
+
+		assert_eq!(contribution.inputs, inputs);
+		assert_eq!(contribution.feerate, target_feerate);
+		assert_eq!(contribution.max_feerate, max_feerate);
+		assert!(contribution.estimated_fee > estimated_fee);
+		assert!(contribution.value_added() < prior_value_added);
+	}
+
+	/// The same for a coin-selected prior contribution: its change output absorbs the higher fee
+	/// instead of coin selection being run again.
+	#[test]
+	fn test_rbf_adjusts_coin_selected_prior_above_its_max_feerate_without_coin_selection() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let prior_max_feerate = FeeRate::from_sat_per_kwu(3000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
+		let target_feerate = FeeRate::from_sat_per_kwu(4000);
+		let max_feerate = FeeRate::from_sat_per_kwu(6000);
+
+		let inputs = vec![funding_input_sats(100_000)];
+		let change = funding_output_sats(10_000);
+		let estimated_fee =
+			estimate_transaction_fee(&inputs, &[], Some(&change), true, true, prior_feerate);
+		let prior = FundingContribution {
+			estimated_fee,
+			inputs: inputs.clone(),
+			outputs: vec![],
+			change_output: Some(change.clone()),
+			feerate: prior_feerate,
+			max_feerate: prior_max_feerate,
+			is_splice: true,
+			input_mode: Some(FundingInputMode::CoinSelected),
+			pending_components: Default::default(),
+		};
+		let prior_value_added = prior.value_added();
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(prior),
+			Amount::MAX_MONEY,
+		);
+		let contribution = template
+			.rbf_prior_contribution_sync(Some(target_feerate), max_feerate, UnreachableWallet)
+			.unwrap();
+
+		assert_eq!(contribution.inputs, inputs);
+		assert_eq!(contribution.feerate, target_feerate);
+		assert_eq!(contribution.max_feerate, max_feerate);
+		assert_eq!(contribution.value_added(), prior_value_added);
+		let adjusted_change = contribution.change_output.expect("change absorbs the fee");
+		assert_eq!(adjusted_change.script_pubkey, change.script_pubkey);
+		assert!(adjusted_change.value < change.value);
+	}
+
+	/// And for a splice-out: the higher fee keeps coming from the channel balance rather than from
+	/// newly selected wallet inputs.
+	#[test]
+	fn test_rbf_adjusts_splice_out_prior_above_its_max_feerate_from_channel_balance() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let prior_max_feerate = FeeRate::from_sat_per_kwu(3000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
+		let target_feerate = FeeRate::from_sat_per_kwu(4000);
+		let max_feerate = FeeRate::from_sat_per_kwu(6000);
+
+		let withdrawal = funding_output_sats(20_000);
+		let estimated_fee = estimate_transaction_fee(
+			&[],
+			std::slice::from_ref(&withdrawal),
+			None,
+			true,
+			true,
+			prior_feerate,
+		);
+		let prior = FundingContribution {
+			estimated_fee,
+			inputs: vec![],
+			outputs: vec![withdrawal.clone()],
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: prior_max_feerate,
+			is_splice: true,
+			input_mode: None,
+			pending_components: Default::default(),
+		};
+
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(prior),
+			Amount::MAX_MONEY,
+		);
+		let contribution = template
+			.rbf_prior_contribution_sync(Some(target_feerate), max_feerate, UnreachableWallet)
+			.unwrap();
+
+		assert!(contribution.inputs.is_empty(), "the fee comes from the channel balance");
+		assert_eq!(contribution.outputs, vec![withdrawal]);
+		assert_eq!(contribution.feerate, target_feerate);
+		assert_eq!(contribution.max_feerate, max_feerate);
+		assert!(contribution.estimated_fee > estimated_fee);
+	}
+
+	/// Amending a prior contribution for a fee bump is likewise bounded by the caller's
+	/// `max_feerate`: adding an input to a manual-input prior at a target above the prior's
+	/// maximum builds, rather than being reported as the inputs falling short.
+	#[test]
+	fn test_amend_manual_input_prior_above_its_max_feerate() {
+		let prior_feerate = FeeRate::from_sat_per_kwu(2000);
+		let prior_max_feerate = FeeRate::from_sat_per_kwu(3000);
+		let min_rbf_feerate = FeeRate::from_sat_per_kwu(2025);
+		let target_feerate = FeeRate::from_sat_per_kwu(4000);
+		let max_feerate = FeeRate::from_sat_per_kwu(6000);
+
+		let prior_input = funding_input_sats(100_000);
+		let estimated_fee = estimate_transaction_fee(
+			std::slice::from_ref(&prior_input),
+			&[],
+			None,
+			true,
+			true,
+			prior_feerate,
+		);
+		let prior = FundingContribution {
+			estimated_fee,
+			inputs: vec![prior_input.clone()],
+			outputs: vec![],
+			change_output: None,
+			feerate: prior_feerate,
+			max_feerate: prior_max_feerate,
+			is_splice: true,
+			input_mode: Some(FundingInputMode::ManuallySelected),
+			pending_components: Default::default(),
+		};
+
+		let new_input = funding_input_sats(50_000);
+		let template = FundingTemplate::new(
+			Some(shared_input(100_000)),
+			Some(min_rbf_feerate),
+			Some(prior),
+			Amount::MAX_MONEY,
+		);
+		let contribution = template
+			.with_prior_contribution(target_feerate, max_feerate)
+			.add_input(new_input.clone())
+			.unwrap()
+			.build()
+			.unwrap();
+
+		assert_eq!(contribution.inputs, vec![prior_input, new_input]);
+		assert_eq!(contribution.feerate, target_feerate);
+		assert_eq!(contribution.max_feerate, max_feerate);
+		assert_eq!(contribution.input_mode, Some(FundingInputMode::ManuallySelected));
 	}
 
 	#[test]
