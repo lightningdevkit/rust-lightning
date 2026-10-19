@@ -178,7 +178,7 @@ fn derive_public_key<T: secp256k1::Signing>(
 /// Adds a tweak to a public key to derive a new public key.
 ///
 /// May panic if `tweak` is not the output of a SHA-256 hash.
-pub fn add_public_key_tweak<T: secp256k1::Signing>(
+pub(crate) fn add_public_key_tweak<T: secp256k1::Signing>(
 	secp_ctx: &Secp256k1<T>, base_point: &PublicKey, tweak: &Sha256,
 ) -> PublicKey {
 	let hashkey = PublicKey::from_secret_key(
