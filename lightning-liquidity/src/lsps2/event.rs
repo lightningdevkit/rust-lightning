@@ -161,6 +161,12 @@ pub enum LSPS2ServiceEvent {
 	},
 	/// You should open a channel using [`ChannelManager::create_channel`].
 	///
+	/// You must ensure the client's `to_self_delay` does not exceed the maximum agreed upon in
+	/// the selected opening fee parameters. To do so, set
+	/// `override_config.channel_handshake_limits.their_to_self_delay` to the minimum of
+	/// `max_client_to_self_delay` and any stricter limit of your own (in `u32` arithmetic to
+	/// avoid truncation) before calling [`ChannelManager::create_channel`].
+	///
 	/// **Note: ** As this event is persisted and might get replayed after restart, you'll need to
 	/// ensure channel creation idempotency. I.e., please check if you already created a
 	/// corresponding channel based on the given `their_network_key` and `user_channel_id` and
@@ -178,6 +184,15 @@ pub enum LSPS2ServiceEvent {
 		user_channel_id: u128,
 		/// The intercept short channel id to use in the route hint.
 		intercept_scid: u64,
+		/// The maximum number of blocks the client is allowed to set its `to_self_delay`
+		/// parameter to, as agreed upon in the selected opening fee parameters.
+		///
+		/// This is [`Option::None`] for events that were persisted before this field was
+		/// introduced. For such events, recover the agreed-upon limit from the corresponding
+		/// persisted JIT channel state if possible, or apply an explicit conservative limit of
+		/// your own (or fail the channel open). Do not fall back to a default such as 2016, as
+		/// that may exceed what was actually negotiated with the client.
+		max_client_to_self_delay: Option<u32>,
 	},
 }
 
@@ -199,5 +214,89 @@ impl_ser_tlv_based_enum!(LSPS2ServiceEvent,
 		(4, opening_fee_msat, required),
 		(6, user_channel_id, required),
 		(8, intercept_scid, required),
+		(9, max_client_to_self_delay, option),
 	}
 );
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	use bitcoin::secp256k1::Secp256k1;
+	use lightning::io::Cursor;
+	use lightning::util::ser::{BigSize, Readable, Writeable};
+
+	fn sample_open_channel(max_client_to_self_delay: Option<u32>) -> LSPS2ServiceEvent {
+		let secp = Secp256k1::new();
+		let mut key_bytes = [2u8; 32];
+		key_bytes[31] = 1;
+		let key = bitcoin::secp256k1::PublicKey::from_secret_key(
+			&secp,
+			&bitcoin::secp256k1::SecretKey::from_slice(&key_bytes).unwrap(),
+		);
+		LSPS2ServiceEvent::OpenChannel {
+			their_network_key: key,
+			amt_to_forward_msat: 90_000_000,
+			opening_fee_msat: 10_000_000,
+			user_channel_id: 42,
+			intercept_scid: 0x0f9f_9f9f_9f9f_9f9f,
+			max_client_to_self_delay,
+		}
+	}
+
+	#[test]
+	fn open_channel_event_round_trips_with_negotiated_limit() {
+		let event = sample_open_channel(Some(128));
+		let encoded = event.encode();
+		assert_eq!(
+			<LSPS2ServiceEvent as Readable>::read(&mut Cursor::new(&encoded)).unwrap(),
+			event
+		);
+	}
+
+	#[test]
+	fn open_channel_event_round_trips_without_negotiated_limit() {
+		let event = sample_open_channel(None);
+		let encoded = event.encode();
+		assert_eq!(
+			<LSPS2ServiceEvent as Readable>::read(&mut Cursor::new(&encoded)).unwrap(),
+			event
+		);
+	}
+
+	// Events persisted by versions that did not serialize the negotiated limit carry no TLV
+	// field 9 and must still decode, with the limit left as `None`.
+	#[test]
+	fn open_channel_event_without_negotiated_limit_field_decodes() {
+		// Encoded as an `OpenChannel` event with `max_client_to_self_delay: None`, i.e., the
+		// format written before the field existed: variant id 4 followed by the required TLV
+		// fields 0, 2, 4, 6 and 8 only.
+		let old_encoded: Vec<u8> = vec![
+			4, 83, 0, 33, 3, 188, 1, 30, 108, 181, 21, 89, 67, 199, 54, 91, 241, 238, 234, 158, 47,
+			11, 110, 198, 134, 142, 212, 185, 130, 49, 160, 188, 66, 237, 158, 148, 11, 2, 8, 0, 0,
+			0, 0, 5, 93, 74, 128, 4, 8, 0, 0, 0, 0, 0, 152, 150, 128, 6, 16, 0, 0, 0, 0, 0, 0, 0,
+			0, 0, 0, 0, 0, 0, 0, 0, 42, 8, 8, 15, 159, 159, 159, 159, 159, 159, 159,
+		];
+		let decoded =
+			<LSPS2ServiceEvent as Readable>::read(&mut Cursor::new(&old_encoded)).unwrap();
+		assert_eq!(decoded, sample_open_channel(None));
+	}
+
+	// Readers of the old schema do not know TLV field 9; they skip it as an unknown odd field
+	// and remain compatible, though they do not acquire enforcement of the limit.
+	#[test]
+	fn open_channel_event_unknown_odd_field_is_skipped() {
+		let mut encoded = sample_open_channel(None).encode();
+		// Append an unknown odd field (type 11, length 4) to the TLV stream, before the
+		// length prefix. Rebuild the stream with the extra field and an updated length.
+		let mut stream = encoded[2..].to_vec();
+		stream.extend_from_slice(&[11, 4, 1, 2, 3, 4]);
+		let mut new_encoded = vec![encoded[0]];
+		BigSize(stream.len() as u64).write(&mut new_encoded).unwrap();
+		new_encoded.extend_from_slice(&stream);
+		encoded = new_encoded;
+
+		let decoded = <LSPS2ServiceEvent as Readable>::read(&mut Cursor::new(&encoded)).unwrap();
+		assert_eq!(decoded, sample_open_channel(None));
+	}
+}

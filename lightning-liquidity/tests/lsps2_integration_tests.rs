@@ -1500,11 +1500,14 @@ fn lsps2_service_handler_persistence_across_restarts() {
 		if let Some(LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
 			user_channel_id: restored_channel_id,
 			intercept_scid: restored_scid,
+			max_client_to_self_delay: restored_max_client_to_self_delay,
 			..
 		})) = event
 		{
 			assert_eq!(restored_channel_id, user_channel_id);
 			assert_eq!(restored_scid, intercept_scid);
+			// The negotiated limit survives the restart via the persisted JIT channel state.
+			assert_eq!(restored_max_client_to_self_delay, Some(128));
 		} else {
 			panic!("Expected OpenChannel event after restart");
 		}
@@ -1637,12 +1640,14 @@ fn client_trusts_lsp_end_to_end_test() {
 			opening_fee_msat,
 			user_channel_id,
 			intercept_scid: iscd,
+			max_client_to_self_delay,
 		}) => {
 			assert_eq!(their_network_key, client_node_id);
 			assert_eq!(amt_to_forward_msat, payment_size_msat.unwrap() - fee_base_msat);
 			assert_eq!(opening_fee_msat, fee_base_msat);
 			assert_eq!(user_channel_id, 42);
 			assert_eq!(iscd, intercept_scid);
+			assert_eq!(max_client_to_self_delay, Some(128));
 		},
 		other => panic!("Expected OpenChannel event, got: {:?}", other),
 	};
@@ -2636,12 +2641,14 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 			opening_fee_msat,
 			user_channel_id: u,
 			intercept_scid: sc,
+			max_client_to_self_delay,
 		}) => {
 			assert_eq!(their_network_key, client_node_id);
 			assert_eq!(u, user_channel_id);
 			assert_eq!(sc, intercept_scid);
 			assert_eq!(opening_fee_msat, fee_base_msat);
 			assert_eq!(amt_to_forward_msat, payment_size_msat.unwrap() - fee_base_msat);
+			assert_eq!(max_client_to_self_delay, Some(128));
 		},
 		other => panic!("Unexpected event: {:?}", other),
 	};
