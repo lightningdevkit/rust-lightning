@@ -106,7 +106,7 @@ impl AnchorDescriptor {
 			)
 		} else {
 			debug_assert!(tx_params.channel_type_features.supports_anchor_zero_fee_commitments());
-			Witness::from_slice(&[&[]])
+			Witness::new()
 		}
 	}
 }
@@ -1421,5 +1421,25 @@ mod tests {
 		};
 
 		assert_eq!(anchor_descriptor.previous_utxo().script_pubkey, expected_script_pubkey);
+	}
+
+	#[test]
+	fn test_anchor_descriptor_p2a_witness_is_empty() {
+		let mut transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
+		transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_fee_commitments();
+
+		let anchor_descriptor = AnchorDescriptor {
+			channel_derivation_parameters: ChannelDerivationParameters {
+				value_satoshis: 42_000_000,
+				keys_id: [42; 32],
+				transaction_parameters,
+			},
+			outpoint: OutPoint::null(),
+			value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
+		};
+
+		let dummy_sig = secp256k1::ecdsa::Signature::from_compact(&[1; 64]).unwrap();
+		assert!(anchor_descriptor.tx_input_witness(&dummy_sig).is_empty());
 	}
 }
