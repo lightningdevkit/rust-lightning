@@ -498,13 +498,15 @@ fn channel_open_failed_releases_intercepted_htlcs() {
 	let fee_base_msat: u64 = 1_000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
@@ -620,13 +622,15 @@ fn htlc_declaring_more_than_delivered_is_failed_back() {
 	let fee_base_msat: u64 = 1_000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
@@ -865,13 +869,15 @@ fn channel_open_abandoned_releases_intercepted_htlcs() {
 	let fee_base_msat: u64 = 1_000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
@@ -1567,13 +1573,15 @@ fn client_trusts_lsp_end_to_end_test() {
 	let fee_base_msat = 1000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
@@ -1741,14 +1749,151 @@ fn client_trusts_lsp_end_to_end_test() {
 	expect_payment_sent(&payer_node, preimage.unwrap(), Some(total_fee_msat), true, true);
 }
 
-fn execute_lsps2_dance(
-	lsps_nodes: &LSPSNodesWithPayer, intercept_scid: u64, user_channel_id: u128,
-	cltv_expiry_delta: u32, promise_secret: [u8; 32], payment_size_msat: Option<u64>,
-	fee_base_msat: u64,
+// Checks that the negotiated `max_client_to_self_delay` carried by the `OpenChannel` event is
+// enforced when applied to `create_channel`'s handshake limits: a client `accept_channel` delay
+// above the negotiated maximum is rejected even when below the operator's global limit, a
+// compliant delay is accepted, and a stricter operator limit still wins.
+fn assert_negotiated_delay_limit_enforced(
+	client_our_to_self_delay: u16, operator_their_to_self_delay: Option<u16>,
+	expect_channel_open: bool,
 ) {
-	let service_node = &lsps_nodes.service_node;
-	let client_node = &lsps_nodes.client_node;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.channel_handshake_config.our_to_self_delay = client_our_to_self_delay;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, Some(client_node_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { ref service_node, ref client_node } = lsps_nodes;
 
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42u128;
+	let payment_size_msat = Some(1_000_000);
+	let fee_base_msat: u64 = 1_000;
+
+	execute_lsps2_dance(
+		&service_node,
+		&client_node,
+		intercept_scid,
+		user_channel_id,
+		144,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+		200,
+	);
+
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			InterceptId([0; 32]),
+			payment_size_msat.unwrap(),
+			PaymentHash([1; 32]),
+			payment_size_msat.unwrap(),
+		)
+		.unwrap();
+
+	let negotiated_limit = match service_node.liquidity_manager.next_event().unwrap() {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel {
+			max_client_to_self_delay,
+			..
+		}) => max_client_to_self_delay,
+		other => panic!("Expected OpenChannel event, got: {:?}", other),
+	};
+	assert_eq!(negotiated_limit, Some(200));
+
+	let mut override_config = test_default_channel_config();
+	if let Some(operator_limit) = operator_their_to_self_delay {
+		override_config.channel_handshake_limits.their_to_self_delay = operator_limit;
+	}
+	// Both limits are u16 while the negotiated offer is u32, so take the minimum in u32
+	// arithmetic and convert back, rather than truncating either value.
+	if let Some(negotiated) = negotiated_limit {
+		let operator_limit = override_config.channel_handshake_limits.their_to_self_delay as u32;
+		override_config.channel_handshake_limits.their_to_self_delay =
+			u16::try_from(u32::min(operator_limit, negotiated)).unwrap();
+	}
+
+	service_node
+		.node
+		.create_channel(
+			client_node_id,
+			payment_size_msat.unwrap(),
+			0,
+			user_channel_id,
+			None,
+			Some(override_config),
+		)
+		.unwrap();
+	let open_channel =
+		get_event_msg!(service_node, MessageSendEvent::SendOpenChannel, client_node_id);
+	client_node.node.handle_open_channel(service_node_id, &open_channel);
+
+	let events = client_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let temporary_channel_id = match &events[0] {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => *temporary_channel_id,
+		other => panic!("Unexpected event: {:?}", other),
+	};
+	client_node
+		.node
+		.accept_inbound_channel(&temporary_channel_id, &service_node_id, user_channel_id, None)
+		.unwrap_or_else(|e| panic!("accept_inbound_channel failed: {:?}", e));
+
+	let accept_channel =
+		get_event_msg!(client_node, MessageSendEvent::SendAcceptChannel, service_node_id);
+	service_node.node.handle_accept_channel(client_node_id, &accept_channel);
+
+	let service_events = service_node.node.get_and_clear_pending_events();
+	if expect_channel_open {
+		assert!(
+			!service_events.iter().any(|e| matches!(e, Event::ChannelClosed { .. })),
+			"channel should have opened, got {:?}",
+			service_events
+		);
+	} else {
+		let msg_events = service_node.node.get_and_clear_pending_msg_events();
+		assert!(
+			msg_events.iter().all(|e| !matches!(e, MessageSendEvent::SendFundingCreated { .. })),
+			"no funding should have been created, got {:?}",
+			msg_events
+		);
+		assert_eq!(
+			service_events.iter().filter(|e| matches!(e, Event::ChannelClosed { .. })).count(),
+			1,
+			"channel should have been rejected, got {:?}",
+			service_events
+		);
+	}
+}
+
+#[test]
+fn open_channel_event_delay_limit_rejects_delay_above_negotiated_maximum() {
+	// 1000 is below the default global limit of 2016 but above the negotiated maximum of 200.
+	assert_negotiated_delay_limit_enforced(1000, None, false);
+}
+
+#[test]
+fn open_channel_event_delay_limit_accepts_compliant_delay() {
+	assert_negotiated_delay_limit_enforced(150, None, true);
+}
+
+#[test]
+fn open_channel_event_delay_limit_preserves_stricter_operator_limit() {
+	// The operator's own limit of 32 is stricter than the negotiated maximum of 200 and must
+	// not be loosened by the offer.
+	assert_negotiated_delay_limit_enforced(150, Some(32), false);
+}
+
+fn execute_lsps2_dance(
+	service_node: &LiquidityNode, client_node: &LiquidityNode, intercept_scid: u64,
+	user_channel_id: u128, cltv_expiry_delta: u32, promise_secret: [u8; 32],
+	payment_size_msat: Option<u64>, fee_base_msat: u64, max_client_to_self_delay: u32,
+) {
 	let service_node_id = service_node.inner.node.get_our_node_id();
 	let client_node_id = client_node.inner.node.get_our_node_id();
 
@@ -1779,7 +1924,7 @@ fn execute_lsps2_dance(
 		proportional: 0,
 		valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
 		min_lifetime: 144,
-		max_client_to_self_delay: 128,
+		max_client_to_self_delay,
 		min_payment_size_msat: 1,
 		max_payment_size_msat: 100_000_000,
 	};
@@ -2043,13 +2188,15 @@ fn late_payment_forwarded_and_safe_after_force_close_does_not_broadcast() {
 	let fee_base_msat: u64 = 10_000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
@@ -2234,13 +2381,15 @@ fn htlc_timeout_before_client_claim_results_in_handling_failed() {
 	let fee_base_msat: u64 = 10_000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
@@ -2571,13 +2720,15 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 	let fee_base_msat: u64 = 10_000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
