@@ -5,7 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
-use crate::common::{is_potentially_unsafe_merkle_leaf, ConfirmedTx, FilterQueue, SyncState};
+use crate::common::{ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 
 use lightning::chain::WatchedOutput;
@@ -450,22 +450,6 @@ impl<L: Logger> EsploraSyncClient<L> {
 				if tx.compute_txid() != txid {
 					log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
 					return Err(InternalError::Failed);
-				}
-
-				// Bitcoin Core's Merkle tree implementation has no way to discern between
-				// internal and leaf node entries. As a consequence it is susceptible to an
-				// attacker injecting additional transactions by crafting 64-byte
-				// transactions matching an inner Merkle node's hash (see
-				// https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
-				// To protect against this (highly unlikely) attack vector, we check that the
-				// transaction is at least 65 bytes in length.
-				if is_potentially_unsafe_merkle_leaf(&tx) {
-					log_error!(
-						self.logger,
-						"Skipping transaction {} due to retrieving potentially invalid tx data.",
-						txid
-					);
-					return Ok(None);
 				}
 
 				if let Some(block_height) = known_block_height {
