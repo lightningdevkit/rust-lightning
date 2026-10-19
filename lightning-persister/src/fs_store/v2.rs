@@ -147,13 +147,18 @@ impl FilesystemStoreState {
 	fn list_paginated_impl(
 		&self, prefixed_dest: PathBuf, page_token: Option<PageToken>,
 	) -> Result<PaginatedListResponse, lightning::io::Error> {
-		if !prefixed_dest.exists() {
-			return Ok(PaginatedListResponse { keys: Vec::new(), next_page_token: None });
-		}
+		let dir = match fs::read_dir(&prefixed_dest) {
+			Ok(dir) => dir,
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+				// A missing namespace is treated as empty.
+				return Ok(PaginatedListResponse { keys: Vec::new(), next_page_token: None });
+			},
+			Err(e) => return Err(e.into()),
+		};
 
 		// Collect all entries with their modification times
 		let mut entries: Vec<(u64, String)> = Vec::new();
-		for dir_entry in fs::read_dir(&prefixed_dest)? {
+		for dir_entry in dir {
 			let dir_entry = dir_entry?;
 
 			match dir_entry_is_key(&dir_entry) {
