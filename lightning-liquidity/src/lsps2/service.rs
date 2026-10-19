@@ -1053,6 +1053,9 @@ where
 									opening_fee_msat: open_channel_params.opening_fee_msat,
 									user_channel_id: jit_channel.user_channel_id,
 									intercept_scid,
+									max_client_to_self_delay: Some(
+										jit_channel.opening_fee_params.max_client_to_self_delay,
+									),
 								};
 								event_queue_notifier.enqueue(event);
 							},
