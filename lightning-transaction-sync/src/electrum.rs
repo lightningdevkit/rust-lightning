@@ -5,7 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
-use crate::common::{is_potentially_unsafe_merkle_leaf, ConfirmedTx, FilterQueue, SyncState};
+use crate::common::{ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 
 use electrum_client::utils::validate_merkle_proof;
@@ -282,13 +282,6 @@ impl<L: Logger> ElectrumSyncClient<L> {
 						return Err(InternalError::Failed);
 					}
 
-					// Skip before potentially using an arbitrary returned output to look up the
-					// transaction's script history.
-					if is_potentially_unsafe_merkle_leaf(&tx) {
-						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
-						continue;
-					}
-
 					watched_txs.push((txid, tx.clone()));
 					// We watch an output's script_pubkey of the transaction of interest in order
 					// to retrieve the associated script history, before narrowing down our search
@@ -474,19 +467,6 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		&self, tx: &Transaction, prob_conf_height: u32,
 	) -> Result<Option<ConfirmedTx>, InternalError> {
 		let txid = tx.compute_txid();
-		// Bitcoin Core's Merkle tree implementation has no way to discern between internal and
-		// leaf node entries. As a consequence it is susceptible to an attacker injecting
-		// additional transactions by crafting 64-byte transactions matching an inner Merkle
-		// node's hash (see https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
-		if is_potentially_unsafe_merkle_leaf(tx) {
-			log_error!(
-				self.logger,
-				"Skipping transaction {} due to retrieving potentially invalid tx data.",
-				txid
-			);
-			return Ok(None);
-		}
-
 		match self.client.transaction_get_merkle(&txid, prob_conf_height as usize) {
 			Ok(merkle_res) => {
 				debug_assert_eq!(prob_conf_height, merkle_res.block_height as u32);
