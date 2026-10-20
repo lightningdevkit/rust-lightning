@@ -405,6 +405,7 @@ jobs:
           if ! grep -q "Bootstrapped 100%" "$TOR_DATA/tor.log"; then
             echo "tor failed to bootstrap within timeout:"; cat "$TOR_DATA/tor.log"; exit 1
           fi
+          source ci/ci-tests-common.sh
           TOR_PROXY="127.0.0.1:9050" RUSTFLAGS="--cfg=tor" cargo test --verbose --color always -p lightning-net-tokio
 
   notify-failure:
