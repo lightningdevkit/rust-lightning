@@ -354,134 +354,132 @@ impl<NG: Deref<Target = NetworkGraph<L>>, L: Logger> RapidGossipSync<NG, L> {
 		}
 		log_debug!(self.logger, "Processing RGS update from {} with {} nodes, {} channel announcements and {} channel updates.",
 			latest_seen_timestamp, node_id_count, announcement_count, update_count);
-		if update_count == 0 {
-			return Ok(latest_seen_timestamp);
-		}
+		if update_count != 0 {
+			// obtain default values for non-incremental updates
+			let default_cltv_expiry_delta: u16 = Readable::read(read_cursor)?;
+			let default_htlc_minimum_msat: u64 = Readable::read(read_cursor)?;
+			let default_fee_base_msat: u32 = Readable::read(read_cursor)?;
+			let default_fee_proportional_millionths: u32 = Readable::read(read_cursor)?;
+			let default_htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
 
-		// obtain default values for non-incremental updates
-		let default_cltv_expiry_delta: u16 = Readable::read(read_cursor)?;
-		let default_htlc_minimum_msat: u64 = Readable::read(read_cursor)?;
-		let default_fee_base_msat: u32 = Readable::read(read_cursor)?;
-		let default_fee_proportional_millionths: u32 = Readable::read(read_cursor)?;
-		let default_htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
+			let mut previous_channel_direction = None;
 
-		let mut previous_channel_direction = None;
+			for _ in 0..update_count {
+				let scid_delta: BigSize = Readable::read(read_cursor)?;
+				let short_channel_id =
+					previous_scid.checked_add(scid_delta.0).ok_or(DecodeError::InvalidValue)?;
+				previous_scid = short_channel_id;
 
-		for _ in 0..update_count {
-			let scid_delta: BigSize = Readable::read(read_cursor)?;
-			let short_channel_id =
-				previous_scid.checked_add(scid_delta.0).ok_or(DecodeError::InvalidValue)?;
-			previous_scid = short_channel_id;
+				let channel_flags: u8 = Readable::read(read_cursor)?;
 
-			let channel_flags: u8 = Readable::read(read_cursor)?;
+				if version >= 2 {
+					let direction = (channel_flags & 1) == 1;
+					let is_same_direction_update = Some(direction) == previous_channel_direction;
+					previous_channel_direction = Some(direction);
 
-			if version >= 2 {
-				let direction = (channel_flags & 1) == 1;
-				let is_same_direction_update = Some(direction) == previous_channel_direction;
-				previous_channel_direction = Some(direction);
+					if scid_delta.0 == 0 && is_same_direction_update {
+						// this is additional data for forwards compatibility
+						let additional_data: Vec<u8> = Readable::read(read_cursor)?;
+						log_gossip!(
+							self.logger,
+							"Ignoring {} bytes of additional data in channel update",
+							additional_data.len()
+						);
+						continue;
+					}
+				}
 
-				if scid_delta.0 == 0 && is_same_direction_update {
-					// this is additional data for forwards compatibility
-					let additional_data: Vec<u8> = Readable::read(read_cursor)?;
-					log_gossip!(
-						self.logger,
-						"Ignoring {} bytes of additional data in channel update",
-						additional_data.len()
-					);
+				// flags are always sent in full, and hence always need updating
+				let standard_channel_flags = channel_flags & 0b_0000_0011;
+
+				let mut synthetic_update = UnsignedChannelUpdate {
+					chain_hash,
+					short_channel_id,
+					timestamp: backdated_timestamp,
+					message_flags: 1, // Only must_be_one
+					channel_flags: standard_channel_flags,
+					cltv_expiry_delta: default_cltv_expiry_delta,
+					htlc_minimum_msat: default_htlc_minimum_msat,
+					htlc_maximum_msat: default_htlc_maximum_msat,
+					fee_base_msat: default_fee_base_msat,
+					fee_proportional_millionths: default_fee_proportional_millionths,
+					excess_data: Vec::new(),
+				};
+
+				let mut skip_update_for_unknown_channel = false;
+
+				if (channel_flags & 0b_1000_0000) != 0 {
+					// incremental update, field flags will indicate mutated values
+					let read_only_network_graph = network_graph.read_only();
+					if let Some(directional_info) = read_only_network_graph
+						.channels()
+						.get(&short_channel_id)
+						.and_then(|channel| channel.get_directional_info(channel_flags))
+					{
+						synthetic_update.cltv_expiry_delta = directional_info.cltv_expiry_delta;
+						synthetic_update.htlc_minimum_msat = directional_info.htlc_minimum_msat;
+						synthetic_update.htlc_maximum_msat = directional_info.htlc_maximum_msat;
+						synthetic_update.fee_base_msat = directional_info.fees.base_msat;
+						synthetic_update.fee_proportional_millionths =
+							directional_info.fees.proportional_millionths;
+					} else {
+						log_trace!(self.logger,
+							"Skipping application of channel update for chan {} with flags {} as original data is missing.",
+							short_channel_id, channel_flags);
+						skip_update_for_unknown_channel = true;
+					}
+				};
+
+				if channel_flags & 0b_0100_0000 > 0 {
+					let cltv_expiry_delta: u16 = Readable::read(read_cursor)?;
+					synthetic_update.cltv_expiry_delta = cltv_expiry_delta;
+				}
+
+				if channel_flags & 0b_0010_0000 > 0 {
+					let htlc_minimum_msat: u64 = Readable::read(read_cursor)?;
+					synthetic_update.htlc_minimum_msat = htlc_minimum_msat;
+				}
+
+				if channel_flags & 0b_0001_0000 > 0 {
+					let fee_base_msat: u32 = Readable::read(read_cursor)?;
+					synthetic_update.fee_base_msat = fee_base_msat;
+				}
+
+				if channel_flags & 0b_0000_1000 > 0 {
+					let fee_proportional_millionths: u32 = Readable::read(read_cursor)?;
+					synthetic_update.fee_proportional_millionths = fee_proportional_millionths;
+				}
+
+				if channel_flags & 0b_0000_0100 > 0 {
+					let htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
+					synthetic_update.htlc_maximum_msat = htlc_maximum_msat;
+				}
+
+				if skip_update_for_unknown_channel {
 					continue;
 				}
-			}
 
-			// flags are always sent in full, and hence always need updating
-			let standard_channel_flags = channel_flags & 0b_0000_0011;
-
-			let mut synthetic_update = UnsignedChannelUpdate {
-				chain_hash,
-				short_channel_id,
-				timestamp: backdated_timestamp,
-				message_flags: 1, // Only must_be_one
-				channel_flags: standard_channel_flags,
-				cltv_expiry_delta: default_cltv_expiry_delta,
-				htlc_minimum_msat: default_htlc_minimum_msat,
-				htlc_maximum_msat: default_htlc_maximum_msat,
-				fee_base_msat: default_fee_base_msat,
-				fee_proportional_millionths: default_fee_proportional_millionths,
-				excess_data: Vec::new(),
-			};
-
-			let mut skip_update_for_unknown_channel = false;
-
-			if (channel_flags & 0b_1000_0000) != 0 {
-				// incremental update, field flags will indicate mutated values
-				let read_only_network_graph = network_graph.read_only();
-				if let Some(directional_info) = read_only_network_graph
-					.channels()
-					.get(&short_channel_id)
-					.and_then(|channel| channel.get_directional_info(channel_flags))
-				{
-					synthetic_update.cltv_expiry_delta = directional_info.cltv_expiry_delta;
-					synthetic_update.htlc_minimum_msat = directional_info.htlc_minimum_msat;
-					synthetic_update.htlc_maximum_msat = directional_info.htlc_maximum_msat;
-					synthetic_update.fee_base_msat = directional_info.fees.base_msat;
-					synthetic_update.fee_proportional_millionths =
-						directional_info.fees.proportional_millionths;
-				} else {
-					log_trace!(self.logger,
-						"Skipping application of channel update for chan {} with flags {} as original data is missing.",
-						short_channel_id, channel_flags);
-					skip_update_for_unknown_channel = true;
+				log_gossip!(
+					self.logger,
+					"Updating channel {} with flags {} from RGS announcement at {}",
+					short_channel_id,
+					channel_flags,
+					latest_seen_timestamp
+				);
+				match network_graph.update_channel_unsigned(&synthetic_update) {
+					Ok(_) => {},
+					Err(LightningError { action: ErrorAction::IgnoreDuplicateGossip, .. }) => {},
+					Err(LightningError { action: ErrorAction::IgnoreAndLog(level), err }) => {
+						log_given_level!(
+							self.logger,
+							level,
+							"Failed to apply channel update: {:?}",
+							err
+						);
+					},
+					Err(LightningError { action: ErrorAction::IgnoreError, .. }) => {},
+					Err(e) => return Err(e.into()),
 				}
-			};
-
-			if channel_flags & 0b_0100_0000 > 0 {
-				let cltv_expiry_delta: u16 = Readable::read(read_cursor)?;
-				synthetic_update.cltv_expiry_delta = cltv_expiry_delta;
-			}
-
-			if channel_flags & 0b_0010_0000 > 0 {
-				let htlc_minimum_msat: u64 = Readable::read(read_cursor)?;
-				synthetic_update.htlc_minimum_msat = htlc_minimum_msat;
-			}
-
-			if channel_flags & 0b_0001_0000 > 0 {
-				let fee_base_msat: u32 = Readable::read(read_cursor)?;
-				synthetic_update.fee_base_msat = fee_base_msat;
-			}
-
-			if channel_flags & 0b_0000_1000 > 0 {
-				let fee_proportional_millionths: u32 = Readable::read(read_cursor)?;
-				synthetic_update.fee_proportional_millionths = fee_proportional_millionths;
-			}
-
-			if channel_flags & 0b_0000_0100 > 0 {
-				let htlc_maximum_msat: u64 = Readable::read(read_cursor)?;
-				synthetic_update.htlc_maximum_msat = htlc_maximum_msat;
-			}
-
-			if skip_update_for_unknown_channel {
-				continue;
-			}
-
-			log_gossip!(
-				self.logger,
-				"Updating channel {} with flags {} from RGS announcement at {}",
-				short_channel_id,
-				channel_flags,
-				latest_seen_timestamp
-			);
-			match network_graph.update_channel_unsigned(&synthetic_update) {
-				Ok(_) => {},
-				Err(LightningError { action: ErrorAction::IgnoreDuplicateGossip, .. }) => {},
-				Err(LightningError { action: ErrorAction::IgnoreAndLog(level), err }) => {
-					log_given_level!(
-						self.logger,
-						level,
-						"Failed to apply channel update: {:?}",
-						err
-					);
-				},
-				Err(LightningError { action: ErrorAction::IgnoreError, .. }) => {},
-				Err(e) => return Err(e.into()),
 			}
 		}
 
@@ -642,6 +640,13 @@ mod tests {
 
 		let update_result = rapid_sync.update_network_graph_no_std(&example_input[..], None);
 		assert!(update_result.is_ok());
+
+		// A snapshot without channel updates is still the freshest data we have.
+		assert_eq!(
+			network_graph.get_last_rapid_gossip_sync_timestamp(),
+			Some(update_result.unwrap())
+		);
+		assert!(rapid_sync.is_initial_sync_complete());
 
 		logger.assert_log_contains(
 			"lightning_rapid_gossip_sync::processing",
