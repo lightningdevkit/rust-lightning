@@ -77,6 +77,8 @@ use crate::ln::types::ChannelId;
 use crate::offers::static_invoice::StaticInvoice;
 use crate::routing::gossip::NodeId;
 use crate::sign::ecdsa::EcdsaChannelSigner;
+#[cfg(debug_assertions)]
+use crate::sign::tx_builder::total_anchors_sat;
 use crate::sign::tx_builder::{
 	ChannelConstraints, ChannelStats, HTLCAmountDirection, SpecTxBuilder, TxBuilder,
 };
@@ -4440,6 +4442,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 		let pubkeys = holder_signer.pubkeys(&secp_ctx);
 
+		#[cfg(debug_assertions)]
+		let counterparty_balance_msat = (channel_value_satoshis * 1000)
+			.checked_sub(value_to_self_msat)
+			.unwrap()
+			.saturating_sub(total_anchors_sat(&channel_type) * 1000);
+
 		let funding = FundingScope {
 			value_to_self_msat,
 			counterparty_selected_channel_reserve_satoshis: Some(msg_channel_reserve_satoshis),
@@ -4448,12 +4456,12 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			#[cfg(debug_assertions)]
 			holder_prev_commitment_tx_balance: Mutex::new((
 				value_to_self_msat,
-				(channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat),
+				counterparty_balance_msat,
 			)),
 			#[cfg(debug_assertions)]
 			counterparty_prev_commitment_tx_balance: Mutex::new((
 				value_to_self_msat,
-				(channel_value_satoshis * 1000 - msg_push_msat).saturating_sub(value_to_self_msat),
+				counterparty_balance_msat,
 			)),
 
 			#[cfg(any(test, fuzzing))]
@@ -4756,6 +4764,10 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			.map(|f| f(&pubkeys))
 			.unwrap_or_else(|| ChannelId::temporary_from_entropy_source(entropy_source));
 
+		#[cfg(debug_assertions)]
+		let holder_balance_msat =
+			value_to_self_msat.saturating_sub(total_anchors_sat(&channel_type) * 1000);
+
 		let funding = FundingScope {
 			value_to_self_msat,
 			counterparty_selected_channel_reserve_satoshis: None, // Filled in in accept_channel
@@ -4764,15 +4776,9 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			// We'll add our counterparty's `funding_satoshis` to these max commitment output assertions
 			// when we receive `accept_channel2`.
 			#[cfg(debug_assertions)]
-			holder_prev_commitment_tx_balance: Mutex::new((
-				channel_value_satoshis * 1000 - push_msat,
-				push_msat,
-			)),
+			holder_prev_commitment_tx_balance: Mutex::new((holder_balance_msat, push_msat)),
 			#[cfg(debug_assertions)]
-			counterparty_prev_commitment_tx_balance: Mutex::new((
-				channel_value_satoshis * 1000 - push_msat,
-				push_msat,
-			)),
+			counterparty_prev_commitment_tx_balance: Mutex::new((holder_balance_msat, push_msat)),
 
 			#[cfg(any(test, fuzzing))]
 			next_local_fee: Mutex::new(PredictedNextFee::default()),
@@ -6874,6 +6880,18 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 		self.feerate_per_kw =
 			selected_commitment_sat_per_1000_weight(&fee_estimator, &next_channel_type);
 		funding.channel_transaction_parameters.channel_type_features = next_channel_type;
+		#[cfg(debug_assertions)]
+		{
+			let holder_balance_msat = funding
+				.value_to_self_msat
+				.saturating_sub(total_anchors_sat(funding.get_channel_type()) * 1000);
+			let counterparty_balance_msat = (funding.get_value_satoshis() * 1000)
+				.checked_sub(funding.value_to_self_msat)
+				.unwrap();
+			let initial_balances = (holder_balance_msat, counterparty_balance_msat);
+			*funding.holder_prev_commitment_tx_balance.lock().unwrap() = initial_balances;
+			*funding.counterparty_prev_commitment_tx_balance.lock().unwrap() = initial_balances;
+		}
 
 		Ok(())
 	}
