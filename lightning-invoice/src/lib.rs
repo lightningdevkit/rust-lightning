@@ -981,6 +981,10 @@ impl<M: tb::Bool> InvoiceBuilder<tb::True, tb::True, tb::True, tb::True, tb::Tru
 
 		let invoice = Bolt11Invoice { signed_invoice: signed };
 
+		if invoice.check_signature().is_err() {
+			return Err(SignOrCreationError::CreationError(CreationError::InvalidSignature));
+		}
+
 		invoice.check_field_counts().expect("should be ensured by type signature of builder");
 		invoice.check_feature_bits().expect("should be ensured by type signature of builder");
 		invoice.check_amount().expect("should be ensured by type signature of builder");
@@ -1838,6 +1842,9 @@ pub enum CreationError {
 
 	/// The provided `min_final_cltv_expiry_delta` was less than rust-lightning's minimum.
 	MinFinalCltvExpiryDeltaTooShort,
+
+	/// The signature produced by the signing function was not valid for the invoice.
+	InvalidSignature,
 }
 
 impl Display for CreationError {
@@ -1851,6 +1858,7 @@ impl Display for CreationError {
 			CreationError::MissingRouteHints => f.write_str("The invoice required route hints and they weren't provided"),
 			CreationError::MinFinalCltvExpiryDeltaTooShort => f.write_str(
 				"The supplied final CLTV expiry delta was less than LDK's `MIN_FINAL_CLTV_EXPIRY_DELTA`"),
+			CreationError::InvalidSignature => f.write_str("The signature produced by the signing function was not valid for the invoice"),
 		}
 	}
 }
@@ -2287,7 +2295,7 @@ mod test {
 	#[test]
 	fn test_builder_fail() {
 		use crate::*;
-		use bitcoin::secp256k1::PublicKey;
+		use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
 		use lightning_types::routing::RouteHintHop;
 		use std::iter::FromIterator;
 
@@ -2326,10 +2334,21 @@ mod test {
 		assert_eq!(long_route_res, Err(CreationError::RouteTooLong));
 
 		let sign_error_res = builder
+			.clone()
 			.description("Test".into())
 			.payment_secret(PaymentSecret([0; 32]))
 			.try_build_signed(|_| Err("ImaginaryError"));
 		assert_eq!(sign_error_res, Err(SignOrCreationError::SignError("ImaginaryError")));
+
+		let secp_ctx = Secp256k1::new();
+		let payee_key = SecretKey::from_slice(&[41; 32]).unwrap();
+		let other_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let wrong_key_res = builder
+			.description("Test".into())
+			.payment_secret(PaymentSecret([0; 32]))
+			.payee_pub_key(PublicKey::from_secret_key(&secp_ctx, &payee_key))
+			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &other_key));
+		assert_eq!(wrong_key_res, Err(CreationError::InvalidSignature));
 	}
 
 	#[test]

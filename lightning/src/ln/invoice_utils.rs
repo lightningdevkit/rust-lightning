@@ -1,7 +1,8 @@
 //! Convenient utilities to create an invoice.
 
 use lightning_invoice::{
-	Bolt11Invoice, CreationError, Currency, InvoiceBuilder, SignOrCreationError,
+	Bolt11Invoice, Bolt11SemanticError, CreationError, Currency, InvoiceBuilder, RawBolt11Invoice,
+	SignOrCreationError,
 };
 use lightning_invoice::{Bolt11InvoiceDescription, Description, Sha256};
 
@@ -243,12 +244,32 @@ fn _create_phantom_invoice<ES: EntropySource, NS: NodeSigner, L: Logger>(
 		Ok(inv) => inv,
 		Err(e) => return Err(SignOrCreationError::CreationError(e)),
 	};
-	let signature = node_signer.sign_invoice(&raw_invoice, Recipient::PhantomNode);
-	let signed_raw_invoice = raw_invoice.sign(|_| signature);
-	match signed_raw_invoice {
-		Ok(inv) => Ok(Bolt11Invoice::from_signed(inv).unwrap()),
-		Err(e) => Err(SignOrCreationError::SignError(e)),
-	}
+	sign_invoice(raw_invoice, &node_signer, Recipient::PhantomNode)
+}
+
+/// Signs an invoice built by an [`InvoiceBuilder`] with the given [`NodeSigner`], checking that
+/// the produced signature is valid for it.
+pub(super) fn sign_invoice<NS: NodeSigner>(
+	raw_invoice: RawBolt11Invoice, node_signer: &NS, recipient: Recipient,
+) -> Result<Bolt11Invoice, SignOrCreationError<()>> {
+	let signature = node_signer.sign_invoice(&raw_invoice, recipient);
+	let signed_raw_invoice =
+		raw_invoice.sign(|_| signature).map_err(SignOrCreationError::SignError)?;
+	Bolt11Invoice::from_signed(signed_raw_invoice).map_err(|e| match e {
+		Bolt11SemanticError::InvalidSignature => {
+			SignOrCreationError::CreationError(CreationError::InvalidSignature)
+		},
+		Bolt11SemanticError::NoPaymentHash
+		| Bolt11SemanticError::MultiplePaymentHashes
+		| Bolt11SemanticError::NoDescription
+		| Bolt11SemanticError::MultipleDescriptions
+		| Bolt11SemanticError::NoPaymentSecret
+		| Bolt11SemanticError::MultiplePaymentSecrets
+		| Bolt11SemanticError::InvalidFeatures
+		| Bolt11SemanticError::ImpreciseAmount => {
+			unreachable!("Ensured by the type signature of the invoice builder")
+		},
+	})
 }
 
 /// Utility to select route hints for phantom invoices.

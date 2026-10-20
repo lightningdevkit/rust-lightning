@@ -1,0 +1,4 @@
+# API Updates
+ * `InvoiceBuilder::build_signed` and `try_build_signed` now verify the signature produced by the
+   signing function, failing with the new `CreationError::InvalidSignature` if it isn't valid
+   (#5306).
