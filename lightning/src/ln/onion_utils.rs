@@ -658,18 +658,25 @@ pub(crate) fn set_max_path_length(
 		.saturating_mul(OVERPAY_ESTIMATE_MULTIPLER)
 		.clamp(MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY, 1 << 56);
 
-	let blinded_tail_opt = route_params
-		.payment_params
-		.payee
-		.blinded_route_hints()
+	// The size of a blinded path hint on the wire does not bound the size of the onion payloads it
+	// will result in -- e.g. an introduction node encoded as a node id takes 24 more bytes than
+	// one encoded as a directed short channel id, but is not included in the onion at all. Since
+	// the router is free to route through any of the hints, we thus need to size against the hint
+	// with the largest onion payloads, which we compute for each hint below.
+	let blinded_route_hints = route_params.payment_params.payee.blinded_route_hints();
+	let blinded_tail_opts = blinded_route_hints
 		.iter()
-		.max_by_key(|path| path.inner_blinded_path().serialized_length())
-		.map(|largest_path| BlindedTailDetails::DirectEntry {
-			hops: largest_path.blinded_hops().iter(),
-			blinding_point: largest_path.blinding_point(),
-			final_value_msat: final_value_msat_with_overpay_buffer,
-			excess_final_cltv_expiry_delta: 0,
-		});
+		.map(|path| {
+			Some(BlindedTailDetails::DirectEntry {
+				hops: path.blinded_hops().iter(),
+				blinding_point: path.blinding_point(),
+				final_value_msat: final_value_msat_with_overpay_buffer,
+				excess_final_cltv_expiry_delta: 0,
+			})
+		})
+		// When paying a payee that did not provide any blinded path hints, the final payload is an
+		// unblinded receive instead.
+		.chain(blinded_route_hints.is_empty().then_some(None));
 
 	let cltv_expiry_delta =
 		core::cmp::min(route_params.payment_params.max_total_cltv_expiry_delta, 0x1000_0000);
@@ -687,20 +694,24 @@ pub(crate) fn set_max_path_length(
 	// explicit amount parameter to build_onion_payloads_callback.
 	let mut recipient_onion_with_excess_value = recipient_onion.clone();
 	recipient_onion_with_excess_value.total_mpp_amount_msat = final_value_msat_with_overpay_buffer;
-	let build_payloads_res = build_onion_payloads_callback(
-		core::iter::once(&unblinded_route_hop),
-		blinded_tail_opt,
-		&recipient_onion_with_excess_value,
-		best_block_height,
-		&keysend_preimage,
-		invoice_request,
-		|_, payload: msgs::OutboundOnionPayload| {
-			num_reserved_bytes = num_reserved_bytes
-				.saturating_add(payload.serialized_length())
-				.saturating_add(PAYLOAD_HMAC_LEN);
-		},
-	);
-	debug_assert!(build_payloads_res.is_ok());
+	for blinded_tail_opt in blinded_tail_opts {
+		let mut tail_reserved_bytes: usize = 0;
+		let build_payloads_res = build_onion_payloads_callback(
+			core::iter::once(&unblinded_route_hop),
+			blinded_tail_opt,
+			&recipient_onion_with_excess_value,
+			best_block_height,
+			&keysend_preimage,
+			invoice_request,
+			|_, payload: msgs::OutboundOnionPayload| {
+				tail_reserved_bytes = tail_reserved_bytes
+					.saturating_add(payload.serialized_length())
+					.saturating_add(PAYLOAD_HMAC_LEN);
+			},
+		);
+		debug_assert!(build_payloads_res.is_ok());
+		num_reserved_bytes = core::cmp::max(num_reserved_bytes, tail_reserved_bytes);
+	}
 
 	let max_path_length = 1300usize
 		.checked_sub(num_reserved_bytes)
@@ -3074,14 +3085,19 @@ mod tests {
 	use core::iter;
 	use std::sync::Arc;
 
+	use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
+	use crate::blinded_path::{BlindedHop, BlindedPath, Direction, IntroductionNode};
 	use crate::io;
 	use crate::ln::channelmanager::PaymentId;
 	use crate::ln::msgs::{self, UpdateFailHTLC};
 	use crate::ln::types::ChannelId;
-	use crate::routing::router::{Path, PaymentParameters, Route, RouteHop};
-	use crate::types::features::{ChannelFeatures, NodeFeatures};
+	use crate::routing::router::{
+		BlindedTail, Path, PaymentParameters, Route, RouteHop, RouteParameters,
+	};
+	use crate::types::features::{BlindedHopFeatures, ChannelFeatures, NodeFeatures};
 	use crate::types::payment::PaymentHash;
 	use crate::util::ser::{VecWriter, Writeable, Writer};
+	use crate::util::test_utils;
 
 	#[allow(unused_imports)]
 	use crate::prelude::*;
@@ -4110,6 +4126,114 @@ mod tests {
 		route_params.payment_params.max_total_cltv_expiry_delta = u32::MAX;
 		let recipient_onion = RecipientOnionFields::spontaneous_empty(u64::MAX);
 		set_max_path_length(&mut route_params, &recipient_onion, None, None, 42).unwrap();
+	}
+
+	fn oversized_payload_test_payinfo() -> BlindedPayInfo {
+		BlindedPayInfo {
+			fee_base_msat: 0,
+			fee_proportional_millionths: 0,
+			cltv_expiry_delta: 42,
+			htlc_minimum_msat: 1,
+			htlc_maximum_msat: u64::MAX / 2,
+			features: BlindedHopFeatures::empty(),
+		}
+	}
+
+	/// Checks that whenever `set_max_path_length` accepts a payment to a single-hop blinded path
+	/// with the given encrypted payload length, an onion can actually be constructed for a route
+	/// to it.
+	fn check_onion_fits_when_max_path_length_accepts(
+		hints: Vec<BlindedPaymentPath>, final_hint: &BlindedPaymentPath, amount_msat: u64,
+	) {
+		let secp_ctx = Secp256k1::new();
+		let session_priv = get_test_session_key();
+		let recipient_onion = RecipientOnionFields::spontaneous_empty(amount_msat);
+		let payment_hash = PaymentHash([42; 32]);
+		// Any public key will do, the onion construction never validates the introduction node
+		// against the blinded path's introduction node encoding.
+		let intro_node_pubkey = test_utils::pubkey(1);
+
+		let mut route_params = RouteParameters::from_payment_params_and_value(
+			PaymentParameters::blinded(hints),
+			amount_msat,
+		);
+		if set_max_path_length(&mut route_params, &recipient_onion, None, None, 42).is_err() {
+			return;
+		}
+
+		let path = Path {
+			hops: vec![RouteHop {
+				pubkey: intro_node_pubkey,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: 42,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: amount_msat,
+				cltv_expiry_delta: 42,
+				maybe_announced_channel: true,
+			}],
+			blinded_tail: Some(BlindedTail {
+				trampoline_hops: vec![],
+				hops: final_hint.blinded_hops().to_vec(),
+				blinding_point: final_hint.blinding_point(),
+				excess_final_cltv_expiry_delta: 0,
+				final_value_msat: amount_msat,
+			}),
+		};
+		super::create_payment_onion(
+			&secp_ctx,
+			&path,
+			&session_priv,
+			&recipient_onion,
+			43,
+			&payment_hash,
+			&None,
+			None,
+			[42; 32],
+		)
+		.expect(
+			"onion construction must succeed whenever set_max_path_length accepted the payment",
+		);
+	}
+
+	#[test]
+	fn set_max_path_length_accounts_for_all_blinded_path_hints() {
+		// A blinded path hint whose introduction node is encoded as a node id serializes larger
+		// than one encoded as a directed short channel id, even when its onion payloads are
+		// smaller. Since the router is free to pick either hint, `set_max_path_length` needs to
+		// size against the largest onion payloads, not the largest hint on the wire.
+		let amount_msat = 1 << 24;
+		let payee_pubkey = test_utils::pubkey(2);
+		let blinding_point = test_utils::pubkey(3);
+		for payload_len in 1195..=1215 {
+			let node_id_hint = BlindedPaymentPath::from_blinded_path_and_payinfo(
+				test_utils::pubkey(1),
+				blinding_point,
+				vec![BlindedHop {
+					blinded_node_id: payee_pubkey,
+					encrypted_payload: vec![0; payload_len as usize],
+				}],
+				oversized_payload_test_payinfo(),
+			);
+			let scid_hint = BlindedPaymentPath::from_parts(
+				BlindedPath {
+					introduction_node: IntroductionNode::DirectedShortChannelId(
+						Direction::NodeOne,
+						42,
+					),
+					blinding_point,
+					blinded_hops: vec![BlindedHop {
+						blinded_node_id: payee_pubkey,
+						encrypted_payload: vec![0; payload_len as usize + 1],
+					}],
+				},
+				oversized_payload_test_payinfo(),
+			);
+			check_onion_fits_when_max_path_length_accepts(
+				vec![node_id_hint, scid_hint.clone()],
+				&scid_hint,
+				amount_msat,
+			);
+		}
 	}
 
 	#[test]
