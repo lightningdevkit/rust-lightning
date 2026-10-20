@@ -2504,8 +2504,11 @@ impl<'a> PaymentPath<'a> {
 	//
 	// Returns the amount that this path contributes to the total payment value, which may be greater
 	// than `value_msat` if we had to overpay to meet the final node's `htlc_minimum_msat`.
+	//
+	// Returns `None` if the fees required to route `value_msat` overflow, in which case `self` may
+	// have been left partially updated and should be discarded.
 	#[rustfmt::skip]
-	fn update_value_and_recompute_fees(&mut self, value_msat: u64) -> u64 {
+	fn update_value_and_recompute_fees(&mut self, value_msat: u64) -> Option<u64> {
 		let mut extra_contribution_msat = 0;
 		let mut total_fee_paid_msat = 0 as u64;
 		for i in (0..self.hops.len()).rev() {
@@ -2526,7 +2529,7 @@ impl<'a> PaymentPath<'a> {
 			// We try to account for htlc_minimum_msat in scoring (add_entry!), so that nodes don't
 			// set it too high just to maliciously take more fees by exploiting this
 			// match htlc_minimum_msat logic.
-			let mut cur_hop_transferred_amount_msat = total_fee_paid_msat + value_msat;
+			let mut cur_hop_transferred_amount_msat = total_fee_paid_msat.checked_add(value_msat)?;
 			if let Some(extra_fees_msat) = cur_hop.candidate.htlc_minimum_msat().checked_sub(cur_hop_transferred_amount_msat) {
 				// Note that there is a risk that *previous hops* (those closer to us, as we go
 				// payee->our_node here) would exceed their htlc_maximum_msat or available balance.
@@ -2536,15 +2539,15 @@ impl<'a> PaymentPath<'a> {
 				// channels in add_entry.
 				// Also, this can't be exploited more heavily than *announce a free path and fail
 				// all payments*.
-				cur_hop_transferred_amount_msat += extra_fees_msat;
+				cur_hop_transferred_amount_msat = cur_hop_transferred_amount_msat.checked_add(extra_fees_msat)?;
 
 				// We remember and return the extra fees on the final hop to allow accounting for
 				// them in the path's value contribution.
 				if last_hop {
 					extra_contribution_msat = extra_fees_msat;
 				} else {
-					total_fee_paid_msat += extra_fees_msat;
-					cur_hop_fees_msat += extra_fees_msat;
+					total_fee_paid_msat = total_fee_paid_msat.checked_add(extra_fees_msat)?;
+					cur_hop_fees_msat = cur_hop_fees_msat.checked_add(extra_fees_msat)?;
 				}
 			}
 
@@ -2564,17 +2567,13 @@ impl<'a> PaymentPath<'a> {
 			if i != 0 {
 				if let Some(new_fee) = compute_fees(cur_hop_transferred_amount_msat, cur_hop.candidate.fees()) {
 					cur_hop.hop_use_fee_msat = new_fee;
-					total_fee_paid_msat += new_fee;
+					total_fee_paid_msat = total_fee_paid_msat.checked_add(new_fee)?;
 				} else {
-					// It should not be possible because this function is only called either to reduce the
-					// value or with a larger amount that was already checked for overflow in
-					// `compute_max_final_value_contribution`. In the former case, compute_fee was already
-					// called with the same fees for larger amount and there was no overflow.
-					unreachable!();
+					return None;
 				}
 			}
 		}
-		value_msat + extra_contribution_msat
+		Some(value_msat + extra_contribution_msat)
 	}
 
 	/// Returns the hop which most limited our maximum contribution as well as the maximum
@@ -3825,7 +3824,17 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 						}
 					};
 				let desired_value_contribution = cmp::min(max_path_contribution_msat, final_value_msat);
-				value_contribution_msat = payment_path.update_value_and_recompute_fees(desired_value_contribution);
+				value_contribution_msat = match payment_path.update_value_and_recompute_fees(desired_value_contribution) {
+					Some(contribution) => contribution,
+					None => {
+						let candidate = &payment_path.hops[lowest_value_contrib_hop].0.candidate;
+						log_trace!(logger,
+							"Ignoring path because recomputing its fees for {} msat overflows: {}.",
+							desired_value_contribution, LoggedCandidateHop(candidate));
+						mark_candidate_liquidity_exhausted(&mut used_liquidities, candidate);
+						continue 'paths_collection;
+					}
+				};
 
 				// Since a path allows to transfer as much value as
 				// the smallest channel it has ("bottleneck"), we should recompute
@@ -3996,7 +4005,13 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 		// We already dropped all the paths with value below `overpaid_value_msat` above, thus this
 		// can't go negative.
 		let expensive_path_new_value_msat = expensive_payment_path.get_value_msat() - overpaid_value_msat;
-		expensive_payment_path.update_value_and_recompute_fees(expensive_path_new_value_msat);
+		// Recomputing on a clone as a failed recompute may leave the path half-updated. Should the
+		// recompute overflow, we keep the path at its original value, which still covers
+		// `final_value_msat`, rather than dropping it.
+		let mut reduced_path = expensive_payment_path.clone();
+		if reduced_path.update_value_and_recompute_fees(expensive_path_new_value_msat).is_some() {
+			*expensive_payment_path = reduced_path;
+		}
 	}
 
 	// Step (8).
@@ -4016,9 +4031,19 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 		if idx + 1 >= selected_route.len() { break; }
 		if iter_equal(selected_route[idx    ].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target())),
 		              selected_route[idx + 1].hops.iter().map(|h| (h.0.candidate.id(), h.0.candidate.target()))) {
-			let new_value = selected_route[idx].get_value_msat() + selected_route[idx + 1].get_value_msat();
-			selected_route[idx].update_value_and_recompute_fees(new_value);
-			selected_route.remove(idx + 1);
+			// Merging the paths may make the fee computation overflow, even though it didn't for
+			// either path alone. In that case we keep the paths separate, which is safe as both
+			// were already validated individually.
+			let new_value = selected_route[idx].get_value_msat()
+				.checked_add(selected_route[idx + 1].get_value_msat());
+			if let Some(new_value) = new_value {
+				// Recomputing on a clone as a failed recompute may leave the path half-updated.
+				let mut merged_path = selected_route[idx].clone();
+				if merged_path.update_value_and_recompute_fees(new_value).is_some() {
+					selected_route[idx] = merged_path;
+					selected_route.remove(idx + 1);
+				}
+			}
 		}
 	}
 
