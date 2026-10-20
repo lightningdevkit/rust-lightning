@@ -159,6 +159,9 @@ pub const DEFAULT_MIN_FINAL_CLTV_EXPIRY_DELTA: u64 = 18;
 /// consistency is more important.
 pub const MAX_LENGTH: usize = 7089;
 
+/// The number of 5-bit values used to encode an invoice's 65-byte recoverable signature.
+const SIGNATURE_LEN_5: usize = 104;
+
 /// The maximum length of a tagged field in a BOLT11 invoice. This is 1023 * 5 bits (i.e., 639
 /// bytes).
 pub const MAX_TAGGED_FIELD_DATA_BYTES: usize = 639;
@@ -1239,6 +1242,18 @@ impl RawBolt11Invoice {
 	/// Convert from HRP prefix and Fe32 encoded data part.
 	/// Can be used to receive unsigned invoices for remote signing.
 	pub fn from_raw(hrp: &str, data: &[Fe32]) -> Result<Self, Bolt11ParseError> {
+		// The encoded invoice consists of the HRP, the separator, the data, the signature and
+		// the checksum.
+		let encoded_len =
+			hrp.len() + 1 + data.len() + SIGNATURE_LEN_5 + Bolt11Bech32::CHECKSUM_LENGTH;
+		if encoded_len > MAX_LENGTH {
+			return Err(Bolt11ParseError::InvalidSliceLength(
+				encoded_len,
+				MAX_LENGTH,
+				"RawBolt11Invoice",
+			));
+		}
+
 		let raw_hrp: RawHrp = RawHrp::from_str(hrp)?;
 		let data_part = RawDataPart::from_base32(data)?;
 
