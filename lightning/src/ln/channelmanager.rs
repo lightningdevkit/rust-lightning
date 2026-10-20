@@ -7099,6 +7099,12 @@ impl<
 	/// Expect an [`Event::DiscardFunding`] for such an input even though the confirmed splice
 	/// transaction spent it.
 	///
+	/// For example, an input reserved for a splice attempt A and dropped from an RBF attempt B
+	/// built on A's template stays with A: B failing does not release the input, and it is released
+	/// only once A fails or B confirms in A's place. Should a further attempt C built on B's
+	/// template add that input back, C reserved it, so C failing releases it -- even if A has
+	/// confirmed and spent it by then.
+	///
 	/// # Fee Estimation
 	///
 	/// The splice initiator is responsible for paying fees for common fields, shared inputs, and
@@ -7200,9 +7206,6 @@ impl<
 	) -> Result<(), SpliceContributionError> {
 		let mut result = Ok(());
 		PersistenceNotifierGuard::optionally_notify(self, || {
-			// A pushed event is the only unlock signal the caller will ever get for the released
-			// inputs, so the manager must be persisted with it lest a crash leave them reserved
-			// forever.
 			let push_discard_funding = |contribution: FundingContribution| -> NotifyOption {
 				let funding_info = contribution.unique_contributions().map(|(inputs, outputs)| {
 					FundingInfo::Contribution {
