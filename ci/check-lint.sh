@@ -113,6 +113,6 @@ CLIPPY() {
 		-A clippy::manual-async-fn # Not really sure why this is even a warning when there's a Send bound
 }
 
-CLIPPY "$EXTRA_CLIPPY_ARGS"
+CLIPPY "" "$EXTRA_CLIPPY_ARGS"
 # We allow some additional warnings in tests which we should fix, but which aren't currently a priority
 CLIPPY --tests "$EXTRA_CLIPPY_ARGS -A clippy::bool_assert_comparison -A clippy::assertions_on_constants -A clippy::needless-late-init -A clippy::field_reassign_with_default -A clippy::unnecessary_literal_unwrap"
