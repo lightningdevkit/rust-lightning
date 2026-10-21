@@ -3087,6 +3087,8 @@ where
 	/// This can be used to rebroadcast the channel_announcement message later.
 	announcement_sigs: Option<(Signature, Signature)>,
 
+	broadcasted_signed_announcement: bool,
+
 	/// lnd has a long-standing bug where, upon reconnection, if the channel is not yet confirmed
 	/// they will not send a channel_reestablish until the channel locks in. Then, they will send a
 	/// channel_ready *before* sending the channel_reestablish (which is clearly a violation of
@@ -3716,6 +3718,7 @@ where
 			closing_signed_in_flight: false,
 
 			announcement_sigs: None,
+			broadcasted_signed_announcement: false,
 
 			workaround_lnd_bug_4006: None,
 			sent_message_awaiting_response: None,
@@ -3956,6 +3959,7 @@ where
 			closing_signed_in_flight: false,
 
 			announcement_sigs: None,
+			broadcasted_signed_announcement: false,
 
 			workaround_lnd_bug_4006: None,
 			sent_message_awaiting_response: None,
@@ -9266,6 +9270,7 @@ where
 		if self.context.announcement_sigs_state == AnnouncementSigsState::MessageSent || self.context.announcement_sigs_state == AnnouncementSigsState::Committed {
 			self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 		}
+		self.context.broadcasted_signed_announcement = false;
 
 		// Upon reconnect we have to start the closing_signed dance over, but shutdown messages
 		// will be retransmitted.
@@ -11240,6 +11245,7 @@ where
 		self.context.interactive_tx_signing_session = None;
 		self.pending_splice = None;
 		self.context.announcement_sigs = None;
+		self.context.broadcasted_signed_announcement = false;
 		self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 
 		let funding_txo = self
@@ -11755,6 +11761,12 @@ where
 		&mut self, node_signer: &NS, chain_hash: ChainHash, best_block_height: u32,
 		msg: &msgs::AnnouncementSignatures, user_config: &UserConfig
 	) -> Result<msgs::ChannelAnnouncement, ChannelError> where NS::Target: NodeSigner {
+		if self.context.broadcasted_signed_announcement {
+			return Err(ChannelError::Ignore(
+				"Ignoring duplicate announcement_signatures - we already generated a signed channel_announcement for this channel"
+					.to_owned()));
+		}
+
 		let announcement = self.get_channel_announcement(node_signer, chain_hash, user_config)?;
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
@@ -11776,7 +11788,9 @@ where
 				"Got announcement_signatures prior to the required six confirmations - we may not have received a block yet that our peer has".to_owned()));
 		}
 
-		self.sign_channel_announcement(node_signer, announcement)
+		let signed_announcement = self.sign_channel_announcement(node_signer, announcement)?;
+		self.context.broadcasted_signed_announcement = true;
+		Ok(signed_announcement)
 	}
 
 	/// Gets a signed channel_announcement for this channel, if we previously received an
@@ -15707,6 +15721,7 @@ where
 				closing_signed_in_flight: false,
 
 				announcement_sigs,
+				broadcasted_signed_announcement: false,
 
 				workaround_lnd_bug_4006: None,
 				sent_message_awaiting_response: None,
