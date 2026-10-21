@@ -186,6 +186,106 @@ fn test_funding_peer_disconnect() {
 }
 
 #[test]
+fn test_duplicate_announcement_signatures_ignored() {
+	// A counterparty with a confirmed public channel can replay the announcement_signatures it
+	// originally sent, which are indistinguishable from a legitimate retransmission. If we
+	// generated a fresh channel_announcement broadcast for each replay, the counterparty could
+	// flood our peers' gossip buffers, so only the first announcement_signatures we process may
+	// generate a broadcast. The signed channel_announcement we generate in response is not
+	// tracked across restarts, however, so one replayed announcement_signatures still generates
+	// a broadcast after a restart (in case we shut down after processing it but before the
+	// announcement reached our peers). Further replays must not.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes_0_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let ((as_channel_ready, as_announcement_sigs), chan_id, _) =
+		create_chan_between_nodes_with_value_a(&nodes[0], &nodes[1], 100000, 10001);
+
+	// Deliver nodes[0]'s channel_ready, prompting nodes[1] to send its announcement_signatures,
+	// then deliver announcement_signatures both ways, generating a channel_announcement broadcast
+	// on each side.
+	nodes[1].node.handle_channel_ready(node_a_id, &as_channel_ready);
+	let bs_announcement_sigs =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_a_id);
+	nodes[1].node.handle_announcement_signatures(node_a_id, &as_announcement_sigs);
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let chan_announcement = match events[0] {
+		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => msg.clone(),
+		_ => panic!("Unexpected event {:?}", events[0]),
+	};
+	expect_channel_ready_event(&nodes[1], &node_a_id);
+
+	nodes[0].node.handle_announcement_signatures(node_b_id, &bs_announcement_sigs);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => {
+			assert_eq!(*msg, chan_announcement);
+		},
+		_ => panic!("Unexpected event {:?}", events[0]),
+	}
+
+	// Replays on either side must not generate a fresh broadcast.
+	nodes[0].node.handle_announcement_signatures(node_b_id, &bs_announcement_sigs);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	nodes[1].node.handle_announcement_signatures(node_a_id, &as_announcement_sigs);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[1].node.peer_disconnected(node_a_id);
+
+	let chan_0_monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], &nodes[0].node.encode(), &[&chan_0_monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+
+	nodes[0].node.peer_connected(node_b_id, &msgs::Init {
+		features: nodes[1].node.init_features(), networks: None, remote_network_address: None
+	}, true).unwrap();
+	let as_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
+	nodes[1].node.peer_connected(node_a_id, &msgs::Init {
+		features: nodes[0].node.init_features(), networks: None, remote_network_address: None
+	}, false).unwrap();
+	let bs_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
+
+	nodes[0].node.handle_channel_reestablish(node_b_id, &bs_reestablish);
+	// Both sides are still on their initial commitment number, so the reloaded node retransmits
+	// its channel_ready, announcement_signatures, and channel_update, which we drop.
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 3);
+	assert!(matches!(&events[0], MessageSendEvent::SendChannelReady { .. }));
+	assert!(matches!(&events[1], MessageSendEvent::SendAnnouncementSignatures { .. }));
+	assert!(matches!(events[2], MessageSendEvent::SendChannelUpdate { .. }));
+
+	nodes[1].node.handle_channel_reestablish(node_a_id, &as_reestablish);
+	// nodes[1] retransmits its channel_ready, announcement_signatures, and channel_update, which
+	// we drop rather than deliver, replaying the original announcement_signatures below instead.
+	let events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 3);
+	assert!(matches!(&events[0], MessageSendEvent::SendChannelReady { .. }));
+	assert!(matches!(&events[1], MessageSendEvent::SendAnnouncementSignatures { .. }));
+	assert!(matches!(events[2], MessageSendEvent::SendChannelUpdate { .. }));
+
+	nodes[0].node.handle_announcement_signatures(node_b_id, &bs_announcement_sigs);
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		MessageSendEvent::BroadcastChannelAnnouncement { ref msg, .. } => {
+			assert_eq!(*msg, chan_announcement);
+		},
+		_ => panic!("Unexpected event {:?}", events[0]),
+	}
+	nodes[0].node.handle_announcement_signatures(node_b_id, &bs_announcement_sigs);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+}
+
+#[test]
 fn test_no_txn_manager_serialize_deserialize() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
