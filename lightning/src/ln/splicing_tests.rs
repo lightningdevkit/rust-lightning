@@ -1952,6 +1952,33 @@ fn test_splice_out() {
 }
 
 #[test]
+fn test_splice_out_after_initial_push() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 500_000, 50_000_000);
+
+	// Splice before any HTLC updates, withdrawing more than the channel value minus twice the
+	// initial push so that an underestimated initial counterparty balance would fall below reserve.
+	let output = TxOut {
+		value: Amount::from_sat(410_000),
+		script_pubkey: nodes[0].wallet_source.get_change_script().unwrap(),
+	};
+	let contribution =
+		initiate_splice_out(&nodes[0], &nodes[1], channel_id, vec![output.clone()]).unwrap();
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, contribution);
+	assert!(splice_tx.output.contains(&output));
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	lock_splice_after_blocks(&nodes[0], &nodes[1], ANTI_REORG_DELAY - 1);
+
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+	send_payment(&nodes[1], &[&nodes[0]], 1_000_000);
+}
+
+#[test]
 fn test_splice_in_and_out_funds_outputs_from_inputs() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);

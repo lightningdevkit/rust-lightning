@@ -98,7 +98,7 @@ fn commit_plus_htlc_tx_fees_msat(
 	(total_fees_msat, extra_accepted_htlc_total_fees_msat)
 }
 
-fn total_anchors_sat(channel_type: &ChannelTypeFeatures) -> u64 {
+pub(crate) fn total_anchors_sat(channel_type: &ChannelTypeFeatures) -> u64 {
 	if channel_type.supports_anchors_zero_fee_htlc_tx() {
 		ANCHOR_OUTPUT_VALUE_SATOSHI * 2
 	} else {
