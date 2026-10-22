@@ -140,8 +140,13 @@ impl Writeable for BlindedPath {
 		}
 
 		self.blinding_point.write(w)?;
-		(self.blinded_hops.len() as u8).write(w)?;
-		for hop in &self.blinded_hops {
+		debug_assert!(
+			self.blinded_hops.len() <= u8::MAX as usize,
+			"Blinded paths may not have more than 255 hops",
+		);
+		let num_hops = self.blinded_hops.len().min(u8::MAX as usize);
+		(num_hops as u8).write(w)?;
+		for hop in &self.blinded_hops[..num_hops] {
 			hop.write(w)?;
 		}
 		Ok(())
