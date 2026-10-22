@@ -1830,6 +1830,13 @@ impl OutboundPayments {
 			let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 			match outbounds.entry(payment_id) {
 				hash_map::Entry::Occupied(mut payment) => {
+					// The payment ID may have been reused for a different payment while
+					// we were finding a route. If so, reading the new payment's secrets
+					// here would disclose them along the old payment's route, so bail.
+					if payment.get().payment_hash() != Some(payment_hash) {
+						log_trace!(logger, "Payment with ID {} changed while finding a route", &payment_id);
+						return
+					}
 					match payment.get() {
 						PendingOutboundPayment::Retryable {
 							total_msat, keysend_preimage, payment_secret, payment_metadata,
