@@ -407,6 +407,26 @@ impl<'a, L: chain::Listen + ?Sized> ChainNotifier<'a, L> {
 			BlockSourceError::persistent("could not resolve any block from BlockLocator")
 		})?;
 
+		// The block source may be behind the listener's saved tip, e.g., because it is still syncing
+		// or was restored from a backup. If the first locator entry the source resolves is its own
+		// tip, that tip is an ancestor of the saved tip, so connecting the listener to it would
+		// disconnect blocks the listener has already observed. A resolved header with more chainwork
+		// than the advertised best block likewise means the advertised tip is stale. Failing here
+		// avoids rolling the listener back to a lower tip; the error is transient so initialization
+		// can be retried once the source catches up.
+		if current_header.block_hash == found_header.block_hash
+			&& current_header.block_hash != prev_best_block.block_hash
+		{
+			return Err(BlockSourceError::transient(
+				"block source's tip is an ancestor of the previous tip",
+			));
+		}
+		if current_header.chainwork < found_header.chainwork {
+			return Err(BlockSourceError::transient(
+				"best block has less chainwork than previous tip",
+			));
+		}
+
 		self.find_difference_from_header(current_header, &found_header, chain_poller).await
 	}
 
