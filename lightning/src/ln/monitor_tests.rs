@@ -262,14 +262,22 @@ fn archive_fully_resolved_monitors() {
 	nodes[0].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 1);
 
-	// ...however, nodes[1]'s `ChannelMonitor` is ready to be archived, and will be in exactly
-	// `ARCHIVAL_DELAY_BLOCKS` blocks.
+	// nodes[1]'s `ChannelMonitor`, however, has a matured `SpendableOutputs` event for its
+	// claimed HTLC output which the application has yet to handle. Unlike nodes[0]'s unacked
+	// `MonitorEvent`, such an event would be dropped entirely if the monitor were archived.
+	// Thus, the monitor is not archived even once `ARCHIVAL_DELAY_BLOCKS` blocks have passed.
 	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
-	connect_blocks(&nodes[1], ARCHIVAL_DELAY_BLOCKS - 1);
+	connect_blocks(&nodes[1], ARCHIVAL_DELAY_BLOCKS);
 	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 1);
-	connect_blocks(&nodes[1], 1);
+	let claim_outputs = nodes[1].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(claim_outputs.len(), 2);
+	for event in claim_outputs {
+		if let Event::SpendableOutputs { .. } = event {} else { panic!(); }
+	}
+
+	// Once the `SpendableOutputs` event has been handled, the monitor can be archived.
 	nodes[1].chain_monitor.chain_monitor.archive_fully_resolved_channel_monitors();
 	assert_eq!(nodes[1].chain_monitor.chain_monitor.list_monitors().len(), 0);
 
