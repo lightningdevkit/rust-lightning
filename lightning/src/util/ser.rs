@@ -643,6 +643,28 @@ impl Readable for bool {
 }
 
 macro_rules! impl_array {
+	($size:expr, u8) => {
+		impl Writeable for [u8; $size] {
+			#[inline]
+			fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
+				w.write_all(self)
+			}
+
+			#[inline]
+			fn serialized_length(&self) -> usize {
+				$size
+			}
+		}
+
+		impl Readable for [u8; $size] {
+			#[inline]
+			fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
+				let mut buf = [0u8; $size];
+				r.read_exact(&mut buf)?;
+				Ok(buf)
+			}
+		}
+	};
 	($size:expr, $ty: ty) => {
 		impl Writeable for [$ty; $size] {
 			#[inline]
