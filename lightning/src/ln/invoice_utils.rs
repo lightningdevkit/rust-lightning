@@ -259,6 +259,9 @@ pub(super) fn sign_invoice<NS: NodeSigner>(
 		Bolt11SemanticError::InvalidSignature => {
 			SignOrCreationError::CreationError(CreationError::InvalidSignature)
 		},
+		Bolt11SemanticError::InvoiceTooLong => {
+			SignOrCreationError::CreationError(CreationError::InvoiceTooLong)
+		},
 		Bolt11SemanticError::NoPaymentHash
 		| Bolt11SemanticError::MultiplePaymentHashes
 		| Bolt11SemanticError::NoDescription

@@ -2,3 +2,6 @@
  * `InvoiceBuilder::build_signed` and `try_build_signed` now verify the signature produced by the
    signing function, failing with the new `CreationError::InvalidSignature` if it isn't valid
    (#5306).
+ * `InvoiceBuilder::build_raw` and `Bolt11Invoice::from_signed` now reject invoices which would be
+   longer than `MAX_LENGTH` once encoded, failing with the new `CreationError::InvoiceTooLong` and
+   `Bolt11SemanticError::InvoiceTooLong`, respectively (#5306).

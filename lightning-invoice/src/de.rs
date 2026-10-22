@@ -1314,8 +1314,8 @@ mod test {
 	fn test_serde_long_invoice() {
 		use crate::TaggedField::*;
 		use crate::{
-			Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency,
-			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField,
+			Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Bolt11SemanticError,
+			Currency, PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField,
 			SignedRawBolt11Invoice,
 		};
 		use bitcoin::hex::FromHex;
@@ -1433,6 +1433,23 @@ mod test {
 				crate::MAX_LENGTH,
 				"RawBolt11Invoice"
 			))
+		);
+
+		// Ensure that a signed invoice exceeding `MAX_LENGTH` by a single character is rejected.
+		// The original hash is kept so that the signature remains valid.
+		let mut too_long_raw_invoice = raw_invoice.clone();
+		too_long_raw_invoice
+			.data
+			.tagged_fields
+			.push(RawTaggedField::UnknownSemantics(vec![Fe32::Q]));
+		let too_long_signed_invoice = SignedRawBolt11Invoice {
+			raw_invoice: too_long_raw_invoice,
+			hash,
+			signature: invoice.signed_invoice.signature().clone(),
+		};
+		assert_eq!(
+			Bolt11Invoice::from_signed(too_long_signed_invoice),
+			Err(Bolt11SemanticError::InvoiceTooLong)
 		);
 	}
 

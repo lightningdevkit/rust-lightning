@@ -162,6 +162,14 @@ pub const MAX_LENGTH: usize = 7089;
 /// The number of 5-bit values used to encode an invoice's 65-byte recoverable signature.
 const SIGNATURE_LEN_5: usize = 104;
 
+/// Returns the length of a signed invoice's string encoding, given the lengths of its HRP and of
+/// its data part excluding the signature.
+fn signed_invoice_encoded_len(hrp_len: usize, data_len: usize) -> usize {
+	// The encoded invoice consists of the HRP, the separator, the data, the signature and the
+	// checksum.
+	hrp_len + 1 + data_len + SIGNATURE_LEN_5 + Bolt11Bech32::CHECKSUM_LENGTH
+}
+
 /// The maximum length of a tagged field in a BOLT11 invoice. This is 1023 * 5 bits (i.e., 639
 /// bytes).
 pub const MAX_TAGGED_FIELD_DATA_BYTES: usize = 639;
@@ -731,7 +739,7 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 	InvoiceBuilder<D, H, tb::True, C, S, M>
 {
 	/// Builds a [`RawBolt11Invoice`] if no [`CreationError`] occurred while construction any of the
-	/// fields.
+	/// fields and the invoice will not exceed [`MAX_LENGTH`] once signed and encoded.
 	pub fn build_raw(self) -> Result<RawBolt11Invoice, CreationError> {
 		// If an error occurred at any time before, return it now
 		if let Some(e) = self.error {
@@ -751,7 +759,12 @@ impl<D: tb::Bool, H: tb::Bool, C: tb::Bool, S: tb::Bool, M: tb::Bool>
 
 		let data = RawDataPart { timestamp, tagged_fields };
 
-		Ok(RawBolt11Invoice { hrp, data })
+		let invoice = RawBolt11Invoice { hrp, data };
+		if invoice.signed_encoded_len() > MAX_LENGTH {
+			return Err(CreationError::InvoiceTooLong);
+		}
+
+		Ok(invoice)
 	}
 }
 
@@ -1130,6 +1143,11 @@ impl RawBolt11Invoice {
 		hash
 	}
 
+	/// Returns the length of the string encoding of this invoice once signed.
+	fn signed_encoded_len(&self) -> usize {
+		signed_invoice_encoded_len(self.hrp.to_string().len(), self.data.fe_iter().count())
+	}
+
 	/// Calculate the hash of the encoded `RawBolt11Invoice` which should be signed.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		Self::hash_from_parts(self.hrp.to_string().as_bytes(), self.data.fe_iter())
@@ -1242,10 +1260,7 @@ impl RawBolt11Invoice {
 	/// Convert from HRP prefix and Fe32 encoded data part.
 	/// Can be used to receive unsigned invoices for remote signing.
 	pub fn from_raw(hrp: &str, data: &[Fe32]) -> Result<Self, Bolt11ParseError> {
-		// The encoded invoice consists of the HRP, the separator, the data, the signature and
-		// the checksum.
-		let encoded_len =
-			hrp.len() + 1 + data.len() + SIGNATURE_LEN_5 + Bolt11Bech32::CHECKSUM_LENGTH;
+		let encoded_len = signed_invoice_encoded_len(hrp.len(), data.len());
 		if encoded_len > MAX_LENGTH {
 			return Err(Bolt11ParseError::InvalidSliceLength(
 				encoded_len,
@@ -1401,6 +1416,14 @@ impl Bolt11Invoice {
 		Ok(())
 	}
 
+	/// Check that the invoice does not exceed [`MAX_LENGTH`] once encoded
+	fn check_length(&self) -> Result<(), Bolt11SemanticError> {
+		if self.signed_invoice.raw_invoice().signed_encoded_len() > MAX_LENGTH {
+			return Err(Bolt11SemanticError::InvoiceTooLong);
+		}
+		Ok(())
+	}
+
 	/// Check that feature bits are set as required
 	fn check_feature_bits(&self) -> Result<(), Bolt11SemanticError> {
 		self.check_payment_secret()?;
@@ -1464,6 +1487,7 @@ impl Bolt11Invoice {
 		invoice.check_feature_bits()?;
 		invoice.check_signature()?;
 		invoice.check_amount()?;
+		invoice.check_length()?;
 
 		Ok(invoice)
 	}
@@ -1860,6 +1884,9 @@ pub enum CreationError {
 
 	/// The signature produced by the signing function was not valid for the invoice.
 	InvalidSignature,
+
+	/// The invoice would be longer than [`MAX_LENGTH`] once signed and encoded.
+	InvoiceTooLong,
 }
 
 impl Display for CreationError {
@@ -1874,6 +1901,7 @@ impl Display for CreationError {
 			CreationError::MinFinalCltvExpiryDeltaTooShort => f.write_str(
 				"The supplied final CLTV expiry delta was less than LDK's `MIN_FINAL_CLTV_EXPIRY_DELTA`"),
 			CreationError::InvalidSignature => f.write_str("The signature produced by the signing function was not valid for the invoice"),
+			CreationError::InvoiceTooLong => f.write_str("The invoice would be longer than 7089 bytes once signed and encoded"),
 		}
 	}
 }
@@ -1912,6 +1940,9 @@ pub enum Bolt11SemanticError {
 
 	/// The invoice's amount was not a whole number of millisatoshis
 	ImpreciseAmount,
+
+	/// The invoice is longer than [`MAX_LENGTH`] once encoded
+	InvoiceTooLong,
 }
 
 impl Display for Bolt11SemanticError {
@@ -1926,6 +1957,7 @@ impl Display for Bolt11SemanticError {
 			Bolt11SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
 			Bolt11SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
 			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
+			Bolt11SemanticError::InvoiceTooLong => f.write_str("The invoice is longer than 7089 bytes once encoded"),
 		}
 	}
 }
@@ -2343,7 +2375,7 @@ mod test {
 			htlc_minimum_msat: None,
 			htlc_maximum_msat: None,
 		};
-		let too_long_route = RouteHint(vec![route_hop; 13]);
+		let too_long_route = RouteHint(vec![route_hop.clone(); 13]);
 		let long_route_res =
 			builder.clone().description("Test".into()).private_route(too_long_route).build_raw();
 		assert_eq!(long_route_res, Err(CreationError::RouteTooLong));
@@ -2359,11 +2391,32 @@ mod test {
 		let payee_key = SecretKey::from_slice(&[41; 32]).unwrap();
 		let other_key = SecretKey::from_slice(&[42; 32]).unwrap();
 		let wrong_key_res = builder
+			.clone()
 			.description("Test".into())
 			.payment_secret(PaymentSecret([0; 32]))
 			.payee_pub_key(PublicKey::from_secret_key(&secp_ctx, &payee_key))
 			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &other_key));
 		assert_eq!(wrong_key_res, Err(CreationError::InvalidSignature));
+
+		// An invoice with a 1 second expiry time and a 588 byte description encodes to exactly
+		// `MAX_LENGTH`, while a 32 second expiry time takes one more character to encode.
+		let max_length_route = RouteHint(vec![route_hop; 12]);
+		let max_length_builder = |expiry_secs| {
+			let mut builder = builder
+				.clone()
+				.description("a".repeat(588))
+				.payment_secret(PaymentSecret([0; 32]))
+				.expiry_time(Duration::from_secs(expiry_secs));
+			for _ in 0..6 {
+				builder = builder.private_route(max_length_route.clone());
+			}
+			builder
+		};
+		let max_length_invoice = max_length_builder(1)
+			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &payee_key))
+			.unwrap();
+		assert_eq!(max_length_invoice.to_string().len(), MAX_LENGTH);
+		assert_eq!(max_length_builder(32).build_raw(), Err(CreationError::InvoiceTooLong));
 	}
 
 	#[test]
