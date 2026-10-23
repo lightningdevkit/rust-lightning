@@ -1152,17 +1152,14 @@ impl Readable for Vec<Witness> {
 
 impl Writeable for ScriptBuf {
 	fn write<W: Writer>(&self, w: &mut W) -> Result<(), io::Error> {
-		(self.len() as u16).write(w)?;
+		CollectionLength(self.len() as u64).write(w)?;
 		w.write_all(self.as_bytes())
 	}
 }
 
 impl Readable for ScriptBuf {
 	fn read<R: Read>(r: &mut R) -> Result<Self, DecodeError> {
-		let len = <u16 as Readable>::read(r)? as usize;
-		let mut buf = vec![0; len];
-		r.read_exact(&mut buf)?;
-		Ok(ScriptBuf::from(buf))
+		Ok(ScriptBuf::from(<Vec<u8> as Readable>::read(r)?))
 	}
 }
 
@@ -1841,6 +1838,25 @@ mod tests {
 	fn str_serialization_matches_string() {
 		let s = "test";
 		assert_eq!(s.encode(), s.to_string().encode());
+	}
+
+	#[test]
+	fn scriptbuf_length_encodes_like_collection_length() {
+		// For lengths below 0xffff the length prefix is a plain u16, matching what the BOLT
+		// wire format uses for scripts. Above that, `CollectionLength` still round-trips
+		// rather than wrapping like a bare `u16` cast would.
+		for len in [0usize, 1, 0xfffe, 0xffff, 0x1_0000, 0x1_0001] {
+			let script = bitcoin::script::Builder::from(vec![0x51u8; len]).into_script();
+			let mut buf = Vec::new();
+			script.write(&mut buf).unwrap();
+			if len < 0xffff {
+				assert_eq!(&buf[..2], &(len as u16).to_be_bytes());
+			}
+			let mut reader = &buf[..];
+			let decoded = bitcoin::script::ScriptBuf::read(&mut reader).unwrap();
+			assert_eq!(decoded, script);
+			assert!(reader.is_empty());
+		}
 	}
 
 	#[test]
