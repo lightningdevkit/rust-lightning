@@ -12,7 +12,7 @@ use bech32::primitives::decode::{CheckedHrpstring, CheckedHrpstringError};
 use bech32::{Fe32, Fe32IterExt};
 
 use crate::prelude::*;
-use crate::Bolt11Bech32;
+use crate::{Bolt11Bech32, SIGNATURE_LEN_5};
 use bitcoin::hashes::sha256;
 use bitcoin::hashes::Hash;
 use bitcoin::{PubkeyHash, ScriptHash, WitnessVersion};
@@ -396,7 +396,6 @@ impl FromStr for SignedRawBolt11Invoice {
 		// Note: the type argument is needed due to the API peculiarities, but it's not used
 		let data: Vec<_> = parsed.fe32_iter::<&mut dyn Iterator<Item = u8>>().collect();
 
-		const SIGNATURE_LEN_5: usize = 104; // number of the 5-bit values (equals to 65 bytes)
 		if data.len() < SIGNATURE_LEN_5 {
 			return Err(Bolt11ParseError::TooShortDataPart);
 		}
@@ -474,10 +473,10 @@ impl FromBase32 for PositiveTimestamp {
 impl FromBase32 for Bolt11InvoiceSignature {
 	type Err = Bolt11ParseError;
 	fn from_base32(signature: &[Fe32]) -> Result<Self, Self::Err> {
-		if signature.len() != 104 {
+		if signature.len() != SIGNATURE_LEN_5 {
 			return Err(Bolt11ParseError::InvalidSliceLength(
 				signature.len(),
-				104,
+				SIGNATURE_LEN_5,
 				"Bolt11InvoiceSignature",
 			));
 		}
@@ -1315,8 +1314,8 @@ mod test {
 	fn test_serde_long_invoice() {
 		use crate::TaggedField::*;
 		use crate::{
-			Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Currency,
-			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField,
+			Bolt11Invoice, Bolt11InvoiceFeatures, Bolt11InvoiceSignature, Bolt11SemanticError,
+			Currency, PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, RawTaggedField,
 			SignedRawBolt11Invoice,
 		};
 		use bitcoin::hex::FromHex;
@@ -1420,6 +1419,38 @@ mod test {
 		let invoice_str = invoice.to_string();
 		assert_eq!(invoice_str.len(), crate::MAX_LENGTH);
 		assert_eq!(invoice, Bolt11Invoice::from_str(&invoice_str).unwrap());
+
+		// Ensure the unsigned invoice roundtrips through the remote signing format, but that
+		// adding a single character to it exceeds `MAX_LENGTH`.
+		let raw_invoice = invoice.signed_invoice.raw_invoice();
+		let (hrp, mut data) = raw_invoice.to_raw();
+		assert_eq!(RawBolt11Invoice::from_raw(&hrp, &data).as_ref(), Ok(raw_invoice));
+		data.push(Fe32::Q);
+		assert_eq!(
+			RawBolt11Invoice::from_raw(&hrp, &data),
+			Err(Bolt11ParseError::InvalidSliceLength(
+				crate::MAX_LENGTH + 1,
+				crate::MAX_LENGTH,
+				"RawBolt11Invoice"
+			))
+		);
+
+		// Ensure that a signed invoice exceeding `MAX_LENGTH` by a single character is rejected.
+		// The original hash is kept so that the signature remains valid.
+		let mut too_long_raw_invoice = raw_invoice.clone();
+		too_long_raw_invoice
+			.data
+			.tagged_fields
+			.push(RawTaggedField::UnknownSemantics(vec![Fe32::Q]));
+		let too_long_signed_invoice = SignedRawBolt11Invoice {
+			raw_invoice: too_long_raw_invoice,
+			hash,
+			signature: invoice.signed_invoice.signature().clone(),
+		};
+		assert_eq!(
+			Bolt11Invoice::from_signed(too_long_signed_invoice),
+			Err(Bolt11SemanticError::InvoiceTooLong)
+		);
 	}
 
 	// Test that invoices above the maximum length fail to parse with the expected error.

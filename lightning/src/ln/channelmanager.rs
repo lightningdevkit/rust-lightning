@@ -15289,12 +15289,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		} else {
 			invoice.build_raw()
 		}.map_err(|e| SignOrCreationError::CreationError(e))?;
-		let signature = self.node_signer.sign_invoice(&raw_invoice, Recipient::Node);
-
-		raw_invoice
-			.sign(|_| signature)
-			.map(|invoice| Bolt11Invoice::from_signed(invoice).unwrap())
-			.map_err(|e| SignOrCreationError::SignError(e))
+		super::invoice_utils::sign_invoice(raw_invoice, &self.node_signer, Recipient::Node)
 	}
 }
 
