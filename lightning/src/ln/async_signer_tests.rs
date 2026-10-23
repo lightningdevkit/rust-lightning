@@ -1379,6 +1379,72 @@ fn test_closing_signed() {
 	do_test_closing_signed(true, true);
 }
 
+#[test]
+fn test_closing_signed_reconnect_while_signer_blocked() {
+	// If the counterparty disconnects while our signer is still unavailable, we drop the
+	// `closing_signed` state on reconnect rather than pairing a signature over the previously
+	// accepted fee with a fresh local signature over the re-proposed fee.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let (_, _, chan_id, funding_tx) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+	nodes[0].node.close_channel(&chan_id, &node_b_id).unwrap();
+	let node_a_shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, node_b_id);
+	nodes[1].node.handle_shutdown(node_a_id, &node_a_shutdown);
+	let node_b_shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, node_a_id);
+	nodes[0].node.handle_shutdown(node_b_id, &node_b_shutdown);
+	let node_a_proposal = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_a_proposal);
+	let node_b_response = get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	assert_ne!(node_a_proposal.fee_satoshis, node_b_response.fee_satoshis);
+
+	// Accept the counterparty's fee while our signature over it is unavailable.
+	nodes[0].disable_channel_signer_op(&node_b_id, &chan_id, SignerOp::SignClosingTransaction);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_b_response);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+
+	// The counterparty disconnects before the signer returns. Keep the signer blocked through
+	// reestablishment and the polling of a fresh closing proposal.
+	nodes[0].node.peer_disconnected(node_b_id);
+	nodes[1].node.peer_disconnected(node_a_id);
+	connect_nodes(&nodes[0], &nodes[1]);
+	let node_a_reestablish = get_chan_reestablish_msgs!(nodes[0], nodes[1]).pop().unwrap();
+	let node_b_reestablish = get_chan_reestablish_msgs!(nodes[1], nodes[0]).pop().unwrap();
+	nodes[1].node.handle_channel_reestablish(node_a_id, &node_a_reestablish);
+	nodes[0].node.handle_channel_reestablish(node_b_id, &node_b_reestablish);
+	nodes[0].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_msg_events();
+
+	nodes[0].enable_channel_signer_op(&node_b_id, &chan_id, SignerOp::SignClosingTransaction);
+	nodes[0].node.signer_unblocked(None);
+
+	// The signer unblocks before any counterparty signature is available, so we re-propose the
+	// initial minimum fee rather than broadcasting anything.
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+	let node_a_reproposal =
+		get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, node_b_id);
+	nodes[1].node.handle_closing_signed(node_a_id, &node_a_reproposal);
+	let node_b_re_response =
+		get_event_msg!(nodes[1], MessageSendEvent::SendClosingSigned, node_a_id);
+	assert_ne!(node_a_reproposal.fee_satoshis, node_b_re_response.fee_satoshis);
+	nodes[0].node.handle_closing_signed(node_b_id, &node_b_re_response);
+	let broadcasts = nodes[0].tx_broadcaster.txn_broadcast();
+	assert_eq!(broadcasts.len(), 1);
+	check_spends!(broadcasts[0], funding_tx);
+	assert!(nodes[0].node.list_channels().is_empty());
+	for node in &nodes {
+		node.node.get_and_clear_pending_msg_events();
+		node.node.get_and_clear_pending_events();
+		node.chain_monitor.added_monitors.lock().unwrap().clear();
+	}
+}
+
 fn do_test_closing_signed(extra_closing_signed: bool, reconnect: bool) {
 	// Based off of `expect_channel_shutdown_state`.
 	// Test that we can asynchronously sign closing transactions.
