@@ -9275,6 +9275,8 @@ where
 		// Upon reconnect we have to start the closing_signed dance over, but shutdown messages
 		// will be retransmitted.
 		self.context.last_sent_closing_fee = None;
+		self.context.last_received_closing_sig = None;
+		self.context.signer_pending_closing = false;
 		self.context.pending_counterparty_closing_signed = None;
 		self.context.closing_fee_limits = None;
 
