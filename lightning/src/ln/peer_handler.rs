@@ -1244,7 +1244,12 @@ impl<Descriptor: SocketDescriptor, CM: Deref, RM: Deref, OM: Deref, L: Deref, CM
 							if let Some(update_b) = update_b_option {
 								let _ = self.enqueue_message(peer, &update_b);
 							}
-							peer.sync_status = InitSyncTracker::ChannelsSyncing(announce.contents.short_channel_id + 1);
+							// The `short_channel_id` is peer-supplied gossip data and may be
+							// `u64::MAX`, so saturate rather than wrapping the cursor back
+							// to zero.
+							peer.sync_status = InitSyncTracker::ChannelsSyncing(
+								announce.contents.short_channel_id.saturating_add(1),
+							);
 						} else {
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(0xffff_ffff_ffff_ffff);
 						}
