@@ -1597,8 +1597,11 @@ impl<
 						if let Some((announce, update_a_option, update_b_option)) =
 							self.message_handler.route_handler.get_next_channel_announcement(c)
 						{
+							// The `short_channel_id` is peer-supplied gossip data and may be
+							// `u64::MAX`, so saturate rather than wrapping the cursor back
+							// to zero.
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(
-								announce.contents.short_channel_id + 1,
+								announce.contents.short_channel_id.saturating_add(1),
 							);
 							let msg = Message::ChannelAnnouncement(announce);
 							let _ = self.enqueue_message(peer, msg);
