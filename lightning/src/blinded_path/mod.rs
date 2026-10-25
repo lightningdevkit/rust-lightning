@@ -75,6 +75,10 @@ pub trait NodeIdLookUp {
 	/// Here, the forwarding node is referring to the node of the [`OnionMessenger`] parameterized
 	/// by the [`NodeIdLookUp`] and the counterparty to one of that node's peers.
 	///
+	/// Per BOLT 4, `short_channel_id` must correspond to an announced channel or a local alias.
+	/// Implementors should return `None` for the real `short_channel_id` of an unannounced channel,
+	/// as resolving it would allow a peer to confirm the channel's funding location.
+	///
 	/// [`OnionMessenger`]: crate::onion_message::messenger::OnionMessenger
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey>;
 }

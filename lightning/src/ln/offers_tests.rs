@@ -3265,3 +3265,73 @@ fn pay_for_bolt12_invoice_partial_amount_multi_payer() {
 		}
 	}
 }
+
+#[test]
+fn onion_messages_do_not_probe_private_real_scids() {
+	use crate::blinded_path::message::MessageForwardNode;
+	use crate::types::payment::PaymentHash;
+
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	let (victim, other_endpoint, attacker) = (&nodes[0], &nodes[1], &nodes[2]);
+	let victim_id = victim.node.get_our_node_id();
+	let other_id = other_endpoint.node.get_our_node_id();
+	let attacker_id = attacker.node.get_our_node_id();
+	assert!(attacker.node.list_channels().is_empty());
+	let channel = victim.node.list_usable_channels().remove(0);
+	assert!(!channel.is_announced);
+	assert!(channel.channel_type.as_ref().unwrap().supports_scid_privacy());
+	let private_scid = channel.short_channel_id.unwrap();
+	let alias = channel.outbound_scid_alias.unwrap();
+	assert_ne!(private_scid, alias);
+
+	// The probe is built only with candidate public node ids and the attacker's own receive key.
+	// Both private-channel endpoints are forwarding hops, so a returned onion is an observable
+	// confirmation of the guessed on-chain SCID, without either endpoint's secret or a channel to
+	// the attacker.
+	let probe = |candidate_scid| -> Option<OnionMessage> {
+		let path = BlindedMessagePath::new(
+			&[
+				MessageForwardNode { node_id: victim_id, short_channel_id: Some(candidate_scid) },
+				MessageForwardNode { node_id: other_id, short_channel_id: None },
+			],
+			attacker_id,
+			attacker.keys_manager.get_receive_auth_key(),
+			MessageContext::Offers(OffersContext::InboundPayment {
+				payment_hash: PaymentHash([42; 32]),
+			}),
+			false,
+			attacker.keys_manager,
+			&Secp256k1::new(),
+		);
+		attacker.onion_messenger.send_onion_message(
+			OffersMessage::InvoiceError(InvoiceError::from_string("scid probe".into())),
+			MessageSendInstructions::WithoutReplyPath {
+				destination: Destination::BlindedPath(path),
+			},
+		).unwrap();
+		let incoming = attacker.onion_messenger.next_onion_message_for_peer(victim_id).unwrap();
+		victim.onion_messenger.handle_onion_message(attacker_id, &incoming);
+		let forwarded = victim.onion_messenger.next_onion_message_for_peer(other_id)?;
+		other_endpoint.onion_messenger.handle_onion_message(victim_id, &forwarded);
+		other_endpoint.onion_messenger.next_onion_message_for_peer(attacker_id)
+	};
+
+	// A local alias is valid, while an unrelated SCID has no observable reply.
+	let alias_response = probe(alias).unwrap();
+	assert!(matches!(
+		attacker.onion_messenger.peel_onion_message(&alias_response),
+		Ok(PeeledOnion::Offers(OffersMessage::InvoiceError(_), _, _)),
+	));
+	assert!(probe(private_scid ^ (1u64 << 63)).is_none());
+
+	// The real SCID of the private channel must not be resolvable either.
+	assert!(
+		probe(private_scid).is_none(),
+		"an unrelated peer linked a private funding location to its endpoints",
+	);
+}

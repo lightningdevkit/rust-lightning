@@ -16068,6 +16068,10 @@ impl<
 					short_channel_id: peer_chans
 						.iter()
 						.filter(|chan| chan.is_usable)
+						// Per BOLT 4, peers refuse to forward onion messages by the real SCID of
+						// an unannounced channel, so only select channels which are announced or
+						// have an inbound SCID alias.
+						.filter(|chan| chan.is_announced || chan.inbound_scid_alias.is_some())
 						// Select the channel which has the highest local balance. We assume this
 						// channel is the most likely to stick around.
 						.max_by_key(|chan| chan.inbound_capacity_msat)
@@ -16093,6 +16097,13 @@ impl<
 					.iter()
 					.filter(|(_, channel)| channel.context().is_usable())
 					.filter_map(|(_, channel)| channel.as_funded())
+					// Per BOLT 4, peers refuse to forward onion messages by the real SCID of an
+					// unannounced channel, so only select channels which are announced or have
+					// an inbound SCID alias.
+					.filter(|funded_channel| {
+						funded_channel.context.should_announce()
+							|| funded_channel.context.latest_inbound_scid_alias().is_some()
+					})
 					// Select the channel which has the highest local balance. We assume this
 					// channel is the most likely to stick around.
 					.max_by_key(|funded_channel| funded_channel.funding.get_value_to_self_msat())
@@ -18564,7 +18575,24 @@ impl<
 	> NodeIdLookUp for ChannelManager<M, T, ES, NS, SP, F, R, MR, L>
 {
 	fn next_node_id(&self, short_channel_id: u64) -> Option<PublicKey> {
-		self.short_to_chan_info.read().unwrap().get(&short_channel_id).map(|(pubkey, _)| *pubkey)
+		let (counterparty_node_id, channel_id) =
+			match self.short_to_chan_info.read().unwrap().get(&short_channel_id) {
+				None => return None,
+				Some(&(counterparty_node_id, channel_id)) => (counterparty_node_id, channel_id),
+			};
+		// Per BOLT 4, an onion message may only be forwarded over a channel identified by an
+		// announced short_channel_id or a local alias. Resolving the real SCID of an unannounced
+		// channel would allow a peer to confirm the channel's funding location, so we pretend not
+		// to know it.
+		let per_peer_state = self.per_peer_state.read().unwrap();
+		let peer_state_mutex = per_peer_state.get(&counterparty_node_id)?;
+		let peer_state = peer_state_mutex.lock().unwrap();
+		let chan = peer_state.channel_by_id.get(&channel_id)?.as_funded()?;
+		if !chan.context.should_announce() && short_channel_id != chan.context.outbound_scid_alias()
+		{
+			return None;
+		}
+		Some(counterparty_node_id)
 	}
 }
 
