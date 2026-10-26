@@ -269,7 +269,8 @@ pub(super) fn sign_invoice<NS: NodeSigner>(
 		| Bolt11SemanticError::NoPaymentSecret
 		| Bolt11SemanticError::MultiplePaymentSecrets
 		| Bolt11SemanticError::InvalidFeatures
-		| Bolt11SemanticError::ImpreciseAmount => {
+		| Bolt11SemanticError::ImpreciseAmount
+		| Bolt11SemanticError::AmountOverflow => {
 			unreachable!("Ensured by the type signature of the invoice builder")
 		},
 	})
