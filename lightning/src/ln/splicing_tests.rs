@@ -2906,6 +2906,8 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 		nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
 
 	// Both nodes should have their `tx_signatures` ready after completing the monitor update, but
@@ -3017,6 +3019,8 @@ fn do_test_splice_reestablish(reload: bool, async_monitor_update: bool) {
 		nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 		chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+		assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
 
 	// We shouldn't have any further events or messages to process.
@@ -3748,6 +3752,7 @@ fn test_holding_cell_claim_freed_after_inferred_splice_locked() {
 
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 	let mut commitment_update = get_htlc_update_msgs(&nodes[1], &node_id_0);
 	check_added_monitors(&nodes[1], 1);
@@ -3836,6 +3841,7 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 	// Let node 1 release its RAA+CS to node 0 and process them.
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	let (raa, commitment_signed) = get_revoke_commit_msgs(&nodes[1], &node_id_0);
 	nodes[0].node.handle_revoke_and_ack(node_id_1, &raa);
 	check_added_monitors(&nodes[0], 1);
@@ -3880,6 +3886,7 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 
 	nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	expect_channel_ready_event(&nodes[1], &node_id_0);
 
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 	assert!(
@@ -3889,7 +3896,6 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 		)),
 		"stale monitor-pending resend leaked after reestablish: {msg_events:?}"
 	);
-	expect_channel_ready_event(&nodes[1], &node_id_0);
 
 	nodes[0].node.handle_channel_reestablish(node_id_1, reestablish_1.first().unwrap());
 	check_added_monitors(&nodes[0], 1);
@@ -3903,6 +3909,7 @@ fn test_stale_monitor_pending_resends_cleared_by_reestablish() {
 		check_added_monitors(&nodes[1], 1);
 		nodes[1].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 		persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		nodes[1].node.process_pending_htlc_forwards();
@@ -6467,6 +6474,7 @@ fn do_splice_waits_for_initial_commitment_monitor_update_before_releasing_tx_sig
 
 	nodes[0].chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	expect_splice_pending_event(&nodes[0], &node_id_1);
 
 	if !complete_update_while_disconnected {
 		let initiator_tx_signatures =
@@ -6474,7 +6482,6 @@ fn do_splice_waits_for_initial_commitment_monitor_update_before_releasing_tx_sig
 		nodes[1].node.handle_tx_signatures(node_id_0, &initiator_tx_signatures);
 	}
 
-	expect_splice_pending_event(&nodes[0], &node_id_1);
 	if !complete_update_while_disconnected {
 		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	}
@@ -6731,6 +6738,7 @@ fn retransmit_completed_tx_signatures_during_monitor_update_after_reestablish() 
 	// Once the monitor update completes, only the freed holding cell update remains to be sent.
 	initiator.chain_monitor.complete_sole_pending_chan_update(&channel_id);
 	chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::Completed);
+	assert!(initiator.node.get_and_clear_pending_events().is_empty());
 
 	let msg_events = initiator.node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
@@ -11555,13 +11563,12 @@ fn do_test_splice_locked_deferred_during_rbf_signing(
 		nodes[0].enable_channel_signer_op(&node_id_1, &channel_id, SignerOp::SignSpliceSharedInput);
 		nodes[0].node.signer_unblocked(None);
 	}
+	let _ = get_event!(nodes[0], Event::SpliceNegotiated);
 
 	let initiator_tx_signatures =
 		get_event_msg!(nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
 	check_added_monitors(&nodes[0], 0);
 	assert_eq!(get_monitor!(nodes[0], channel_id).get_funding_txo().txid, previous_funding_txid);
-
-	let _ = get_event!(nodes[0], Event::SpliceNegotiated);
 
 	// A timer tick, rather than signing completion, releases the deferred lock and handles any
 	// resulting promotion.
@@ -14535,6 +14542,7 @@ fn test_async_splice_receives_tx_signatures_while_unrelated_monitor_update_pendi
 	// is the update for which `monitor_pending_tx_signatures` is expected to be
 	// set.
 	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
+	assert!(acceptor.node.get_and_clear_pending_events().is_empty());
 
 	let acceptor_tx_signatures =
 		get_event_msg!(acceptor, MessageSendEvent::SendTxSignatures, initiator_node_id);
@@ -14583,8 +14591,6 @@ fn test_async_splice_receives_tx_signatures_while_unrelated_monitor_update_pendi
 
 	// Finally, drive the state machines to completion.
 	acceptor.chain_monitor.complete_sole_pending_chan_update(&channel_id);
-	let mut update_fulfill = get_htlc_update_msgs(acceptor, &initiator_node_id);
-	check_added_monitors(acceptor, 1);
 	let payment_forwarded = get_event!(acceptor, Event::PaymentForwarded);
 	expect_payment_forwarded(
 		payment_forwarded,
@@ -14597,6 +14603,8 @@ fn test_async_splice_receives_tx_signatures_while_unrelated_monitor_update_pendi
 		false,
 		false,
 	);
+	let mut update_fulfill = get_htlc_update_msgs(acceptor, &initiator_node_id);
+	check_added_monitors(acceptor, 1);
 
 	do_commitment_signed_dance(
 		acceptor,

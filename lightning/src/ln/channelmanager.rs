@@ -16780,9 +16780,7 @@ impl<
 			// need, especially anything that might end up causing I/O (like a
 			// `ChannelMonitorUpdate`)!
 
-			// TODO: This behavior should be documented. It's unintuitive that we query
-			// ChannelMonitors when clearing other events.
-			let mut result = self.process_pending_monitor_events();
+			let mut result = NotifyOption::SkipPersistNoEvents;
 
 			if self.maybe_generate_initial_closing_signed() {
 				result = NotifyOption::DoPersist;

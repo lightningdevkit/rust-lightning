@@ -250,9 +250,9 @@ pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {
 			vec![node_txn[0].clone(), node_txn[0].clone()],
 		),
 	);
-	check_closed_broadcast(&nodes[1], 1, true);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[nodes[0].node.get_our_node_id()], 100000);
+	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 
 	// Make sure everything is persisted as expected after close.

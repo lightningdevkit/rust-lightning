@@ -970,8 +970,8 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	let fulfill_msg = htlc_fulfill.update_fulfill_htlcs.remove(0);
 	nodes[1].node.handle_update_fulfill_htlc(node_c_id, fulfill_msg);
 	check_added_monitors(&nodes[1], 1);
-	do_commitment_signed_dance(&nodes[1], &nodes[2], &htlc_fulfill.commitment_signed, false, false);
 	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &htlc_fulfill.commitment_signed, false, false);
 
 	if confirm_before_reload {
 		let best_block = nodes[0].blocks.lock().unwrap().last().unwrap().clone();
@@ -1356,10 +1356,10 @@ fn do_test_dup_htlc_onchain_doesnt_fail_on_reload(
 	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
 
 	mine_transaction(&nodes[1], &commitment_tx);
-	check_closed_broadcast(&nodes[1], 1, false);
-	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
+	check_closed_broadcast(&nodes[1], 1, false);
+	check_added_monitors(&nodes[1], 1);
 	let htlc_success_tx = {
 		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(txn.len(), 1);
@@ -1917,12 +1917,10 @@ fn onchain_failed_probe_yields_event() {
 	// Node A, which after 6 confirmations should result in a probe failure event.
 	let bs_txn = get_local_commitment_txn!(nodes[1], chan_id);
 	confirm_transaction(&nodes[0], &bs_txn[0]);
-	check_closed_broadcast(&nodes[0], 1, true);
-	check_added_monitors(&nodes[0], 1);
-
 	check_added_monitors(&nodes[0], 0);
 	let mut events = nodes[0].node.get_and_clear_pending_events();
-	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 2);
 	assert_eq!(events.len(), 2);
 	let mut found_probe_failed = false;
 	for event in events.drain(..) {
@@ -4666,10 +4664,10 @@ fn do_claim_from_closed_chan(fail_payment: bool) {
 		assert_eq!(bs_tx.len(), 1);
 
 		mine_transaction(&nodes[3], &bs_tx[0]);
-		check_closed_broadcast(&nodes[3], 1, true);
-		check_added_monitors(&nodes[3], 1);
 		let reason = ClosureReason::CommitmentTxConfirmed;
 		check_closed_event(&nodes[3], 1, reason, &[node_b_id], 1000000);
+		check_closed_broadcast(&nodes[3], 1, true);
+		check_added_monitors(&nodes[3], 1);
 
 		nodes[3].node.claim_funds(payment_preimage, Default::default());
 		check_added_monitors(&nodes[3], 2);

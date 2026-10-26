@@ -2373,15 +2373,15 @@ pub fn test_funding_and_commitment_tx_confirm_same_block() {
 			panic!();
 		}
 	};
-	check_msg_events(&nodes[0]);
-	check_added_monitors(&nodes[0], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[0], 1, reason, &[node_b_id], 1_000_000);
+	check_msg_events(&nodes[0]);
+	check_added_monitors(&nodes[0], 1);
 
-	check_msg_events(&nodes[1]);
-	check_added_monitors(&nodes[1], 1);
 	let reason = ClosureReason::CommitmentTxConfirmed;
 	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 1_000_000);
+	check_msg_events(&nodes[1]);
+	check_added_monitors(&nodes[1], 1);
 
 	assert!(nodes[0].node.list_channels().is_empty());
 	assert!(nodes[1].node.list_channels().is_empty());

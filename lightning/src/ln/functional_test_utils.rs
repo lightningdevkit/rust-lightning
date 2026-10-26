@@ -4427,6 +4427,46 @@ pub fn route_payment<'a, 'b, 'c>(
 	(res.0, res.1, res.2, res.3)
 }
 
+/// Routes a payment from `origin_node` to its peer `recipient`, where both use a deferred
+/// [`TestChainMonitor`]. Queued monitor updates are only flushed, and their completions processed,
+/// when a node handles its events, so each node handles its events after every step which
+/// generates a monitor update.
+pub fn route_payment_deferred<'a, 'b, 'c>(
+	origin_node: &Node<'a, 'b, 'c>, recipient: &Node<'a, 'b, 'c>, recv_value: u64,
+) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
+	let origin_id = origin_node.node.get_our_node_id();
+	let recipient_id = recipient.node.get_our_node_id();
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(origin_node, recipient, recv_value);
+	let onion = RecipientOnionFields::secret_only(payment_secret, recv_value);
+	let payment_id = PaymentId(payment_hash.0);
+	origin_node.node.send_payment_with_route(route, payment_hash, onion, payment_id).unwrap();
+	check_added_monitors(origin_node, 1);
+	assert!(origin_node.node.get_and_clear_pending_events().is_empty());
+
+	let updates = get_htlc_update_msgs(origin_node, &recipient_id);
+	recipient.node.handle_update_add_htlc(origin_id, &updates.update_add_htlcs[0]);
+	recipient.node.handle_commitment_signed_batch_test(origin_id, &updates.commitment_signed);
+	check_added_monitors(recipient, 1);
+	assert!(recipient.node.get_and_clear_pending_events().is_empty());
+
+	let (raa, cs) = get_revoke_commit_msgs(recipient, &origin_id);
+	origin_node.node.handle_revoke_and_ack(recipient_id, &raa);
+	check_added_monitors(origin_node, 1);
+	origin_node.node.handle_commitment_signed_batch_test(recipient_id, &cs);
+	check_added_monitors(origin_node, 1);
+	assert!(origin_node.node.get_and_clear_pending_events().is_empty());
+
+	let raa = get_event_msg!(origin_node, MessageSendEvent::SendRevokeAndACK, recipient_id);
+	recipient.node.handle_revoke_and_ack(origin_id, &raa);
+	check_added_monitors(recipient, 1);
+	assert!(recipient.node.get_and_clear_pending_events().is_empty());
+
+	expect_and_process_pending_htlcs(recipient, false);
+	expect_payment_claimable!(recipient, payment_hash, payment_secret, recv_value);
+	(payment_preimage, payment_hash, payment_secret, payment_id)
+}
+
 pub fn send_payment<'a, 'b, 'c>(
 	origin: &Node<'a, 'b, 'c>, expected_route: &[&Node<'a, 'b, 'c>], recv_value: u64,
 ) -> (PaymentPreimage, PaymentHash, PaymentSecret, PaymentId) {
