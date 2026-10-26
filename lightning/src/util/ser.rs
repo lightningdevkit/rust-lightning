@@ -801,6 +801,9 @@ impl<T: MaybeReadable> LengthReadable for WithoutLength<Vec<T>> {
 		loop {
 			let mut track_read = ReadTrackingReader::new(reader);
 			match MaybeReadable::read(&mut track_read) {
+				// A `MaybeReadable` type which succeeds without consuming any bytes
+				// (e.g. `()`) would otherwise cause an infinite loop here.
+				Ok(_) if !track_read.have_read => return Err(DecodeError::InvalidValue),
 				Ok(Some(v)) => {
 					values.push(v);
 				},
