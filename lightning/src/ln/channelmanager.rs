@@ -8098,6 +8098,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		};
 
+		let channel_entry = match peer_state.channel_by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(entry) => {
+				let channel_id = entry.key();
+				let err_str = format!("Channel with ID {channel_id} already exists");
+				log_error!(logger, "Refusing to accept inbound channel: {}", err_str);
+				return Err(APIError::ChannelUnavailable { err: err_str });
+			},
+			hash_map::Entry::Vacant(entry) => entry,
+		};
+
 		if accept_0conf {
 			// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
 			debug_assert!(channel_phase.context().minimum_depth().unwrap() == 0);
@@ -8141,7 +8151,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		if let Some(message_send_event) = message_send_event {
 			peer_state.pending_msg_events.push(message_send_event);
 		}
-		peer_state.channel_by_id.insert(channel_id, channel_phase);
+		channel_entry.insert(channel_phase);
 
 		Ok(())
 	}
