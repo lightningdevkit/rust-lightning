@@ -2080,6 +2080,13 @@ pub enum Event {
 		/// When this invoice and its metadata are persisted, this slot number should be included so if
 		/// we receive another [`Event::PersistStaticInvoice`] containing the same slot number we can
 		/// swap the existing invoice out for the new one.
+		///
+		/// If the new invoice's [`StaticInvoice::created_at`] is older
+		/// than that of the invoice already persisted for this `recipient_id` and `invoice_slot`,
+		/// the new invoice SHOULD NOT replace the existing one and
+		/// [`ChannelManager::static_invoice_persisted`] should not be called.
+		///
+		/// [`ChannelManager::static_invoice_persisted`]: crate::ln::channelmanager::ChannelManager::static_invoice_persisted
 		invoice_slot: u16,
 		/// An identifier for the recipient, originally provided to
 		/// [`ChannelManager::blinded_paths_for_async_recipient`].

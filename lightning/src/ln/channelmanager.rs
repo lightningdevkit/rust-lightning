@@ -6349,8 +6349,8 @@ impl<
 		self.check_refresh_async_receive_offer_cache(false);
 	}
 
-	/// Should be called after handling an [`Event::PersistStaticInvoice`], where the `Responder`
-	/// comes from [`Event::PersistStaticInvoice::invoice_persisted_path`].
+	/// Should be called after persisting the invoice from an [`Event::PersistStaticInvoice`],
+	/// where the `Responder` comes from [`Event::PersistStaticInvoice::invoice_persisted_path`].
 	pub fn static_invoice_persisted(&self, invoice_persisted_path: Responder) {
 		self.flow.static_invoice_persisted(invoice_persisted_path);
 	}
