@@ -12782,9 +12782,10 @@ fn test_rejected_stale_rbf_discards_only_new_contribution() {
 }
 
 #[test]
-fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
-	// Test that rbf_prior_contribution_sync re-runs coin selection when the prior
-	// contribution's max_feerate is too low to accommodate the minimum RBF feerate.
+fn test_rbf_adjusts_prior_contribution_above_its_max_feerate() {
+	// Test that rbf_prior_contribution_sync adjusts the prior contribution in place, without
+	// consulting the wallet, when the minimum RBF feerate exceeds the prior contribution's
+	// max_feerate but not the caller's.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -12814,13 +12815,28 @@ fn test_prior_contribution_unadjusted_when_max_feerate_too_low() {
 	let (_splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
 
 	// Call splice_channel again — the minimum RBF feerate (floor + 25 sat/kwu) exceeds the prior
-	// contribution's max_feerate (floor), so adjustment fails.
-	// rbf_prior_contribution_sync re-runs coin selection with the caller's max_feerate.
+	// contribution's max_feerate (floor). The adjustment is bounded by the caller's max_feerate
+	// instead, so the prior contribution is adjusted to the minimum RBF feerate as is. Clearing
+	// the wallet first ensures that coin selection cannot be what produces the contribution.
 	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	assert!(funding_template.min_rbf_feerate().is_some());
-	assert!(funding_template.prior_contribution().is_some());
+	let min_rbf_feerate = funding_template.min_rbf_feerate().unwrap();
+	let prior_contribution = funding_template.prior_contribution().unwrap().clone();
+	assert!(min_rbf_feerate > prior_contribution.max_feerate());
+
+	nodes[0].wallet_source.clear_utxos();
 	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	assert!(funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).is_ok());
+	let contribution =
+		funding_template.rbf_prior_contribution_sync(None, FeeRate::MAX, &wallet).unwrap();
+
+	assert_eq!(contribution.inputs(), prior_contribution.inputs());
+	assert_eq!(contribution.feerate(), min_rbf_feerate);
+	assert_eq!(contribution.max_feerate(), FeeRate::MAX);
+	assert_eq!(contribution.value_added(), prior_contribution.value_added());
+	assert!(contribution.estimated_fee() > prior_contribution.estimated_fee());
+	let prior_change = prior_contribution.change_output().unwrap();
+	let adjusted_change = contribution.change_output().unwrap();
+	assert_eq!(adjusted_change.script_pubkey, prior_change.script_pubkey);
+	assert!(adjusted_change.value < prior_change.value);
 }
 
 #[test]
