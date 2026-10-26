@@ -1028,10 +1028,13 @@ impl OfferContents {
 	) -> Result<(OfferId, Option<Keypair>), ()> {
 		match metadata {
 			Some(metadata) => {
+				// Offers verified using recipient data carry no metadata, so any metadata
+				// record present must be included in the HMAC. When verifying against the
+				// offer's own metadata, the record itself is the claim being checked.
 				let tlv_stream = TlvStream::new(bytes)
 					.range(OFFER_TYPES)
 					.filter(|record| match record.r#type {
-						OFFER_METADATA_TYPE => false,
+						OFFER_METADATA_TYPE => matches!(metadata, Metadata::RecipientData(_)),
 						OFFER_ISSUER_ID_TYPE => !metadata.derives_recipient_keys(),
 						_ => true,
 					})
@@ -1668,6 +1671,24 @@ mod tests {
 		let mut tlv_stream = offer.as_tlv_stream();
 		let issuer_id = pubkey(1);
 		tlv_stream.0.issuer_id = Some(&issuer_id);
+
+		let mut encoded_offer = Vec::new();
+		tlv_stream.write(&mut encoded_offer).unwrap();
+
+		let invoice_request = Offer::try_from(encoded_offer)
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.build_and_sign()
+			.unwrap();
+		assert!(invoice_request
+			.verify_using_recipient_data(nonce, &expanded_key, &secp_ctx)
+			.is_err());
+
+		// Fails verification with forged metadata
+		let mut tlv_stream = offer.as_tlv_stream();
+		let metadata = vec![42; 32];
+		tlv_stream.0.metadata = Some(&metadata);
 
 		let mut encoded_offer = Vec::new();
 		tlv_stream.write(&mut encoded_offer).unwrap();
