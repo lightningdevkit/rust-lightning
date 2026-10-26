@@ -88,12 +88,17 @@ impl_ser_tlv_based!(Utxo, {
 
 impl Utxo {
 	/// Returns a `Utxo` with the `satisfaction_weight` estimate for a legacy P2PKH output.
+	///
+	/// The estimate assumes the output commits to a compressed (33-byte) public key, as spending
+	/// such an output requires a compressed public key. Outputs committing to an uncompressed
+	/// (65-byte) public key will consume more weight than estimated and must not be constructed
+	/// with this method.
 	pub fn new_p2pkh(outpoint: OutPoint, value: Amount, pubkey_hash: &PubkeyHash) -> Self {
 		let script_sig_size = 1 /* script_sig length */ +
 			1 /* OP_PUSH73 */ +
 			73 /* sig including sighash flag */ +
 			1 /* OP_PUSH33 */ +
-			33 /* pubkey */;
+			33 /* compressed pubkey */;
 		Self {
 			outpoint,
 			output: TxOut { value, script_pubkey: ScriptBuf::new_p2pkh(pubkey_hash) },
