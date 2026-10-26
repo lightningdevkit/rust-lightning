@@ -2909,3 +2909,194 @@ fn client_trusts_lsp_partial_fee_does_not_trigger_broadcast() {
 	client_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
 	payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
 }
+
+#[test]
+fn client_trusts_lsp_broadcasts_despite_unforwardable_held_htlc() {
+	// Once the opening fee has been paid, an HTLC held for the JIT channel that can no longer be
+	// forwarded (e.g., because `ChannelManager` already timed it out) must not keep us from
+	// broadcasting the funding transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42;
+	let cltv_expiry_delta: u32 = 144;
+	let payment_size_msat = Some(1_000_000);
+	let fee_base_msat: u64 = 10_000;
+
+	execute_lsps2_dance(
+		&lsps_nodes,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+	);
+
+	let invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"test unforwardable held htlc",
+		3600,
+	)
+	.unwrap();
+
+	payer_node
+		.node
+		.pay_for_bolt11_invoice(
+			&invoice,
+			PaymentId(invoice.payment_hash().0),
+			None,
+			OptionalBolt11PaymentParams::default(),
+		)
+		.unwrap();
+
+	check_added_monitors(&payer_node, 1);
+	let events = payer_node.node.get_and_clear_pending_msg_events();
+	let ev = SendEvent::from_event(events[0].clone());
+	service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+	do_commitment_signed_dance(&service_node.inner, &payer_node, &ev.commitment_msg, false, true);
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (payment_hash, expected_outbound_amount_msat) = match &events[0] {
+		Event::HTLCIntercepted {
+			intercept_id,
+			requested_next_hop_scid,
+			payment_hash,
+			expected_outbound_amount_msat,
+			inbound_amount_msat,
+			..
+		} => {
+			assert_eq!(*requested_next_hop_scid, intercept_scid);
+			service_handler
+				.htlc_intercepted(
+					*requested_next_hop_scid,
+					*intercept_id,
+					*expected_outbound_amount_msat,
+					*payment_hash,
+					*inbound_amount_msat,
+				)
+				.unwrap();
+			(*payment_hash, expected_outbound_amount_msat)
+		},
+		other => panic!("Expected HTLCIntercepted, got {:?}", other),
+	};
+
+	match service_node.liquidity_manager.next_event().unwrap() {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel { .. }) => {},
+		other => panic!("Unexpected event: {:?}", other),
+	};
+
+	let (channel_id, funding_tx) = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		expected_outbound_amount_msat,
+		true,
+	);
+
+	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let pay_event = {
+		{
+			let mut added_monitors =
+				service_node.inner.chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1);
+			added_monitors.clear();
+		}
+		let mut events = service_node.inner.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	let preimage = match &client_events[0] {
+		Event::PaymentClaimable { payment_hash: ph, purpose, .. } => {
+			assert_eq!(*ph, payment_hash);
+			purpose.preimage().unwrap()
+		},
+		other => panic!("Expected PaymentClaimable event on client, got: {:?}", other),
+	};
+
+	// While the opening fee payment is in flight, another HTLC is held for the JIT channel.
+	// `ChannelManager` doesn't know its intercept id, just as if it had timed it out already.
+	let stale_intercept_id = InterceptId([42; 32]);
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			stale_intercept_id,
+			100_000,
+			PaymentHash([43; 32]),
+			100_000,
+		)
+		.unwrap();
+
+	client_node.inner.node.claim_funds(preimage);
+	claim_and_assert_forwarded_only(&payer_node, &service_node.inner, &client_node.inner, preimage);
+
+	let service_events = service_node.node.get_and_clear_pending_events();
+	assert_eq!(service_events.len(), 1);
+	let (skimmed_fee_msat, total_fee_msat) = match &service_events[0] {
+		Event::PaymentForwarded { skimmed_fee_msat, total_fee_earned_msat, .. } => {
+			(skimmed_fee_msat.unwrap(), total_fee_earned_msat.unwrap() - skimmed_fee_msat.unwrap())
+		},
+		other => panic!("Expected PaymentForwarded event, got: {:?}", other),
+	};
+
+	// Forwarding the held HTLC fails, which is reported back to us...
+	match service_handler.payment_forwarded(channel_id, skimmed_fee_msat) {
+		Err(APIError::APIMisuseError { err }) => {
+			assert!(err.contains("not found"), "unexpected error: {}", err)
+		},
+		other => panic!("Expected APIMisuseError, got {:?}", other),
+	}
+
+	// ... but the paid-for channel still gets funded.
+	let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
+	assert!(broadcasted.iter().any(|b| b.compute_txid() == funding_tx.compute_txid()));
+	drop(broadcasted);
+
+	expect_payment_sent(&payer_node, preimage, Some(Some(total_fee_msat)), true, true);
+}

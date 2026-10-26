@@ -1226,6 +1226,7 @@ where
 		&self, next_channel_id: ChannelId, skimmed_fee_msat: u64,
 	) -> Result<(), APIError> {
 		let mut should_persist = None;
+		let mut forward_err = None;
 		if let Some(counterparty_node_id) =
 			self.peer_by_channel_id.read().unwrap().get(&next_channel_id)
 		{
@@ -1243,13 +1244,17 @@ where
 						{
 							match jit_channel.payment_forwarded(skimmed_fee_msat) {
 								Ok(Some(ForwardHTLCsAction(channel_id, htlcs))) => {
+									// The fee is paid, so a failed forward must not block finalizing.
 									for htlc in htlcs {
-										self.channel_manager.get_cm().forward_intercepted_htlc(
-											htlc.intercept_id,
-											&channel_id,
-											*counterparty_node_id,
-											htlc.expected_outbound_amount_msat,
-										)?;
+										if let Err(e) =
+											self.channel_manager.get_cm().forward_intercepted_htlc(
+												htlc.intercept_id,
+												&channel_id,
+												*counterparty_node_id,
+												htlc.expected_outbound_amount_msat,
+											) {
+											forward_err.get_or_insert(e);
+										}
 									}
 								},
 								Ok(None) => {},
@@ -1291,7 +1296,10 @@ where
 			})?;
 		}
 
-		Ok(())
+		match forward_err {
+			Some(e) => Err(e),
+			None => Ok(()),
+		}
 	}
 
 	/// Forward [`Event::ChannelClosed`] event parameter into this function.
