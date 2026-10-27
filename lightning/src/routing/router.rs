@@ -536,10 +536,13 @@ pub struct RouteHop {
 	pub cltv_expiry_delta: u32,
 	/// Indicates whether this hop is possibly announced in the public network graph.
 	///
-	/// Will be `true` if there is a possibility that the channel is publicly known, i.e., if we
-	/// either know for sure it's announced in the public graph, or if any public channels exist
-	/// for which the given `short_channel_id` could be an alias for. Will be `false` if we believe
-	/// the channel to be unannounced.
+	/// Will be `true` if the channel was sourced from the public network graph or is one of our
+	/// announced channels. Will be `false` for route hint hops whose `short_channel_id` did not
+	/// resolve to a known public channel towards the hop's target, e.g., because it is an alias
+	/// which isn't trusted to refer to a public channel.
+	///
+	/// If this is `false`, a failure at this hop will never cause the channel with the given
+	/// `short_channel_id` to be removed from the network graph.
 	///
 	/// Will be `true` for objects serialized with LDK version 0.0.116 and before.
 	pub maybe_announced_channel: bool,
@@ -3879,21 +3882,16 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 			.filter(|(h, _)| h.candidate.short_channel_id().is_some())
 		{
 			let target = hop.candidate.target().expect("target is defined when short_channel_id is defined");
-			let maybe_announced_channel = if let CandidateRouteHop::PublicHop(_) = hop.candidate {
-				// If we sourced the hop from the graph we're sure the target node is announced.
-				true
-			} else if let CandidateRouteHop::FirstHop(first_hop) = &hop.candidate {
+			let maybe_announced_channel = match &hop.candidate {
+				// If we sourced the hop from the graph we're sure the channel is announced.
+				CandidateRouteHop::PublicHop(_) => true,
 				// If this is a first hop we also know if it's announced.
-				first_hop.details.is_announced
-			} else {
-				// If we sourced it any other way, we double-check the network graph to see if
-				// there are announced channels between the endpoints. If so, the hop might be
-				// referring to any of the announced channels, as its `short_channel_id` might be
-				// an alias, in which case we don't take any chances here.
-				network_graph.node(&target).is_some_and(|hop_node|
-					hop_node.channels.iter().any(|scid| network_graph.channel(*scid)
-							.is_some_and(|c| c.as_directed_from(&hop.candidate.source()).is_some()))
-				)
+				CandidateRouteHop::FirstHop(first_hop) => first_hop.details.is_announced,
+				// Otherwise, the hop came from a route hint. Its `short_channel_id` may be an alias
+				// for a public channel, but it may also mean something else entirely, e.g. a channel
+				// an LSP will open once paid, so a failure here doesn't mean any public channel with
+				// the same SCID failed.
+				_ => false,
 			};
 
 			hops.push(RouteHop {
