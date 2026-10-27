@@ -1408,7 +1408,10 @@ impl ClaimablePayment {
 
 	/// Returns the total counterparty skimmed fee across all HTLCs.
 	fn total_counterparty_skimmed_msat(&self) -> u64 {
-		self.htlcs.iter().map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0)).sum()
+		self.htlcs
+			.iter()
+			.map(|htlc| htlc.counterparty_skimmed_fee_msat.unwrap_or(0))
+			.fold(0, u64::saturating_add)
 	}
 }
 
