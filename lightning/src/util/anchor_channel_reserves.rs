@@ -306,23 +306,32 @@ where
 		if is_anchor_channel_type(&channel_monitor.channel_type_features())
 			&& !channel_monitor.get_claimable_balances().is_empty()
 		{
-			anchor_channels.insert(channel_id);
+			anchor_channels.insert((channel_monitor.get_counterparty_node_id(), channel_id));
 		}
 	}
 	// Also include channels that are in the middle of negotiation or anchor channels that don't have
-	// a ChannelMonitor yet.
+	// a ChannelMonitor yet. Until a channel is funded its ID is chosen by the peer and may match
+	// one of our ChannelMonitors, so only funded channels are deduplicated against them.
+	let mut unfunded_anchor_channels = 0;
 	for channel in a_channel_manager.get_cm().list_channels() {
 		if channel.channel_type.map_or(true, |ct| is_anchor_channel_type(&ct)) {
-			anchor_channels.insert(channel.channel_id);
+			if channel.funding_txo.is_some() {
+				anchor_channels.insert((channel.counterparty.node_id, channel.channel_id));
+			} else {
+				unfunded_anchor_channels += 1;
+			}
 		}
 	}
-	get_supportable_anchor_channels(context, utxos) > anchor_channels.len() as u64
+	let anchor_channel_count = anchor_channels.len() as u64 + unfunded_anchor_channels;
+	get_supportable_anchor_channels(context, utxos) > anchor_channel_count
 }
 
 #[cfg(test)]
 mod test {
 	use super::*;
+	use crate::get_event_msg;
 	use crate::ln::functional_test_utils::*;
+	use crate::ln::msgs::{BaseMessageHandler, MessageSendEvent};
 	use bitcoin::{OutPoint, ScriptBuf, Sequence, TxOut, Txid};
 	use std::str::FromStr;
 
@@ -479,6 +488,113 @@ mod test {
 
 		// We already have one TRUC anchor channel and only enough reserve for
 		// a single channel; we must not authorize an additional one.
+		assert!(!can_support_additional_anchor_channel(
+			&context,
+			&utxos,
+			nodes[0].node,
+			&nodes[0].chain_monitor.chain_monitor,
+		));
+	}
+
+	#[test]
+	fn test_can_support_additional_anchor_channel_counts_funded_channel_once() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let (_, _, _, channel_id, _) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+		assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors(), vec![channel_id]);
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		let context = AnchorChannelReserveContext::default();
+		let reserve = get_reserve_per_channel(&context);
+		let utxos = vec![make_p2wpkh_utxo(reserve * 2), make_p2wpkh_utxo(reserve * 2)];
+		assert_eq!(get_supportable_anchor_channels(&context, &utxos), 2);
+
+		assert!(can_support_additional_anchor_channel(
+			&context,
+			&utxos,
+			nodes[0].node,
+			&nodes[0].chain_monitor.chain_monitor,
+		));
+	}
+
+	#[test]
+	fn test_can_support_additional_anchor_channel_counts_duplicate_temporary_ids() {
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+		let node_c_id = nodes[2].node.get_our_node_id();
+
+		nodes[1].node.create_channel(node_a_id, 100_000, 0, 41, None, None).unwrap();
+		let open_chan_msg_1 =
+			get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
+		nodes[2].node.create_channel(node_a_id, 100_000, 0, 42, None, None).unwrap();
+		let mut open_chan_msg_2 =
+			get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_a_id);
+		open_chan_msg_2.common_fields.temporary_channel_id =
+			open_chan_msg_1.common_fields.temporary_channel_id;
+
+		handle_and_accept_open_channel(&nodes[0], node_b_id, &open_chan_msg_1);
+		get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_b_id);
+		handle_and_accept_open_channel(&nodes[0], node_c_id, &open_chan_msg_2);
+		get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_c_id);
+
+		let channels = nodes[0].node.list_channels();
+		assert_eq!(channels.len(), 2);
+		assert_eq!(channels[0].channel_id, channels[1].channel_id);
+
+		let context = AnchorChannelReserveContext::default();
+		let reserve = get_reserve_per_channel(&context);
+		let utxos = vec![make_p2wpkh_utxo(reserve * 2), make_p2wpkh_utxo(reserve * 2)];
+		assert_eq!(get_supportable_anchor_channels(&context, &utxos), 2);
+
+		assert!(!can_support_additional_anchor_channel(
+			&context,
+			&utxos,
+			nodes[0].node,
+			&nodes[0].chain_monitor.chain_monitor,
+		));
+	}
+
+	#[test]
+	fn test_can_support_additional_anchor_channel_counts_reused_closed_channel_id() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
+		let (_, _, _, channel_id, _) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(&channel_id, &node_b_id, "".to_owned())
+			.unwrap();
+		nodes[0].node.get_and_clear_pending_msg_events();
+		nodes[0].node.get_and_clear_pending_events();
+		check_added_monitors(&nodes[0], 1);
+		assert_eq!(nodes[0].node.list_channels().len(), 0);
+
+		// The peer opens a new channel reusing the closing channel's ID as its temporary ID.
+		nodes[1].node.create_channel(node_a_id, 100_000, 0, 43, None, None).unwrap();
+		let mut open = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
+		open.common_fields.temporary_channel_id = channel_id;
+		handle_and_accept_open_channel(&nodes[0], node_b_id, &open);
+		get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_b_id);
+		assert_eq!(nodes[0].node.list_channels().len(), 1);
+
+		let context = AnchorChannelReserveContext::default();
+		let reserve = get_reserve_per_channel(&context);
+		let utxos = vec![make_p2wpkh_utxo(reserve * 2), make_p2wpkh_utxo(reserve * 2)];
+		assert_eq!(get_supportable_anchor_channels(&context, &utxos), 2);
+
+		// One closing and one pending channel already use both reserves.
 		assert!(!can_support_additional_anchor_channel(
 			&context,
 			&utxos,
