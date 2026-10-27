@@ -2342,6 +2342,94 @@ fn test_revoked_counterparty_aggregated_claims() {
 	do_test_revoked_counterparty_aggregated_claims(false, true);
 }
 
+#[test]
+fn test_p2a_anchor_spend_cannot_trigger_revoked_htlc_claims() {
+	// A zero-fee commitment transaction's shared anchor output is anyone-can-spend, and a
+	// transaction spending it can pad its witness to the five elements we look for when
+	// detecting counterparty spends of revoked HTLC transactions. Ensure such an anchor spend
+	// paying an unspendable output does not cause us to claim it, as the resulting bogus claim
+	// would render the justice transactions we build for the revoked HTLCs unconfirmable.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// Required to broadcast a revoked commitment transaction.
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut user_config = test_default_channel_config();
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
+
+	// Route an HTLC from B to A such that A's commitment transaction contains an HTLC output for
+	// B to claim once the commitment is revoked, then revoke the state by routing a dummy
+	// payment back.
+	route_payment(&nodes[1], &[&nodes[0]], 3_000_100);
+	let as_revoked_txn = get_local_commitment_txn!(nodes[0], chan_id);
+	assert_eq!(as_revoked_txn.len(), 1);
+	check_spends!(as_revoked_txn[0], funding_tx);
+
+	route_payment(&nodes[0], &[&nodes[1]], 1000);
+
+	// Have the P2A anchor output of A's commitment transaction spent in the same block the
+	// commitment confirms, with a five-element witness, paying an unspendable output at the
+	// spending input's index. This used to trip the revoked HTLC detection, poisoning the
+	// justice transactions built for the revoked HTLCs in the same block.
+	let anchor_index = as_revoked_txn[0].output.iter()
+		.position(|out| out.script_pubkey == chan_utils::shared_anchor_script_pubkey()).unwrap();
+	let anchor_spend = Transaction {
+		version: Version::non_standard(3),
+		lock_time: LockTime::ZERO,
+		input: vec![TxIn {
+			previous_output: bitcoin::OutPoint {
+				txid: as_revoked_txn[0].compute_txid(), vout: anchor_index as u32,
+			},
+			witness: Witness::from_slice(&vec![vec![1u8; 5]; 5]),
+			..Default::default()
+		}],
+		output: vec![TxOut {
+			value: as_revoked_txn[0].output[anchor_index].value,
+			script_pubkey: ScriptBuf::new_op_return(&[]),
+		}],
+	};
+	check_spends!(anchor_spend, as_revoked_txn[0]; allow_nonstandard: true);
+	mine_transactions(&nodes[1], &[&as_revoked_txn[0], &anchor_spend]);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[nodes[0].node.get_our_node_id()], 1000000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	// B claims the revoked to_self and HTLC outputs of A's commitment transaction, and the
+	// anchor spend must not result in a bogus claim of its unspendable output.
+	let claim_txn = nodes[1].tx_broadcaster.txn_broadcast();
+	assert_eq!(claim_txn.len(), 2);
+	for claim in claim_txn.iter() {
+		assert_eq!(claim.input.len(), 1);
+		check_spends!(claim, as_revoked_txn[0]);
+	}
+	assert_ne!(claim_txn[0].input[0].previous_output, claim_txn[1].input[0].previous_output);
+
+	let channel_type_features = get_channel_type_features!(nodes[0], nodes[1], chan_id);
+	let chan_feerate = get_feerate!(nodes[0], nodes[1], chan_id) as u64;
+	let commitment_tx_fee = chan_feerate *
+		(chan_utils::commitment_tx_base_weight(&channel_type_features) + chan_utils::COMMITMENT_TX_WEIGHT_PER_HTLC) / 1000;
+	let to_remote_maturity = nodes[1].best_block_info().1 + ANTI_REORG_DELAY - 1;
+	assert_eq!(sorted_vec(vec![
+		Balance::ClaimableAwaitingConfirmations {
+			// to_remote output in A's revoked commitment
+			amount_satoshis: 100_000 - 3_000 - 1 /* rounded up msat parts of HTLCs */,
+			confirmation_height: to_remote_maturity,
+			source: BalanceSource::CounterpartyForceClosed,
+		},
+		Balance::CounterpartyRevokedOutputClaimable {
+			// to_self output in A's revoked commitment
+			amount_satoshis: 1_000_000 - 100_000 - commitment_tx_fee,
+		},
+		Balance::CounterpartyRevokedOutputClaimable { // HTLC
+			amount_satoshis: 3_000,
+		},
+	]), sorted_vec(nodes[1].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances()));
+}
+
 fn do_test_claimable_balance_correct_while_payment_pending(outbound_payment: bool, keyed_anchors: bool, p2a_anchor: bool) {
 	// Previously when a user fetched their balances via `get_claimable_balances` after forwarding a
 	// payment, but before it cleared, and summed up their balance using `Balance::claimable_amount_satoshis`
