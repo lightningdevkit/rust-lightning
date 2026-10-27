@@ -5069,10 +5069,21 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		// https://lists.linuxfoundation.org/pipermail/lightning-dev/2022-April/003561.html).
 		//
 		// We make sure we're not vulnerable to this case by checking all inputs of the transaction,
-		// and claim those which spend the commitment transaction, have a witness of 5 elements, and
-		// have a corresponding output at the same index within the transaction.
+		// and claim those which spend an HTLC output of the commitment transaction, have a witness
+		// of 5 elements, and have a corresponding output at the same index within the transaction.
 		for (idx, input) in tx.input.iter().enumerate() {
 			if input.previous_output.txid == *commitment_txid && input.witness.len() == 5 && tx.output.get(idx).is_some() {
+				// Anchor outputs of zero-fee commitment transactions can also be spent with a
+				// five-element witness without satisfying any HTLC script, in a transaction that
+				// is consensus-valid but nonstandard. Only claim outputs which spend an HTLC we
+				// know about, otherwise a bogus claim would be merged into our justice
+				// transactions, rendering them unconfirmable.
+				let counterparty_htlcs = funding_spent.counterparty_claimable_outpoints
+					.get(commitment_txid)
+					.expect("HTLC outputs should be tracked for any revocable counterparty commitment transaction");
+				if !counterparty_htlcs.iter().any(|(htlc, _)| {
+					htlc.transaction_output_index == Some(input.previous_output.vout)
+				}) { continue; }
 				log_error!(logger, "Got broadcast of revoked counterparty HTLC transaction, spending {}:{}", htlc_txid, idx);
 				let revk_outp = RevokedOutput::build(
 					per_commitment_point, per_commitment_key, tx.output[idx].value,
@@ -6117,7 +6128,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 							} else if _script_pubkey.is_p2wpkh() {
 								assert_eq!(&bitcoin::Address::p2wpkh(&bitcoin::CompressedPublicKey(bitcoin::PublicKey::from_slice(&input.witness.last().unwrap()).unwrap().inner), bitcoin::Network::Bitcoin).script_pubkey(), _script_pubkey);
 							} else if _script_pubkey == &chan_utils::shared_anchor_script_pubkey() {
-								assert!(input.witness.is_empty());
+								// The anchor output is anyone-can-spend, so a consensus-valid
+								// spend of it may carry an arbitrary witness, which we cannot
+								// validate here.
 							} else { panic!(); }
 						}
 						return true;
