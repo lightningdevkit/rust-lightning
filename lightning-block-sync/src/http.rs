@@ -75,7 +75,7 @@ impl fmt::Display for HttpClientError {
 		match self {
 			HttpClientError::Transport(e) => write!(f, "transport error: {}", e),
 			HttpClientError::Http(e) => write!(f, "HTTP error: {}", e),
-			HttpClientError::Parse(e) => write!(f, "response parsing error: {}", e),
+			HttpClientError::Parse(e) => write!(f, "response parsing error: {}", e.escape_debug()),
 		}
 	}
 }
@@ -193,7 +193,7 @@ impl std::error::Error for HttpError {}
 impl fmt::Display for HttpError {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		let contents = String::from_utf8_lossy(&self.contents);
-		write!(f, "status_code: {}, contents: {}", self.status_code, contents)
+		write!(f, "status_code: {}, contents: {}", self.status_code, contents.escape_debug())
 	}
 }
 
