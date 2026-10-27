@@ -487,7 +487,7 @@ pub(super) fn create_recv_pending_htlc_info(
 		incoming_amt_msat: Some(amt_msat),
 		outgoing_amt_msat: onion_amt_msat,
 		outgoing_cltv_value: onion_cltv_expiry,
-		skimmed_fee_msat: counterparty_skimmed_fee_msat,
+		skimmed_fee_msat: if allow_underpay { counterparty_skimmed_fee_msat } else { None },
 		incoming_accountable,
 	})
 }
