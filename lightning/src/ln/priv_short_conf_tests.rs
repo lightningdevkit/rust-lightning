@@ -12,7 +12,7 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider};
+use crate::events::{ClosureReason, Event, HTLCDestination, MessageSendEvent, MessageSendEventsProvider, PathFailure};
 use crate::ln::channelmanager::{MIN_CLTV_EXPIRY_DELTA, PaymentId, RecipientOnionFields};
 use crate::routing::gossip::RoutingFees;
 use crate::routing::router::{PaymentParameters, RouteHint, RouteHintHop};
@@ -80,7 +80,9 @@ fn test_priv_forwarding_rejection() {
 
 	nodes[0].node.handle_update_fail_htlc(nodes[1].node.get_our_node_id(), &htlc_fail_updates.update_fail_htlcs[0]);
 	commitment_signed_dance!(nodes[0], nodes[1], htlc_fail_updates.commitment_signed, true, true);
-	expect_payment_failed_with_update!(nodes[0], our_payment_hash, false, nodes[2].node.list_channels()[0].short_channel_id.unwrap(), true);
+	let chan_2_scid = nodes[2].node.list_channels()[0].short_channel_id.unwrap();
+	let conditions = PaymentFailedConditions::new().blamed_scid(chan_2_scid);
+	expect_payment_failed_conditions(&nodes[0], our_payment_hash, false, conditions);
 
 	// Now disconnect nodes[1] from its peers and restart with accept_forwards_to_priv_channels set
 	// to true. Sadly there is currently no way to change it at runtime.
@@ -126,6 +128,74 @@ fn test_priv_forwarding_rejection() {
 	check_added_monitors!(nodes[0], 1);
 	pass_along_route(&nodes[0], &[&[&nodes[1], &nodes[2]]], 10_000, our_payment_hash, our_payment_secret);
 	claim_payment(&nodes[0], &[&nodes[1], &nodes[2]], our_payment_preimage);
+}
+
+#[test]
+fn test_hint_with_unrelated_public_scid_keeps_channel() {
+	// A route hint's SCID may collide with a public channel which doesn't connect the hint's
+	// endpoints. When forwarding over the hint fails, we must not generate a network update which
+	// would remove that public channel from our network graph, even if the hint's endpoints also
+	// share a public channel.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	create_announced_chan_between_nodes(&nodes, 1, 2);
+	// Offset the funding height so the channel's SCID doesn't match the 1 <-> 2 channel's.
+	connect_blocks(&nodes[0], 1);
+	let unrelated_scid =
+		create_announced_chan_between_nodes(&nodes, 0, 3).0.contents.short_channel_id;
+	assert!(nodes[0].network_graph.read_only().channel(unrelated_scid).is_some());
+
+	let route_hint = RouteHint(vec![RouteHintHop {
+		src_node_id: node_b_id,
+		short_channel_id: unrelated_scid,
+		// Undercut the public 1 <-> 2 channel's fees so that the hint is used.
+		fees: RoutingFees { base_msat: 0, proportional_millionths: 0 },
+		cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA,
+		htlc_minimum_msat: None,
+		htlc_maximum_msat: None,
+	}]);
+	let payment_params = PaymentParameters::from_node_id(node_c_id, TEST_FINAL_CLTV)
+		.with_bolt11_features(nodes[2].node.bolt11_invoice_features())
+		.unwrap()
+		.with_route_hints(vec![route_hint])
+		.unwrap();
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[2], payment_params, 10_000);
+	assert_eq!(route.paths[0].hops[1].short_channel_id, unrelated_scid);
+	assert!(!route.paths[0].hops[1].maybe_announced_channel);
+
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let payment_event =
+		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &payment_event.commitment_msg, false, true);
+
+	let htlc_fail_updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	nodes[0].node.handle_update_fail_htlc(node_b_id, &htlc_fail_updates.update_fail_htlcs[0]);
+	let commitment = &htlc_fail_updates.commitment_signed;
+	do_commitment_signed_dance(&nodes[0], &nodes[1], commitment, true, true);
+
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	match &events[0] {
+		Event::PaymentPathFailed {
+			failure: PathFailure::OnPath { network_update: None },
+			short_channel_id,
+			..
+		} => assert_eq!(*short_channel_id, Some(unrelated_scid)),
+		_ => panic!("Unexpected event"),
+	}
+	assert!(matches!(events[1], Event::PaymentFailed { .. }));
 }
 
 fn do_test_1_conf_open(connect_style: ConnectStyle) {
@@ -444,7 +514,7 @@ fn test_inbound_scid_privacy() {
 
 	expect_payment_failed_conditions(&nodes[0], payment_hash_2, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].short_channel_id.unwrap())
-			.blamed_chan_closed(true).expected_htlc_error_data(0x4000|10, &[0; 0]));
+			.expected_htlc_error_data(0x4000|10, &[0; 0]));
 }
 
 #[test]
@@ -501,7 +571,7 @@ fn test_scid_alias_returned() {
 	let err_data = 0u16.to_be_bytes();
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
-			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|7, &err_data));
+			.expected_htlc_error_data(0x1000|7, &err_data));
 
 	route.paths[0].hops[1].fee_msat = 10_000; // Reset to the correct payment amount
 	route.paths[0].hops[0].fee_msat = 0; // But set fee paid to the middle hop to 0
@@ -523,7 +593,7 @@ fn test_scid_alias_returned() {
 	err_data.extend_from_slice(&0u16.to_be_bytes());
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false,
 		PaymentFailedConditions::new().blamed_scid(last_hop[0].inbound_scid_alias.unwrap())
-			.blamed_chan_closed(false).expected_htlc_error_data(0x1000|12, &err_data));
+			.expected_htlc_error_data(0x1000|12, &err_data));
 }
 
 #[test]
