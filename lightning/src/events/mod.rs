@@ -3304,6 +3304,9 @@ impl MaybeReadable for Event {
 							prev_channel_id_legacy,
 						])),
 					});
+					if prev_channel_ids.is_empty() {
+						return Err(msgs::DecodeError::InvalidValue);
+					}
 
 					// If a legacy HTLCHandlingFailureType::UnknownNextHop was written, upgrade
 					// it to its new representation, otherwise leave unchanged.
