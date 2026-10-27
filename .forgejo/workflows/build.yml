@@ -413,31 +413,20 @@ jobs:
     if: failure() && github.ref == 'refs/heads/main'
     runs-on: debian-trixie
     steps:
-      - name: Configure fj credentials
-        # `fj` reads its token from keys.json; it has no token environment
-        # variable, so write the automatic Actions token there.
-        env:
-          FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
-          FORGEJO_USER: ${{ github.actor }}
-        run: |
-          install -d -m 700 "$HOME/.local/share/forgejo-cli"
-          printf '{"hosts":{"git.rust-bitcoin.org":{"type":"Application","name":"%s","token":"%s"}}}' "$FORGEJO_USER" "$FORGEJO_TOKEN" > "$HOME/.local/share/forgejo-cli/keys.json"
-          chmod 600 "$HOME/.local/share/forgejo-cli/keys.json"
       - name: Create or update failure issue
-        # Deduplicate by label (like the GitHub job): comment on the top open
-        # issue carrying the "build failed" label, otherwise open a new one.
-        # fj handles search/create/comment; the raw API is used only to attach
-        # the label after creating, since fj cannot set or create labels. The
-        # automatic token has write access to this repo for non-fork events.
+        # Deduplicate by label (like the GitHub job): comment on the newest
+        # open issue carrying the "build failed" label, otherwise open a new
+        # one with the label already attached. The automatic token has write
+        # access to this repo for non-fork events.
         env:
-          HOST: git.rust-bitcoin.org
           API: ${{ github.server_url }}/api/v1
           REPO: ${{ github.repository }}
           FORGEJO_TOKEN: ${{ secrets.FORGEJO_TOKEN }}
           LABEL: build failed
         run: |
-          set -eu
+          set -euo pipefail
           AUTH="Authorization: token ${FORGEJO_TOKEN}"
+          JSON="Content-Type: application/json"
 
           TITLE="Failed build: ${{ github.workflow }}"
           RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_number }}"
@@ -452,36 +441,28 @@ jobs:
             BODY="${BODY}"$'\n'"Committer: @${COMMITTER}"
           fi
 
-          # Find the top open issue carrying the label. With `--style minimal`,
-          # `fj issue search` prints a totals line, then one
-          # "#<number>: <title> (by <author>)" line per match; take the first.
-          NUM="$(fj -H "$HOST" --style minimal issue search --repo "$REPO" --labels "$LABEL" --state open \
-            | head -n2 | tail -n1 | awk '/^#[0-9]/ { print $1 }' | tr -d '#:')"
+          # Find the newest open issue carrying the label.
+          NUM="$(curl -fsS -H "$AUTH" --get "$API/repos/$REPO/issues" \
+            --data-urlencode "labels=$LABEL" --data-urlencode "state=open" \
+            --data-urlencode "type=issues" --data-urlencode "limit=1" \
+            | jq -r '.[0].number // empty')"
 
           if [ -n "$NUM" ]; then
-            fj -H "$HOST" issue comment "${REPO}#${NUM}" "$BODY"
+            curl -fsS -H "$AUTH" -H "$JSON" -X POST "$API/repos/$REPO/issues/$NUM/comments" \
+              -d "$(jq -n --arg b "$BODY" '{body: $b}')" >/dev/null
+            echo "Commented on existing issue #$NUM"
           else
-            # Create with fj, then parse the new number from "created issue #N:".
-            if ! CREATED="$(fj -H "$HOST" --style minimal issue create "$TITLE" --body "$BODY" --repo "$REPO" 2>&1)"; then
-              echo "fj issue create failed:"; echo "$CREATED"; exit 1
+            # Resolve the label id, creating the label if it does not exist
+            # yet (the lookup answers 404 then, so no -f on that request).
+            LABEL_ID="$(curl -sS -H "$AUTH" \
+              "$API/repos/$REPO/labels/$(jq -rn --arg n "$LABEL" '$n | @uri')" \
+              | jq -r '.id // empty')"
+            if [ -z "$LABEL_ID" ]; then
+              LABEL_ID="$(curl -fsS -H "$AUTH" -H "$JSON" -X POST "$API/repos/$REPO/labels" \
+                -d "$(jq -n --arg n "$LABEL" '{name: $n, color: "#e11d21"}')" | jq -r '.id')"
             fi
-            echo "$CREATED"
-            NUM="$(printf '%s\n' "$CREATED" | grep -oE '#[0-9]+' | head -n1 | tr -d '#')"
-
-            # Attach the label via the raw API (fj cannot set or create labels):
-            # resolve the label id, creating the label if it does not exist yet.
-            if [ -n "$NUM" ]; then
-              LABEL_ID="$(curl -fsS -H "$AUTH" "$API/repos/$REPO/labels" \
-                | jq -r --arg n "$LABEL" 'map(select(.name == $n)) | .[0].id // empty')"
-              if [ -z "$LABEL_ID" ]; then
-                LABEL_ID="$(curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
-                  -X POST "$API/repos/$REPO/labels" \
-                  -d "$(jq -n --arg n "$LABEL" '{name: $n, color: "#e11d21"}')" | jq -r '.id')"
-              fi
-              curl -fsS -H "$AUTH" -H 'Content-Type: application/json' \
-                -X POST "$API/repos/$REPO/issues/$NUM/labels" \
-                -d "$(jq -n --argjson l "[$LABEL_ID]" '{labels: $l}')" >/dev/null
-            else
-              echo "Could not parse the new issue number; label not attached." >&2
-            fi
+            NUM="$(curl -fsS -H "$AUTH" -H "$JSON" -X POST "$API/repos/$REPO/issues" \
+              -d "$(jq -n --arg t "$TITLE" --arg b "$BODY" --argjson l "$LABEL_ID" \
+                    '{title: $t, body: $b, labels: [$l]}')" | jq -r '.number')"
+            echo "Created issue #$NUM"
           fi
