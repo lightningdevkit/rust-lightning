@@ -2715,12 +2715,28 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 
 #[test]
 fn accept_underpaying_htlcs_config() {
-	do_accept_underpaying_htlcs_config(1);
-	do_accept_underpaying_htlcs_config(2);
-	do_accept_underpaying_htlcs_config(3);
+	do_accept_underpaying_htlcs_config(1, true, None);
+	do_accept_underpaying_htlcs_config(2, true, None);
+	do_accept_underpaying_htlcs_config(3, true, None);
 }
 
-fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
+#[test]
+fn ignore_skimmed_fees_when_underpayment_disabled() {
+	for reported_skimmed_fee_msat in [20, u64::MAX] {
+		do_accept_underpaying_htlcs_config(2, false, Some(reported_skimmed_fee_msat));
+		do_accept_underpaying_htlcs_config(3, false, Some(reported_skimmed_fee_msat));
+	}
+}
+
+#[test]
+fn saturate_counterparty_skimmed_fees() {
+	do_accept_underpaying_htlcs_config(2, true, Some(u64::MAX));
+	do_accept_underpaying_htlcs_config(3, true, Some(u64::MAX));
+}
+
+fn do_accept_underpaying_htlcs_config(
+	num_mpp_parts: usize, accept_underpaying_htlcs: bool, reported_skimmed_fee_msat: Option<u64>,
+) {
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 
@@ -2732,7 +2748,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 		.channel_handshake_config
 		.announced_channel_max_inbound_htlc_value_in_flight_percentage = max_in_flight_percent;
 	let mut underpay_config = test_default_channel_config();
-	underpay_config.channel_config.accept_underpaying_htlcs = true;
+	underpay_config.channel_config.accept_underpaying_htlcs = accept_underpaying_htlcs;
 	underpay_config
 		.channel_handshake_config
 		.unannounced_channel_max_inbound_htlc_value_in_flight_percentage = max_in_flight_percent;
@@ -2758,7 +2774,12 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	}
 
 	// Send the initial payment.
-	let skimmed_fee_msat = 20;
+	let skimmed_fee_msat = if accept_underpaying_htlcs { 20 } else { 0 };
+	let expected_skimmed_fee_per_htlc_msat = if accept_underpaying_htlcs {
+		reported_skimmed_fee_msat.unwrap_or(skimmed_fee_msat)
+	} else {
+		0
+	};
 	let mut route_hints = Vec::new();
 	for _ in 0..num_mpp_parts {
 		route_hints.push(RouteHint(vec![RouteHintHop {
@@ -2814,7 +2835,7 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 			.forward_intercepted_htlc(intercept_id, &chan_ids[idx], node_c_id, amt)
 			.unwrap();
 		expect_and_process_pending_htlcs(&nodes[1], false);
-		let pay_event = {
+		let mut pay_event = {
 			{
 				let mut added_monitors = nodes[1].chain_monitor.added_monitors.lock().unwrap();
 				assert_eq!(added_monitors.len(), 1);
@@ -2824,6 +2845,9 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 			assert_eq!(events.len(), 1);
 			SendEvent::from_event(events.remove(0))
 		};
+		if let Some(fee_msat) = reported_skimmed_fee_msat {
+			pay_event.msgs[0].skimmed_fee_msat = Some(fee_msat);
+		}
 		nodes[2].node.handle_update_add_htlc(node_b_id, &pay_event.msgs[0]);
 		do_commitment_signed_dance(&nodes[2], &nodes[1], &pay_event.commitment_msg, false, true);
 		if idx == num_mpp_parts - 1 {
@@ -2849,7 +2873,9 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 		} => {
 			assert_eq!(pmt_hash, payment_hash);
 			assert_eq!(amt_msat - skimmed_fee_msat * num_mpp_parts as u64, amount_msat);
-			assert_eq!(skimmed_fee_msat * num_mpp_parts as u64, counterparty_skimmed_fee_msat);
+			let expected_skimmed_fee_msat =
+				expected_skimmed_fee_per_htlc_msat.saturating_mul(num_mpp_parts as u64);
+			assert_eq!(expected_skimmed_fee_msat, counterparty_skimmed_fee_msat);
 			assert_eq!(node_c_id, receiver_node_id.unwrap());
 			match purpose {
 				crate::events::PaymentPurpose::Bolt11InvoicePayment {
@@ -2875,7 +2901,8 @@ fn do_accept_underpaying_htlcs_config(num_mpp_parts: usize) {
 	}
 	expected_paths[0].last().unwrap().node.claim_funds(payment_preimage, Default::default());
 	let args = ClaimAlongRouteArgs::new(&nodes[0], &expected_paths[..], payment_preimage)
-		.with_expected_extra_fees(vec![skimmed_fee_msat as u32; num_mpp_parts]);
+		.with_expected_extra_fees(vec![skimmed_fee_msat as u32; num_mpp_parts])
+		.with_expected_skimmed_fee_per_htlc_msat(expected_skimmed_fee_per_htlc_msat);
 	let total_fee_msat = pass_claimed_payment_along_route(args);
 	// The sender doesn't know that the penultimate hop took an extra fee.
 	let amt = total_fee_msat - skimmed_fee_msat * num_mpp_parts as u64;
