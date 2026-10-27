@@ -121,6 +121,9 @@ impl HTLCClaim {
 		}
 		let witness_script = witness.last().unwrap();
 		let second_to_last = witness.second_to_last().unwrap();
+		// The timeout selector is only ever compared against 32 (the preimage length) to pick a
+		// branch, so any non-32-byte element, not just the empty one we build ourselves, may
+		// select the timeout path of a consensus-valid spend.
 		if witness_script.len() == OFFERED_HTLC_SCRIPT_WEIGHT {
 			if witness.len() == 3 && second_to_last.len() == 33 {
 				// <revocation sig> <revocationpubkey> <witness_script>
@@ -128,8 +131,8 @@ impl HTLCClaim {
 			} else if witness.len() == 3 && second_to_last.len() == 32 {
 				// <remotehtlcsig> <payment_preimage> <witness_script>
 				Some(Self::OfferedPreimage)
-			} else if witness.len() == 5 && second_to_last.len() == 0 {
-				// 0 <remotehtlcsig> <localhtlcsig> <> <witness_script>
+			} else if witness.len() == 5 && second_to_last.len() != 32 {
+				// 0 <remotehtlcsig> <localhtlcsig> <timeout selector> <witness_script>
 				Some(Self::OfferedTimeout)
 			} else {
 				None
@@ -143,11 +146,11 @@ impl HTLCClaim {
 			} else if witness.len() == 3 && second_to_last.len() == 32 {
 				// <remotehtlcsig> <payment_preimage> <witness_script>
 				Some(Self::OfferedPreimage)
-			} else if witness.len() == 5 && second_to_last.len() == 0 {
-				// 0 <remotehtlcsig> <localhtlcsig> <> <witness_script>
+			} else if witness.len() == 5 && second_to_last.len() != 32 {
+				// 0 <remotehtlcsig> <localhtlcsig> <timeout selector> <witness_script>
 				Some(Self::OfferedTimeout)
-			} else if witness.len() == 3 && second_to_last.len() == 0 {
-				// <remotehtlcsig> <> <witness_script>
+			} else if witness.len() == 3 {
+				// <remotehtlcsig> <timeout selector> <witness_script>
 				Some(Self::AcceptedTimeout)
 			} else if witness.len() == 5 && second_to_last.len() == 32 {
 				// 0 <remotehtlcsig> <localhtlcsig> <payment_preimage> <witness_script>
@@ -161,8 +164,11 @@ impl HTLCClaim {
 			if witness.len() == 3 && second_to_last.len() == 33 {
 				// <revocation sig> <revocationpubkey> <witness_script>
 				Some(Self::Revocation)
-			} else if witness.len() == 3 && second_to_last.len() == 0 {
-				// <remotehtlcsig> <> <witness_script>
+			} else if witness.len() == 3 && second_to_last.len() != 32 {
+				// <remotehtlcsig> <timeout selector> <witness_script>
+				Some(Self::AcceptedTimeout)
+			} else if witness.len() == 5 && second_to_last.len() != 32 {
+				// 0 <remotehtlcsig> <localhtlcsig> <timeout selector> <witness_script>
 				Some(Self::AcceptedTimeout)
 			} else if witness.len() == 5 && second_to_last.len() == 32 {
 				// 0 <remotehtlcsig> <localhtlcsig> <payment_preimage> <witness_script>
@@ -1894,7 +1900,7 @@ pub fn get_commitment_transaction_number_obscure_factor(
 mod tests {
 	use super::{CounterpartyCommitmentSecrets, ChannelPublicKeys};
 	use crate::chain;
-	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCOutputInCommitment};
+	use crate::ln::chan_utils::{get_htlc_redeemscript, get_to_countersignatory_with_anchors_redeemscript, CommitmentTransaction, TxCreationKeys, ChannelTransactionParameters, CounterpartyChannelTransactionParameters, HTLCClaim, HTLCOutputInCommitment};
 	use bitcoin::secp256k1::{PublicKey, SecretKey, Secp256k1};
 	use crate::util::test_utils;
 	use crate::sign::{ChannelSigner, SignerProvider};
@@ -1903,6 +1909,7 @@ mod tests {
 	use bitcoin::hex::FromHex;
 	use crate::types::payment::PaymentHash;
 	use bitcoin::PublicKey as BitcoinPublicKey;
+	use bitcoin::Witness;
 	use crate::types::features::ChannelTypeFeatures;
 
 	#[allow(unused_imports)]
@@ -2429,6 +2436,86 @@ mod tests {
 			secrets.push([0; 32]);
 			secrets.last_mut().unwrap()[0..32].clone_from_slice(&<Vec<u8>>::from_hex("a7efbc61aac46d34f77778bac22c8a20c6a46ca460addc49009bda875ec88fa4").unwrap());
 			assert!(monitor.provide_secret(281474976710648, secrets.last().unwrap().clone()).is_err());
+		}
+	}
+
+	#[test]
+	fn test_htlc_claim_timeout_selectors() {
+		let offered_htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 10_000,
+			cltv_expiry: 123,
+			payment_hash: PaymentHash([0xbb; 32]),
+			transaction_output_index: Some(0),
+		};
+		let accepted_htlc = HTLCOutputInCommitment {
+			offered: false,
+			amount_msat: 10_000,
+			cltv_expiry: 123,
+			payment_hash: PaymentHash([0xbb; 32]),
+			transaction_output_index: Some(1),
+		};
+		let sig = [0x30; 71];
+
+		for channel_type_features in [
+			ChannelTypeFeatures::only_static_remote_key(),
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies(),
+		] {
+			let mut builder = TestCommitmentTxBuilder::new();
+			builder.channel_parameters.channel_type_features = channel_type_features.clone();
+			let tx = builder.build(0, 0);
+			let keys = tx.trust().keys();
+			let offered_script =
+				get_htlc_redeemscript(&offered_htlc, &channel_type_features, &keys);
+			let accepted_script =
+				get_htlc_redeemscript(&accepted_htlc, &channel_type_features, &keys);
+
+			for selector in [&[][..], &[0u8][..], &[1u8][..], &sig[..]] {
+				let witness = Witness::from_slice(&[
+					&[][..],
+					&sig[..],
+					&sig[..],
+					selector,
+					offered_script.as_bytes(),
+				]);
+				assert_eq!(HTLCClaim::from_witness(&witness), Some(HTLCClaim::OfferedTimeout));
+			}
+			// A 32-byte selector is instead interpreted as a preimage, so it does not claim the
+			// timeout path.
+			let witness = Witness::from_slice(&[
+				&[][..],
+				&sig[..],
+				&sig[..],
+				&[0xaa; 32][..],
+				offered_script.as_bytes(),
+			]);
+			assert_ne!(HTLCClaim::from_witness(&witness), Some(HTLCClaim::OfferedTimeout));
+
+			for selector in [&[][..], &[0u8][..], &[1u8][..], &sig[..]] {
+				let witness =
+					Witness::from_slice(&[&sig[..], selector, accepted_script.as_bytes()]);
+				assert_eq!(HTLCClaim::from_witness(&witness), Some(HTLCClaim::AcceptedTimeout));
+			}
+
+			for selector in [&[][..], &[0u8][..], &sig[..]] {
+				let witness = Witness::from_slice(&[
+					&[][..],
+					&sig[..],
+					&sig[..],
+					selector,
+					accepted_script.as_bytes(),
+				]);
+				assert_eq!(HTLCClaim::from_witness(&witness), Some(HTLCClaim::AcceptedTimeout));
+			}
+
+			let witness = Witness::from_slice(&[
+				&[][..],
+				&sig[..],
+				&sig[..],
+				&[0xaa; 32][..],
+				accepted_script.as_bytes(),
+			]);
+			assert_eq!(HTLCClaim::from_witness(&witness), Some(HTLCClaim::AcceptedPreimage));
 		}
 	}
 }
