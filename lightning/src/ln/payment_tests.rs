@@ -2604,7 +2604,6 @@ fn do_test_intercepted_payment(test: InterceptTest) {
 		// Ensure the payment fails with the expected error.
 		let fail_conditions = PaymentFailedConditions::new()
 			.blamed_scid(intercept_scid)
-			.blamed_chan_closed(true)
 			.expected_htlc_error_data(LocalHTLCFailureReason::UnknownNextPeer, &[]);
 		expect_payment_failed_conditions(&nodes[0], hash, false, fail_conditions);
 	} else if test == InterceptTest::Forward {

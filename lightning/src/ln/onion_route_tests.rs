@@ -2481,7 +2481,6 @@ fn test_phantom_onion_hmac_failure() {
 	// Ensure the payment fails with the expected error.
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
-		.blamed_chan_closed(true)
 		.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionHMAC, &sha256_of_onion);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, fail_conditions);
 }
@@ -2583,7 +2582,6 @@ fn test_phantom_invalid_onion_payload() {
 	let error_data = Vec::new();
 	let mut fail_conditions = PaymentFailedConditions::new()
 		.blamed_scid(phantom_scid)
-		.blamed_chan_closed(true)
 		.expected_htlc_error_data(LocalHTLCFailureReason::InvalidOnionPayload, &error_data);
 	expect_payment_failed_conditions(&nodes[0], payment_hash, true, fail_conditions);
 }

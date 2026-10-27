@@ -1480,10 +1480,12 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 			// completely ban one of its counterparties. Instead, we simply remove the channel in
 			// question.
 			if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
-				network_update = Some(NetworkUpdate::ChannelFailure {
-					short_channel_id: failing_route_hop.short_channel_id,
-					is_permanent: true,
-				});
+				if failing_route_hop.maybe_announced_channel {
+					network_update = Some(NetworkUpdate::ChannelFailure {
+						short_channel_id: failing_route_hop.short_channel_id,
+						is_permanent: true,
+					});
+				}
 			}
 		} else if error_code.is_node() {
 			network_update = Some(NetworkUpdate::NodeFailure {
@@ -1494,10 +1496,12 @@ fn process_onion_failure_inner<T: secp256k1::Signing, L: Logger>(
 		} else if error_code.is_permanent() {
 			if !payment_failed {
 				if let ErrorHop::RouteHop(failing_route_hop) = failing_route_hop {
-					network_update = Some(NetworkUpdate::ChannelFailure {
-						short_channel_id: failing_route_hop.short_channel_id,
-						is_permanent: true,
-					});
+					if failing_route_hop.maybe_announced_channel {
+						network_update = Some(NetworkUpdate::ChannelFailure {
+							short_channel_id: failing_route_hop.short_channel_id,
+							is_permanent: true,
+						});
+					}
 				}
 				short_channel_id = failing_route_hop.short_channel_id();
 			}
