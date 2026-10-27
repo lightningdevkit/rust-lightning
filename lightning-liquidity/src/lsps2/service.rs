@@ -1766,9 +1766,23 @@ where
 		}
 
 		if peer_state_lock.pending_requests_and_channels() < MAX_PENDING_REQUESTS_PER_PEER {
-			peer_state_lock.pending_requests.insert(request_id, request);
-			self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
-			Ok(())
+			match peer_state_lock.pending_requests.entry(request_id.clone()) {
+				Entry::Vacant(entry) => {
+					entry.insert(request);
+					self.total_pending_requests.fetch_add(1, Ordering::Relaxed);
+					Ok(())
+				},
+				Entry::Occupied(_) => {
+					let error_message = format!(
+						"Peer {} already has a pending request with the given request_id.",
+						counterparty_node_id
+					);
+					create_pending_request_limit_exceeded_response(
+						message_queue_notifier,
+						error_message,
+					)
+				},
+			}
 		} else {
 			let error_message = format!(
 				"Peer {} reached maximum number of pending requests: {}",
