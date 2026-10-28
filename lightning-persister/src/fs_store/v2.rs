@@ -147,13 +147,18 @@ impl FilesystemStoreState {
 	fn list_paginated_impl(
 		&self, prefixed_dest: PathBuf, page_token: Option<PageToken>,
 	) -> Result<PaginatedListResponse, lightning::io::Error> {
-		if !prefixed_dest.exists() {
-			return Ok(PaginatedListResponse { keys: Vec::new(), next_page_token: None });
-		}
+		let dir = match fs::read_dir(&prefixed_dest) {
+			Ok(dir) => dir,
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+				// A missing namespace is treated as empty.
+				return Ok(PaginatedListResponse { keys: Vec::new(), next_page_token: None });
+			},
+			Err(e) => return Err(e.into()),
+		};
 
 		// Collect all entries with their modification times
 		let mut entries: Vec<(u64, String)> = Vec::new();
-		for dir_entry in fs::read_dir(&prefixed_dest)? {
+		for dir_entry in dir {
 			let dir_entry = dir_entry?;
 
 			match dir_entry_is_key(&dir_entry) {
@@ -364,7 +369,8 @@ mod tests {
 	#[cfg(feature = "tokio")]
 	use crate::test_utils::do_test_data_migration_async;
 	use crate::test_utils::{
-		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
+		do_list_error_propagation, do_read_write_remove_list_persist, do_test_data_migration,
+		do_test_store,
 	};
 	use std::fs::FileTimes;
 	use std::time::UNIX_EPOCH;
@@ -475,6 +481,33 @@ mod tests {
 			.filter(|p| p.extension().map_or(false, |ext| ext == "tmp"))
 			.collect();
 		assert!(tmp_files.is_empty(), "Found leaked tmp files: {:?}", tmp_files);
+	}
+
+	#[test]
+	fn list_error_propagation() {
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_list_error_propagation_v2");
+		let fs_store = FilesystemStoreV2::new(temp_path.clone()).unwrap();
+		do_list_error_propagation(&fs_store, &temp_path);
+	}
+
+	#[cfg(feature = "tokio")]
+	#[tokio::test]
+	async fn list_error_propagation_async() {
+		use crate::test_utils::do_list_error_propagation_async;
+		use lightning::util::persist::KVStore;
+
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_list_error_propagation_async_v2");
+		let fs_store = FilesystemStoreV2::new(temp_path.clone()).unwrap();
+
+		// A missing data directory or namespace lists as empty.
+		assert!(KVStore::list(&fs_store, "missingprimary", "missingsecondary")
+			.await
+			.unwrap()
+			.is_empty());
+
+		do_list_error_propagation_async(&fs_store, &temp_path).await;
 	}
 
 	#[test]
