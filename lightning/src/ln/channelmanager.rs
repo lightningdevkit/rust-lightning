@@ -12025,9 +12025,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let minimum_depth = self.config.read().unwrap().channel_handshake_config.minimum_depth;
 					let init_res = funded_channel.splice_init(
 						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
+						&self.get_our_node_id(), minimum_depth, &self.logger
 					);
 					let splice_ack_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
@@ -12062,9 +12063,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let minimum_depth = self.config.read().unwrap().channel_handshake_config.minimum_depth;
 					let splice_ack_res = funded_channel.splice_ack(
 						msg, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
+						&self.get_our_node_id(), minimum_depth, &self.logger
 					);
 					let tx_msg_opt = try_channel_entry!(self, peer_state, splice_ack_res, chan_entry);
 					if let Some(tx_msg) = tx_msg_opt {

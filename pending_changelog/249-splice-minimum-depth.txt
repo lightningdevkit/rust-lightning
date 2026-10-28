@@ -1,0 +1,9 @@
+# Backwards Compatibility
+
+ * `ChannelHandshakeLimits::trust_own_funding_0conf` now applies only to a channel's initial
+   funding transaction. Splices on channels opened as ordinary outbound channels are no longer
+   considered locked in at zero confirmations and instead require
+   `ChannelHandshakeConfig::minimum_depth` confirmations, preventing a counterparty from having
+   its own unconfirmed, independently spendable splice inputs promoted to a usable channel
+   balance. Zero-confirmation splices remain possible on channels accepted from a trusted peer
+   with zero confirmations via `ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`.

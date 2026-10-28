@@ -2530,7 +2530,7 @@ impl FundingScope {
 	fn for_splice<SP: Deref>(
 		prev_funding: &Self, context: &ChannelContext<SP>, our_funding_contribution: SignedAmount,
 		their_funding_contribution: SignedAmount, counterparty_funding_pubkey: PublicKey,
-		our_new_holder_keys: ChannelPublicKeys,
+		our_new_holder_keys: ChannelPublicKeys, minimum_depth: u32,
 	) -> Result<Self, String>
 	where
 		SP::Target: SignerProvider,
@@ -2604,6 +2604,21 @@ impl FundingScope {
 			)
 		})?;
 
+		// Trusting our own funding transaction at zero confirmations does not extend to
+		// splices, which may include inputs only the counterparty controls. Splices thus
+		// require our configured minimum depth, unless the channel was accepted from a
+		// trusted peer at zero confirmations, in which case that trust covers splices, too.
+		let minimum_depth_override =
+			if !prev_funding.is_outbound() && context.minimum_depth == Some(0) {
+				None
+			} else {
+				let mut min_depth = cmp::max(minimum_depth, 1);
+				if let Some(chan_min_depth) = context.minimum_depth {
+					min_depth = cmp::max(min_depth, chan_min_depth);
+				}
+				Some(min_depth)
+			};
+
 		Ok(Self {
 			channel_transaction_parameters: post_channel_transaction_parameters,
 			value_to_self_msat: post_value_to_self_msat,
@@ -2626,7 +2641,7 @@ impl FundingScope {
 			next_remote_fee: Mutex::new(PredictedNextFee::default()),
 			funding_tx_confirmation_height: 0,
 			funding_tx_confirmed_in: None,
-			minimum_depth_override: None,
+			minimum_depth_override,
 			short_channel_id: None,
 		})
 	}
@@ -12158,7 +12173,7 @@ where
 
 	/// Checks during handling splice_init
 	pub fn validate_splice_init(
-		&self, msg: &msgs::SpliceInit, our_funding_contribution: SignedAmount,
+		&self, msg: &msgs::SpliceInit, our_funding_contribution: SignedAmount, minimum_depth: u32,
 	) -> Result<FundingScope, ChannelError> {
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(ChannelError::WarnAndDisconnect(format!(
@@ -12226,6 +12241,7 @@ where
 			their_funding_contribution,
 			msg.funding_pubkey,
 			new_keys,
+			minimum_depth,
 		)
 		.map_err(|e| ChannelError::WarnAndDisconnect(e))
 	}
@@ -12338,14 +12354,16 @@ where
 
 	pub(crate) fn splice_init<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceInit, our_funding_contribution_satoshis: i64,
-		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, logger: &L,
+		signer_provider: &SP, entropy_source: &ES, holder_node_id: &PublicKey, minimum_depth: u32,
+		logger: &L,
 	) -> Result<msgs::SpliceAck, ChannelError>
 	where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
 		let our_funding_contribution = SignedAmount::from_sat(our_funding_contribution_satoshis);
-		let splice_funding = self.validate_splice_init(msg, our_funding_contribution)?;
+		let splice_funding =
+			self.validate_splice_init(msg, our_funding_contribution, minimum_depth)?;
 
 		log_info!(
 			logger,
@@ -12409,13 +12427,13 @@ where
 
 	pub(crate) fn splice_ack<ES: Deref, L: Deref>(
 		&mut self, msg: &msgs::SpliceAck, signer_provider: &SP, entropy_source: &ES,
-		holder_node_id: &PublicKey, logger: &L,
+		holder_node_id: &PublicKey, minimum_depth: u32, logger: &L,
 	) -> Result<Option<InteractiveTxMessageSend>, ChannelError>
 	where
 		ES::Target: EntropySource,
 		L::Target: Logger,
 	{
-		let splice_funding = self.validate_splice_ack(msg)?;
+		let splice_funding = self.validate_splice_ack(msg, minimum_depth)?;
 
 		log_info!(
 			logger,
@@ -12463,7 +12481,9 @@ where
 		Ok(tx_msg_opt)
 	}
 
-	fn validate_splice_ack(&self, msg: &msgs::SpliceAck) -> Result<FundingScope, ChannelError> {
+	fn validate_splice_ack(
+		&self, msg: &msgs::SpliceAck, minimum_depth: u32,
+	) -> Result<FundingScope, ChannelError> {
 		// TODO(splicing): Add check that we are the splice (quiescence) initiator
 
 		let pending_splice = self
@@ -12505,6 +12525,7 @@ where
 			their_funding_contribution,
 			msg.funding_pubkey,
 			new_keys,
+			minimum_depth,
 		)
 		.map_err(|e| ChannelError::WarnAndDisconnect(e))
 	}

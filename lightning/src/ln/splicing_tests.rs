@@ -1368,6 +1368,9 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	if use_0conf {
 		config.manually_accept_inbound_channels = true;
 		config.channel_handshake_limits.trust_own_funding_0conf = true;
+		// The 0-conf variant never announces the channel, and the splices lock in only after
+		// being mined, which would otherwise trigger announcement messages.
+		config.channel_handshake_config.announce_for_forwarding = false;
 	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let (node_0a, node_0b, node_1a, node_1b);
@@ -1499,47 +1502,45 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 			new_funding_script,
 		)
 	};
+	// Node 0 initiates the first splice. Its splice requires the configured minimum depth, so it
+	// does not send `splice_locked` at signing, even on a zero-conf channel. Node 1, which
+	// accepted the channel from a trusted peer at zero confirmations, locks the splice at signing
+	// when `use_0conf`.
 	let (splice_tx, splice_locked) =
-		sign_interactive_funding_tx(&nodes[0], &nodes[1], initial_commit_sig, use_0conf);
+		sign_interactive_funding_tx(&nodes[0], &nodes[1], initial_commit_sig, false);
 	expect_splice_pending_event(&nodes[0], &node_id_1);
 	expect_splice_pending_event(&nodes[1], &node_id_0);
-
-	let splice_locked = if use_0conf {
-		let (splice_locked, for_node_id) = splice_locked.unwrap();
-		assert_eq!(for_node_id, node_id_1);
-		splice_locked
+	assert!(splice_locked.is_none());
+	let node_1_splice_locked = if use_0conf {
+		Some(get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_0))
 	} else {
-		assert!(splice_locked.is_none());
-
-		mine_transaction(&nodes[0], &splice_tx);
-		mine_transaction(&nodes[1], &splice_tx);
-
-		// Mine enough blocks for the first splice to become locked.
-		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
-		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
-
-		get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1)
+		None
 	};
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	// Mine enough blocks for the first splice to become locked on node 0.
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
+
+	let splice_locked = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
 	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked);
 
 	// We should see the node which lost the tie-breaker attempt their splice now by first
-	// negotiating quiescence, but their `stfu` won't be sent until after another reconnection.
+	// negotiating quiescence, but their `stfu` won't be sent until after another reconnection. On
+	// a zero-conf channel node 1 already sent its `splice_locked` at signing, so only the
+	// non-zero-conf variant emits one here, alongside the announcement messages.
 	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), if use_0conf { 2 } else { 3 }, "{msg_events:?}");
-	if let MessageSendEvent::SendSpliceLocked { ref msg, .. } = &msg_events[0] {
-		nodes[0].node.handle_splice_locked(node_id_1, msg);
-		if use_0conf {
-			// TODO(splicing): Revisit splice transaction rebroadcasts.
-			let txn_0 = nodes[0].tx_broadcaster.txn_broadcast();
-			assert_eq!(txn_0.len(), 1);
-			assert_eq!(&txn_0[0], &splice_tx);
-			mine_transaction(&nodes[0], &splice_tx);
-			mine_transaction(&nodes[1], &splice_tx);
-		}
+	assert_eq!(msg_events.len(), if use_0conf { 1 } else { 3 }, "{msg_events:?}");
+	if let Some(node_1_splice_locked) = &node_1_splice_locked {
+		nodes[0].node.handle_splice_locked(node_id_1, node_1_splice_locked);
 	} else {
-		panic!("Unexpected event {:?}", &msg_events[0]);
-	}
-	if !use_0conf {
+		if let MessageSendEvent::SendSpliceLocked { ref msg, .. } = &msg_events[0] {
+			nodes[0].node.handle_splice_locked(node_id_1, msg);
+		} else {
+			panic!("Unexpected event {:?}", &msg_events[0]);
+		}
 		if let MessageSendEvent::SendAnnouncementSignatures { ref msg, .. } = &msg_events[1] {
 			nodes[0].node.handle_announcement_signatures(node_id_1, msg);
 		} else {
@@ -1547,7 +1548,7 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 		}
 	}
 	assert!(matches!(
-		&msg_events[if use_0conf { 1 } else { 2 }],
+		&msg_events[if use_0conf { 0 } else { 2 }],
 		MessageSendEvent::SendStfu { .. }
 	));
 
@@ -1647,8 +1648,14 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 	expect_splice_pending_event(&nodes[1], &node_id_0);
 
 	if use_0conf {
+		// Node 1 sends `splice_locked` at signing, while node 0 only sends its own once the splice
+		// reaches the configured minimum depth.
 		let (splice_locked, for_node_id) = splice_locked.unwrap();
 		assert_eq!(for_node_id, node_id_0);
+		mine_transaction(&nodes[0], &splice_tx);
+		mine_transaction(&nodes[1], &splice_tx);
+		connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+		connect_blocks(&nodes[1], ANTI_REORG_DELAY - 1);
 		lock_splice(&nodes[1], &nodes[0], &splice_locked, true);
 	} else {
 		assert!(splice_locked.is_none());
@@ -1659,6 +1666,79 @@ fn do_test_propose_splice_while_disconnected(reload: bool, use_0conf: bool) {
 
 	// Sanity check that we can still make a test payment.
 	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+}
+
+#[test]
+fn test_trust_own_funding_does_not_trust_counterparty_splice_inputs() {
+	// Trusting our own funding transaction at zero confirmations does not extend to splices:
+	// a counterparty-funded splice-in may only promote to the channel funding once it reaches
+	// the configured minimum depth, even on a channel whose initial funding we trusted at zero
+	// confirmations. Otherwise the counterparty could have its unconfirmed, independently
+	// spendable inputs promoted to a usable channel balance and double-spend them later.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.manually_accept_inbound_channels = true;
+	config.channel_handshake_config.announce_for_forwarding = false;
+	config.channel_handshake_config.minimum_depth = 6;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	// Only node 1 accepts the channel through the trusted zero-conf path. Node 0 used an
+	// ordinary outbound channel and trusts only the funding transaction it created itself.
+	let (funding_tx, channel_id) =
+		open_zero_conf_channel_with_value(&nodes[0], &nodes[1], None, 100_000, 0);
+	assert!(!nodes[0].node.list_channels()[0].channel_type.as_ref().unwrap().supports_zero_conf());
+	mine_transaction(&nodes[0], &funding_tx);
+	mine_transaction(&nodes[1], &funding_tx);
+	let original_funding_txid = funding_tx.compute_txid();
+
+	// Node 1 now contributes its own independently spendable input, which node 0 never
+	// authorized trusting at zero confirmations.
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let contribution = SpliceContribution::SpliceIn {
+		value: Amount::from_sat(50_000),
+		inputs: vec![FundingTxInput::new_p2wpkh(coinbase_tx, 1).unwrap()],
+		change_script: Some(nodes[1].wallet_source.get_change_script().unwrap()),
+	};
+	let new_funding_script =
+		complete_splice_handshake(&nodes[1], &nodes[0], channel_id, contribution.clone());
+	let initial_commit_sig = complete_interactive_funding_negotiation(
+		&nodes[1],
+		&nodes[0],
+		channel_id,
+		contribution,
+		new_funding_script,
+	);
+	let (splice_tx, splice_locked) =
+		sign_interactive_funding_tx(&nodes[1], &nodes[0], initial_commit_sig, true);
+	assert!(splice_tx
+		.input
+		.iter()
+		.any(|input| input.previous_output.txid != original_funding_txid));
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	// Node 1 claims the splice is locked without any block containing it. This must not replace
+	// our confirmed funding with a transaction whose additional input node 1 can double-spend
+	// without our signature.
+	let (splice_locked, destination) = splice_locked.unwrap();
+	assert_eq!(destination, node_id_0);
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked);
+	assert_eq!(get_monitor!(nodes[0], channel_id).get_funding_txo().txid, original_funding_txid);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+	check_added_monitors(&nodes[0], 0);
+	let channel = nodes[0]
+		.node
+		.list_channels()
+		.into_iter()
+		.find(|channel| channel.channel_id == channel_id)
+		.unwrap();
+	assert_eq!(channel.funding_txo.unwrap().txid, original_funding_txid);
 }
 
 #[test]
