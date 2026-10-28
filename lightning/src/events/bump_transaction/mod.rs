@@ -356,6 +356,7 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 			.channel_derivation_parameters
 			.transaction_parameters
 			.channel_type_features;
+		let commitment_txid = commitment_tx.compute_txid();
 		let anchor_input_witness_weight = if channel_type.supports_anchor_zero_fee_commitments() {
 			EMPTY_WITNESS_WEIGHT
 		} else {
@@ -375,7 +376,7 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 		);
 		if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
 			log_debug!(self.logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW, broadcasting.",
-				commitment_tx.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
+				commitment_txid, commitment_tx_feerate_sat_per_1000_weight,
 				package_target_feerate_sat_per_1000_weight);
 			self.broadcaster.broadcast_transactions(&[(
 				&commitment_tx,
@@ -423,7 +424,24 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 					// increase the max_tx_weight by the same delta here.
 					+ commitment_tx_weight,
 				)
-				.await?;
+				.await
+				.map_err(|()| {
+					// Keyed-anchor commitments may still confirm using their
+					// existing fees. Zero-fee commitments require a funded
+					// child to be relayed.
+					if channel_type.supports_anchors_zero_fee_htlc_tx() {
+						log_warn!(
+							self.logger,
+							"Funding the anchor child transaction failed; broadcasting pre-signed commitment {} at its own feerate of {} sat/kW",
+							commitment_txid,
+							commitment_tx_feerate_sat_per_1000_weight,
+						);
+						self.broadcaster.broadcast_transactions(&[(
+							&commitment_tx,
+							TransactionType::UnilateralClose { counterparty_node_id, channel_id },
+						)]);
+					}
+				})?;
 
 			let version = if channel_type.supports_anchor_zero_fee_commitments() {
 				Version::non_standard(3)
@@ -543,7 +561,7 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				self.logger,
 				"Broadcasting anchor transaction {} to bump channel close with txid {}",
 				anchor_txid,
-				commitment_tx.compute_txid()
+				commitment_txid,
 			);
 			self.broadcaster.broadcast_transactions(&[
 				(
