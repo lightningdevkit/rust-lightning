@@ -26,7 +26,7 @@ pub const MAX_EVENT_QUEUE_SIZE: usize = 1000;
 
 pub(crate) struct EventQueue<K: KVStore + Clone> {
 	state: Mutex<QueueState>,
-	waker: Mutex<Option<Waker>>,
+	wakers: Mutex<Vec<Waker>>,
 	#[cfg(feature = "std")]
 	condvar: crate::sync::Condvar,
 	kv_store: K,
@@ -38,14 +38,38 @@ impl<K: KVStore + Clone> EventQueue<K> {
 		queue: VecDeque<LiquidityEvent>, kv_store: K, persist_notifier: Arc<Notifier>,
 	) -> Self {
 		let state = Mutex::new(QueueState { queue, needs_persist: false });
-		let waker = Mutex::new(None);
 		Self {
 			state,
-			waker,
+			wakers: Mutex::new(Vec::new()),
 			#[cfg(feature = "std")]
 			condvar: crate::sync::Condvar::new(),
 			kv_store,
 			persist_notifier,
+		}
+	}
+
+	// Registers `waker` on behalf of a pending async consumer, replacing any prior
+	// registration made with an equivalent waker so that repeated polls don't
+	// accumulate duplicates. Wakers of dropped futures may linger until the next
+	// notification; waking them is a no-op.
+	fn register_waker(&self, waker: &Waker) {
+		let mut wakers = self.wakers.lock().unwrap();
+		for registered in wakers.iter_mut() {
+			if registered.will_wake(waker) {
+				*registered = waker.clone();
+				return;
+			}
+		}
+		wakers.push(waker.clone());
+	}
+
+	// Wakes all registered consumers. Must only be called after releasing the
+	// queue lock: wake callbacks may poll consumers inline, taking the locks
+	// again.
+	fn wake_waiters(&self) {
+		let wakers = core::mem::take(&mut *self.wakers.lock().unwrap());
+		for waker in wakers {
+			waker.wake();
 		}
 	}
 
@@ -86,11 +110,7 @@ impl<K: KVStore + Clone> EventQueue<K> {
 		drop(state_lock);
 
 		if should_notify {
-			let waker = self.waker.lock().unwrap().take();
-			if let Some(waker) = waker {
-				waker.wake();
-			}
-
+			self.wake_waiters();
 			self.condvar.notify_one();
 		}
 
@@ -180,10 +200,7 @@ impl<'a, K: KVStore + Clone> Drop for EventQueueNotifierGuard<'a, K> {
 		};
 
 		if should_notify {
-			let waker = self.0.waker.lock().unwrap().take();
-			if let Some(waker) = waker {
-				waker.wake();
-			}
+			self.0.wake_waiters();
 
 			#[cfg(feature = "std")]
 			self.0.condvar.notify_one();
@@ -209,7 +226,10 @@ impl<K: KVStore + Clone> Future for EventFuture<'_, K> {
 				state_lock.needs_persist = true;
 				(Poll::Ready(event), true)
 			} else {
-				*self.0.waker.lock().unwrap() = Some(cx.waker().clone());
+				// Registering under the queue lock closes the race with an
+				// enqueue that would otherwise slip past the empty check
+				// without waking anyone.
+				self.0.register_waker(&cx.waker());
 				(Poll::Pending, false)
 			}
 		};
@@ -318,6 +338,204 @@ mod tests {
 	use lightning::util::test_utils::TestStore;
 	use std::task::Wake;
 	use std::time::Duration;
+
+	struct WakeCounter(AtomicUsize);
+
+	impl Wake for WakeCounter {
+		fn wake(self: Arc<Self>) {
+			self.0.fetch_add(1, Ordering::SeqCst);
+		}
+	}
+
+	fn poll_event_fut<F: Future + Unpin>(fut: &mut F, waker: &Waker) -> Poll<F::Output> {
+		let mut cx = Context::from_waker(waker);
+		Future::poll(core::pin::Pin::new(fut), &mut cx)
+	}
+
+	fn counter_waker(counter: &Arc<WakeCounter>) -> Waker {
+		Waker::from(Arc::clone(&counter))
+	}
+
+	// Regression test for the single-slot waker: two independently polled
+	// consumers must both be woken when events are enqueued, and both events
+	// must become consumable without any further enqueue.
+	#[test]
+	fn multi_consumer_events_both_delivered() {
+		let event_queue = test_queue();
+		let event = test_event();
+
+		let mut fut_a = Box::pin(event_queue.next_event_async());
+		let mut fut_b = Box::pin(event_queue.next_event_async());
+
+		let counter_a = Arc::new(WakeCounter(AtomicUsize::new(0)));
+		let counter_b = Arc::new(WakeCounter(AtomicUsize::new(0)));
+		let waker_a = counter_waker(&counter_a);
+		let waker_b = counter_waker(&counter_b);
+
+		assert!(matches!(poll_event_fut(&mut fut_a, &waker_a), Poll::Pending));
+		assert!(matches!(poll_event_fut(&mut fut_b, &waker_b), Poll::Pending));
+		assert_eq!(counter_a.0.load(Ordering::SeqCst), 0);
+		assert_eq!(counter_b.0.load(Ordering::SeqCst), 0);
+
+		let guard = event_queue.notifier();
+		guard.enqueue(event.clone());
+		guard.enqueue(event.clone());
+		drop(guard);
+
+		// Both consumers must have been woken.
+		assert_eq!(counter_a.0.load(Ordering::SeqCst), 1);
+		assert_eq!(counter_b.0.load(Ordering::SeqCst), 1);
+
+		assert!(matches!(poll_event_fut(&mut fut_a, &waker_a), Poll::Ready(_)));
+		assert!(matches!(poll_event_fut(&mut fut_b, &waker_b), Poll::Ready(_)));
+		assert_eq!(event_queue.next_event(), None);
+	}
+
+	// An initially non-empty queue must yield events without requiring a wake.
+	#[test]
+	fn initially_non_empty_queue_immediately_ready() {
+		let event_queue = test_queue();
+		let event = test_event();
+
+		let guard = event_queue.notifier();
+		guard.enqueue(event.clone());
+		guard.enqueue(event.clone());
+		drop(guard);
+
+		let mut fut_a = Box::pin(event_queue.next_event_async());
+		let mut fut_b = Box::pin(event_queue.next_event_async());
+		let unused_waker =
+			counter_waker(&Arc::new(WakeCounter(core::sync::atomic::AtomicUsize::new(0))));
+
+		assert!(matches!(poll_event_fut(&mut fut_a, &unused_waker), Poll::Ready(_)));
+		assert!(matches!(poll_event_fut(&mut fut_b, &unused_waker), Poll::Ready(_)));
+	}
+
+	// More waiters than events: the extra waiters stay pending but remain
+	// registered, and are woken by the next enqueue.
+	#[test]
+	fn more_waiters_than_events() {
+		let event_queue = test_queue();
+		let event = test_event();
+
+		let mut futs: Vec<_> = (0..3).map(|_| Box::pin(event_queue.next_event_async())).collect();
+		let counters: Vec<_> = (0..3).map(|_| Arc::new(WakeCounter(AtomicUsize::new(0)))).collect();
+		let wakers: Vec<_> = counters.iter().map(counter_waker).collect();
+
+		for (fut, waker) in futs.iter_mut().zip(wakers.iter()) {
+			assert!(matches!(poll_event_fut(fut, waker), Poll::Pending));
+		}
+
+		let guard = event_queue.notifier();
+		guard.enqueue(event.clone());
+		drop(guard);
+
+		for counter in counters.iter() {
+			assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+		}
+
+		assert!(matches!(poll_event_fut(&mut futs[0], &wakers[0]), Poll::Ready(_)));
+		assert!(matches!(poll_event_fut(&mut futs[1], &wakers[1]), Poll::Pending));
+
+		let guard = event_queue.notifier();
+		guard.enqueue(event.clone());
+		drop(guard);
+
+		assert_eq!(counters[1].0.load(Ordering::SeqCst), 2);
+		assert!(matches!(poll_event_fut(&mut futs[1], &wakers[1]), Poll::Ready(_)));
+		assert!(matches!(poll_event_fut(&mut futs[2], &wakers[2]), Poll::Pending));
+		assert_eq!(event_queue.next_event(), None);
+	}
+
+	// A cancelled consumer's waker may still be woken, which must be a no-op,
+	// and the remaining consumer still gets its event.
+	#[test]
+	fn cancellation_leaves_other_consumer_woken() {
+		let event_queue = test_queue();
+		let event = test_event();
+
+		let counter_cancelled = Arc::new(WakeCounter(AtomicUsize::new(0)));
+		let counter_kept = Arc::new(WakeCounter(AtomicUsize::new(0)));
+		let waker_cancelled = counter_waker(&counter_cancelled);
+		let waker_kept = counter_waker(&counter_kept);
+
+		{
+			let mut fut_cancelled = Box::pin(event_queue.next_event_async());
+			assert!(matches!(poll_event_fut(&mut fut_cancelled, &waker_cancelled), Poll::Pending));
+			// `fut_cancelled` is dropped here, after registering its waker.
+		}
+
+		let mut fut_kept = Box::pin(event_queue.next_event_async());
+		assert!(matches!(poll_event_fut(&mut fut_kept, &waker_kept), Poll::Pending));
+
+		let guard = event_queue.notifier();
+		guard.enqueue(event.clone());
+		drop(guard);
+
+		assert_eq!(counter_cancelled.0.load(Ordering::SeqCst), 1);
+		assert_eq!(counter_kept.0.load(Ordering::SeqCst), 1);
+		assert!(matches!(poll_event_fut(&mut fut_kept, &waker_kept), Poll::Ready(_)));
+		assert_eq!(event_queue.next_event(), None);
+	}
+
+	// Repeated polls of the same future must not accumulate stale
+	// registrations: re-registering an equivalent waker replaces the prior
+	// registration instead, so a notification wakes the consumer exactly once.
+	#[test]
+	fn repeated_polls_replace_stale_registrations() {
+		let event_queue = test_queue();
+		let event = test_event();
+
+		let mut fut = Box::pin(event_queue.next_event_async());
+		let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+
+		assert!(matches!(poll_event_fut(&mut fut, &counter_waker(&counter)), Poll::Pending));
+		assert!(matches!(poll_event_fut(&mut fut, &counter_waker(&counter)), Poll::Pending));
+
+		let guard = event_queue.notifier();
+		guard.enqueue(event.clone());
+		drop(guard);
+
+		// Wakers built from the same counter are `will_wake`-equivalent, so
+		// this exercises the replacement path; the count would be 2 if both
+		// registrations were kept.
+		assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+		assert!(matches!(poll_event_fut(&mut fut, &counter_waker(&counter)), Poll::Ready(_)));
+	}
+
+	// Repeated empty-to-nonempty transitions must wake the pending consumer
+	// each time, including when an event is taken while another remains
+	// queued.
+	#[test]
+	fn repeated_empty_to_nonempty_transitions() {
+		let event_queue = test_queue();
+		let event = test_event();
+
+		// Reuse a single `EventFuture` across the transitions, as a consumer
+		// awaiting `next_event_async` in a loop would.
+		let mut fut = EventFuture(&*event_queue);
+		let counter = Arc::new(WakeCounter(AtomicUsize::new(0)));
+		let waker = counter_waker(&counter);
+
+		for _ in 0..3 {
+			assert!(matches!(poll_event_fut(&mut fut, &waker), Poll::Pending));
+			assert_eq!(counter.0.load(Ordering::SeqCst), 0);
+
+			let guard = event_queue.notifier();
+			guard.enqueue(event.clone());
+			guard.enqueue(event.clone());
+			drop(guard);
+
+			// Each empty-to-nonempty transition wakes the pending consumer
+			// exactly once, with no spurious wakeups on taking the events.
+			assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+			assert!(matches!(poll_event_fut(&mut fut, &waker), Poll::Ready(_)));
+			assert!(matches!(poll_event_fut(&mut fut, &waker), Poll::Ready(_)));
+			assert_eq!(counter.0.load(Ordering::SeqCst), 1);
+			counter.0.store(0, Ordering::SeqCst);
+		}
+		assert_eq!(event_queue.next_event(), None);
+	}
 
 	#[tokio::test]
 	async fn event_queue_works() {
@@ -589,7 +807,7 @@ mod tests {
 			queue: Arc::clone(&event_queue),
 			delivered: Arc::clone(&delivered),
 		}));
-		*event_queue.waker.lock().unwrap() = Some(waker);
+		event_queue.register_waker(&waker);
 
 		let waiter_flag = completion_flag();
 		let waiter_event = Arc::new(Mutex::new(None));
