@@ -1163,6 +1163,98 @@ fn max_total_requests_buy_rejected() {
 }
 
 #[test]
+fn duplicate_request_id_rejected() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, _) = setup_test_lsps2_nodes(nodes);
+	let LSPSNodes { service_node, client_node } = lsps_nodes;
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let client_handler = client_node.liquidity_manager.lsps2_client_handler().unwrap();
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	// Rewrite the request_id of a `get_info` request so we can replay it with a fixed ID.
+	let client_request_id = client_handler.request_opening_params(service_node_id, None);
+	let mut dup_request_msg = get_lsps_message!(client_node, service_node_id);
+	dup_request_msg.payload = dup_request_msg
+		.payload
+		.replace(&format!("\"id\":\"{}\"", client_request_id.0), "\"id\":\"duplicate-request-id\"");
+
+	// The first request with the given request_id is accepted.
+	service_node
+		.liquidity_manager
+		.handle_custom_message(dup_request_msg.clone(), client_node_id)
+		.unwrap();
+
+	let duplicate_request_event = service_node.liquidity_manager.next_event().unwrap();
+	let duplicate_request_id = match &duplicate_request_event {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::GetInfo {
+			request_id,
+			counterparty_node_id,
+			..
+		}) => {
+			assert_eq!(request_id.0, "duplicate-request-id");
+			assert_eq!(*counterparty_node_id, client_node_id);
+			request_id.clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	// Replaying the request with the same request_id is rejected with an error response ...
+	for _ in 1..MAX_TOTAL_PENDING_REQUESTS {
+		let result = service_node
+			.liquidity_manager
+			.handle_custom_message(dup_request_msg.clone(), client_node_id);
+		assert!(result.is_err(), "Duplicate request_id should have been rejected");
+
+		let get_info_error_response = get_lsps_message!(service_node, client_node_id);
+		assert!(get_info_error_response.payload.contains("duplicate-request-id"));
+		assert!(get_info_error_response.payload.contains("error"));
+	}
+
+	// ... and must not exhaust the total number of pending requests, i.e., a different
+	// peer's `get_info` request is still accepted.
+	let secp = Secp256k1::new();
+	let other_sk = SecretKey::from_slice(&[42u8; 32]).unwrap();
+	let other_node_id = PublicKey::from_secret_key(&secp, &other_sk);
+
+	let _ = client_handler.request_opening_params(service_node_id, None);
+	let other_request_msg = get_lsps_message!(client_node, service_node_id);
+	service_node.liquidity_manager.handle_custom_message(other_request_msg, other_node_id).unwrap();
+
+	match service_node.liquidity_manager.next_event().unwrap() {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::GetInfo { .. }) => {},
+		_ => panic!("Unexpected event"),
+	}
+
+	// The original request can still be answered.
+	let raw_opening_params = LSPS2RawOpeningFeeParams {
+		min_fee_msat: 100,
+		proportional: 21,
+		valid_until: LSPSDateTime::from_str("2035-05-20T08:30:45Z").unwrap(),
+		min_lifetime: 144,
+		max_client_to_self_delay: 128,
+		min_payment_size_msat: 1,
+		max_payment_size_msat: 100_000_000,
+	};
+	service_handler
+		.opening_fee_params_generated(
+			&client_node_id,
+			duplicate_request_id,
+			vec![raw_opening_params],
+		)
+		.unwrap();
+
+	let get_info_response = get_lsps_message!(service_node, client_node_id);
+	assert!(get_info_response.payload.contains("duplicate-request-id"));
+	assert!(get_info_response.payload.contains("result"));
+}
+
+#[test]
 fn invalid_token_flow() {
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
