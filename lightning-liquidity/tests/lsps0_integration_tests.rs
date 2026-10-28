@@ -6,6 +6,7 @@ use common::{create_service_and_client_nodes, get_lsps_message, LSPSNodes};
 
 use lightning_liquidity::events::LiquidityEvent;
 use lightning_liquidity::lsps0::event::LSPS0ClientEvent;
+use lightning_liquidity::lsps0::ser::RawLSPSMessage;
 use lightning_liquidity::lsps1::client::LSPS1ClientConfig;
 use lightning_liquidity::lsps1::msgs::LSPS1Options;
 use lightning_liquidity::lsps1::service::LSPS1ServiceConfig;
@@ -23,13 +24,7 @@ use lightning::ln::peer_handler::CustomMessageHandler;
 
 use std::sync::Arc;
 
-#[test]
-fn list_protocols_integration_test() {
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+fn lsps_service_and_client_configs() -> (LiquidityServiceConfig, LiquidityClientConfig) {
 	let promise_secret = [42; 32];
 	let lsps2_service_config = LSPS2ServiceConfig { promise_secret };
 	let lsps1_service_config = {
@@ -63,6 +58,18 @@ fn list_protocols_integration_test() {
 		lsps2_client_config: Some(lsps2_client_config),
 		lsps5_client_config: Some(lsps5_client_config),
 	};
+
+	(service_config, client_config)
+}
+
+#[test]
+fn list_protocols_integration_test() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (service_config, client_config) = lsps_service_and_client_configs();
 
 	let service_node_id = nodes[0].node.get_our_node_id();
 	let client_node_id = nodes[1].node.get_our_node_id();
@@ -107,4 +114,57 @@ fn list_protocols_integration_test() {
 		},
 		_ => panic!("Unexpected event"),
 	}
+}
+
+#[test]
+fn list_protocols_request_with_oversized_id_is_rejected() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (service_config, client_config) = lsps_service_and_client_configs();
+
+	let client_node_id = nodes[1].node.get_our_node_id();
+
+	let LSPSNodes { service_node, client_node: _ } = create_service_and_client_nodes(
+		nodes,
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
+
+	// An id just under the maximum custom message size would previously be
+	// echoed back in a response exceeding the Lightning message size limit.
+	let oversized_id = "a".repeat(65_000);
+	let payload = format!(
+		r#"{{"jsonrpc":"2.0","id":"{}","method":"lsps0.list_protocols","params":{{}}}}"#,
+		oversized_id
+	);
+
+	let err = service_node
+		.liquidity_manager
+		.handle_custom_message(RawLSPSMessage { payload }, client_node_id)
+		.unwrap_err();
+	assert!(matches!(err.action, lightning::ln::msgs::ErrorAction::IgnoreAndLog(_)));
+
+	// The service must not echo the oversized id back; it responds with a
+	// parse error carrying a `null` id instead.
+	let response = get_lsps_message!(service_node, client_node_id);
+	let parsed_response: serde_json::Value = serde_json::from_str(&response.payload).unwrap();
+	assert_eq!(parsed_response["id"], serde_json::Value::Null);
+	assert_eq!(parsed_response["error"]["code"], -32700);
+
+	// The peer sent an invalid message, so it is ignored from now on.
+	assert!(service_node
+		.liquidity_manager
+		.handle_custom_message(
+			RawLSPSMessage {
+				payload: r#"{"jsonrpc":"2.0","id":"1","method":"lsps0.list_protocols"}"#
+					.to_string()
+			},
+			client_node_id,
+		)
+		.is_err());
+	assert_eq!(service_node.liquidity_manager.get_and_clear_pending_msg().len(), 0);
 }

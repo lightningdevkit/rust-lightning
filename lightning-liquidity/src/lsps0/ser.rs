@@ -56,6 +56,14 @@ pub(crate) const JSONRPC_INVALID_MESSAGE_ERROR_MESSAGE: &str = "parse error";
 pub(crate) const JSONRPC_INTERNAL_ERROR_ERROR_CODE: i32 = -32603;
 pub(crate) const JSONRPC_INTERNAL_ERROR_ERROR_MESSAGE: &str = "Internal error";
 
+/// The maximum length of a JSON-RPC request `id` we accept from a peer.
+///
+/// We echo a peer's request `id` back in our responses, so accepting arbitrarily
+/// long ids would allow a peer to push our responses over the Lightning message
+/// size limit. Our own ids are 32 hex characters, so 256 bytes leaves plenty of
+/// room while keeping every response we generate well within the limit.
+pub(crate) const MAX_REQUEST_ID_LEN: usize = 256;
+
 pub(crate) const LSPS0_CLIENT_REJECTED_ERROR_CODE: i32 = 1;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -554,7 +562,14 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 		while let Some(key) = map.next_key()? {
 			match key {
 				"id" => {
-					id = map.next_value()?;
+					let request_id: LSPSRequestId = map.next_value()?;
+					if request_id.0.len() > MAX_REQUEST_ID_LEN {
+						return Err(de::Error::custom(format!(
+							"Request id exceeds maximum supported length of {} bytes",
+							MAX_REQUEST_ID_LEN
+						)));
+					}
+					id = Some(request_id);
 				},
 				"method" => {
 					method = Some(map.next_value()?);
@@ -1019,5 +1034,26 @@ mod tests {
 		// JSON deserialization (the path peer messages take) must reject it too.
 		let json = "\"1900-01-01T00:00:00Z\"";
 		assert!(serde_json::from_str::<LSPSDateTime>(json).is_err());
+	}
+
+	#[test]
+	fn request_ids_longer_than_maximum_are_rejected() {
+		let at_limit = "a".repeat(MAX_REQUEST_ID_LEN);
+		let over_limit = "a".repeat(MAX_REQUEST_ID_LEN + 1);
+
+		let mut request_id_to_method_map = HashMap::with_hasher(Default::default());
+		let at_limit_json =
+			format!(r#"{{"jsonrpc":"2.0","id":"{}","method":"lsps0.list_protocols"}}"#, at_limit);
+		match LSPSMessage::from_str_with_id_map(&at_limit_json, &mut request_id_to_method_map)
+			.unwrap()
+		{
+			LSPSMessage::LSPS0(LSPS0Message::Request(..)) => {},
+			_ => panic!("Unexpected message"),
+		}
+
+		let over_limit_json =
+			format!(r#"{{"jsonrpc":"2.0","id":"{}","method":"lsps0.list_protocols"}}"#, over_limit);
+		assert!(LSPSMessage::from_str_with_id_map(&over_limit_json, &mut request_id_to_method_map)
+			.is_err());
 	}
 }
