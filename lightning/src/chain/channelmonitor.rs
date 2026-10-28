@@ -6411,6 +6411,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn get_spendable_outputs(&self, funding_spent: &FundingScope, tx: &Transaction) -> Vec<SpendableOutputDescriptor> {
 		let mut spendable_outputs = Vec::new();
 		for (i, outp) in tx.output.iter().enumerate() {
+			// Spendable output descriptors cannot represent indices larger than u16::MAX.
+			if i > u16::MAX as usize { break; }
 			if outp.script_pubkey == self.destination_script {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },
