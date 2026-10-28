@@ -765,12 +765,33 @@ impl_ser_tlv_based!(BlindedTail, {
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub struct Path {
 	/// The list of unblinded hops in this [`Path`]. Must be at least length one.
-	pub hops: Vec<RouteHop>,
+	pub(crate) hops: Vec<RouteHop>,
 	/// The blinded path at which this path terminates, if we're sending to one, and its metadata.
-	pub blinded_tail: Option<BlindedTail>,
+	pub(crate) blinded_tail: Option<BlindedTail>,
 }
 
 impl Path {
+	/// Constructs a new [`Path`] from its unblinded hops and the blinded path at which it
+	/// terminates, if any.
+	///
+	/// Returns an error if `hops` is empty.
+	pub fn new(hops: Vec<RouteHop>, blinded_tail: Option<BlindedTail>) -> Result<Self, ()> {
+		if hops.is_empty() {
+			return Err(());
+		}
+		Ok(Self { hops, blinded_tail })
+	}
+
+	/// The list of unblinded hops in this [`Path`]. Always at least length one.
+	pub fn hops(&self) -> &[RouteHop] {
+		&self.hops
+	}
+
+	/// The blinded path at which this path terminates, if we're sending to one, and its metadata.
+	pub fn blinded_tail(&self) -> Option<&BlindedTail> {
+		self.blinded_tail.as_ref()
+	}
+
 	/// Gets the fees for a given path, excluding any excess paid to the recipient.
 	#[rustfmt::skip]
 	pub fn fee_msat(&self) -> u64 {

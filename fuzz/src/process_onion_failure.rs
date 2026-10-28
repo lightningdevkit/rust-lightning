@@ -114,7 +114,10 @@ fn do_test<Out: test_logger::Output>(data: &[u8], out: Out) {
 		None
 	};
 
-	let path = Path { hops, blinded_tail };
+	let path = match Path::new(hops, blinded_tail) {
+		Ok(path) => path,
+		Err(()) => return,
+	};
 
 	let htlc_source = HTLCSource::OutboundRoute {
 		path: path.clone(),

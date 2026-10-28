@@ -2216,7 +2216,7 @@ impl PaymentTracker {
 						}
 					})
 					.collect();
-				Path { hops, blinded_tail: None }
+				Path::new(hops, None).expect("payment path should contain at least one hop")
 			})
 			.collect();
 		Route { paths, route_params }
@@ -2311,7 +2311,7 @@ impl PaymentTracker {
 			.iter()
 			.map(|path| {
 				cur_height.saturating_add(
-					path.hops
+					path.hops()
 						.last()
 						.expect("payment path should contain at least one hop")
 						.cltv_expiry_delta,
