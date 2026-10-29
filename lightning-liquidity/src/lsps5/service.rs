@@ -307,7 +307,14 @@ where
 		}
 
 		for client_id in need_remove {
+			// Persist the emptied state before removing the key so that if the removal
+			// below fails, the on-disk record matches the in-memory state. Otherwise a
+			// restart would reload the peer with the webhooks the client asked us to
+			// remove, resurrecting them.
+			self.persist_peer_state(client_id).await?;
+
 			let mut future_opt = None;
+			let mut removed_state = None;
 			{
 				// We need to take the `per_peer_state` write lock to remove an entry, but also
 				// have to hold it until after the `remove` call returns (but not through
@@ -318,7 +325,7 @@ where
 				if let Entry::Occupied(mut entry) = per_peer_state.entry(client_id) {
 					let state = entry.get_mut();
 					if state.is_prunable() && !self.client_has_open_channel(&client_id) {
-						entry.remove();
+						removed_state = Some(entry.remove());
 						let key = client_id.to_string();
 						future_opt = Some(self.kv_store.remove(
 							LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
@@ -337,7 +344,15 @@ where
 				}
 			}
 			if let Some(future) = future_opt {
-				future.await?;
+				if let Err(e) = future.await {
+					// Put the emptied state back so a later `persist` retries the removal,
+					// unless the peer was re-added in the meantime.
+					if let Some(mut state) = removed_state {
+						state.needs_persist = true;
+						self.per_peer_state.write().unwrap().entry(client_id).or_insert(state);
+					}
+					return Err(e);
+				}
 				did_persist = true;
 			} else {
 				self.persist_peer_state(client_id).await?;
