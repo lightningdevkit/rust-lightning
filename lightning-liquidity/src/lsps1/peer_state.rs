@@ -387,9 +387,9 @@ impl PeerState {
 		num_pruned
 	}
 
-	pub(super) fn prune_expired_request_state(&mut self) {
+	pub(super) fn prune_expired_request_state(&mut self, now: LSPSDateTime) {
 		self.outbound_channels_by_order_id.retain(|_order_id, entry| {
-			if entry.is_prunable() {
+			if entry.is_prunable(now) {
 				self.needs_persist |= true;
 				return false;
 			}
@@ -465,21 +465,12 @@ impl ChannelOrder {
 		self.state.channel_info()
 	}
 
-	fn is_prunable(&self) -> bool {
-		let all_payment_details_expired;
-		#[cfg(feature = "time")]
-		{
-			let details = self.state.payment_details();
-			all_payment_details_expired =
-				details.bolt11.as_ref().map_or(true, |d| d.expires_at.is_past())
-					&& details.bolt12.as_ref().map_or(true, |d| d.expires_at.is_past())
-					&& details.onchain.as_ref().map_or(true, |d| d.expires_at.is_past());
-		}
-		#[cfg(not(feature = "time"))]
-		{
-			// TODO: We need to find a way to check expiry times in no-std builds.
-			all_payment_details_expired = false;
-		}
+	fn is_prunable(&self, now: LSPSDateTime) -> bool {
+		let details = self.state.payment_details();
+		let all_payment_details_expired =
+			details.bolt11.as_ref().map_or(true, |d| d.expires_at < now)
+				&& details.bolt12.as_ref().map_or(true, |d| d.expires_at < now)
+				&& details.onchain.as_ref().map_or(true, |d| d.expires_at < now);
 
 		let created_or_failed = matches!(
 			self.state,
@@ -550,6 +541,41 @@ mod tests {
 			bolt12: None,
 			onchain: Some(create_test_onchain_payment_info()),
 		}
+	}
+
+	fn create_test_bolt11_payment_info_expiring_at(
+		expires_at: LSPSDateTime,
+	) -> LSPS1Bolt11PaymentInfo {
+		let mut info = create_test_bolt11_payment_info();
+		info.expires_at = expires_at;
+		info
+	}
+
+	fn create_test_onchain_payment_info_expiring_at(
+		expires_at: LSPSDateTime,
+	) -> LSPS1OnchainPaymentInfo {
+		let mut info = create_test_onchain_payment_info();
+		info.expires_at = expires_at;
+		info
+	}
+
+	fn create_test_peer_state_with_order(payment_info: LSPS1PaymentInfo) -> PeerState {
+		let mut peer_state = PeerState::default();
+		peer_state.new_order(
+			LSPS1OrderId("test_order_id".to_string()),
+			LSPS1OrderParams {
+				lsp_balance_sat: 100_000,
+				client_balance_sat: 100_000,
+				required_channel_confirmations: 0,
+				funding_confirms_within_blocks: 6,
+				channel_expiry_blocks: 144,
+				token: None,
+				announce_channel: true,
+			},
+			LSPSDateTime::from_str("2024-01-01T00:00:00Z").unwrap(),
+			payment_info,
+		);
+		peer_state
 	}
 
 	fn create_test_channel_info() -> LSPS1ChannelInfo {
@@ -777,5 +803,41 @@ mod tests {
 
 		// Available in CompletedAndChannelOpened
 		assert_eq!(state.channel_info(), Some(&channel_info));
+	}
+
+	// An unpaid order is only pruned once all of its payment options expired, and only
+	// as of the current time handed to the prune pass.
+	#[test]
+	fn test_prune_expired_unpaid_order() {
+		let expires_at = LSPSDateTime::from_str("2020-01-01T00:00:00Z").unwrap();
+		let mut peer_state = create_test_peer_state_with_order(LSPS1PaymentInfo {
+			bolt11: Some(create_test_bolt11_payment_info_expiring_at(expires_at)),
+			bolt12: None,
+			onchain: Some(create_test_onchain_payment_info_expiring_at(expires_at)),
+		});
+
+		let before_expiry = LSPSDateTime::from_str("2019-01-01T00:00:00Z").unwrap();
+		peer_state.prune_expired_request_state(before_expiry);
+		assert!(peer_state.get_order(&LSPS1OrderId("test_order_id".to_string())).is_ok());
+
+		let after_expiry = LSPSDateTime::from_str("2030-01-01T00:00:00Z").unwrap();
+		peer_state.prune_expired_request_state(after_expiry);
+		assert!(peer_state.get_order(&LSPS1OrderId("test_order_id".to_string())).is_err());
+	}
+
+	// An unpaid order with at least one unexpired payment option is kept.
+	#[test]
+	fn test_prune_keeps_order_with_unexpired_payment_option() {
+		let expired = LSPSDateTime::from_str("2020-01-01T00:00:00Z").unwrap();
+		let unexpired = LSPSDateTime::from_str("2035-01-01T00:00:00Z").unwrap();
+		let mut peer_state = create_test_peer_state_with_order(LSPS1PaymentInfo {
+			bolt11: Some(create_test_bolt11_payment_info_expiring_at(expired)),
+			bolt12: None,
+			onchain: Some(create_test_onchain_payment_info_expiring_at(unexpired)),
+		});
+
+		let after_expiry = LSPSDateTime::from_str("2030-01-01T00:00:00Z").unwrap();
+		peer_state.prune_expired_request_state(after_expiry);
+		assert!(peer_state.get_order(&LSPS1OrderId("test_order_id".to_string())).is_ok());
 	}
 }
