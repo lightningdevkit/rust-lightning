@@ -95,7 +95,7 @@ fn list_protocols_integration_test() {
 
 	client_node
 		.liquidity_manager
-		.handle_custom_message(list_protocols_response, client_node_id)
+		.handle_custom_message(list_protocols_response, service_node_id)
 		.unwrap();
 
 	let list_protocols_event = client_node.liquidity_manager.next_event().unwrap();
@@ -104,7 +104,7 @@ fn list_protocols_integration_test() {
 			counterparty_node_id,
 			protocols,
 		}) => {
-			assert_eq!(counterparty_node_id, client_node_id);
+			assert_eq!(counterparty_node_id, service_node_id);
 			{
 				assert!(protocols.contains(&1));
 				assert!(protocols.contains(&2));
@@ -167,4 +167,99 @@ fn list_protocols_request_with_oversized_id_is_rejected() {
 		)
 		.is_err());
 	assert_eq!(service_node.liquidity_manager.get_and_clear_pending_msg().len(), 0);
+}
+
+#[test]
+fn response_from_other_peer_is_ignored() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (service_config, client_config) = lsps_service_and_client_configs();
+
+	let service_node_id = nodes[0].node.get_our_node_id();
+	let client_node_id = nodes[1].node.get_our_node_id();
+	let other_peer_node_id = nodes[2].node.get_our_node_id();
+
+	let LSPSNodes { service_node, client_node } = create_service_and_client_nodes(
+		nodes,
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
+
+	let client_handler = client_node.liquidity_manager.lsps0_client_handler();
+
+	client_handler.list_protocols(&service_node_id);
+	let list_protocols_request = get_lsps_message!(client_node, service_node_id);
+
+	let request_json: serde_json::Value =
+		serde_json::from_str(&list_protocols_request.payload).unwrap();
+	let request_id = request_json["id"].as_str().unwrap().to_string();
+
+	// A peer we never queried responds with the request id we sent to the service.
+	// It must not be treated as a valid response, and it must not consume the
+	// pending request tracked for the service.
+	let bogus_payload =
+		format!(r#"{{"jsonrpc":"2.0","id":"{}","result":{{"protocols":[1,2,5]}}}}"#, request_id);
+	assert!(client_node
+		.liquidity_manager
+		.handle_custom_message(RawLSPSMessage { payload: bogus_payload }, other_peer_node_id,)
+		.is_err());
+	assert!(client_node.liquidity_manager.next_event().is_none());
+
+	// The genuine response from the queried peer is still processed.
+	service_node
+		.liquidity_manager
+		.handle_custom_message(list_protocols_request, client_node_id)
+		.unwrap();
+
+	let list_protocols_response = get_lsps_message!(service_node, client_node_id);
+
+	client_node
+		.liquidity_manager
+		.handle_custom_message(list_protocols_response, service_node_id)
+		.unwrap();
+
+	let list_protocols_event = client_node.liquidity_manager.next_event().unwrap();
+	match list_protocols_event {
+		LiquidityEvent::LSPS0Client(LSPS0ClientEvent::ListProtocolsResponse {
+			counterparty_node_id,
+			..
+		}) => assert_eq!(counterparty_node_id, service_node_id),
+		_ => panic!("Unexpected event"),
+	}
+}
+
+#[test]
+fn unexpected_list_protocols_response_is_ignored() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (service_config, client_config) = lsps_service_and_client_configs();
+
+	let service_node_id = nodes[0].node.get_our_node_id();
+	let other_peer_node_id = nodes[2].node.get_our_node_id();
+
+	let LSPSNodes { service_node: _, client_node } = create_service_and_client_nodes(
+		nodes,
+		service_config,
+		client_config,
+		Arc::new(DefaultTimeProvider),
+	);
+
+	// A response carrying an id we never sent, both from a peer we queried and
+	// from one we didn't, must not surface a `ListProtocolsResponse` event.
+	for sender_node_id in [service_node_id, other_peer_node_id] {
+		let payload =
+			r#"{"jsonrpc":"2.0","id":"never-sent","result":{"protocols":[1,2,5]}}"#.to_string();
+		assert!(client_node
+			.liquidity_manager
+			.handle_custom_message(RawLSPSMessage { payload }, sender_node_id)
+			.is_err());
+		assert!(client_node.liquidity_manager.next_event().is_none());
+	}
 }

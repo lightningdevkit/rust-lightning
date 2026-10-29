@@ -353,13 +353,17 @@ pub enum LSPSMessage {
 impl LSPSMessage {
 	/// A constructor returning an `LSPSMessage` from a raw JSON string.
 	///
-	/// The given `request_id_to_method` associates request ids with method names, as response objects
-	/// don't carry the latter.
+	/// The given `request_id_to_method` associates the request ids we sent to
+	/// `counterparty_node_id` with method names, as response objects don't carry the latter.
+	/// A response is only mapped if its id matches a request we sent to
+	/// `counterparty_node_id`, i.e., responses carrying another peer's request id are
+	/// rejected.
 	pub(crate) fn from_str_with_id_map(
-		json_str: &str, request_id_to_method_map: &mut HashMap<LSPSRequestId, LSPSMethod>,
+		json_str: &str, counterparty_node_id: PublicKey,
+		request_id_to_method_map: &mut HashMap<(PublicKey, LSPSRequestId), LSPSMethod>,
 	) -> Result<Self, serde_json::Error> {
 		let deserializer = &mut serde_json::Deserializer::from_str(json_str);
-		let visitor = LSPSMessageVisitor { request_id_to_method_map };
+		let visitor = LSPSMessageVisitor { counterparty_node_id, request_id_to_method_map };
 		deserializer.deserialize_any(visitor)
 	}
 
@@ -539,7 +543,8 @@ impl Serialize for LSPSMessage {
 }
 
 struct LSPSMessageVisitor<'a> {
-	request_id_to_method_map: &'a mut HashMap<LSPSRequestId, LSPSMethod>,
+	counterparty_node_id: PublicKey,
+	request_id_to_method_map: &'a mut HashMap<(PublicKey, LSPSRequestId), LSPSMethod>,
 }
 
 impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
@@ -677,161 +682,164 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 					)))
 				},
 			},
-			None => match self.request_id_to_method_map.remove(&id) {
-				Some(method) => match method {
-					LSPSMethod::LSPS0ListProtocols => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS0(LSPS0Message::Response(
-								id,
-								LSPS0Response::ListProtocolsError(error),
-							)))
-						} else if let Some(result) = result {
-							let list_protocols_response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS0(LSPS0Message::Response(
-								id,
-								LSPS0Response::ListProtocols(list_protocols_response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
+			None => {
+				match self.request_id_to_method_map.remove(&(self.counterparty_node_id, id.clone()))
+				{
+					Some(method) => match method {
+						LSPSMethod::LSPS0ListProtocols => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS0(LSPS0Message::Response(
+									id,
+									LSPS0Response::ListProtocolsError(error),
+								)))
+							} else if let Some(result) = result {
+								let list_protocols_response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS0(LSPS0Message::Response(
+									id,
+									LSPS0Response::ListProtocols(list_protocols_response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS1GetInfo => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
+									id,
+									LSPS1Response::GetInfoError(error),
+								)))
+							} else if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
+									id,
+									LSPS1Response::GetInfo(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS1CreateOrder => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
+									id,
+									LSPS1Response::CreateOrderError(error),
+								)))
+							} else if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
+									id,
+									LSPS1Response::CreateOrder(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS1GetOrder => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
+									id,
+									LSPS1Response::GetOrderError(error),
+								)))
+							} else if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
+									id,
+									LSPS1Response::GetOrder(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS2GetInfo => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
+									id,
+									LSPS2Response::GetInfoError(error),
+								)))
+							} else if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
+									id,
+									LSPS2Response::GetInfo(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS2Buy => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
+									id,
+									LSPS2Response::BuyError(error),
+								)))
+							} else if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
+									id,
+									LSPS2Response::Buy(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS5SetWebhook => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
+									id,
+									LSPS5Response::SetWebhookError(error.into()),
+								)))
+							} else if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
+									id,
+									LSPS5Response::SetWebhook(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS5ListWebhooks => {
+							if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
+									id,
+									LSPS5Response::ListWebhooks(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
+						LSPSMethod::LSPS5RemoveWebhook => {
+							if let Some(error) = error {
+								Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
+									id,
+									LSPS5Response::RemoveWebhookError(error.into()),
+								)))
+							} else if let Some(result) = result {
+								let response =
+									serde_json::from_value(result).map_err(de::Error::custom)?;
+								Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
+									id,
+									LSPS5Response::RemoveWebhook(response),
+								)))
+							} else {
+								Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
+							}
+						},
 					},
-					LSPSMethod::LSPS1GetInfo => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
-								id,
-								LSPS1Response::GetInfoError(error),
-							)))
-						} else if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
-								id,
-								LSPS1Response::GetInfo(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-					LSPSMethod::LSPS1CreateOrder => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
-								id,
-								LSPS1Response::CreateOrderError(error),
-							)))
-						} else if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
-								id,
-								LSPS1Response::CreateOrder(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-					LSPSMethod::LSPS1GetOrder => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
-								id,
-								LSPS1Response::GetOrderError(error),
-							)))
-						} else if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS1(LSPS1Message::Response(
-								id,
-								LSPS1Response::GetOrder(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-					LSPSMethod::LSPS2GetInfo => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
-								id,
-								LSPS2Response::GetInfoError(error),
-							)))
-						} else if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
-								id,
-								LSPS2Response::GetInfo(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-					LSPSMethod::LSPS2Buy => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
-								id,
-								LSPS2Response::BuyError(error),
-							)))
-						} else if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS2(LSPS2Message::Response(
-								id,
-								LSPS2Response::Buy(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-					LSPSMethod::LSPS5SetWebhook => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
-								id,
-								LSPS5Response::SetWebhookError(error.into()),
-							)))
-						} else if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
-								id,
-								LSPS5Response::SetWebhook(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-					LSPSMethod::LSPS5ListWebhooks => {
-						if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
-								id,
-								LSPS5Response::ListWebhooks(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-					LSPSMethod::LSPS5RemoveWebhook => {
-						if let Some(error) = error {
-							Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
-								id,
-								LSPS5Response::RemoveWebhookError(error.into()),
-							)))
-						} else if let Some(result) = result {
-							let response =
-								serde_json::from_value(result).map_err(de::Error::custom)?;
-							Ok(LSPSMessage::LSPS5(LSPS5Message::Response(
-								id,
-								LSPS5Response::RemoveWebhook(response),
-							)))
-						} else {
-							Err(de::Error::custom("Received invalid JSON-RPC object: one of method, result, or error required"))
-						}
-					},
-				},
-				None => Err(de::Error::custom(format!(
-					"Received response for unknown request id: {}",
-					id.0
-				))),
+					None => Err(de::Error::custom(format!(
+						"Received response for unknown request id: {}",
+						id.0
+					))),
+				}
 			},
 		}
 	}
@@ -1041,11 +1049,20 @@ mod tests {
 		let at_limit = "a".repeat(MAX_REQUEST_ID_LEN);
 		let over_limit = "a".repeat(MAX_REQUEST_ID_LEN + 1);
 
+		let counterparty_node_id = crate::tests::utils::parse_pubkey(
+			"027100442c3b79f606f80f322d98d499eefcb060599efc5d4ecb00209c2cb54190",
+		)
+		.unwrap();
+
 		let mut request_id_to_method_map = HashMap::with_hasher(Default::default());
 		let at_limit_json =
 			format!(r#"{{"jsonrpc":"2.0","id":"{}","method":"lsps0.list_protocols"}}"#, at_limit);
-		match LSPSMessage::from_str_with_id_map(&at_limit_json, &mut request_id_to_method_map)
-			.unwrap()
+		match LSPSMessage::from_str_with_id_map(
+			&at_limit_json,
+			counterparty_node_id,
+			&mut request_id_to_method_map,
+		)
+		.unwrap()
 		{
 			LSPSMessage::LSPS0(LSPS0Message::Request(..)) => {},
 			_ => panic!("Unexpected message"),
@@ -1053,7 +1070,11 @@ mod tests {
 
 		let over_limit_json =
 			format!(r#"{{"jsonrpc":"2.0","id":"{}","method":"lsps0.list_protocols"}}"#, over_limit);
-		assert!(LSPSMessage::from_str_with_id_map(&over_limit_json, &mut request_id_to_method_map)
-			.is_err());
+		assert!(LSPSMessage::from_str_with_id_map(
+			&over_limit_json,
+			counterparty_node_id,
+			&mut request_id_to_method_map
+		)
+		.is_err());
 	}
 }

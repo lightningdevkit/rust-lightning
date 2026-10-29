@@ -100,8 +100,15 @@ mod tests {
 
 	use super::*;
 	use crate::lsps0::ser::LSPSMethod;
+	use crate::tests::utils;
 
 	use alloc::string::ToString;
+	use bitcoin::secp256k1::PublicKey;
+
+	fn test_counterparty_node_id() -> PublicKey {
+		utils::parse_pubkey("027100442c3b79f606f80f322d98d499eefcb060599efc5d4ecb00209c2cb54190")
+			.unwrap()
+	}
 
 	#[test]
 	fn deserializes_request() {
@@ -111,9 +118,14 @@ mod tests {
 			"method": "lsps0.list_protocols"
 		}"#;
 
+		let counterparty_node_id = test_counterparty_node_id();
 		let mut request_id_method_map = new_hash_map();
 
-		let msg = LSPSMessage::from_str_with_id_map(json, &mut request_id_method_map);
+		let msg = LSPSMessage::from_str_with_id_map(
+			json,
+			counterparty_node_id,
+			&mut request_id_method_map,
+		);
 		assert!(msg.is_ok());
 		let msg = msg.unwrap();
 		assert_eq!(
@@ -147,12 +159,19 @@ mod tests {
 	            "protocols": [1,2,3]
 	        }
 	    }"#;
+		let counterparty_node_id = test_counterparty_node_id();
 		let mut request_id_to_method_map = new_hash_map();
-		request_id_to_method_map
-			.insert(LSPSRequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
+		request_id_to_method_map.insert(
+			(counterparty_node_id, LSPSRequestId("request:id:xyz123".to_string())),
+			LSPSMethod::LSPS0ListProtocols,
+		);
 
-		let response =
-			LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let response = LSPSMessage::from_str_with_id_map(
+			json,
+			counterparty_node_id,
+			&mut request_id_to_method_map,
+		)
+		.unwrap();
 
 		assert_eq!(
 			response,
@@ -175,12 +194,19 @@ mod tests {
 				"message": "Unknown Error"
 	        }
 	    }"#;
+		let counterparty_node_id = test_counterparty_node_id();
 		let mut request_id_to_method_map = new_hash_map();
-		request_id_to_method_map
-			.insert(LSPSRequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
+		request_id_to_method_map.insert(
+			(counterparty_node_id, LSPSRequestId("request:id:xyz123".to_string())),
+			LSPSMethod::LSPS0ListProtocols,
+		);
 
-		let response =
-			LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map).unwrap();
+		let response = LSPSMessage::from_str_with_id_map(
+			json,
+			counterparty_node_id,
+			&mut request_id_to_method_map,
+		)
+		.unwrap();
 
 		assert_eq!(
 			response,
@@ -204,11 +230,18 @@ mod tests {
 	            "protocols": [1,2,3]
 	        }
 	    }"#;
+		let counterparty_node_id = test_counterparty_node_id();
 		let mut request_id_to_method_map = new_hash_map();
-		request_id_to_method_map
-			.insert(LSPSRequestId("request:id:xyz123".to_string()), LSPSMethod::LSPS0ListProtocols);
+		request_id_to_method_map.insert(
+			(counterparty_node_id, LSPSRequestId("request:id:xyz123".to_string())),
+			LSPSMethod::LSPS0ListProtocols,
+		);
 
-		let response = LSPSMessage::from_str_with_id_map(json, &mut request_id_to_method_map);
+		let response = LSPSMessage::from_str_with_id_map(
+			json,
+			counterparty_node_id,
+			&mut request_id_to_method_map,
+		);
 		assert!(response.is_err());
 	}
 
