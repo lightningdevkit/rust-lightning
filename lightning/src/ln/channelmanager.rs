@@ -21244,6 +21244,11 @@ impl<
 		// If we have a pending intercept HTLC present but no corresponding event, add that now rather
 		// than relying on the user having persisted the event prior to shutdown.
 		for (id, fwd) in pending_intercepted_htlcs.iter() {
+			// Held HTLCs only surface in an `HTLCIntercepted` event once the recipient releases
+			// them, so leave them be rather than letting the application forward them early.
+			if fwd.forward_info.routing.should_hold_htlc() {
+				continue;
+			}
 			if !pending_events_read.iter().any(
 				|(ev, _)| matches!(ev, Event::HTLCIntercepted { intercept_id, .. } if intercept_id == id),
 			) {
