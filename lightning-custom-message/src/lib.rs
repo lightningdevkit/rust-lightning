@@ -313,17 +313,27 @@ macro_rules! composite_custom_message_handler {
 
 			fn peer_connected(&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey, msg: &$crate::lightning::ln::msgs::Init, inbound: bool) -> Result<(), ()> {
 				// Per the `CustomMessageHandler::peer_connected` contract, `peer_disconnected`
-				// will not be called by `PeerManager` if we return `Err`. To avoid leaking
-				// per-peer state in sub-handlers that already returned `Ok` when a later one
-				// errors, record each sub-handler's result and roll back the successful ones
-				// ourselves before propagating the failure.
+				// will not be called by `PeerManager` if we return `Err`. Match `PeerManager`'s
+				// own handling: stop at the first sub-handler that rejects the peer so later
+				// sub-handlers never observe the connection, and roll back the sub-handlers
+				// that already accepted it ourselves before propagating the failure.
+				let mut any_err = false;
 				$(
-					let $field = self.$field.peer_connected(their_node_id, msg, inbound);
+					let $field = if any_err {
+						None
+					} else {
+						match self.$field.peer_connected(their_node_id, msg, inbound) {
+							Ok(()) => Some(()),
+							Err(_) => {
+								any_err = true;
+								None
+							},
+						}
+					};
 				)*
-				let any_err = false $( || $field.is_err() )*;
 				if any_err {
 					$(
-						if $field.is_ok() {
+						if $field.is_some() {
 							self.$field.peer_disconnected(their_node_id);
 						}
 					)*
