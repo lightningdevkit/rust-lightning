@@ -226,6 +226,9 @@ enum OutboundJITChannelState {
 		payment_queue: PaymentQueue,
 		opening_fee_msat: u64,
 		channel_id: ChannelId,
+		/// The part of the opening fee that was skimmed from the parts of the pending payment
+		/// that have been claimed so far.
+		collected_fee_msat: u64,
 	},
 	/// The channel is open, no payment is currently being forwarded, and the JIT channel fee still
 	/// needs to be paid. This state can occur when the initial payment fails, e.g. due to a
@@ -328,6 +331,7 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
+				collected_fee_msat,
 			} => {
 				let mut payment_queue = core::mem::take(payment_queue);
 				payment_queue.add_htlc(htlc);
@@ -335,6 +339,7 @@ impl OutboundJITChannelState {
 					payment_queue,
 					opening_fee_msat: *opening_fee_msat,
 					channel_id: *channel_id,
+					collected_fee_msat: *collected_fee_msat,
 				};
 				Ok(None)
 			},
@@ -356,6 +361,7 @@ impl OutboundJITChannelState {
 						payment_queue,
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
+						collected_fee_msat: 0,
 					};
 					Ok(Some(forward_payment))
 				} else {
@@ -391,6 +397,7 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id,
+						collected_fee_msat: 0,
 					};
 					Ok(Some(forward_payment))
 				} else {
@@ -420,6 +427,7 @@ impl OutboundJITChannelState {
 				payment_queue,
 				opening_fee_msat,
 				channel_id,
+				..
 			} => {
 				let required_payment_size_msat = (*payment_size_msat).unwrap_or(*opening_fee_msat);
 				if let Some(entry) = payment_queue.pop_greater_than_msat(required_payment_size_msat)
@@ -432,6 +440,7 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
+						collected_fee_msat: 0,
 					};
 					Ok(Some(forward_payment))
 				} else {
@@ -474,8 +483,12 @@ impl OutboundJITChannelState {
 				payment_queue,
 				channel_id,
 				opening_fee_msat,
+				collected_fee_msat,
 			} => {
-				if skimmed_fee_msat >= *opening_fee_msat {
+				// The fee is skimmed across all parts of the payment, each of which is reported
+				// as forwarded on its own.
+				let collected_fee_msat = collected_fee_msat.saturating_add(skimmed_fee_msat);
+				if collected_fee_msat >= *opening_fee_msat {
 					let mut pq = core::mem::take(payment_queue);
 					let forward_htlcs = ForwardHTLCsAction(*channel_id, pq.clear());
 					*self = OutboundJITChannelState::PaymentForwarded { channel_id: *channel_id };
@@ -485,6 +498,7 @@ impl OutboundJITChannelState {
 						payment_queue: core::mem::take(payment_queue),
 						opening_fee_msat: *opening_fee_msat,
 						channel_id: *channel_id,
+						collected_fee_msat,
 					};
 					Ok(None)
 				}
@@ -513,6 +527,7 @@ impl_ser_tlv_based_enum!(OutboundJITChannelState,
 		(0, payment_queue, required),
 		(2, opening_fee_msat, required),
 		(4, channel_id, required),
+		(5, collected_fee_msat, (default_value, 0)),
 	},
 	(6, PendingPayment) => {
 		(0, payment_queue, required),
@@ -1300,9 +1315,12 @@ where
 	/// Will register the forwarded payment as having paid the JIT channel fee, and forward any held
 	/// and future HTLCs for the SCID of the initial invoice.
 	///
-	/// When the reported skimmed fee equals or exceeds the promised opening fee, any HTLCs that
-	/// were being held for that JIT channel are forwarded. In a `client_trusts_lsp` flow, once
-	/// the fee has been fully paid, the channel's funding transaction will be broadcasted.
+	/// A payment made of several HTLCs is reported by one [`Event::PaymentForwarded`] per HTLC,
+	/// each carrying the part of the opening fee skimmed from that HTLC, so every one of these
+	/// events needs to be forwarded. Once the skimmed fees add up to the promised opening fee, any
+	/// HTLCs that were being held for that JIT channel are forwarded. In a `client_trusts_lsp`
+	/// flow, once the fee has been fully paid, the channel's funding transaction will be
+	/// broadcasted.
 	///
 	/// Note that `next_channel_id` and `skimmed_fee_msat` are required to be provided.
 	/// Therefore, the corresponding [`Event::PaymentForwarded`] events need to be generated and
@@ -3340,6 +3358,68 @@ mod tests {
 		}
 	}
 
+	/// The opening fee is skimmed across all parts of a multi-part payment, and each part is
+	/// reported as forwarded on its own. The fee only counts as collected once the skims of all
+	/// parts add up to it.
+	#[test]
+	fn test_opening_fee_collected_across_payment_parts() {
+		let payment_size_msat = 500_000_000;
+		let mut jit_channel =
+			OutboundJITChannel::new(Some(payment_size_msat), test_opening_fee_params(), 42, true);
+		let part = |id, amount_msat, hash| InterceptedHTLC {
+			intercept_id: InterceptId([id; 32]),
+			expected_outbound_amount_msat: amount_msat,
+			payment_hash: PaymentHash([hash; 32]),
+		};
+		let parts = [part(0, 200_000_000, 100), part(1, 300_000_000, 100)];
+		let queued = part(2, 1_000_000, 101);
+
+		assert!(jit_channel.htlc_intercepted(parts[0]).unwrap().is_none());
+		assert!(matches!(
+			jit_channel.htlc_intercepted(parts[1]).unwrap(),
+			Some(HTLCInterceptedAction::OpenChannel(_))
+		));
+		assert!(jit_channel.htlc_intercepted(queued).unwrap().is_none());
+
+		let channel_id = ChannelId([200; 32]);
+		let ForwardPaymentAction(_, FeePayment { opening_fee_msat, htlcs }) =
+			jit_channel.channel_ready(channel_id).unwrap().unwrap();
+		let skims: Vec<u64> = calculate_amount_to_forward_per_htlc(&htlcs, opening_fee_msat)
+			.into_iter()
+			.zip(htlcs.iter())
+			.map(|((_, forwarded_msat), htlc)| htlc.expected_outbound_amount_msat - forwarded_msat)
+			.collect();
+		assert_eq!(skims.len(), 2);
+		assert!(skims.iter().all(|skim| *skim > 0 && *skim < opening_fee_msat));
+		assert_eq!(skims.iter().sum::<u64>(), opening_fee_msat);
+
+		jit_channel.set_funding_tx(Transaction {
+			version: Version(2),
+			lock_time: LockTime::ZERO,
+			input: vec![],
+			output: vec![],
+		});
+		jit_channel.set_funding_tx_broadcast_safe(true);
+
+		assert!(jit_channel.payment_forwarded(skims[0]).unwrap().is_none());
+		assert!(
+			!jit_channel.should_broadcast_funding_transaction(),
+			"Part of the opening fee must not count as all of it"
+		);
+
+		match jit_channel.payment_forwarded(skims[1]).unwrap() {
+			Some(ForwardHTLCsAction(forwarded_channel_id, htlcs)) => {
+				assert_eq!(forwarded_channel_id, channel_id);
+				assert_eq!(htlcs, vec![queued]);
+			},
+			other => panic!("Expected the queued HTLCs to be released, got {:?}", other),
+		}
+		assert!(
+			jit_channel.should_broadcast_funding_transaction(),
+			"The opening fee was collected in full across both parts"
+		);
+	}
+
 	/// A JIT channel holds at most a fixed number of HTLCs, but an HTLC it already holds may always
 	/// be presented again, as happens when events are replayed after a restart.
 	#[test]
@@ -3392,6 +3472,7 @@ mod tests {
 				payment_queue: payment_queue.clone(),
 				opening_fee_msat,
 				channel_id,
+				collected_fee_msat: 0,
 			},
 			OutboundJITChannelState::PendingPayment {
 				payment_queue: payment_queue.clone(),

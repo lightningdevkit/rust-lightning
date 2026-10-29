@@ -3372,6 +3372,268 @@ fn failed_fee_payment_forward_releases_held_htlcs() {
 	};
 }
 
+/// When a payment reaches us in several parts, the opening fee is skimmed across all of them and
+/// every part is reported as forwarded with its own share of the fee. In the `client_trusts_lsp`
+/// model the funding transaction must be broadcast once those shares add up to the fee.
+#[test]
+fn client_trusts_lsp_fee_collected_across_payment_parts() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+	// Keep each payer channel from carrying the whole payment, so that it is split.
+	service_node_config
+		.channel_handshake_config
+		.announced_channel_max_inbound_htlc_value_in_flight_percentage = 1;
+	service_node_config
+		.channel_handshake_config
+		.unannounced_channel_max_inbound_htlc_value_in_flight_percentage = 1;
+
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 60_000, 0);
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 60_000, 0);
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42;
+	let cltv_expiry_delta: u32 = 144;
+	let payment_size_msat = Some(1_000_000);
+	let fee_base_msat = 10_000;
+
+	execute_lsps2_dance(
+		&service_node,
+		&client_node,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+		128,
+	);
+
+	let invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"fee-across-parts",
+		3600,
+	)
+	.unwrap();
+
+	payer_node
+		.node
+		.pay_for_bolt11_invoice(
+			&invoice,
+			PaymentId(invoice.payment_hash().0),
+			None,
+			OptionalBolt11PaymentParams::default(),
+		)
+		.unwrap();
+
+	check_added_monitors(&payer_node, 2);
+	let events = payer_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 2, "The payment must be split into two parts");
+	let mut opened = false;
+	for (idx, ev) in events.into_iter().enumerate() {
+		let ev = SendEvent::from_event(ev);
+		service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+		do_commitment_signed_dance(
+			&service_node.inner,
+			&payer_node,
+			&ev.commitment_msg,
+			false,
+			true,
+		);
+		service_node.inner.node.process_pending_htlc_forwards();
+
+		let events = service_node.inner.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			Event::HTLCIntercepted {
+				intercept_id,
+				requested_next_hop_scid,
+				payment_hash,
+				expected_outbound_amount_msat,
+				inbound_amount_msat,
+				..
+			} => {
+				assert_eq!(*requested_next_hop_scid, intercept_scid);
+				assert!(*expected_outbound_amount_msat < payment_size_msat.unwrap());
+				service_handler
+					.htlc_intercepted(
+						*requested_next_hop_scid,
+						*intercept_id,
+						*expected_outbound_amount_msat,
+						*payment_hash,
+						*inbound_amount_msat,
+					)
+					.unwrap();
+			},
+			other => panic!("Expected HTLCIntercepted event, got: {:?}", other),
+		}
+		match service_node.liquidity_manager.next_event() {
+			Some(LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel { .. })) => {
+				assert_eq!(idx, 1, "The channel must only be opened once the payment is complete");
+				opened = true;
+			},
+			None => assert_eq!(idx, 0),
+			other => panic!("Unexpected event: {:?}", other),
+		}
+	}
+	assert!(opened);
+
+	let (channel_id, funding_tx) = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		&payment_size_msat.unwrap(),
+		true,
+	);
+
+	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
+
+	service_node.inner.node.process_pending_htlc_forwards();
+	check_added_monitors(&service_node.inner, 1);
+	let pay_event = {
+		let mut events = service_node.inner.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	assert_eq!(pay_event.msgs.len(), 2, "Both parts must be forwarded to the client");
+	for msg in &pay_event.msgs {
+		client_node.inner.node.handle_update_add_htlc(service_node_id, msg);
+	}
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	let preimage = match &client_events[0] {
+		Event::PaymentClaimable { amount_msat, purpose, .. } => {
+			assert_eq!(*amount_msat, payment_size_msat.unwrap() - fee_base_msat);
+			purpose.preimage().unwrap()
+		},
+		other => panic!("Expected PaymentClaimable event on client, got: {:?}", other),
+	};
+
+	// The client claims, and we learn of the preimage for both parts. The client only releases
+	// the second fulfill once the first commitment update completed, so relay messages between
+	// the two until they settle. Messages towards the payer are not needed here.
+	client_node.inner.node.claim_funds(preimage, Default::default());
+	check_added_monitors(&client_node.inner, 2);
+	let _ = client_node.inner.node.get_and_clear_pending_events();
+	let mut num_fulfills = 0;
+	loop {
+		let mut progressed = false;
+		for ev in client_node.inner.node.get_and_clear_pending_msg_events() {
+			progressed = true;
+			match ev {
+				MessageSendEvent::UpdateHTLCs { node_id, updates, .. } => {
+					assert_eq!(node_id, service_node_id);
+					for fulfill in updates.update_fulfill_htlcs {
+						num_fulfills += 1;
+						service_node.inner.node.handle_update_fulfill_htlc(client_node_id, fulfill);
+					}
+					service_node.inner.node.handle_commitment_signed_batch_test(
+						client_node_id,
+						&updates.commitment_signed,
+					);
+				},
+				MessageSendEvent::SendRevokeAndACK { node_id, msg } => {
+					assert_eq!(node_id, service_node_id);
+					service_node.inner.node.handle_revoke_and_ack(client_node_id, &msg);
+				},
+				other => panic!("Unexpected client msg event: {:?}", other),
+			}
+		}
+		for ev in service_node.inner.node.get_and_clear_pending_msg_events() {
+			match ev {
+				MessageSendEvent::UpdateHTLCs { node_id, updates, .. }
+					if node_id == client_node_id =>
+				{
+					progressed = true;
+					assert!(updates.update_add_htlcs.is_empty());
+					client_node.inner.node.handle_commitment_signed_batch_test(
+						service_node_id,
+						&updates.commitment_signed,
+					);
+				},
+				MessageSendEvent::SendRevokeAndACK { node_id, msg }
+					if node_id == client_node_id =>
+				{
+					progressed = true;
+					client_node.inner.node.handle_revoke_and_ack(service_node_id, &msg);
+				},
+				_ => {},
+			}
+		}
+		service_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
+		client_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
+		if !progressed {
+			break;
+		}
+	}
+	assert_eq!(num_fulfills, 2);
+
+	// Each part is reported as forwarded on its own, carrying only its share of the fee.
+	let skims: Vec<u64> = service_node
+		.inner
+		.node
+		.get_and_clear_pending_events()
+		.into_iter()
+		.filter_map(|ev| match ev {
+			Event::PaymentForwarded { skimmed_fee_msat, .. } => Some(skimmed_fee_msat.unwrap()),
+			_ => None,
+		})
+		.collect();
+	assert_eq!(skims.len(), 2, "Expected one PaymentForwarded event per part");
+	assert!(skims.iter().all(|skim| *skim < fee_base_msat));
+	assert_eq!(skims.iter().sum::<u64>(), fee_base_msat);
+
+	let was_broadcast = || {
+		let broadcasted = service_node.inner.tx_broadcaster.txn_broadcasted.lock().unwrap();
+		broadcasted.iter().any(|tx| tx.compute_txid() == funding_tx.compute_txid())
+	};
+	service_handler.payment_forwarded(channel_id, skims[0]).unwrap();
+	assert!(!was_broadcast(), "Part of the opening fee must not count as all of it");
+	service_handler.payment_forwarded(channel_id, skims[1]).unwrap();
+	assert!(was_broadcast(), "The opening fee was collected in full across both parts");
+
+	service_node.inner.node.get_and_clear_pending_msg_events();
+	client_node.inner.node.get_and_clear_pending_msg_events();
+	payer_node.node.get_and_clear_pending_msg_events();
+	service_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
+	client_node.inner.chain_monitor.added_monitors.lock().unwrap().clear();
+	payer_node.chain_monitor.added_monitors.lock().unwrap().clear();
+}
+
 // Checks that the negotiated `max_client_to_self_delay` carried by the `OpenChannel` event is
 // enforced when applied to `create_channel`'s handshake limits: a client `accept_channel` delay
 // above the negotiated maximum is rejected even when below the operator's global limit, a
