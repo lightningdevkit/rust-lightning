@@ -30,6 +30,7 @@ use bitcoin::secp256k1::PublicKey;
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::sign::EntropySource;
 use lightning::util::logger::Level;
+use lightning_types::string::PrintableString;
 
 use alloc::collections::VecDeque;
 use alloc::string::String;
@@ -388,7 +389,10 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS5ClientHandler<ES, K> {
 				}
 			} else {
 				result = Err(LightningError {
-					err: format!("Received response for unknown request ID: {}", request_id.0),
+					err: format!(
+						"Received response for unknown request ID: {}",
+						PrintableString(&request_id.0)
+					),
 					action: ErrorAction::IgnoreAndLog(Level::Debug),
 				});
 			}

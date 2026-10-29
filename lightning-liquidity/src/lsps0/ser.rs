@@ -854,7 +854,7 @@ impl<'de, 'a> Visitor<'de> for LSPSMessageVisitor<'a> {
 					},
 					None => Err(de::Error::custom(format!(
 						"Received response for unknown request id: {}",
-						id.0
+						PrintableString(&id.0)
 					))),
 				}
 			},
@@ -1110,5 +1110,29 @@ mod tests {
 		assert!(rendered.contains("code = -32600"), "{}", rendered);
 		assert!(rendered.contains("message = line1"), "{}", rendered);
 		assert!(rendered.contains("data = line1"), "{}", rendered);
+	}
+
+	#[test]
+	fn unknown_request_id_error_message_is_sanitized() {
+		let counterparty_node_id = crate::tests::utils::parse_pubkey(
+			"027100442c3b79f606f80f322d98d499eefcb060599efc5d4ecb00209c2cb54190",
+		)
+		.unwrap();
+
+		let mut request_id_to_method_map = HashMap::with_hasher(Default::default());
+		let json =
+			concat!(r#"{"jsonrpc":"2.0","id":"bad\nid"#, r#"\u0000\u001b[31m<html>","result":{}}"#);
+
+		let err = LSPSMessage::from_str_with_id_map(
+			json,
+			counterparty_node_id,
+			&mut request_id_to_method_map,
+		)
+		.unwrap_err()
+		.to_string();
+
+		assert!(!err.contains('\n'), "{}", err);
+		assert!(!err.contains('\u{0}'), "{}", err);
+		assert!(!err.contains('\u{1b}'), "{}", err);
 	}
 }

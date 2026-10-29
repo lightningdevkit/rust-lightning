@@ -19,7 +19,7 @@ use super::url_utils::LSPSUrl;
 use lightning::ln::msgs::DecodeError;
 use lightning::util::ser::{Readable, Writeable};
 use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
-use lightning_types::string::UntrustedString;
+use lightning_types::string::{PrintableString, UntrustedString};
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -677,7 +677,12 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 					LSPS5_ONION_MESSAGE_INCOMING_NOTIFICATION => {
 						WebhookNotificationMethod::LSPS5OnionMessageIncoming
 					},
-					_ => return Err(de::Error::custom(format!("Unknown method: {}", method))),
+					_ => {
+						return Err(de::Error::custom(format!(
+							"Unknown method: {}",
+							PrintableString(&method)
+						)))
+					},
 				};
 
 				Ok(WebhookNotification { method })
@@ -794,6 +799,20 @@ mod tests {
 		let app2 = LSPS5AppName::new("app2".to_string()).unwrap();
 		assert_eq!(response.app_names, vec![app1, app2]);
 		assert_eq!(response.max_webhooks, 5);
+	}
+
+	#[test]
+	fn webhook_notification_unknown_method_error_is_sanitized() {
+		let json = concat!(
+			r#"{"jsonrpc":"2.0","method":"bad\nmethod"#,
+			r#"\u0000\u001b[31m<html>","params":{}}"#
+		);
+
+		let err = serde_json::from_str::<WebhookNotification>(json).unwrap_err().to_string();
+
+		assert!(!err.contains('\n'), "{}", err);
+		assert!(!err.contains('\u{0}'), "{}", err);
+		assert!(!err.contains('\u{1b}'), "{}", err);
 	}
 
 	#[test]
