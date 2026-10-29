@@ -137,7 +137,11 @@ where
 			// We clean up the peer state, but leave removing the peer entry to the prune logic in
 			// `persist` which removes it from the store.
 			peer_state_lock.prune_pending_requests();
-			peer_state_lock.prune_expired_request_state();
+			peer_state_lock.prune_expired_request_state(
+				LSPSDateTime::new_from_duration_since_epoch(
+					self.time_provider.duration_since_epoch(),
+				),
+			);
 		}
 	}
 
@@ -166,12 +170,15 @@ where
 			let mut need_persist = Vec::new();
 
 			{
+				let now = LSPSDateTime::new_from_duration_since_epoch(
+					self.time_provider.duration_since_epoch(),
+				);
 				// First build a list of peers to persist and prune with the read lock. This allows
 				// us to avoid the write lock unless we actually need to remove a node.
 				let outer_state_lock = self.per_peer_state.read().unwrap();
 				for (counterparty_node_id, inner_state_lock) in outer_state_lock.iter() {
 					let mut peer_state_lock = inner_state_lock.lock().unwrap();
-					peer_state_lock.prune_expired_request_state();
+					peer_state_lock.prune_expired_request_state(now);
 					let is_prunable = peer_state_lock.is_prunable();
 					if is_prunable {
 						need_remove.push(*counterparty_node_id);

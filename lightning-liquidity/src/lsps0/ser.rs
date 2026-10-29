@@ -242,7 +242,7 @@ impl Readable for LSPSRequestId {
 }
 
 /// An object representing datetimes as described in bLIP-50 / LSPS0.
-#[derive(Clone, Debug, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct LSPSDateTime(pub chrono::DateTime<chrono::Utc>);
 
