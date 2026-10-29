@@ -70,6 +70,18 @@ impl PaymentQueue {
 		self.payments.drain(..).map(|entry| entry.htlcs).flatten().collect()
 	}
 
+	/// Returns the number of HTLCs held across all queued payments.
+	pub(crate) fn num_htlcs(&self) -> usize {
+		self.payments.iter().map(|entry| entry.htlcs.len()).sum()
+	}
+
+	/// Returns whether the HTLC with the given ID is held.
+	pub(crate) fn contains_htlc(&self, intercept_id: InterceptId) -> bool {
+		self.payments
+			.iter()
+			.any(|entry| entry.htlcs.iter().any(|htlc| htlc.intercept_id == intercept_id))
+	}
+
 	/// Drops the HTLCs for which `keep` returns `false`, discarding any payment left without
 	/// HTLCs. Returns whether anything was dropped.
 	pub(crate) fn retain_htlcs(&mut self, mut keep: impl FnMut(&InterceptedHTLC) -> bool) -> bool {

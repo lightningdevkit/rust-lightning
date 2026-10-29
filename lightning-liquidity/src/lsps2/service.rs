@@ -69,6 +69,9 @@ use crate::lsps2::msgs::{
 const MAX_PENDING_REQUESTS_PER_PEER: usize = 10;
 const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 const MAX_TOTAL_PEERS: usize = 100000;
+/// The maximum number of intercepted HTLCs we hold for a single JIT channel while waiting for a
+/// payment to complete. HTLCs beyond this bound are failed back.
+const MAX_PENDING_HTLCS_PER_JIT_CHANNEL: usize = 50;
 
 /// Server-side configuration options for JIT channels.
 #[derive(Clone)]
@@ -592,6 +595,21 @@ impl OutboundJITChannel {
 		}
 	}
 
+	/// Returns whether the HTLC with the given ID can be held for this channel. An HTLC that is
+	/// already held can always be presented again.
+	fn can_queue_htlc(&self, intercept_id: InterceptId) -> bool {
+		match &self.state {
+			OutboundJITChannelState::PendingInitialPayment { payment_queue }
+			| OutboundJITChannelState::PendingChannelOpen { payment_queue, .. }
+			| OutboundJITChannelState::PendingPaymentForward { payment_queue, .. }
+			| OutboundJITChannelState::PendingPayment { payment_queue, .. } => {
+				payment_queue.num_htlcs() < MAX_PENDING_HTLCS_PER_JIT_CHANNEL
+					|| payment_queue.contains_htlc(intercept_id)
+			},
+			OutboundJITChannelState::PaymentForwarded { .. } => true,
+		}
+	}
+
 	fn is_pending_initial_payment(&self) -> bool {
 		matches!(self.state, OutboundJITChannelState::PendingInitialPayment { .. })
 	}
@@ -1048,8 +1066,9 @@ where
 	/// Will return an error if the intercept scid does not match any of the ones we gave out.
 	///
 	/// Will fail the intercepted HTLC if its `expected_outbound_amount_msat` exceeds
-	/// `inbound_amount_msat`, i.e., if the payer asked us to forward more than it delivered,
-	/// or if it declares a zero amount to forward.
+	/// `inbound_amount_msat`, i.e., if the payer asked us to forward more than it delivered, if it
+	/// declares a zero amount to forward, or if we already hold the maximum number of HTLCs for the
+	/// JIT channel.
 	///
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
@@ -1086,6 +1105,18 @@ where
 								err: format!(
 									"Intercepted HTLC {} declares {}msat to forward but delivered {}msat; failed back",
 									intercept_id, expected_outbound_amount_msat, inbound_amount_msat
+								),
+							});
+						}
+						// Holding HTLCs costs us state and persistence for every one of them, so
+						// we bound how many a single JIT channel may accumulate. Rejecting the
+						// surplus here, like above, leaves the HTLCs we already hold alone.
+						if !jit_channel.can_queue_htlc(intercept_id) {
+							self.channel_manager.get_cm().fail_intercepted_htlc(intercept_id)?;
+							return Err(APIError::APIMisuseError {
+								err: format!(
+									"Intercepted HTLC {} exceeds the limit of {} HTLCs held for intercept scid {}; failed back",
+									intercept_id, MAX_PENDING_HTLCS_PER_JIT_CHANNEL, intercept_scid
 								),
 							});
 						}
@@ -3284,6 +3315,29 @@ mod tests {
 			},
 			other => panic!("expected complete fixed-size MPP to forward, got {:?}", other),
 		}
+	}
+
+	/// A JIT channel holds at most a fixed number of HTLCs, but an HTLC it already holds may always
+	/// be presented again, as happens when events are replayed after a restart.
+	#[test]
+	fn test_held_htlc_cap_admits_replays() {
+		let mut jit_channel =
+			OutboundJITChannel::new(Some(100_000_000), test_opening_fee_params(), 42, false);
+		for i in 0..MAX_PENDING_HTLCS_PER_JIT_CHANNEL {
+			let htlc = InterceptedHTLC {
+				intercept_id: InterceptId([i as u8; 32]),
+				expected_outbound_amount_msat: 1_000,
+				payment_hash: PaymentHash([i as u8; 32]),
+			};
+			assert!(jit_channel.can_queue_htlc(htlc.intercept_id));
+			assert!(jit_channel.htlc_intercepted(htlc).unwrap().is_none());
+		}
+
+		assert!(!jit_channel.can_queue_htlc(InterceptId([255; 32])), "The cap must be enforced");
+		assert!(jit_channel.can_queue_htlc(InterceptId([0; 32])), "A held HTLC must be admitted");
+
+		assert!(jit_channel.retain_htlcs(|htlc| htlc.intercept_id != InterceptId([0; 32])));
+		assert!(jit_channel.can_queue_htlc(InterceptId([255; 32])), "Dropping a part frees a slot");
 	}
 
 	/// Dropping the HTLC that failed must leave every other queued HTLC, and the state the JIT
