@@ -1,8 +1,7 @@
 //! Abstractions for scripts used in the Lightning Network.
 
-use bitcoin::blockdata::script::Instruction;
 use bitcoin::hashes::Hash;
-use bitcoin::opcodes::all::{OP_PUSHBYTES_0 as SEGWIT_V0, OP_RETURN};
+use bitcoin::opcodes::all::{OP_PUSHBYTES_0 as SEGWIT_V0, OP_PUSHDATA1, OP_RETURN};
 use bitcoin::script::{PushBytes, Script, ScriptBuf};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::{WPubkeyHash, WScriptHash, WitnessProgram};
@@ -145,35 +144,29 @@ pub(crate) fn is_bolt2_compliant(script: &Script, features: &InitFeatures) -> bo
 		script.as_bytes()[0] != SEGWIT_V0.to_u8()
 	} else if features.supports_simple_close() && script.is_op_return() {
 		// 4. if (and only if) `option_simple_close` is negotiated:
-		let mut instruction_iter = script.instructions();
-		if let Some(Ok(Instruction::Op(opcode))) = instruction_iter.next() {
-			// * `OP_RETURN` followed by one of:
-			if opcode != OP_RETURN {
-				return false;
-			}
-
-			match instruction_iter.next() {
-				Some(Ok(Instruction::PushBytes(bytes))) => {
-					// * `6` to `75` inclusive followed by exactly that many bytes
-					if (6..=75).contains(&bytes.len()) {
-						return instruction_iter.next().is_none();
-					}
-
-					// `rust-bitcoin` interprets `OP_PUSHDATA1` as `Instruction::PushBytes`, having
-					// us land here in this case, too.
-					//
-					// * `76` followed by `76` to `80` followed by exactly that many bytes
-					if (76..=80).contains(&bytes.len()) {
-						return instruction_iter.next().is_none();
-					}
-
-					false
-				},
-				_ => false,
-			}
-		} else {
-			false
+		// * `OP_RETURN` followed by one of:
+		//   * `6` to `75` inclusive followed by exactly that many bytes, OR
+		//   * `76` (`OP_PUSHDATA1`) followed by `76` to `80` followed by exactly that many bytes
+		//
+		// We check the push encoding on the raw bytes, as `Script::instructions()` maps
+		// `OP_PUSHDATA1`, `OP_PUSHDATA2` and `OP_PUSHDATA4` alike to `Instruction::PushBytes`,
+		// discarding the encoding.
+		let bytes = script.as_bytes();
+		if bytes.len() < 2 || bytes[0] != OP_RETURN.to_u8() {
+			return false;
 		}
+
+		let push_opcode = bytes[1];
+		if (6..=75).contains(&push_opcode) {
+			return bytes.len() == 2 + usize::from(push_opcode);
+		}
+
+		if push_opcode == OP_PUSHDATA1.to_u8() && bytes.len() >= 3 {
+			let push_len = usize::from(bytes[2]);
+			return (76..=80).contains(&push_len) && bytes.len() == 3 + push_len;
+		}
+
+		false
 	} else {
 		false
 	}
@@ -335,12 +328,6 @@ mod shutdown_script_tests {
 		// intended length range of 76 to 80 bytes.
 		assert_pushdata_script_compat(76);
 		assert_pushdata_script_compat(80);
-
-		// While the `option_simple_close` spec prescribes the use of `OP_PUSHBYTES_0` up to 75
-		// bytes, we follow Postel's law and accept if our counterparty would create an
-		// `OP_PUSHDATA1` script for less than 76 bytes of payload.
-		assert_pushdata_script_compat(75);
-		assert_pushdata_script_compat(6);
 	}
 
 	#[test]
@@ -376,5 +363,76 @@ mod shutdown_script_tests {
 		let big_buffer = &[1u8; 81][..];
 		let push_bytes: &PushBytes = big_buffer.try_into().unwrap();
 		assert!(ShutdownScript::new_op_return(&push_bytes).is_err());
+	}
+
+	#[cfg(simple_close)]
+	#[test]
+	fn op_return_push_encodings() {
+		use super::{is_bolt2_compliant, OP_RETURN};
+		use bitcoin::opcodes::all::{OP_PUSHDATA1, OP_PUSHDATA2, OP_PUSHDATA4};
+
+		let features = simple_close_features();
+
+		let op_return_script = |push_opcode: u8, len_bytes: &[u8], data_len: usize| {
+			let mut bytes = vec![OP_RETURN.to_u8(), push_opcode];
+			bytes.extend_from_slice(len_bytes);
+			bytes.extend(core::iter::repeat(0u8).take(data_len));
+			ScriptBuf::from_bytes(bytes)
+		};
+
+		// BOLT 2 permits `OP_RETURN` followed by a direct push of 6 to 75 bytes or an
+		// `OP_PUSHDATA1` push of 76 to 80 bytes.
+		for len in [6, 75] {
+			let script = op_return_script(len as u8, &[], len);
+			assert!(is_bolt2_compliant(&script, &features));
+		}
+		for len in [76, 80] {
+			let script = op_return_script(OP_PUSHDATA1.to_u8(), &[len as u8], len);
+			assert!(is_bolt2_compliant(&script, &features));
+		}
+
+		// `OP_PUSHDATA1` encodings of pushes below 76 bytes are rejected, as are
+		// `OP_PUSHDATA2` and `OP_PUSHDATA4` encodings of any length.
+		for len in [6, 75] {
+			let script = op_return_script(OP_PUSHDATA1.to_u8(), &[len as u8], len);
+			assert!(!is_bolt2_compliant(&script, &features));
+		}
+		for len in [6usize, 80] {
+			let script = op_return_script(
+				OP_PUSHDATA2.to_u8(),
+				&u16::try_from(len).unwrap().to_be_bytes(),
+				len,
+			);
+			assert!(!is_bolt2_compliant(&script, &features));
+			let script = op_return_script(
+				OP_PUSHDATA4.to_u8(),
+				&u32::try_from(len).unwrap().to_be_bytes(),
+				len,
+			);
+			assert!(!is_bolt2_compliant(&script, &features));
+		}
+
+		// Truncated `OP_PUSHDATA1` scripts are rejected.
+		assert!(!is_bolt2_compliant(
+			&ScriptBuf::from_bytes(vec![OP_RETURN.to_u8(), OP_PUSHDATA1.to_u8()]),
+			&features
+		));
+
+		// Push lengths outside the allowed ranges are rejected.
+		assert!(!is_bolt2_compliant(&op_return_script(5, &[], 5), &features));
+		assert!(!is_bolt2_compliant(&op_return_script(0, &[], 0), &features));
+		let script = op_return_script(OP_PUSHDATA1.to_u8(), &[81], 81);
+		assert!(!is_bolt2_compliant(&script, &features));
+
+		// Trailing bytes after the push are rejected.
+		for (push_opcode, len_bytes, len) in
+			[(6u8, &[][..], 6usize), (OP_PUSHDATA1.to_u8(), &[76u8][..], 76usize)]
+		{
+			let script = op_return_script(push_opcode, len_bytes, len);
+			assert!(is_bolt2_compliant(&script, &features));
+			let mut trailing = script.as_bytes().to_vec();
+			trailing.push(0);
+			assert!(!is_bolt2_compliant(&ScriptBuf::from_bytes(trailing), &features));
+		}
 	}
 }
