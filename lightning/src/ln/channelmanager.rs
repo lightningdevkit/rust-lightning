@@ -11049,7 +11049,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								htlc_claim_value_msat.unwrap(), event_prev_hop_data.channel_id);
 						}
 						debug_assert!(
-							skimmed_fee_msat <= total_fee_earned_msat,
+							total_fee_earned_msat.is_none()
+								|| skimmed_fee_msat <= total_fee_earned_msat,
 							"skimmed_fee_msat must always be included in total_fee_earned_msat"
 						);
 						let prev_htlc_amount_msat =
