@@ -278,7 +278,7 @@ pub struct LiquidityManager<
 {
 	pending_messages: Arc<MessageQueue>,
 	pending_events: Arc<EventQueue<K>>,
-	request_id_to_method_map: Mutex<HashMap<LSPSRequestId, LSPSMethod>>,
+	request_id_to_method_map: Mutex<HashMap<(PublicKey, LSPSRequestId), LSPSMethod>>,
 	// We ignore peers if they send us bogus data.
 	ignored_peers: RwLock<HashSet<PublicKey>>,
 	lsps0_client_handler: LSPS0ClientHandler<ES, K>,
@@ -802,7 +802,11 @@ where
 		let message = {
 			{
 				let mut request_id_to_method_map = self.request_id_to_method_map.lock().unwrap();
-				LSPSMessage::from_str_with_id_map(&msg.payload, &mut request_id_to_method_map)
+				LSPSMessage::from_str_with_id_map(
+					&msg.payload,
+					sender_node_id,
+					&mut request_id_to_method_map,
+				)
 			}
 			.map_err(|_| {
 				let mut message_queue_notifier = self.pending_messages.notifier();
@@ -831,13 +835,16 @@ where
 
 		let mut request_ids_and_methods = pending_messages
 			.iter()
-			.filter_map(|(_, msg)| msg.get_request_id_and_method())
+			.filter_map(|(counterparty_node_id, msg)| {
+				msg.get_request_id_and_method()
+					.map(|(request_id, method)| (*counterparty_node_id, request_id, method))
+			})
 			.peekable();
 
 		if request_ids_and_methods.peek().is_some() {
 			let mut request_id_to_method_map_lock = self.request_id_to_method_map.lock().unwrap();
-			for (request_id, method) in request_ids_and_methods {
-				request_id_to_method_map_lock.insert(request_id, method);
+			for (counterparty_node_id, request_id, method) in request_ids_and_methods {
+				request_id_to_method_map_lock.insert((counterparty_node_id, request_id), method);
 			}
 		}
 
