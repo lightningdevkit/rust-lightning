@@ -1679,15 +1679,29 @@ fn lsps5_service_handler_persistence_across_restarts() {
 struct FailableKVStore {
 	inner: TestStore,
 	fail_lsps5: std::sync::atomic::AtomicBool,
+	fail_lsps5_remove: std::sync::atomic::AtomicBool,
 }
 
 impl FailableKVStore {
 	fn new() -> Self {
-		Self { inner: TestStore::new(false), fail_lsps5: std::sync::atomic::AtomicBool::new(false) }
+		Self {
+			inner: TestStore::new(false),
+			fail_lsps5: std::sync::atomic::AtomicBool::new(false),
+			fail_lsps5_remove: std::sync::atomic::AtomicBool::new(false),
+		}
 	}
 
 	fn set_fail_lsps5(&self, fail: bool) {
 		self.fail_lsps5.store(fail, std::sync::atomic::Ordering::SeqCst);
+	}
+
+	fn set_fail_lsps5_remove(&self, fail: bool) {
+		self.fail_lsps5_remove.store(fail, std::sync::atomic::Ordering::SeqCst);
+	}
+
+	fn lsps5_remove_should_fail(&self) -> bool {
+		self.fail_lsps5.load(std::sync::atomic::Ordering::SeqCst)
+			|| self.fail_lsps5_remove.load(std::sync::atomic::Ordering::SeqCst)
 	}
 }
 
@@ -1726,9 +1740,7 @@ impl lightning::util::persist::KVStoreSync for FailableKVStore {
 	fn remove(
 		&self, primary_namespace: &str, secondary_namespace: &str, key: &str, lazy: bool,
 	) -> lightning::io::Result<()> {
-		if secondary_namespace == "lsps5_service"
-			&& self.fail_lsps5.load(std::sync::atomic::Ordering::SeqCst)
-		{
+		if secondary_namespace == "lsps5_service" && self.lsps5_remove_should_fail() {
 			return Err(lightning::io::Error::new(
 				lightning::io::ErrorKind::Other,
 				"intentional failure for lsps5 namespace",
@@ -1843,5 +1855,165 @@ fn lsps5_service_persist_resets_in_flight_counter_on_io_error() {
 		res2.is_err(),
 		"after a failed persist, subsequent persist calls must still attempt to persist; got {:?}",
 		res2,
+	);
+}
+
+#[test]
+fn lsps5_service_retries_prunable_peer_removal_after_io_error() {
+	use lightning::util::persist::KVStoreSync;
+	use lightning_liquidity::persist::{
+		LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+	};
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let service_kv_store = Arc::new(FailableKVStore::new());
+	let client_kv_store = Arc::new(TestStore::new(false));
+
+	let service_config = LiquidityServiceConfig {
+		lsps1_service_config: None,
+		lsps2_service_config: None,
+		lsps5_service_config: Some(LSPS5ServiceConfig::default()),
+		advertise_service: true,
+	};
+	let client_config = LiquidityClientConfig {
+		lsps1_client_config: None,
+		lsps2_client_config: None,
+		lsps5_client_config: Some(LSPS5ClientConfig::default()),
+	};
+	let time_provider: Arc<dyn TimeProvider + Send + Sync> = Arc::new(DefaultTimeProvider);
+
+	let service_lm = LiquidityManagerSync::new_with_custom_time_provider(
+		nodes[0].keys_manager,
+		nodes[0].keys_manager,
+		nodes[0].node,
+		Arc::clone(&service_kv_store),
+		nodes[0].tx_broadcaster,
+		Some(service_config.clone()),
+		None,
+		Arc::clone(&time_provider),
+	)
+	.unwrap();
+
+	let client_lm = LiquidityManagerSync::new_with_custom_time_provider(
+		nodes[1].keys_manager,
+		nodes[1].keys_manager,
+		nodes[1].node,
+		client_kv_store,
+		nodes[1].tx_broadcaster,
+		None,
+		Some(client_config),
+		Arc::clone(&time_provider),
+	)
+	.unwrap();
+
+	let service_node_id = nodes[0].node.get_our_node_id();
+	let client_node_id = nodes[1].node.get_our_node_id();
+
+	let (_, _, _, channel_id, funding_tx) = create_chan_between_nodes(&nodes[0], &nodes[1]);
+
+	let client_handler = client_lm.lsps5_client_handler().unwrap();
+	client_handler
+		.set_webhook(service_node_id, "App".to_string(), "https://example.org/hook".to_string())
+		.unwrap();
+
+	let req_msgs = client_lm.get_and_clear_pending_msg();
+	assert_eq!(req_msgs.len(), 1);
+	let (_, request) = req_msgs.into_iter().next().unwrap();
+	service_lm.handle_custom_message(request, client_node_id).unwrap();
+
+	// Consume the SendWebhookNotification event for webhook_registered.
+	match service_lm.next_event().unwrap() {
+		LiquidityEvent::LSPS5Service(LSPS5ServiceEvent::SendWebhookNotification { .. }) => {},
+		_ => panic!("Expected SendWebhookNotification event"),
+	}
+	let resp_msgs = service_lm.get_and_clear_pending_msg();
+	assert_eq!(resp_msgs.len(), 1);
+	let (_, response) = resp_msgs.into_iter().next().unwrap();
+	client_lm.handle_custom_message(response, service_node_id).unwrap();
+	match client_lm.next_event().unwrap() {
+		LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRegistered { .. }) => {},
+		_ => panic!("Expected WebhookRegistered event"),
+	}
+
+	// Persist the peer state with its registered webhook.
+	service_lm.persist().unwrap();
+
+	// Close the channel so that the peer becomes prunable once its webhooks are gone.
+	close_channel(&nodes[0], &nodes[1], &channel_id, funding_tx, true);
+	check_closed_event(
+		&nodes[0],
+		1,
+		ClosureReason::CounterpartyInitiatedCooperativeClosure,
+		&[client_node_id],
+		100000,
+	);
+	check_closed_event(
+		&nodes[1],
+		1,
+		ClosureReason::LocallyInitiatedCooperativeClosure,
+		&[service_node_id],
+		100000,
+	);
+
+	client_handler.remove_webhook(service_node_id, "App".to_string()).unwrap();
+	let req_msgs = client_lm.get_and_clear_pending_msg();
+	assert_eq!(req_msgs.len(), 1);
+	let (_, request) = req_msgs.into_iter().next().unwrap();
+	service_lm.handle_custom_message(request, client_node_id).unwrap();
+
+	let resp_msgs = service_lm.get_and_clear_pending_msg();
+	assert_eq!(resp_msgs.len(), 1);
+	let (_, response) = resp_msgs.into_iter().next().unwrap();
+	client_lm.handle_custom_message(response, service_node_id).unwrap();
+	match client_lm.next_event().unwrap() {
+		LiquidityEvent::LSPS5Client(LSPS5ClientEvent::WebhookRemoved { .. }) => {},
+		_ => panic!("Expected WebhookRemoved event"),
+	}
+
+	// Now the peer is prunable, but only its state removal fails: the emptied state is
+	// written successfully before the removal is attempted.
+	service_kv_store.set_fail_lsps5_remove(true);
+	assert!(service_lm.persist().is_err(), "persist should fail when the removal fails");
+
+	// Restarting the service from the store must not resurrect the removed webhook.
+	{
+		let restarted_service_lm = LiquidityManagerSync::new_with_custom_time_provider(
+			nodes[0].keys_manager,
+			nodes[0].keys_manager,
+			nodes[0].node,
+			Arc::clone(&service_kv_store),
+			nodes[0].tx_broadcaster,
+			Some(service_config),
+			None,
+			Arc::clone(&time_provider),
+		)
+		.unwrap();
+
+		let restarted_service_handler = restarted_service_lm.lsps5_service_handler().unwrap();
+		restarted_service_handler.notify_payment_incoming(client_node_id).unwrap();
+		assert!(
+			restarted_service_lm.next_event().is_none(),
+			"Removed webhook must not be resurrected after a restart"
+		);
+	}
+
+	// With the store accepting removals again, a subsequent `persist` must retry the
+	// removal and complete it.
+	service_kv_store.set_fail_lsps5_remove(false);
+	service_lm.persist().unwrap();
+	assert!(
+		service_kv_store
+			.list(
+				LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+				LSPS5_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+			)
+			.unwrap()
+			.is_empty(),
+		"Peer state key should have been removed from the store"
 	);
 }
