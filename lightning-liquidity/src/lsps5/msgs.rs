@@ -335,7 +335,7 @@ impl Deref for LSPS5AppName {
 
 impl Display for LSPS5AppName {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_str(self)
+		write!(f, "{}", self.0)
 	}
 }
 
@@ -369,7 +369,9 @@ impl AsRef<str> for LSPS5AppName {
 
 impl From<LSPS5AppName> for String {
 	fn from(app_name: LSPS5AppName) -> Self {
-		app_name.to_string()
+		// Yield the raw app name rather than the sanitized `Display` output, so
+		// values destined for storage or the wire are not mangled.
+		app_name.0 .0
 	}
 }
 
@@ -799,6 +801,21 @@ mod tests {
 		let app2 = LSPS5AppName::new("app2".to_string()).unwrap();
 		assert_eq!(response.app_names, vec![app1, app2]);
 		assert_eq!(response.max_webhooks, 5);
+	}
+
+	#[test]
+	fn app_name_display_sanitizes_peer_controlled_input() {
+		let raw = "bad\nname\u{0}\u{1b}[31m<html>".to_string();
+		let app_name = LSPS5AppName::new(raw.clone()).unwrap();
+
+		let rendered = format!("{}", app_name);
+		assert!(!rendered.contains('\n'), "{}", rendered);
+		assert!(!rendered.contains('\u{0}'), "{}", rendered);
+		assert!(!rendered.contains('\u{1b}'), "{}", rendered);
+
+		// Converting to `String` still yields the raw value, only the
+		// `Display` output is sanitized.
+		assert_eq!(String::from(app_name), raw);
 	}
 
 	#[test]
