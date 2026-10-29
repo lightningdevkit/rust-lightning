@@ -31,6 +31,7 @@ use crate::prelude::HashMap;
 use lightning::ln::msgs::{DecodeError, LightningError};
 use lightning::ln::wire;
 use lightning::util::ser::{LengthLimitedRead, LengthReadable, Readable, WithoutLength, Writeable};
+use lightning_types::string::PrintableString;
 
 use bitcoin::secp256k1::PublicKey;
 
@@ -333,6 +334,22 @@ pub struct LSPSResponseError {
 	pub message: String,
 	/// A primitive or structured value that contains additional information about the error.
 	pub data: Option<String>,
+}
+
+impl Display for LSPSResponseError {
+	/// Renders the error for inclusion in logs and other human-readable output.
+	///
+	/// The peer-controlled `message` and `data` fields are passed through
+	/// [`PrintableString`], which replaces control characters and other
+	/// unprintable characters with U+FFFD, so that a peer cannot inject forged
+	/// log lines or terminal escape sequences via an error response.
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		write!(f, "code = {}, message = {}", self.code, PrintableString(&self.message))?;
+		if let Some(data) = self.data.as_deref() {
+			write!(f, ", data = {}", PrintableString(data))?;
+		}
+		Ok(())
+	}
 }
 
 /// A (de-)serializable LSPS message allowing to be sent over the wire.
@@ -1076,5 +1093,22 @@ mod tests {
 			&mut request_id_to_method_map
 		)
 		.is_err());
+	}
+
+	#[test]
+	fn response_error_display_sanitizes_peer_controlled_fields() {
+		let error = LSPSResponseError {
+			code: -32600,
+			message: "line1\nline2\u{0}\u{1b}[31m<html>".to_string(),
+			data: Some("line1\nline2\u{0}\u{1b}[31m<html>".to_string()),
+		};
+
+		let rendered = format!("{}", error);
+		assert!(!rendered.contains('\n'), "{}", rendered);
+		assert!(!rendered.contains('\u{0}'), "{}", rendered);
+		assert!(!rendered.contains('\u{1b}'), "{}", rendered);
+		assert!(rendered.contains("code = -32600"), "{}", rendered);
+		assert!(rendered.contains("message = line1"), "{}", rendered);
+		assert!(rendered.contains("data = line1"), "{}", rendered);
 	}
 }

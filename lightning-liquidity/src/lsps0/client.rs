@@ -10,7 +10,7 @@ use crate::lsps0::msgs::{
 	LSPS0ListProtocolsRequest, LSPS0ListProtocolsResponse, LSPS0Message, LSPS0Request,
 	LSPS0Response,
 };
-use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId, LSPSResponseError};
+use crate::lsps0::ser::{LSPSProtocolMessageHandler, LSPSRequestId};
 use crate::message_queue::MessageQueue;
 use crate::prelude::{new_hash_map, new_hash_set, HashMap, HashSet};
 use crate::sync::{Arc, Mutex, RwLock};
@@ -95,13 +95,8 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS0ClientHandler<ES, K> {
 				});
 				Ok(())
 			},
-			LSPS0Response::ListProtocolsError(LSPSResponseError {
-				code, message, data, ..
-			}) => Err(LightningError {
-				err: format!(
-					"ListProtocols error received. code = {}, message = {}, data = {:?}",
-					code, message, data
-				),
+			LSPS0Response::ListProtocolsError(error) => Err(LightningError {
+				err: format!("ListProtocols error received. {}", error),
 				action: ErrorAction::IgnoreAndLog(Level::Info),
 			}),
 		}
