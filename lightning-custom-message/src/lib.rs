@@ -313,17 +313,27 @@ macro_rules! composite_custom_message_handler {
 
 			fn peer_connected(&self, their_node_id: $crate::bitcoin::secp256k1::PublicKey, msg: &$crate::lightning::ln::msgs::Init, inbound: bool) -> Result<(), ()> {
 				// Per the `CustomMessageHandler::peer_connected` contract, `peer_disconnected`
-				// will not be called by `PeerManager` if we return `Err`. To avoid leaking
-				// per-peer state in sub-handlers that already returned `Ok` when a later one
-				// errors, record each sub-handler's result and roll back the successful ones
-				// ourselves before propagating the failure.
+				// will not be called by `PeerManager` if we return `Err`. Match `PeerManager`'s
+				// own handling: stop at the first sub-handler that rejects the peer so later
+				// sub-handlers never observe the connection, and roll back the sub-handlers
+				// that already accepted it ourselves before propagating the failure.
+				let mut any_err = false;
 				$(
-					let $field = self.$field.peer_connected(their_node_id, msg, inbound);
+					let $field = if any_err {
+						None
+					} else {
+						match self.$field.peer_connected(their_node_id, msg, inbound) {
+							Ok(()) => Some(()),
+							Err(_) => {
+								any_err = true;
+								None
+							},
+						}
+					};
 				)*
-				let any_err = false $( || $field.is_err() )*;
 				if any_err {
 					$(
-						if $field.is_ok() {
+						if $field.is_some() {
 							self.$field.peer_disconnected(their_node_id);
 						}
 					)*
@@ -464,6 +474,43 @@ mod tests {
 		}
 	}
 
+	// The per-peer state this handler records in `peer_connected` is not undone
+	// by `peer_disconnected`, so it can observe whether it was ever told a peer
+	// connected even after a rollback.
+	pub struct RecordingHandler {
+		pub connect_count: AtomicUsize,
+		pub disconnect_count: AtomicUsize,
+	}
+	impl CustomMessageReader for RecordingHandler {
+		type CustomMessage = Foo;
+		fn read<R: LengthLimitedRead>(
+			&self, _t: u16, _b: &mut R,
+		) -> Result<Option<Foo>, DecodeError> {
+			Ok(None)
+		}
+	}
+	impl CustomMessageHandler for RecordingHandler {
+		fn handle_custom_message(&self, _msg: Foo, _: PublicKey) -> Result<(), LightningError> {
+			Ok(())
+		}
+		fn get_and_clear_pending_msg(&self) -> Vec<(PublicKey, Foo)> {
+			vec![]
+		}
+		fn peer_disconnected(&self, _: PublicKey) {
+			self.disconnect_count.fetch_add(1, Ordering::SeqCst);
+		}
+		fn peer_connected(&self, _: PublicKey, _: &Init, _: bool) -> Result<(), ()> {
+			self.connect_count.fetch_add(1, Ordering::SeqCst);
+			Ok(())
+		}
+		fn provided_node_features(&self) -> NodeFeatures {
+			NodeFeatures::empty()
+		}
+		fn provided_init_features(&self, _: PublicKey) -> InitFeatures {
+			InitFeatures::empty()
+		}
+	}
+
 	pub struct ErroringHandler;
 	impl CustomMessageReader for ErroringHandler {
 		type CustomMessage = Bar;
@@ -503,6 +550,32 @@ mod tests {
 		pub enum CompositeMessage {
 			Foo(32768),
 			Bar(32769),
+		}
+	);
+
+	composite_custom_message_handler!(
+		pub struct LeadingErrorComposite {
+			erroring: ErroringHandler,
+			recording: RecordingHandler,
+		}
+
+		pub enum LeadingErrorMessage {
+			Foo(32768),
+			Bar(32769),
+		}
+	);
+
+	composite_custom_message_handler!(
+		pub struct MiddleErrorComposite {
+			first: RecordingHandler,
+			erroring: ErroringHandler,
+			last: RecordingHandler,
+		}
+
+		pub enum MiddleErrorMessage {
+			Foo(32768),
+			Bar(32769),
+			Last(32770),
 		}
 	);
 
@@ -571,12 +644,7 @@ mod tests {
 		assert!(matches!(composite.read(32770, &mut buffer), Ok(None)));
 	}
 
-	#[test]
-	fn peer_connected_failure_does_not_leak_subhandler_state() {
-		let composite = CompositeHandler {
-			counting: CountingHandler { connect_count: AtomicUsize::new(0) },
-			erroring: ErroringHandler,
-		};
+	fn test_peer() -> (PublicKey, Init) {
 		let pk_bytes = [
 			0x02, 0x79, 0xBE, 0x66, 0x7E, 0xF9, 0xDC, 0xBB, 0xAC, 0x55, 0xA0, 0x62, 0x95, 0xCE,
 			0x87, 0x0B, 0x07, 0x02, 0x9B, 0xFC, 0xDB, 0x2D, 0xCE, 0x28, 0xD9, 0x59, 0xF2, 0x81,
@@ -585,6 +653,16 @@ mod tests {
 		let pk = PublicKey::from_slice(&pk_bytes).unwrap();
 		let init =
 			Init { features: InitFeatures::empty(), networks: None, remote_network_address: None };
+		(pk, init)
+	}
+
+	#[test]
+	fn peer_connected_failure_does_not_leak_subhandler_state() {
+		let composite = CompositeHandler {
+			counting: CountingHandler { connect_count: AtomicUsize::new(0) },
+			erroring: ErroringHandler,
+		};
+		let (pk, init) = test_peer();
 
 		let result = composite.peer_connected(pk, &init, true);
 		assert!(result.is_err(), "Composite must propagate the inner Err");
@@ -595,6 +673,73 @@ mod tests {
 			"CountingHandler tracked {leaked} connected peer(s) after the composite \
 			 returned Err; this state will never be cleaned up because per the trait \
 			 contract peer_disconnected won't be called when peer_connected returns Err.",
+		);
+	}
+
+	#[test]
+	fn peer_connected_stops_at_first_rejecting_subhandler() {
+		let composite = LeadingErrorComposite {
+			erroring: ErroringHandler,
+			recording: RecordingHandler {
+				connect_count: AtomicUsize::new(0),
+				disconnect_count: AtomicUsize::new(0),
+			},
+		};
+		let (pk, init) = test_peer();
+
+		let result = composite.peer_connected(pk, &init, true);
+		assert!(result.is_err(), "Composite must propagate the inner Err");
+
+		let connects = composite.recording.connect_count.load(Ordering::SeqCst);
+		assert_eq!(
+			connects, 0,
+			"RecordingHandler was told {connects} peer(s) connected even though an earlier \
+			 sub-handler rejected them; sub-handlers after the first rejecting one must not \
+			 see the connection.",
+		);
+		let disconnects = composite.recording.disconnect_count.load(Ordering::SeqCst);
+		assert_eq!(
+			disconnects, 0,
+			"RecordingHandler was issued {disconnects} peer_disconnected(s) despite never \
+			 having accepted a peer.",
+		);
+	}
+
+	#[test]
+	fn peer_connected_rolls_back_subhandlers_before_a_middle_failure() {
+		let composite = MiddleErrorComposite {
+			first: RecordingHandler {
+				connect_count: AtomicUsize::new(0),
+				disconnect_count: AtomicUsize::new(0),
+			},
+			erroring: ErroringHandler,
+			last: RecordingHandler {
+				connect_count: AtomicUsize::new(0),
+				disconnect_count: AtomicUsize::new(0),
+			},
+		};
+		let (pk, init) = test_peer();
+
+		let result = composite.peer_connected(pk, &init, true);
+		assert!(result.is_err(), "Composite must propagate the inner Err");
+
+		let first_connects = composite.first.connect_count.load(Ordering::SeqCst);
+		assert_eq!(first_connects, 1, "The sub-handler before the failing one must be called.");
+		let first_disconnects = composite.first.disconnect_count.load(Ordering::SeqCst);
+		assert_eq!(
+			first_disconnects, 1,
+			"The sub-handler that accepted the peer before the failing one must be rolled \
+			 back with peer_disconnected.",
+		);
+		let last_connects = composite.last.connect_count.load(Ordering::SeqCst);
+		assert_eq!(
+			last_connects, 0,
+			"The sub-handler after the failing one must never be told the peer connected.",
+		);
+		let last_disconnects = composite.last.disconnect_count.load(Ordering::SeqCst);
+		assert_eq!(
+			last_disconnects, 0,
+			"The sub-handler after the failing one must never be issued peer_disconnected.",
 		);
 	}
 }
