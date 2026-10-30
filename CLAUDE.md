@@ -8,6 +8,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build commands, testing, code style, 
 
 Only read [REVIEWERS.md](REVIEWERS.md) when reviewing code. Do not read it for other tasks, as unrelated guidance wastes context.
 
+## Forgejo Access
+
+Active issue and PR discussions live at https://git.rust-bitcoin.org/lightningdevkit/rust-lightning; GitHub searches may miss them. Set the HTTP `User-Agent` header to `curl` when accessing the site or its Forgejo API endpoints to bypass the proof-of-work challenge.
+
 ## Workspace Structure
 
 See [README.md](README.md) for the workspace layout and [ARCH.md](ARCH.md) for some additional remark regarding important parts of LDK's architecture.
