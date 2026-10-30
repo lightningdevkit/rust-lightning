@@ -697,10 +697,10 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				Err(()) => {
 					let htlcs_to_remove =
 						USER_COINS_WEIGHT_BUDGET.div_ceil(htlc_timeout_input_output_pair_weight);
-					batch_size = batch_size.checked_sub(htlcs_to_remove as usize).ok_or(())?;
-					if batch_size == 0 {
+					if batch_size <= 1 {
 						return Err(());
 					}
+					batch_size = batch_size.saturating_sub(htlcs_to_remove as usize).max(1);
 					continue;
 				},
 			};
@@ -1032,6 +1032,123 @@ mod tests {
 			},
 			pending_htlcs: Vec::new(),
 		});
+	}
+
+	fn do_test_htlc_batch_retries_singleton(fund_singletons: bool) {
+		struct SingletonCoinSelectionSource {
+			expected_selects: Mutex<Vec<(usize, ClaimId)>>,
+			fund_singletons: bool,
+			funding_tx: Transaction,
+		}
+		impl CoinSelectionSourceSync for SingletonCoinSelectionSource {
+			fn select_confirmed_utxos(
+				&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, _must_pay_to: &[TxOut],
+				_target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+			) -> Result<CoinSelection, ()> {
+				let (batch_size, expected_claim_id) =
+					self.expected_selects.lock().unwrap().remove(0);
+				assert_eq!(must_spend.len(), batch_size);
+				assert_eq!(claim_id, Some(expected_claim_id));
+				if must_spend.len() > 1 || !self.fund_singletons {
+					return Err(());
+				}
+				let vout = must_spend[0].outpoint.vout;
+				Ok(CoinSelection {
+					confirmed_utxos: vec![ConfirmedUtxo {
+						utxo: Utxo {
+							outpoint: OutPoint { txid: self.funding_tx.compute_txid(), vout },
+							output: self.funding_tx.output[vout as usize].clone(),
+							satisfaction_weight: 5, // Empty script_sig and witness lengths.
+							sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+						},
+						prevtx: self.funding_tx.clone(),
+					}],
+					change_output: None,
+				})
+			}
+			fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
+				assert!(self.fund_singletons);
+				Ok(psbt.unsigned_tx)
+			}
+		}
+
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let claim_id = ClaimId([42; 32]);
+		let mut expected_selects = vec![(2, claim_id), (1, claim_id)];
+		if fund_singletons {
+			expected_selects.push((1, claim_id.step_with_bytes(&1usize.to_be_bytes())));
+		}
+		let funding_output =
+			TxOut { value: Amount::from_sat(1000), script_pubkey: ScriptBuf::new() };
+		let source = SingletonCoinSelectionSource {
+			expected_selects: Mutex::new(expected_selects),
+			fund_singletons,
+			funding_tx: Transaction {
+				version: Version::TWO,
+				lock_time: LockTime::ZERO,
+				input: vec![],
+				output: vec![funding_output; 2],
+			},
+		};
+		let logger = TestLogger::new();
+		let signer = KeysManager::new(&[42; 32], 42, 42, true, &logger);
+		let handler = BumpTransactionEventHandlerSync::new(&broadcaster, &source, &signer, &logger);
+		let mut transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
+		transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies();
+		let htlc_descriptors: Vec<_> = (0..2)
+			.map(|index| HTLCDescriptor {
+				channel_derivation_parameters: ChannelDerivationParameters {
+					value_satoshis: 42_000_000,
+					keys_id: [42; 32],
+					transaction_parameters: transaction_parameters.clone(),
+				},
+				commitment_txid: OutPoint::null().txid,
+				per_commitment_number: 0,
+				per_commitment_point: PublicKey::from_slice(&[2; 33]).unwrap(),
+				feerate_per_kw: 0,
+				htlc: HTLCOutputInCommitment {
+					offered: true,
+					amount_msat: 1_000_000,
+					cltv_expiry: 0,
+					payment_hash: crate::types::payment::PaymentHash([42; 32]),
+					transaction_output_index: Some(index),
+				},
+				preimage: None,
+				counterparty_sig: Signature::from_compact(&[42; 64]).unwrap(),
+			})
+			.collect();
+
+		// A failed two-HTLC batch must retry one HTLC, then either stop or claim both separately.
+		handler.handle_event(&BumpTransactionEvent::HTLCResolution {
+			channel_id: ChannelId([42; 32]),
+			counterparty_node_id: PublicKey::from_slice(&[2; 33]).unwrap(),
+			claim_id,
+			target_feerate_sat_per_1000_weight: 1000,
+			htlc_descriptors: htlc_descriptors.clone(),
+			tx_lock_time: LockTime::ZERO,
+		});
+		assert!(source.expected_selects.lock().unwrap().is_empty());
+		let transactions = broadcaster.txn_broadcast();
+		assert_eq!(transactions.len(), if fund_singletons { 2 } else { 0 });
+		for (tx, descriptor) in transactions.iter().zip(&htlc_descriptors) {
+			assert_eq!(tx.input.len(), 2);
+			assert_eq!(tx.input[0].previous_output, descriptor.outpoint());
+			assert!(!tx.input[0].witness.is_empty());
+			assert_eq!(tx.input[1].previous_output.txid, source.funding_tx.compute_txid());
+			assert_eq!(tx.input[1].previous_output.vout, descriptor.outpoint().vout);
+			assert_eq!(tx.output, vec![descriptor.tx_output(&Secp256k1::new())]);
+		}
+	}
+
+	#[test]
+	fn test_htlc_batch_retries_singleton() {
+		do_test_htlc_batch_retries_singleton(false);
+	}
+
+	#[test]
+	fn test_htlc_batch_broadcasts_singletons() {
+		do_test_htlc_batch_retries_singleton(true);
 	}
 
 	#[test]
