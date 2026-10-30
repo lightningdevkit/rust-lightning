@@ -2628,7 +2628,11 @@ fn do_test_trampoline_single_hop_receive(success: bool) {
 		assert_eq!(path_events.len(), 1);
 		match &path_events[0] {
 			Event::PaymentPathSuccessful { hold_times, .. } => {
-				assert_eq!(hold_times, &[0, 0]);
+				// Both hops' attribution data must decode. Bob's hold time is measured from the
+				// wall clock and may be non-zero on a slow machine, but Carol, as the final node,
+				// always reports zero.
+				assert_eq!(hold_times.len(), 2);
+				assert_eq!(hold_times[1], 0);
 			},
 			_ => panic!("Unexpected event"),
 		}
