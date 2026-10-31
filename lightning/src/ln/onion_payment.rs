@@ -555,23 +555,28 @@ pub fn peel_payment_onion<NS: NodeSigner, L: Logger, T: secp256k1::Verification>
 				}),
 			};
 
+			// Failures within a blinded path must not reveal their specific reason.
+			let is_blinded = matches!(hop, onion_utils::Hop::BlindedForward { .. });
+			let forward_err = |err_msg, reason| if is_blinded {
+				InboundHTLCErr {
+					msg: err_msg,
+					reason: LocalHTLCFailureReason::InvalidOnionBlinding,
+					err_data: vec![0; 32],
+				}
+			} else {
+				InboundHTLCErr { msg: err_msg, reason, err_data: update_add_failure_err_data(msg, reason) }
+			};
+
 			if msg.amount_msat < outgoing_amt_msat {
-				let reason = LocalHTLCFailureReason::FeeInsufficient;
-				return Err(InboundHTLCErr {
-					msg: "incoming amount check failed",
-					reason,
-					err_data: update_add_failure_err_data(msg, reason),
-				});
+				return Err(forward_err(
+					"incoming amount check failed", LocalHTLCFailureReason::FeeInsufficient,
+				));
 			}
 
 			if let Err(reason) = check_incoming_htlc_cltv(
 				cur_height, outgoing_cltv_value, msg.cltv_expiry, MIN_CLTV_EXPIRY_DELTA,
 			) {
-				return Err(InboundHTLCErr {
-					msg: "incoming cltv check failed",
-					reason,
-					err_data: Vec::new(),
-				});
+				return Err(forward_err("incoming cltv check failed", reason));
 			}
 
 			// TODO: If this is potentially a phantom payment we should decode the phantom payment
@@ -894,16 +899,16 @@ mod tests {
 		};
 	}
 
-	#[test]
-	fn peel_rejects_forward_amount_above_incoming_htlc() {
+	/// Builds a payment onion routed through Bob to Charlie, returning Bob's signer, the current
+	/// height, and the `update_add_htlc` Bob is expected to receive.
+	fn bob_forward_update_add<'a>(
+		secp_ctx: &Secp256k1<bitcoin::secp256k1::All>, logger: &'a test_utils::TestLogger,
+	) -> (crate::sign::KeysManager<&'a test_utils::TestLogger>, u32, msgs::UpdateAddHTLC) {
 		use super::*;
-		let secp_ctx = Secp256k1::new();
-		let logger = test_utils::TestLogger::new();
-
-		let bob = crate::sign::KeysManager::new(&[2; 32], 42, 42, true, &logger);
-		let bob_pk = PublicKey::from_secret_key(&secp_ctx, &bob.get_node_secret_key());
-		let charlie = crate::sign::KeysManager::new(&[3; 32], 42, 42, true, &logger);
-		let charlie_pk = PublicKey::from_secret_key(&secp_ctx, &charlie.get_node_secret_key());
+		let bob = crate::sign::KeysManager::new(&[2; 32], 42, 42, true, logger);
+		let bob_pk = PublicKey::from_secret_key(secp_ctx, &bob.get_node_secret_key());
+		let charlie = crate::sign::KeysManager::new(&[3; 32], 42, 42, true, logger);
+		let charlie_pk = PublicKey::from_secret_key(secp_ctx, &charlie.get_node_secret_key());
 
 		let (
 			session_priv,
@@ -918,7 +923,7 @@ mod tests {
 		) = payment_onion_args(bob_pk, charlie_pk);
 		let path = Path { hops, blinded_tail: None };
 		let (onion, amount_msat, cltv_expiry) = create_payment_onion(
-			&secp_ctx,
+			secp_ctx,
 			&path,
 			&session_priv,
 			&recipient_onion,
@@ -929,17 +934,47 @@ mod tests {
 			prng_seed,
 		)
 		.unwrap();
+		(bob, cur_height, make_update_add_msg(amount_msat, cltv_expiry, payment_hash, onion))
+	}
+
+	#[test]
+	fn peel_rejects_forward_amount_above_incoming_htlc() {
+		use super::*;
+		let secp_ctx = Secp256k1::new();
+		let logger = test_utils::TestLogger::new();
+		let (bob, cur_height, mut msg) = bob_forward_update_add(&secp_ctx, &logger);
 		let logger = test_utils::TestLogger::with_id("bob".to_string());
 
-		// Bob's onion payload forwards `amount_msat - 1`.
-		let msg = make_update_add_msg(amount_msat - 1, cltv_expiry, payment_hash, onion.clone());
+		// Bob's onion payload forwards `msg.amount_msat - 1`.
+		msg.amount_msat -= 1;
 		assert!(peel_payment_onion(&msg, &bob, &logger, &secp_ctx, cur_height, false).is_ok());
 
-		let msg = make_update_add_msg(amount_msat - 2, cltv_expiry, payment_hash, onion);
+		msg.amount_msat -= 1;
 		let err =
 			peel_payment_onion(&msg, &bob, &logger, &secp_ctx, cur_height, false).unwrap_err();
 		assert_eq!(err.reason, LocalHTLCFailureReason::FeeInsufficient);
-		let mut expected_err_data = (amount_msat - 2).to_be_bytes().to_vec();
+		let mut expected_err_data = msg.amount_msat.to_be_bytes().to_vec();
+		expected_err_data.extend_from_slice(&0u16.to_be_bytes());
+		assert_eq!(err.err_data, expected_err_data);
+	}
+
+	#[test]
+	fn peel_rejects_forward_with_insufficient_cltv_delta() {
+		use super::*;
+		let secp_ctx = Secp256k1::new();
+		let logger = test_utils::TestLogger::new();
+		let (bob, cur_height, mut msg) = bob_forward_update_add(&secp_ctx, &logger);
+		let logger = test_utils::TestLogger::with_id("bob".to_string());
+
+		// Bob's onion payload leaves exactly `MIN_CLTV_EXPIRY_DELTA` between the incoming and
+		// outgoing CLTV.
+		assert!(peel_payment_onion(&msg, &bob, &logger, &secp_ctx, cur_height, false).is_ok());
+
+		msg.cltv_expiry -= 1;
+		let err =
+			peel_payment_onion(&msg, &bob, &logger, &secp_ctx, cur_height, false).unwrap_err();
+		assert_eq!(err.reason, LocalHTLCFailureReason::IncorrectCLTVExpiry);
+		let mut expected_err_data = msg.cltv_expiry.to_be_bytes().to_vec();
 		expected_err_data.extend_from_slice(&0u16.to_be_bytes());
 		assert_eq!(err.err_data, expected_err_data);
 	}

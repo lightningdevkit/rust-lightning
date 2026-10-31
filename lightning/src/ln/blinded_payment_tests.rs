@@ -1039,6 +1039,61 @@ fn two_hop_blinded_path_success() {
 }
 
 #[test]
+fn peel_payment_onion_hides_blinded_forward_failures() {
+	// A blinded forward that fails `peel_payment_onion`'s forwarding checks must not reveal the
+	// specific failure reason.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+	let chan_upd_1_2 =
+		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (_, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[2], Some(amt_msat), None);
+	let route_params = get_blinded_route_parameters(
+		amt_msat,
+		payment_secret,
+		1,
+		1_0000_0000,
+		nodes.iter().skip(1).map(|n| n.node.get_our_node_id()).collect(),
+		&[&chan_upd_1_2],
+		&chanmon_cfgs[2].keys_manager,
+	);
+	let onion = RecipientOnionFields::spontaneous_empty(amt_msat);
+	let payment_id = PaymentId(payment_hash.0);
+	nodes[0]
+		.node
+		.send_payment(payment_hash, onion, payment_id, route_params, Retry::Attempts(0))
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let update_add = SendEvent::from_event(events.remove(0)).msgs.remove(0);
+
+	let secp_ctx = Secp256k1::new();
+	let peel = |cur_height| {
+		onion_payment::peel_payment_onion(
+			&update_add,
+			&chanmon_cfgs[1].keys_manager,
+			&chanmon_cfgs[1].logger,
+			&secp_ctx,
+			cur_height,
+			false,
+		)
+	};
+	let cur_height = nodes[1].best_block_info().1;
+	assert!(peel(cur_height).is_ok());
+
+	// At this height the HTLC expires too soon to be forwarded.
+	let err = peel(update_add.cltv_expiry).unwrap_err();
+	assert_eq!(err.reason, LocalHTLCFailureReason::InvalidOnionBlinding);
+	assert_eq!(err.err_data, vec![0; 32]);
+}
+
+#[test]
 #[rustfmt::skip]
 fn three_hop_blinded_path_success() {
 	let chanmon_cfgs = create_chanmon_cfgs(5);
