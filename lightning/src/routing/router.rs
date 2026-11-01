@@ -1536,7 +1536,8 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	/// Information about the blinded path including the fee, HTLC amount limits, and
 	/// cryptographic material required to build an HTLC terminating with the given path.
 	///
-	/// Note that the [`BlindedPayInfo`] is ignored here.
+	/// Note that the fees in the [`BlindedPayInfo`] are ignored here, while its CLTV expiry delta
+	/// is used.
 	///
 	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	///
@@ -1586,8 +1587,9 @@ pub enum CandidateRouteHop<'a> {
 	/// returning `None` from [`CandidateRouteHop::target`]), in this case we do actually know the
 	/// payee's identity - it's the introduction point!
 	///
-	/// [`BlindedPayInfo`] provided for 1-hop blinded paths is ignored because it is meant to apply
-	/// to the hops *between* the introduction node and the destination.
+	/// The fees in the [`BlindedPayInfo`] provided for 1-hop blinded paths are ignored because they
+	/// are meant to apply to the hops *between* the introduction node and the destination. The CLTV
+	/// expiry delta is used, since the recipient folds its `min_final_cltv_expiry_delta` into it.
 	///
 	/// This primarily exists to track that we need to included a blinded path at the end of our
 	/// [`Route`], even though it doesn't actually add an additional hop in the payment.
@@ -1663,7 +1665,9 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::PublicHop(hop) => hop.info.direction().cltv_expiry_delta as u32,
 			CandidateRouteHop::PrivateHop(hop) => hop.hint.cltv_expiry_delta as u32,
 			CandidateRouteHop::Blinded(hop) => hop.hint.payinfo.cltv_expiry_delta as u32,
-			CandidateRouteHop::OneHopBlinded(_) => 0,
+			// The recipient folds its `min_final_cltv_expiry_delta` into this delta (BOLT 4), so
+			// it applies even when the introduction node is the recipient.
+			CandidateRouteHop::OneHopBlinded(hop) => hop.hint.payinfo.cltv_expiry_delta as u32,
 		}
 	}
 
@@ -5937,7 +5941,7 @@ mod tests {
 
 		// MPP to a 1-hop blinded path for nodes[2]
 		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
-		let blinded_payinfo = BlindedPayInfo { // These fields are ignored for 1-hop blinded paths
+		let blinded_payinfo = BlindedPayInfo { // The fees and HTLC limits are ignored for 1-hop blinded paths
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			htlc_minimum_msat: 0,
@@ -8193,11 +8197,10 @@ mod tests {
 		if tail.hops.len() > 1 {
 			assert_eq!(final_hop.fee_msat,
 				blinded_payinfo.fee_base_msat as u64 + blinded_payinfo.fee_proportional_millionths as u64 * tail.final_value_msat / 1000000);
-			assert_eq!(final_hop.cltv_expiry_delta, blinded_payinfo.cltv_expiry_delta as u32);
 		} else {
 			assert_eq!(final_hop.fee_msat, 0);
-			assert_eq!(final_hop.cltv_expiry_delta, 0);
 		}
+		assert_eq!(final_hop.cltv_expiry_delta, blinded_payinfo.cltv_expiry_delta as u32);
 	}
 
 	#[test]

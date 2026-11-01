@@ -1413,7 +1413,8 @@ impl InvoiceFields {
 
 impl Writeable for UnsignedBolt12Invoice {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		WithoutLength(&self.bytes).write(writer)
+		WithoutLength(&self.bytes).write(writer)?;
+		WithoutLength(&self.experimental_bytes).write(writer)
 	}
 }
 
@@ -1884,6 +1885,7 @@ mod tests {
 		let mut buffer = Vec::new();
 		unsigned_invoice.write(&mut buffer).unwrap();
 
+		assert!(unsigned_invoice.experimental_bytes.is_empty());
 		assert_eq!(unsigned_invoice.bytes, buffer.as_slice());
 		assert_eq!(unsigned_invoice.payer_metadata(), &encrypted_payment_id);
 		assert_eq!(
@@ -3502,6 +3504,45 @@ mod tests {
 				e,
 				Bolt12ParseError::InvalidSignature(secp256k1::Error::IncorrectSignature)
 			),
+		}
+	}
+
+	#[test]
+	fn serializes_unsigned_invoice_with_experimental_tlv_records() {
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+		let payment_id = PaymentId([1; 32]);
+
+		// The payer signs the invoice request, so its experimental TLV records may be inherited by
+		// the invoice and must be included when the unsigned invoice is serialized for signing.
+		let invoice_request = OfferBuilder::new(recipient_pubkey())
+			.amount_msats(1000)
+			.build()
+			.unwrap()
+			.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+			.unwrap()
+			.experimental_bar(42)
+			.build_and_sign()
+			.unwrap();
+		let unsigned_invoice = invoice_request
+			.respond_with_no_std(payment_paths(), payment_hash(), now())
+			.unwrap()
+			.build()
+			.unwrap();
+		assert!(!unsigned_invoice.experimental_bytes.is_empty());
+
+		let mut encoded_invoice = Vec::new();
+		unsigned_invoice.write(&mut encoded_invoice).unwrap();
+
+		let mut expected = unsigned_invoice.bytes.clone();
+		expected.extend_from_slice(&unsigned_invoice.experimental_bytes);
+		assert_eq!(encoded_invoice, expected);
+
+		match UnsignedBolt12Invoice::try_from(encoded_invoice) {
+			Ok(reparsed) => assert_eq!(reparsed.tagged_hash, unsigned_invoice.tagged_hash),
+			Err(e) => panic!("error parsing invoice: {:?}", e),
 		}
 	}
 

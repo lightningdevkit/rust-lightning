@@ -206,7 +206,6 @@ impl PaymentPurpose {
 			Some(PaymentContext::AsyncBolt12Offer(_)) => {
 				// Callers are expected to convert from `AsyncBolt12OfferContext` to `Bolt12OfferContext`
 				// using the invoice request provided in the payment onion prior to calling this method.
-				debug_assert!(false);
 				Err(())
 			},
 		}

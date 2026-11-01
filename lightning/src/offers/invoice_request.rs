@@ -1147,7 +1147,8 @@ impl InvoiceRequestContentsWithoutPayerSigningPubkey {
 
 impl Writeable for UnsignedInvoiceRequest {
 	fn write<W: Writer>(&self, writer: &mut W) -> Result<(), io::Error> {
-		WithoutLength(&self.bytes).write(writer)
+		WithoutLength(&self.bytes).write(writer)?;
+		WithoutLength(&self.experimental_bytes).write(writer)
 	}
 }
 
@@ -2870,6 +2871,16 @@ mod tests {
 			.chain(TlvStream::new(&unsigned_invoice_request.experimental_bytes));
 		unsigned_invoice_request.tagged_hash =
 			TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		let mut encoded_invoice_request = Vec::new();
+		unsigned_invoice_request.write(&mut encoded_invoice_request).unwrap();
+
+		match UnsignedInvoiceRequest::try_from(encoded_invoice_request) {
+			Ok(reparsed) => {
+				assert_eq!(reparsed.tagged_hash, unsigned_invoice_request.tagged_hash)
+			},
+			Err(e) => panic!("error parsing invoice_request: {:?}", e),
+		}
 
 		let keys = payer_keys.unwrap();
 		let invoice_request = unsigned_invoice_request

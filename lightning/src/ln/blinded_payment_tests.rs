@@ -197,6 +197,83 @@ fn do_one_hop_blinded_path(success: bool) {
 }
 
 #[test]
+fn one_hop_blinded_path_cltv_expiry_delta() {
+	// The recipient folds its `min_final_cltv_expiry_delta` into the payinfo of a one-hop blinded
+	// path. Use one above the maximum shadow CLTV offset, so the HTLC cannot meet it by chance.
+	let min_final_cltv_expiry_delta = 500;
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let chan_upd =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0).0.contents;
+
+	let amt_msat = 5000;
+	let (payment_preimage, payment_hash, payment_secret) =
+		get_payment_preimage_hash(&nodes[1], Some(amt_msat), None);
+	let payee_tlvs = UnauthenticatedReceiveTlvs {
+		payment_secret,
+		payment_constraints: PaymentConstraints {
+			max_cltv_expiry: u32::MAX,
+			htlc_minimum_msat: chan_upd.htlc_minimum_msat,
+		},
+		payment_context: PaymentContext::Bolt12Refund(Bolt12RefundContext {}),
+	};
+	let nonce = Nonce([42u8; 16]);
+	let expanded_key = chanmon_cfgs[1].keys_manager.get_expanded_key();
+	let payee_tlvs = payee_tlvs.authenticate(nonce, &expanded_key);
+
+	let secp_ctx = Secp256k1::new();
+	let blinded_path = BlindedPaymentPath::new(
+		&[],
+		nodes[1].node.get_our_node_id(),
+		payee_tlvs,
+		u64::MAX,
+		min_final_cltv_expiry_delta,
+		&chanmon_cfgs[1].keys_manager,
+		&secp_ctx,
+	)
+	.unwrap();
+	assert_eq!(blinded_path.blinded_hops().len(), 1);
+	assert_eq!(blinded_path.payinfo.cltv_expiry_delta, min_final_cltv_expiry_delta);
+
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::blinded(vec![blinded_path]),
+		amt_msat,
+	);
+	nodes[0]
+		.node
+		.send_payment(
+			payment_hash,
+			RecipientOnionFields::spontaneous_empty(),
+			PaymentId(payment_hash.0),
+			route_params,
+			Retry::Attempts(0),
+		)
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let mut events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let ev = events.pop().unwrap();
+	let cltv_expiry = SendEvent::from_event(ev.clone()).msgs[0].cltv_expiry;
+	let min_cltv_expiry = nodes[0].best_block_info().1 + min_final_cltv_expiry_delta as u32;
+	assert!(cltv_expiry >= min_cltv_expiry, "{} < {}", cltv_expiry, min_cltv_expiry);
+
+	pass_along_path(
+		&nodes[0],
+		&[&nodes[1]],
+		amt_msat,
+		payment_hash,
+		Some(payment_secret),
+		ev,
+		true,
+		None,
+	);
+	claim_payment(&nodes[0], &[&nodes[1]], payment_preimage);
+}
+
+#[test]
 fn mpp_to_one_hop_blinded_path() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);

@@ -1364,12 +1364,14 @@ impl Bolt11Invoice {
 		Ok(())
 	}
 
-	/// Check that amount is a whole number of millisatoshis
+	/// Check that amount is a whole number of millisatoshis and can be represented
 	fn check_amount(&self) -> Result<(), Bolt11SemanticError> {
 		if let Some(amount_pico_btc) = self.amount_pico_btc() {
 			if amount_pico_btc % 10 != 0 {
 				return Err(Bolt11SemanticError::ImpreciseAmount);
 			}
+		} else if self.signed_invoice.hrp.raw_amount.is_some() {
+			return Err(Bolt11SemanticError::ImpreciseAmount);
 		}
 		Ok(())
 	}
@@ -1860,7 +1862,8 @@ pub enum Bolt11SemanticError {
 	/// The invoice's signature is invalid
 	InvalidSignature,
 
-	/// The invoice's amount was not a whole number of millisatoshis
+	/// The invoice's amount was not a whole number of millisatoshis or is too large to be
+	/// represented.
 	ImpreciseAmount,
 }
 
@@ -1875,7 +1878,7 @@ impl Display for Bolt11SemanticError {
 			Bolt11SemanticError::MultiplePaymentSecrets => f.write_str("The invoice contains multiple payment secrets"),
 			Bolt11SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
 			Bolt11SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
-			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
+			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis or is too large to be represented"),
 		}
 	}
 }
@@ -2227,6 +2230,58 @@ mod test {
 
 		assert_eq!(invoice.hrp.si_prefix, Some(SiPrefix::Pico));
 		assert_eq!(invoice.hrp.raw_amount, Some(1500));
+	}
+
+	#[test]
+	fn test_amount_without_si_prefix() {
+		use crate::TaggedField::*;
+		use crate::{
+			Bolt11Invoice, Bolt11ParseError, Bolt11SemanticError, Currency,
+			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, Sha256,
+		};
+		use bitcoin::secp256k1::{Secp256k1, SecretKey};
+		use lightning_types::features::Bolt11InvoiceFeatures;
+
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let mut payment_secret_features = Bolt11InvoiceFeatures::empty();
+		payment_secret_features.set_payment_secret_required();
+
+		// An amount without an SI prefix that overflows pico BTC cannot be reported in
+		// millisatoshis either, so `from_signed` needs to reject it even though invoices built
+		// this way bypass the overflow check in `RawHrp::from_str`.
+		let invoice =
+			RawBolt11Invoice {
+				hrp: RawHrp {
+					currency: Currency::Bitcoin,
+					raw_amount: Some(184_467_441),
+					si_prefix: None,
+				},
+				data: RawDataPart {
+					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+					tagged_fields: vec![
+						crate::TaggedField::PaymentHash(Sha256(
+								sha256::Hash::from_str(
+									"0001020304050607080900010203040506070809000102030405060708090102",
+								)
+								.unwrap(),
+							),
+						)
+						.into(),
+						Description(crate::Description::new("Test".to_owned()).unwrap()).into(),
+						crate::TaggedField::PaymentSecret(lightning_types::payment::PaymentSecret([21; 32]))
+							.into(),
+						crate::TaggedField::Features(payment_secret_features).into(),
+					],
+				},
+			}
+			.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
+			.unwrap();
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::ImpreciseAmount));
+
+		// Amounts without an SI prefix are denominated in BTC and converted to pico BTC just like
+		// amounts carrying one, so anything above `u64::MAX / 1_000_000_000_000` BTC is rejected.
+		assert_eq!("lnbc18446744".parse::<RawHrp>().unwrap().raw_amount, Some(18_446_744));
+		assert_eq!("lnbc18446745".parse::<RawHrp>(), Err(Bolt11ParseError::IntegerOverflowError));
 	}
 
 	#[test]

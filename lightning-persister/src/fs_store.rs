@@ -416,16 +416,22 @@ impl FilesystemStoreInner {
 	}
 
 	fn list(&self, prefixed_dest: PathBuf) -> lightning::io::Result<Vec<String>> {
-		if !Path::new(&prefixed_dest).exists() {
-			return Ok(Vec::new());
-		}
-
 		let mut keys;
 		let mut retries = LIST_DIR_CONSISTENCY_RETRIES;
 
 		'retry_list: loop {
 			keys = Vec::new();
-			'skip_entry: for entry in fs::read_dir(&prefixed_dest)? {
+			let dir = match fs::read_dir(&prefixed_dest) {
+				Ok(dir) => dir,
+				Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+					// A missing namespace is treated as empty.
+					return Ok(Vec::new());
+				},
+				// Propagate permission, I/O, and other lookup failures rather than
+				// masking them with an empty result.
+				Err(e) => return Err(e.into()),
+			};
+			'skip_entry: for entry in dir {
 				let entry = entry?;
 				let p = entry.path();
 
@@ -650,13 +656,17 @@ fn get_key_from_dir_entry_path(p: &Path, base_path: &Path) -> Result<String, lig
 impl MigratableKVStore for FilesystemStore {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
 		let prefixed_dest = &self.inner.data_dir;
-		if !prefixed_dest.exists() {
-			return Ok(Vec::new());
-		}
-
+		let primary_dir = match fs::read_dir(prefixed_dest) {
+			Ok(dir) => dir,
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+				// A missing data directory is treated as empty.
+				return Ok(Vec::new());
+			},
+			Err(e) => return Err(e.into()),
+		};
 		let mut keys = Vec::new();
 
-		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
+		'primary_loop: for primary_entry in primary_dir {
 			let primary_entry = primary_entry?;
 			let primary_path = primary_entry.path();
 			if dir_entry_is_store_artifact(&primary_path) {
