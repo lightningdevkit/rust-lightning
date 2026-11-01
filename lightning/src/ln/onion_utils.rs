@@ -690,10 +690,14 @@ pub(crate) fn set_max_path_length(
 	.saturating_add(PAYLOAD_HMAC_LEN);
 
 	const OVERPAY_ESTIMATE_MULTIPLER: u64 = 3;
+	// The amount used here only matters for its encoded width, which must be at least as wide as
+	// the encoded width of any amount that may end up in the constructed onion. The upper bound
+	// below keeps it small enough that, added to the fee of the unblinded hop, it does not
+	// overflow the amount checks in `build_onion_payloads_callback`.
 	let final_value_msat_with_overpay_buffer = route_params
 		.final_value_msat
 		.saturating_mul(OVERPAY_ESTIMATE_MULTIPLER)
-		.clamp(MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY, 0x1000_0000);
+		.clamp(MIN_FINAL_VALUE_ESTIMATE_WITH_OVERPAY, 1 << 56);
 
 	let blinded_tail_opt = route_params
 		.payment_params
