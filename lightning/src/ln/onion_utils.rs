@@ -14,7 +14,6 @@ use crate::blinded_path::BlindedHop;
 use crate::crypto::chacha20::ChaCha20;
 use crate::crypto::streams::ChaChaReader;
 use crate::events::HTLCHandlingFailureReason;
-use crate::ln::channel::TOTAL_BITCOIN_SUPPLY_SATOSHIS;
 use crate::ln::channelmanager::{HTLCSource, RecipientOnionFields};
 use crate::ln::msgs::{self, DecodeError};
 use crate::ln::types::ChannelId;
@@ -626,8 +625,9 @@ pub(crate) fn set_max_path_length(
 	const PAYLOAD_HMAC_LEN: usize = 32;
 	let unblinded_intermed_payload_len = msgs::OutboundOnionPayload::Forward {
 		short_channel_id: 42,
-		amt_to_forward: TOTAL_BITCOIN_SUPPLY_SATOSHIS,
-		outgoing_cltv_value: route_params.payment_params.max_total_cltv_expiry_delta,
+		amt_to_forward: msgs::MAX_VALUE_MSAT,
+		outgoing_cltv_value: best_block_height
+			.saturating_add(route_params.payment_params.max_total_cltv_expiry_delta),
 	}
 	.serialized_length()
 	.saturating_add(PAYLOAD_HMAC_LEN);
