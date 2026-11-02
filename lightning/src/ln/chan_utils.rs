@@ -2234,7 +2234,7 @@ impl<'a> TrustedCommitmentTransaction<'a> {
 			input,
 			output,
 		};
-		let weight = justice_tx.weight().to_wu() + WEIGHT_REVOKED_OUTPUT;
+		let weight = justice_tx.weight().to_wu() + SEGWIT_MARKER_FLAG_WEIGHT + WEIGHT_REVOKED_OUTPUT;
 		let fee = Amount::from_sat(fee_for_weight(feerate_per_kw as u32, weight));
 		justice_tx.output[0].value = value.checked_sub(fee).ok_or(())?;
 		Ok(justice_tx)
@@ -2515,6 +2515,15 @@ mod tests {
 		assert_eq!(justice_tx.output.len(), 1);
 		assert!(justice_tx.output[0].value.to_sat() < 1000);
 		assert_eq!(justice_tx.output[0].script_pubkey, destination_script);
+
+		// The fee is derived from the weight of the signed transaction, which includes the
+		// SegWit marker/flag bytes and the revocation witness. At 253 sat/kw the two weight
+		// units of the marker/flag are absorbed by the fee's integer division, so a higher
+		// feerate is used here to assert the full weight is accounted for.
+		let justice_tx = tx.trust().build_to_local_justice_tx(2000, destination_script.clone()).unwrap();
+		let input_value =
+			tx.built.transaction.output[tx.trust().revokeable_output_index().unwrap()].value.to_sat();
+		assert_eq!(input_value - justice_tx.output[0].value.to_sat(), 970);
 	}
 
 	#[test]
