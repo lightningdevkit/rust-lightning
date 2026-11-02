@@ -797,6 +797,13 @@ struct Peer {
 	/// Bytes read from this peer which we have not yet processed because its outbound buffer
 	/// grew too large.
 	stashed_read_data: Option<Vec<u8>>,
+	/// A gossip message which we declined to process because the routing message handler's
+	/// processing queue was high, to be handled once the queue has drained, stored as the
+	/// plaintext bytes of the message (without its 16-byte MAC). We cannot store the ciphertext
+	/// as the decryption key stream has already been rolled past it. Any bytes which followed it
+	/// on the wire are in `stashed_read_data`, and reads from the peer are paused until both
+	/// have been processed.
+	stashed_gossip_msg: Option<Vec<u8>>,
 	stashed_read_processing: bool,
 
 	sync_status: InitSyncTracker,
@@ -1114,6 +1121,15 @@ pub struct PeerManager<
 
 	gossip_processing_backlogged: AtomicBool,
 	gossip_processing_backlog_lifted: AtomicBool,
+	/// A FIFO queue of the descriptors of peers for which we have stashed a gossip message
+	/// because the routing message handler's processing queue was high. We process their stashed
+	/// messages in the order they became blocked so that one peer cannot starve others of gossip
+	/// processing.
+	///
+	/// Entries are added when a peer becomes gossip-blocked and removed when we process its
+	/// stashed messages, so there is at most one entry per peer. Note that the mutex here must
+	/// never be held while taking a lock on a `Peer`.
+	gossip_blocked_peers: Mutex<VecDeque<Descriptor>>,
 
 	node_signer: NS,
 
@@ -1339,6 +1355,7 @@ where
 			peer_counter: AtomicCounter::new(),
 			gossip_processing_backlogged: AtomicBool::new(false),
 			gossip_processing_backlog_lifted: AtomicBool::new(false),
+			gossip_blocked_peers: Mutex::new(VecDeque::new()),
 			last_node_announcement_serial: AtomicU32::new(current_time),
 			logger,
 			node_signer,
@@ -1464,6 +1481,7 @@ where
 					pending_read_buffer_pos: 0,
 					pending_read_is_header: false,
 					stashed_read_data: None,
+					stashed_gossip_msg: None,
 					stashed_read_processing: false,
 
 					sync_status: InitSyncTracker::NoSyncRequested,
@@ -1527,6 +1545,7 @@ where
 					pending_read_buffer_pos: 0,
 					pending_read_is_header: false,
 					stashed_read_data: None,
+					stashed_gossip_msg: None,
 					stashed_read_processing: false,
 
 					sync_status: InitSyncTracker::NoSyncRequested,
@@ -1750,8 +1769,9 @@ where
 		}
 	}
 
-	/// Process bytes which were previously stashed for this peer because its outbound buffer
-	/// grew too large.
+	/// Process messages which were previously stashed for this peer, either because its outbound
+	/// buffer grew too large or because the routing message handler's processing queue was high
+	/// when a gossip message was read.
 	fn process_stashed_read_bytes(&self, peer_descriptor: &mut Descriptor) {
 		let stash = match self.peers.read().unwrap().get(peer_descriptor) {
 			Some(peer_mutex) => {
@@ -1821,7 +1841,13 @@ where
 
 		if let Some(peer_mutex) = peers.get(peer_descriptor) {
 			let mut read_pos = 0;
-			while read_pos < data.len() {
+			// When a gossip message was stashed because the routing message handler's processing
+			// queue was high, it is handled on the first iteration of this loop, before any
+			// stashed bytes, so we run the loop once even if there are no stashed bytes.
+			let mut handle_stashed_gossip_msg =
+				peer_mutex.lock().unwrap().stashed_gossip_msg.is_some();
+			while read_pos < data.len() || handle_stashed_gossip_msg {
+				handle_stashed_gossip_msg = false;
 				macro_rules! try_potential_handleerror {
 					($peer: expr, $thing: expr) => {{
 						let res = $thing;
@@ -1881,11 +1907,25 @@ where
 				if peer_node_id.is_none() {
 					peer_node_id.clone_from(&peer.their_node_id);
 				}
+				let their_node_id = peer.their_node_id.map(|p| p.0);
+				let logger = WithContext::from(&self.logger, their_node_id, None, None);
 
-				assert!(peer.pending_read_buffer.len() > 0);
-				assert!(peer.pending_read_buffer.len() > peer.pending_read_buffer_pos);
+				// A gossip message which we declined to process when it was read, because the
+				// routing message handler's processing queue was high, is handled here, before
+				// any bytes which followed it on the wire. It was successfully decoded when it
+				// was read, so re-decoding its plaintext cannot fail.
+				if let Some(plaintext) = peer.stashed_gossip_msg.take() {
+					msg_to_handle = wire::read(
+						&mut &plaintext[..],
+						&*self.message_handler.custom_message_handler,
+					)
+					.ok();
+					debug_assert!(peer.pending_read_is_header);
+					debug_assert_eq!(peer.pending_read_buffer_pos, 0);
+				} else {
+					assert!(peer.pending_read_buffer.len() > 0);
+					assert!(peer.pending_read_buffer.len() > peer.pending_read_buffer_pos);
 
-				{
 					let data_to_copy = cmp::min(
 						peer.pending_read_buffer.len() - peer.pending_read_buffer_pos,
 						data.len() - read_pos,
@@ -1897,7 +1937,9 @@ where
 					peer.pending_read_buffer_pos += data_to_copy;
 				}
 
-				if peer.pending_read_buffer_pos == peer.pending_read_buffer.len() {
+				if msg_to_handle.is_none()
+					&& peer.pending_read_buffer_pos == peer.pending_read_buffer.len()
+				{
 					peer.pending_read_buffer_pos = 0;
 
 					macro_rules! insert_node_id {
@@ -2011,6 +2053,30 @@ where
 									&*self.message_handler.custom_message_handler,
 								);
 
+								// If the message is a gossip message and the routing message
+								// handler's processing queue is high, we stash its plaintext to
+								// be handled once the queue has drained instead of handling it
+								// now. This strictly bounds the number of in-flight gossip
+								// validations, which read-pausing alone cannot do as it still
+								// leaves us processing up to a socket buffer worth of gossip
+								// messages per peer beyond the limit.
+								let stashed_gossip_msg = match &message_result {
+									Ok(message)
+										if is_gossip_msg(message.type_id())
+											&& self
+												.message_handler
+												.route_handler
+												.processing_queue_high() =>
+									{
+										Some(
+											peer.pending_read_buffer
+												[..peer.pending_read_buffer.len() - 16]
+												.to_vec(),
+										)
+									},
+									_ => None,
+								};
+
 								// Reset read buffer
 								if peer.pending_read_buffer.capacity() > 8192 {
 									peer.pending_read_buffer = Vec::new();
@@ -2018,9 +2084,6 @@ where
 								peer.pending_read_buffer.resize(18, 0);
 								peer.pending_read_is_header = true;
 
-								let their_node_id = peer.their_node_id.map(|p| p.0);
-								let logger =
-									WithContext::from(&self.logger, their_node_id, None, None);
 								let message = match message_result {
 									Ok(x) => x,
 									Err(e) => {
@@ -2083,6 +2146,21 @@ where
 										}
 									},
 								};
+
+								if let Some(plaintext) = stashed_gossip_msg {
+									log_gossip!(logger, "Routing message handler processing queue is high, stashing gossip message");
+									peer.stashed_gossip_msg = Some(plaintext);
+									let mut remaining = data[read_pos..].to_vec();
+									if let Some(deferred) = peer.stashed_read_data.take() {
+										remaining.extend_from_slice(&deferred);
+									}
+									peer.stashed_read_data = Some(remaining);
+									self.gossip_blocked_peers
+										.lock()
+										.unwrap()
+										.push_back((*peer_descriptor).clone());
+									break;
+								}
 
 								msg_to_handle = Some(message);
 							}
@@ -3473,6 +3551,9 @@ where
 					}
 					if peer.total_outbound_buffered() < OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS
 						&& peer.stashed_read_data.is_some()
+						// Peers which are blocked on gossip processing are handled via the
+						// `gossip_blocked_peers` queue below, in the order they became blocked.
+						&& peer.stashed_gossip_msg.is_none()
 					{
 						stashed_reads.push((*descriptor).clone());
 					}
@@ -3507,6 +3588,14 @@ where
 			}
 
 			for mut descriptor in stashed_reads {
+				self.process_stashed_read_bytes(&mut descriptor);
+			}
+
+			while !self.message_handler.route_handler.processing_queue_high() {
+				let mut descriptor = match self.gossip_blocked_peers.lock().unwrap().pop_front() {
+					Some(descriptor) => descriptor,
+					None => break,
+				};
 				self.process_stashed_read_bytes(&mut descriptor);
 			}
 
@@ -3675,6 +3764,13 @@ where
 
 				// We use a loop as a `goto` to skip writing the Ping message:
 				loop {
+					if peer.stashed_gossip_msg.is_some() {
+						// We won't handle anything the peer sends us, including the reply to
+						// any ping we send it, until its stashed gossip message is processed.
+						// Its silence is our own backpressure rather than a dead connection,
+						// so pause liveness checking until then.
+						break;
+					}
 					if peer.awaiting_pong_timer_tick_intervals == -1 {
 						// Magic value set in `maybe_send_extra_ping`.
 						peer.awaiting_pong_timer_tick_intervals = 1;
@@ -5036,6 +5132,171 @@ mod tests {
 			assert!(!peer.sent_pause_read);
 		}
 		drain_queues!();
+	}
+
+	#[test]
+	fn test_read_stash_when_gossip_processing_backlogged() {
+		use crate::routing::test_utils::channel_announcement;
+		use lightning_types::features::ChannelFeatures;
+
+		// Simple test which checks that if the routing message handler's processing queue is
+		// high we stop processing gossip messages from our peers, stashing them (and any bytes
+		// which followed them) until the queue has drained, and that we process the stashed
+		// messages of gossip-blocked peers in the order they became blocked.
+		let cfgs = create_peermgr_cfgs(3);
+		let peers = create_network(3, &cfgs);
+		let (mut fd_ab, mut fd_ba) = establish_connection(&peers[0], &peers[1]);
+		let (mut fd_ac, mut fd_ca) = establish_connection(&peers[0], &peers[2]);
+
+		macro_rules! drain_queues {
+			() => {
+				loop {
+					peers[0].process_events();
+					peers[1].process_events();
+					peers[2].process_events();
+
+					let msg = fd_ab.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[1].read_event(&mut fd_ba, &msg).unwrap();
+						continue;
+					}
+					let msg = fd_ba.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[0].read_event(&mut fd_ab, &msg).unwrap();
+						continue;
+					}
+					let msg = fd_ac.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[2].read_event(&mut fd_ca, &msg).unwrap();
+						continue;
+					}
+					let msg = fd_ca.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[0].read_event(&mut fd_ac, &msg).unwrap();
+						continue;
+					}
+					break;
+				}
+			};
+		}
+		drain_queues!();
+
+		let secp_ctx = Secp256k1::new();
+		let key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let msg = channel_announcement(&key, &key, ChannelFeatures::empty(), 42, &secp_ctx);
+		let msg_ev = MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg: None };
+
+		// Mark A's routing handler as backlogged, then have B and C each broadcast a gossip
+		// message to A. Neither message should be processed, instead A should stash them and
+		// queue the peers for later processing in the order they became blocked.
+		cfgs[0].routing_handler.gossip_backlogged.store(true, Ordering::Relaxed);
+		cfgs[1].chan_handler.pending_events.lock().unwrap().push(msg_ev.clone());
+		peers[1].process_events();
+		let msg = fd_ba.outbound_data.lock().unwrap().split_off(0);
+		peers[0].read_event(&mut fd_ab, &msg).unwrap();
+		cfgs[2].chan_handler.pending_events.lock().unwrap().push(msg_ev);
+		peers[2].process_events();
+		let msg = fd_ca.outbound_data.lock().unwrap().split_off(0);
+		peers[0].read_event(&mut fd_ac, &msg).unwrap();
+
+		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Relaxed), 0);
+		assert_eq!(
+			peers[0]
+				.gossip_blocked_peers
+				.lock()
+				.unwrap()
+				.iter()
+				.map(|d| *d == fd_ab)
+				.collect::<Vec<_>>(),
+			vec![true, false]
+		);
+
+		// While the routing handler's processing queue is high, `process_events` should not
+		// process the stashed messages.
+		peers[0].process_events();
+		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Relaxed), 0);
+		assert_eq!(peers[0].gossip_blocked_peers.lock().unwrap().len(), 2);
+
+		// Once the queue has drained, `process_events` should process the stashed messages,
+		// un-blocking reads from both peers.
+		cfgs[0].routing_handler.gossip_backlogged.store(false, Ordering::Relaxed);
+		peers[0].process_events();
+		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Relaxed), 2);
+		assert_eq!(peers[0].gossip_blocked_peers.lock().unwrap().len(), 0);
+		{
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			for fd in [&fd_ab, &fd_ac] {
+				let peer = peer_a_lock.get(fd).unwrap().lock().unwrap();
+				assert!(peer.stashed_gossip_msg.is_none());
+				assert!(peer.stashed_read_data.is_none());
+				assert!(!peer.sent_pause_read);
+			}
+		}
+		drain_queues!();
+	}
+
+	#[test]
+	fn test_gossip_blocked_peer_not_ping_timed_out() {
+		use crate::routing::test_utils::channel_announcement;
+		use lightning_types::features::ChannelFeatures;
+
+		// Simple test which checks that a peer which is blocked on gossip processing is not
+		// disconnected by the ping timeout, even though we don't handle any of its messages,
+		// including the reply to any ping we send it, while it is blocked. Liveness checking
+		// should resume once its stash has been processed.
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+		let (mut fd_ab, mut fd_ba) = establish_connection(&peers[0], &peers[1]);
+
+		// Deliver any bytes left over from the handshake, so that B has finished processing
+		// A's `GossipTimestampFilter` (and is thus not initial-syncing) before it broadcasts.
+		loop {
+			peers[0].process_events();
+			peers[1].process_events();
+			let msg = fd_ab.outbound_data.lock().unwrap().split_off(0);
+			if !msg.is_empty() {
+				peers[1].read_event(&mut fd_ba, &msg).unwrap();
+				continue;
+			}
+			let msg = fd_ba.outbound_data.lock().unwrap().split_off(0);
+			if !msg.is_empty() {
+				peers[0].read_event(&mut fd_ab, &msg).unwrap();
+				continue;
+			}
+			break;
+		}
+
+		let secp_ctx = Secp256k1::new();
+		let key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let msg = channel_announcement(&key, &key, ChannelFeatures::empty(), 42, &secp_ctx);
+		let msg_ev = MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg: None };
+
+		// Have B send a gossip message to A while A's routing handler's processing queue is
+		// high, blocking B on gossip processing, then check that timer ticks don't disconnect
+		// it.
+		cfgs[0].routing_handler.gossip_backlogged.store(true, Ordering::Relaxed);
+		cfgs[1].chan_handler.pending_events.lock().unwrap().push(msg_ev);
+		peers[1].process_events();
+		let msg = fd_ba.outbound_data.lock().unwrap().split_off(0);
+		peers[0].read_event(&mut fd_ab, &msg).unwrap();
+		assert_eq!(peers[0].gossip_blocked_peers.lock().unwrap().len(), 1);
+		for _ in 0..3 {
+			peers[0].timer_tick_occurred();
+			peers[0].process_events();
+			assert_eq!(peers[0].peers.read().unwrap().len(), 1);
+		}
+
+		// Once the backlog lifts and B's stash is processed, liveness checking should resume,
+		// disconnecting B as it does not respond to the pings we send it here.
+		cfgs[0].routing_handler.gossip_backlogged.store(false, Ordering::Relaxed);
+		peers[0].process_events();
+		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Relaxed), 1);
+		peers[0].timer_tick_occurred();
+		peers[0].process_events();
+		assert_eq!(peers[0].peers.read().unwrap().len(), 1);
+		peers[0].timer_tick_occurred();
+		peers[0].process_events();
+		assert_eq!(peers[0].peers.read().unwrap().len(), 0);
 	}
 
 	#[test]
