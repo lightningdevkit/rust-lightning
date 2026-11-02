@@ -468,7 +468,6 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 			let mut anchor_psbt = Psbt::from_unsigned_tx(anchor_tx).unwrap();
 			// add witness_utxo to anchor input
 			anchor_psbt.inputs[0].witness_utxo = Some(anchor_descriptor.previous_utxo());
-			// add witness_utxo to remaining inputs
 			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
 				// add 1 to skip the anchor input
 				let index = idx + 1;
@@ -478,6 +477,8 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				);
 				if utxo.output().script_pubkey.is_witness_program() {
 					anchor_psbt.inputs[index].witness_utxo = Some(utxo.into_output());
+				} else {
+					anchor_psbt.inputs[index].non_witness_utxo = Some(utxo.prevtx);
 				}
 			}
 
@@ -748,7 +749,6 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				htlc_psbt.inputs[i].witness_utxo = Some(htlc_descriptor.previous_utxo(&self.secp));
 			}
 
-			// add witness_utxo to remaining inputs
 			for (idx, utxo) in coin_selection.confirmed_utxos.into_iter().enumerate() {
 				// offset to skip the htlc inputs
 				let index = idx + selected_htlcs.len();
@@ -758,6 +758,8 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 				);
 				if utxo.output().script_pubkey.is_witness_program() {
 					htlc_psbt.inputs[index].witness_utxo = Some(utxo.into_output());
+				} else {
+					htlc_psbt.inputs[index].non_witness_utxo = Some(utxo.prevtx);
 				}
 			}
 
