@@ -1510,8 +1510,11 @@ impl PackageTemplate {
 	}
 
 	/// Returns value in satoshis to be included as package outgoing output amount and feerate
-	/// which was used to generate the value. Will not return less than `dust_limit_sats` for the
-	/// value.
+	/// which was used to generate the value. Returns `None` if the package inputs don't cover a
+	/// `dust_limit_sats` output at all. Otherwise the value will be at least `dust_limit_sats`,
+	/// though if the fee required at the returned feerate would leave the output below
+	/// `dust_limit_sats`, the value is clamped up to `dust_limit_sats` and a lower fee than the
+	/// returned feerate implies is paid.
 	#[rustfmt::skip]
 	pub(crate) fn compute_package_output<F: FeeEstimator, L: Logger>(
 		&self, predicted_weight: u64, dust_limit_sats: u64, feerate_strategy: &FeerateStrategy,
@@ -1521,20 +1524,25 @@ impl PackageTemplate {
 			"The package output is fixed for non-malleable packages");
 		let input_amounts = self.package_amount();
 		assert!(dust_limit_sats as i64 > 0, "Output script must be broadcastable/have a 'real' dust limit.");
+		if input_amounts < dust_limit_sats {
+			log_warn!(logger, "Can't generate claiming tx, input amount {} is below the dust threshold {}", input_amounts, dust_limit_sats);
+			return None;
+		}
 		// If old feerate is 0, first iteration of this claim, use normal fee calculation
-		if self.feerate_previous != 0 {
-			if let Some((new_fee, feerate)) = feerate_bump(
+		let (new_fee, feerate) = if self.feerate_previous != 0 {
+			feerate_bump(
 				predicted_weight, input_amounts, dust_limit_sats, self.feerate_previous,
 				feerate_strategy, conf_target, fee_estimator, logger,
-			) {
-				return Some((cmp::max(input_amounts.saturating_sub(new_fee), dust_limit_sats), feerate));
-			}
+			)?
 		} else {
-			if let Some((new_fee, feerate)) = compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger) {
-				return Some((cmp::max(input_amounts.saturating_sub(new_fee), dust_limit_sats), feerate));
-			}
+			compute_fee_from_spent_amounts(input_amounts, predicted_weight, conf_target, fee_estimator, logger)?
+		};
+		let desired_output_value = input_amounts.saturating_sub(new_fee);
+		let output_value = cmp::max(desired_output_value, dust_limit_sats);
+		if desired_output_value < dust_limit_sats {
+			log_warn!(logger, "Claiming tx output amount {} would end up below dust threshold {}, clamping the output to {} sats and paying a fee below the returned feerate {} s/kWU", desired_output_value, dust_limit_sats, dust_limit_sats, feerate);
 		}
-		None
+		Some((output_value, feerate))
 	}
 
 	/// Computes a feerate based on the given confirmation target and feerate strategy.
@@ -1782,10 +1790,11 @@ mod tests {
 	use bitcoin::absolute::LockTime;
 	use bitcoin::amount::Amount;
 	use bitcoin::constants::WITNESS_SCALE_FACTOR;
+	use bitcoin::hashes::Hash;
 	use bitcoin::script::ScriptBuf;
 	use bitcoin::transaction::OutPoint as BitcoinOutPoint;
 	use bitcoin::transaction::Version;
-	use bitcoin::{Transaction, TxOut};
+	use bitcoin::{PubkeyHash, Transaction, TxOut};
 
 	use bitcoin::hex::FromHex;
 
@@ -2199,6 +2208,67 @@ mod tests {
 				assert_eq!(package.package_weight(&ScriptBuf::new()), weight_sans_output + weight_offered_htlc(channel_type_features));
 			}
 		}
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_package_output_dust_handling() {
+		// A package spending a 354-sat HTLC output (the lowest channel dust limit we accept, which
+		// a peer can reach on an anchors channel with zero second-stage HTLC fees) cannot afford a
+		// P2PKH destination output, whose dust limit is 546 sat. Claiming it must be rejected
+		// rather than emitting an output the package's inputs cannot cover.
+		let counterparty_outp = dumb_counterparty_offered_output!(
+			354_000,
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()
+		);
+		let package = PackageTemplate::build_package(fake_txid(1), 0, counterparty_outp, 1000);
+		let destination_script = ScriptBuf::new_p2pkh(&PubkeyHash::hash(&[0; 0]));
+		assert_eq!(destination_script.minimal_non_dust().to_sat(), 546);
+		let predicted_weight = package.package_weight(&destination_script);
+		let fee_estimator = LowerBoundedFeeEstimator::new(TestFeeEstimator {
+			sat_per_kw: FEERATE_FLOOR_SATS_PER_KW,
+		});
+		let logger = TestLogger::new();
+
+		assert!(package.compute_package_output(
+			predicted_weight, destination_script.minimal_non_dust().to_sat(),
+			&FeerateStrategy::ForceBump, ConfirmationTarget::UrgentOnChainSweep,
+			&fee_estimator, &logger,
+		).is_none());
+		logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Can't generate claiming tx, input amount 354 is below the dust threshold 546").unwrap(), 1);
+
+		// A package whose inputs cover a dust output but not the fee at the desired feerate is
+		// still claimed, with the output clamped up to the dust limit and a lower fee paid than
+		// the returned feerate implies.
+		let counterparty_outp = dumb_counterparty_offered_output!(
+			600_000,
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()
+		);
+		let package = PackageTemplate::build_package(fake_txid(1), 0, counterparty_outp, 1000);
+		let predicted_weight = package.package_weight(&destination_script);
+		let (output_value, feerate) = package.compute_package_output(
+			predicted_weight, destination_script.minimal_non_dust().to_sat(),
+			&FeerateStrategy::ForceBump, ConfirmationTarget::UrgentOnChainSweep,
+			&fee_estimator, &logger,
+		).unwrap();
+		assert_eq!(feerate, FEERATE_FLOOR_SATS_PER_KW as u64);
+		assert_eq!(output_value, 546);
+		logger.assert_log_regex("lightning::chain::package", regex::Regex::new(r"Claiming tx output amount 452 would end up below dust threshold 546, clamping the output to 546 sats").unwrap(), 1);
+
+		// A package with enough value to cover both the fee and a non-dust output is still claimed.
+		let counterparty_outp = dumb_counterparty_offered_output!(
+			10_000_000,
+			ChannelTypeFeatures::anchors_zero_htlc_fee_and_dependencies()
+		);
+		let package = PackageTemplate::build_package(fake_txid(1), 0, counterparty_outp, 1000);
+		let predicted_weight = package.package_weight(&destination_script);
+		let (output_value, feerate) = package.compute_package_output(
+			predicted_weight, destination_script.minimal_non_dust().to_sat(),
+			&FeerateStrategy::ForceBump, ConfirmationTarget::UrgentOnChainSweep,
+			&fee_estimator, &logger,
+		).unwrap();
+		assert_eq!(feerate, FEERATE_FLOOR_SATS_PER_KW as u64);
+		assert_eq!(output_value, 10_000 - feerate * predicted_weight / 1000);
 	}
 
 	struct TestFeeEstimator {
