@@ -133,12 +133,20 @@ pub(crate) enum PendingOutboundPayment {
 		pending_amt_msat: u64,
 		/// Used to track the fee paid. Present iff the payment was serialized on 0.0.103+.
 		pending_fee_msat: Option<u64>,
-		/// The total payment amount across all paths, used to verify that a retry is not overpaying.
+		/// The total payment amount across all paths, used to be able to issue `PaymentSent`.
 		total_msat: u64,
+		/// The payment amount originally requested, used to verify that a retry is not overpaying.
+		///
+		/// This may be less than [`Self::Retryable::total_msat`], which can include value overpaid
+		/// to the recipient to reach its `htlc_minimum_msat`. Bounding retries by the requested
+		/// amount keeps any such overpayment within the payment's remaining routing fee budget.
+		requested_total_msat: u64,
 		/// The total payment amount which is set in the onion.
 		///
 		/// This is generally equal to [`Self::Retryable::total_msat`] but may differ when making
-		/// payments which are sent MPP from different sources.
+		/// payments which are sent MPP from different sources, or when a route overpaid the
+		/// recipient to reach its `htlc_minimum_msat` (which [`Self::Retryable::total_msat`]
+		/// includes).
 		onion_total_msat: u64,
 		/// Our best known block height at the time this payment was initiated.
 		starting_block_height: u32,
@@ -1598,19 +1606,19 @@ impl OutboundPayments {
 				if pmt.is_auto_retryable_now() {
 					if let PendingOutboundPayment::Retryable {
 						pending_amt_msat,
-						total_msat,
+						requested_total_msat,
 						payment_params: Some(params),
 						payment_hash,
 						remaining_max_total_routing_fee_msat,
 						..
 					} = pmt
 					{
-						if pending_amt_msat < total_msat {
+						if pending_amt_msat < requested_total_msat {
 							retry_id_route_params = Some((
 								*payment_hash,
 								*pmt_id,
 								RouteParameters {
-									final_value_msat: *total_msat - *pending_amt_msat,
+									final_value_msat: *requested_total_msat - *pending_amt_msat,
 									payment_params: params.clone(),
 									max_total_routing_fee_msat:
 										*remaining_max_total_routing_fee_msat,
@@ -1841,13 +1849,21 @@ impl OutboundPayments {
 					}
 					match payment.get() {
 						PendingOutboundPayment::Retryable {
-							total_msat, keysend_preimage, payment_secret, payment_metadata,
-							custom_tlvs, pending_amt_msat, invoice_request, onion_total_msat, ..
+							requested_total_msat, keysend_preimage, payment_secret, payment_metadata,
+							custom_tlvs, pending_amt_msat, invoice_request, onion_total_msat,
+							remaining_max_total_routing_fee_msat, ..
 						} => {
-							const RETRY_OVERFLOW_PERCENTAGE: u64 = 10;
+							// `requested_total_msat` is the amount originally requested for the
+							// payment. A route may exceed it to reach the recipient's
+							// `htlc_minimum_msat`, with any such overpayment counted against the
+							// remaining fee budget when the route is validated. Delivering more
+							// than the requested amount plus the remaining fee budget therefore
+							// implies a buggy router.
+							let max_retry_amt_msat = (*requested_total_msat).saturating_sub(*pending_amt_msat)
+								.saturating_add(remaining_max_total_routing_fee_msat.unwrap_or(u64::MAX));
 							let retry_amt_msat = route.get_total_amount();
-							if retry_amt_msat + *pending_amt_msat > *total_msat * (100 + RETRY_OVERFLOW_PERCENTAGE) / 100 {
-								log_error!(logger, "retry_amt_msat of {} will put pending_amt_msat (currently: {}) more than 10% over total_payment_amt_msat of {}", retry_amt_msat, pending_amt_msat, total_msat);
+							if retry_amt_msat > max_retry_amt_msat {
+								log_error!(logger, "retry_amt_msat of {} would overpay the originally requested {} msat (currently {} msat in flight) beyond the remaining fee budget", retry_amt_msat, requested_total_msat, pending_amt_msat);
 								abandon_with_entry!(payment, PaymentFailureReason::UnexpectedError);
 								return
 							}
@@ -2188,6 +2204,7 @@ impl OutboundPayments {
 			custom_tlvs: recipient_onion.custom_tlvs,
 			starting_block_height: best_block_height,
 			total_msat: route.get_total_amount(),
+			requested_total_msat: route.route_params.final_value_msat,
 			onion_total_msat: recipient_onion.total_mpp_amount_msat,
 			remaining_max_total_routing_fee_msat: route.route_params.max_total_routing_fee_msat,
 		};
@@ -2646,9 +2663,13 @@ impl OutboundPayments {
 		let already_awaiting_retry = outbounds.iter().any(|(_, pmt)| {
 			let mut awaiting_retry = false;
 			if pmt.is_auto_retryable_now() {
-				if let PendingOutboundPayment::Retryable { pending_amt_msat, total_msat, .. } = pmt
+				if let PendingOutboundPayment::Retryable {
+					pending_amt_msat,
+					requested_total_msat,
+					..
+				} = pmt
 				{
-					if pending_amt_msat < total_msat {
+					if pending_amt_msat < requested_total_msat {
 						awaiting_retry = true;
 					}
 				}
@@ -2887,6 +2908,7 @@ fn insert_from_monitor_on_startup<L: Logger>(
 				pending_amt_msat: path_amt,
 				pending_fee_msat: Some(path_fee),
 				total_msat: path_amt,
+				requested_total_msat: path_amt,
 				onion_total_msat: path_amt,
 				starting_block_height: best_block_height,
 				remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
@@ -2985,6 +3007,23 @@ impl_writeable_tlv_based_enum_upgradable!(PendingOutboundPayment,
 			})),
 		(13, invoice_request, option),
 		(15, bolt12_invoice, option),
+		(17, requested_total_msat, (custom, u64,
+			// Once we get here, `total_msat` will have been read (or we'll fail to read). Payments
+			// persisted by prior versions did not track the originally requested amount separately,
+			// so fall back to `total_msat`, matching their retry behavior.
+			|read_val: Option<u64>| Ok(read_val.unwrap_or(total_msat.0.unwrap())),
+			|us: &PendingOutboundPayment| {
+				match us {
+					PendingOutboundPayment::Retryable { total_msat, requested_total_msat, .. } => {
+						if total_msat != requested_total_msat {
+							Some(*requested_total_msat)
+						} else {
+							None
+						}
+					},
+					_ => unreachable!(),
+				}
+			})),
 		(not_written, retry_strategy, (static_value, None)),
 		(not_written, attempts, (static_value, PaymentAttempts::new())),
 	},
@@ -3221,6 +3260,104 @@ mod tests {
 				&&keys_manager, &&keys_manager, 0, &pending_events, |_| Ok(()), &log).unwrap_err();
 			if let RetryableSendFailure::RouteNotFound = err {
 			} else { panic!("Unexpected error"); }
+		}
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn retry_keeps_recipient_overpayment_within_fee_budget() {
+		let logger = test_utils::TestLogger::new();
+		let logger_ref = &logger;
+		let payment_hash = PaymentHash([0; 32]);
+		let log = WithContext::from(&logger_ref, None, None, Some(payment_hash));
+		let outbound_payments = OutboundPayments::new(ChainHash::using_genesis_block(Network::Bitcoin), new_hash_map());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, &logger));
+		let scorer = RwLock::new(test_utils::TestScorer::new());
+		let router = test_utils::TestRouter::new(network_graph, &logger, &scorer);
+		let secp_ctx = Secp256k1::new();
+		let keys_manager = test_utils::TestKeysInterface::new(&[0; 32], Network::Testnet);
+
+		let recipient_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[42; 32]).unwrap());
+		let intermed_pk = PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[43; 32]).unwrap());
+		let payment_amt_msat = 1_000;
+		let fee_budget_msat = 500;
+		let route_params = RouteParameters {
+			payment_params: PaymentParameters::from_node_id(recipient_pk, 0),
+			final_value_msat: payment_amt_msat,
+			max_total_routing_fee_msat: Some(fee_budget_msat),
+		};
+		// The only available path overpays the recipient by the full fee budget to reach its
+		// `htlc_minimum_msat`, leaving nothing for routing fees.
+		let route = Route {
+			paths: vec![Path { hops: vec![
+				RouteHop {
+					pubkey: intermed_pk,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 42,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: 0,
+					cltv_expiry_delta: 40,
+					maybe_announced_channel: true,
+				},
+				RouteHop {
+					pubkey: recipient_pk,
+					node_features: NodeFeatures::empty(),
+					short_channel_id: 43,
+					channel_features: ChannelFeatures::empty(),
+					fee_msat: payment_amt_msat + fee_budget_msat,
+					cltv_expiry_delta: 42,
+					maybe_announced_channel: true,
+				},
+			], blinded_tail: None }],
+			route_params: route_params.clone(),
+		};
+		assert_eq!(route.get_total_fees(), fee_budget_msat);
+		router.expect_find_route(route_params.clone(), Ok(route.clone()));
+
+		// A retry must not request the recipient overpayment again. The replacement path spends
+		// the full fee budget on routing fees instead, keeping the total spend within the
+		// originally requested amount plus the fee budget.
+		let mut retry_route_params = route_params.clone();
+		retry_route_params.payment_params.previously_failed_channels.push(42);
+		let mut retry_route = route.clone();
+		retry_route.route_params = retry_route_params.clone();
+		retry_route.paths[0].hops[0].fee_msat = fee_budget_msat;
+		retry_route.paths[0].hops[1].fee_msat = payment_amt_msat;
+		assert_eq!(retry_route.get_total_fees(), fee_budget_msat);
+		router.expect_find_route(retry_route_params, Ok(retry_route));
+
+		let pending_events = Mutex::new(VecDeque::new());
+		outbound_payments.send_payment(
+			payment_hash, RecipientOnionFields::spontaneous_empty(payment_amt_msat), PaymentId([0; 32]),
+			Retry::Attempts(1), route_params, &&router, vec![], || InFlightHtlcs::new(),
+			&&keys_manager, &&keys_manager, 0, &pending_events,
+			|args| if args.path.fee_msat() == 0 {
+				Err(APIError::ChannelUnavailable { err: "test".to_owned() })
+			} else {
+				Ok(())
+			}, &log).unwrap();
+		{
+			let events = pending_events.lock().unwrap();
+			assert_eq!(events.len(), 1);
+			if let Event::PaymentPathFailed { short_channel_id, .. } = events[0].0 {
+				assert_eq!(short_channel_id, Some(42));
+			} else { panic!("Unexpected event"); }
+		}
+
+		// The retry HTLC is in flight for the originally requested amount, with the full fee
+		// budget spent on routing fees and nothing left to spend on further retries.
+		let outbounds = outbound_payments.pending_outbound_payments.lock().unwrap();
+		match outbounds.get(&PaymentId([0; 32])).unwrap() {
+			PendingOutboundPayment::Retryable {
+				pending_amt_msat, pending_fee_msat, requested_total_msat,
+				remaining_max_total_routing_fee_msat, ..
+			} => {
+				assert_eq!(*requested_total_msat, payment_amt_msat);
+				assert_eq!(*pending_amt_msat, payment_amt_msat);
+				assert_eq!(*pending_fee_msat, Some(fee_budget_msat));
+				assert_eq!(*remaining_max_total_routing_fee_msat, Some(0));
+			},
+			_ => panic!("Unexpected payment state"),
 		}
 	}
 
@@ -3674,6 +3811,10 @@ mod tests {
 	fn retryable_payment_round_trips_bolt12_invoice() {
 		// A `Retryable` payment serializes its `bolt12_invoice` and reads it back. This guards that
 		// the paid invoice (needed to build payer proofs on retried paths) survives the round-trip.
+		//
+		// `total_msat` diverges from `requested_total_msat` so that the serialization of both
+		// amount fields is exercised; when they are equal they are omitted entirely, matching
+		// payments persisted by prior versions which only stored `total_msat`.
 		let secp_ctx = Secp256k1::new();
 		let expanded_key = ExpandedKey::new([42; 32]);
 		let nonce = Nonce([7; 16]);
@@ -3710,7 +3851,8 @@ mod tests {
 			custom_tlvs: Vec::new(),
 			pending_amt_msat: 1000,
 			pending_fee_msat: None,
-			total_msat: 1000,
+			total_msat: 1500,
+			requested_total_msat: 1000,
 			onion_total_msat: 1000,
 			starting_block_height: 0,
 			remaining_max_total_routing_fee_msat: None,
@@ -3719,7 +3861,14 @@ mod tests {
 		let encoded = payment.encode();
 		let decoded = PendingOutboundPayment::read(&mut &encoded[..]).unwrap().unwrap();
 		match decoded {
-			PendingOutboundPayment::Retryable { bolt12_invoice, .. } => {
+			PendingOutboundPayment::Retryable {
+				total_msat,
+				requested_total_msat,
+				bolt12_invoice,
+				..
+			} => {
+				assert_eq!(total_msat, 1500);
+				assert_eq!(requested_total_msat, 1000);
 				assert!(matches!(bolt12_invoice, Some(PaidBolt12Invoice::Bolt12Invoice(_))));
 			},
 			_ => panic!("expected a Retryable payment"),
