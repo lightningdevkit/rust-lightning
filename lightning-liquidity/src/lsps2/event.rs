@@ -163,7 +163,7 @@ pub enum LSPS2ServiceEvent {
 	///
 	/// You must ensure the client's `to_self_delay` does not exceed the maximum agreed upon in
 	/// the selected opening fee parameters. To do so, set
-	/// `override_config.channel_handshake_limits.their_to_self_delay` to the minimum of
+	/// [`override_config.channel_handshake_limits.their_to_self_delay`] to the minimum of
 	/// `max_client_to_self_delay` and any stricter limit of your own (in `u32` arithmetic to
 	/// avoid truncation) before calling [`ChannelManager::create_channel`].
 	///
@@ -173,6 +173,7 @@ pub enum LSPS2ServiceEvent {
 	/// ignore this event in case you did.
 	///
 	/// [`ChannelManager::create_channel`]: lightning::ln::channelmanager::ChannelManager::create_channel
+	/// [`override_config.channel_handshake_limits.their_to_self_delay`]: lightning::util::config::ChannelHandshakeLimits::their_to_self_delay
 	OpenChannel {
 		/// The node to open channel with.
 		their_network_key: PublicKey,
