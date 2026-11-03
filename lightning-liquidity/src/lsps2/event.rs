@@ -189,10 +189,7 @@ pub enum LSPS2ServiceEvent {
 		/// parameter to, as agreed upon in the selected opening fee parameters.
 		///
 		/// This is [`Option::None`] for events that were persisted before this field was
-		/// introduced. For such events, recover the agreed-upon limit from the corresponding
-		/// persisted JIT channel state if possible, or apply an explicit conservative limit of
-		/// your own (or fail the channel open). Do not fall back to a default such as 2016, as
-		/// that may exceed what was actually negotiated with the client.
+		/// introduced in 0.4.
 		max_client_to_self_delay: Option<u32>,
 	},
 }
