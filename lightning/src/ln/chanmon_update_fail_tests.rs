@@ -4566,13 +4566,15 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 
 #[test]
 fn test_claim_to_closed_channel_with_reused_temporary_channel_id() {
-	// A counterparty can open a new channel with us reusing the ID of a closed channel as its
-	// `temporary_channel_id`, which we accept. Until it is funded (which the counterparty may
-	// never do) it sits in `channel_by_id` under the closed channel's ID. Previously, when we
-	// then had to claim an HTLC which had been received on the closed channel we'd find the
-	// unfunded channel, conclude there was nothing to do, and never write the preimage to the
-	// closed channel's `ChannelMonitor`, losing the HTLC once it timed out on-chain.
-	// This tests that such claims still reach the closed channel's `ChannelMonitor`.
+	// A new, unfunded channel may sit in `channel_by_id` under the ID of a closed channel if that
+	// ID is reused as the `temporary_channel_id`. We reject such `open_channel`s from our
+	// counterparty as we may still need to update the closed channel's `ChannelMonitor`, but if
+	// an unfunded channel shares its ID anyway, previously, when we then had to claim an HTLC
+	// which had been received on the closed channel we'd find the unfunded channel, conclude
+	// there was nothing to do, and never write the preimage to the closed channel's
+	// `ChannelMonitor`, losing the HTLC once it timed out on-chain.
+	// This tests that we reject such `open_channel`s, and that claims still reach the closed
+	// channel's `ChannelMonitor` if an unfunded channel shares its ID anyway.
 	let chanmon_cfgs = create_chanmon_cfgs(3);
 	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
 	let legacy_cfg = test_legacy_channel_config();
@@ -4612,12 +4614,30 @@ fn test_claim_to_closed_channel_with_reused_temporary_channel_id() {
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
 
-	// Now have A open a new channel with B, reusing the closed channel's ID as the
-	// `temporary_channel_id`. B accepts it, but A never funds it.
+	// Now have A try to open a new channel with B, reusing the closed channel's ID as the
+	// `temporary_channel_id`. B should reject it as it may still need to update the closed
+	// channel's `ChannelMonitor`.
 	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, Some(chan_a.2), None).unwrap();
 	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
-	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_channel);
-	get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendErrorMessage { msg },
+			node_id,
+		} => {
+			assert_eq!(*node_id, node_a_id);
+			assert_eq!(msg.channel_id, chan_a.2);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Still, have B itself open a new (never funded) channel to A under the closed channel's ID
+	// so that an unfunded channel sits in `channel_by_id` under that ID.
+	nodes[1].node.create_channel(node_a_id, 100_000, 0, 42, Some(chan_a.2), None).unwrap();
+	get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
 
 	// Claim the payment on C and give B the preimage for it. B must write the preimage to the
 	// closed channel A's `ChannelMonitor` (rather than doing nothing because it found the
