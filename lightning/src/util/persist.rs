@@ -853,12 +853,41 @@ where
 			Ok(()) => {},
 			Err(_e) => return,
 		};
-		let _ = self.kv_store.remove(
-			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let _ = self.kv_store.remove(primary, secondary, monitor_name.as_str(), true);
+		// The archived monitor has all stored updates applied, so drop them too. The key of a v1
+		// channel is its funding outpoint, which the funder picks, so a new monitor may later be
+		// persisted under this key starting at `update_id` 0, and any updates we leave behind
+		// would be replayed onto it when it is read. The removal is non-lazy so that it completes
+		// as part of the archive rather than being subject to a lazy deletion that may get lost
+		// on a crash. A failure here is only logged, like for the other operations above, leaving
+		// the updates orphaned until `cleanup_archived_monitor_updates` removes them on the next
+		// startup. `ChainMonitor` will not persist a monitor under this key while it is being
+		// archived, so no lock is needed beyond that.
+		let updates = self.kv_store.list(
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 			monitor_name.as_str(),
-			true,
 		);
+		if let Ok(updates) = updates {
+			for update in updates {
+				if let Ok(update_name) = UpdateName::new(update) {
+					if let Err(e) = self.kv_store.remove(
+						CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+						monitor_name.as_str(),
+						update_name.as_str(),
+						false,
+					) {
+						log_error!(
+							self.logger,
+							"Failed to remove stored updates for archived monitor {}, reason: {}",
+							monitor_name.as_str(),
+							e
+						);
+					}
+				}
+			}
+		}
 	}
 }
 
@@ -1456,6 +1485,77 @@ mod tests {
 				UpdateName::from(1).as_str()
 			)
 			.is_err());
+	}
+
+	// Confirm that archiving a monitor also removes its stored updates. A new monitor may later
+	// be persisted under the same key (e.g. a v1 channel whose funder reuses the funding outpoint
+	// of the archived one), and reading it must not replay the archived channel's updates onto it.
+	#[test]
+	fn archive_removes_monitor_updates() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			100,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
+		let monitor_key = monitor_name.as_str();
+
+		let update_list = KVStore::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		assert!(!update_list.is_empty());
+
+		Persist::<TestChannelSigner>::archive_persisted_channel(&persister, monitor.get_funding_txo().0);
+
+		assert!(KVStore::read(
+			&kv_store,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+		)
+		.is_ok());
+		assert!(KVStore::read(
+			&kv_store,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+		)
+		.is_err());
+		let update_list = KVStore::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		assert!(update_list.is_empty());
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool
