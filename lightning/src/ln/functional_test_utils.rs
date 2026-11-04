@@ -2062,6 +2062,51 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(
 	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 }
 
+/// Constructs a `revoke_and_ack` which `node`'s counterparty would send if it had received and
+/// processed a `commitment_signed` from `node`, without `node` ever sending one.
+///
+/// The returned message revokes `node`'s current holder commitment, so it is only accepted by the
+/// counterparty if its signer is still willing to release the corresponding secrets here.
+#[cfg(any(test, feature = "_externalize_tests"))]
+pub fn forge_counterparty_raa(
+	node: &Node, counterparty_node_id: &PublicKey, channel_id: &ChannelId,
+) -> msgs::RevokeAndACK {
+	use crate::ln::channel::Channel;
+	use crate::sign::ChannelSigner;
+	use bitcoin::secp256k1::Secp256k1;
+
+	let per_commitment_secret;
+	let next_per_commitment_point;
+	{
+		let per_peer_state = node.node.per_peer_state.read().unwrap();
+		let guard = per_peer_state.get(counterparty_node_id).unwrap().lock().unwrap();
+		let keys =
+			guard.channel_by_id.get(channel_id).and_then(Channel::as_funded).unwrap().get_signer();
+
+		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+
+		// Make signer believe we got a counterparty signature, so that it allows the revocation
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap();
+
+		// Must revoke without gaps
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1).unwrap();
+
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		let sec = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap();
+		let key = SecretKey::from_slice(&sec).unwrap();
+		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(), &key);
+	}
+
+	msgs::RevokeAndACK {
+		channel_id: *channel_id,
+		per_commitment_secret,
+		next_per_commitment_point,
+		release_htlc_message_paths: Vec::new(),
+	}
+}
+
 pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64,
 ) -> (msgs::ChannelReady, Transaction) {
