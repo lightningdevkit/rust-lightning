@@ -7461,10 +7461,11 @@ where
 					return;
 				}
 				// If the entry is an unfunded channel it cannot be the one the HTLC was received
-				// on. Rather, the channel was closed and the counterparty has since opened a new
-				// channel reusing its ID as the `temporary_channel_id` (which we allow as the set
-				// of `ChannelMonitor`s is what prevents duplicates). Fall through and claim the
-				// HTLC against the closed channel's `ChannelMonitor` below.
+				// on. Rather, the channel was closed and a new, unfunded channel has since been
+				// opened under the same ID (e.g. we opened a channel ourselves reusing the closed
+				// channel's ID as its `temporary_channel_id`; the set of `ChannelMonitor`s is
+				// what prevents duplicates on-chain). Fall through and claim the HTLC against the
+				// closed channel's `ChannelMonitor` below.
 			}
 		}
 
@@ -8302,7 +8303,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		let channel_id = common_fields.temporary_channel_id;
-		let channel_exists = peer_state.has_channel(&channel_id);
+		// Closed channels which may still need `ChannelMonitorUpdate`s (e.g. to claim HTLCs) are
+		// tracked by their ID as well, so don't let a new channel share an ID with one of those.
+		let channel_exists = peer_state.has_channel(&channel_id)
+			|| peer_state.closed_channel_monitor_update_ids.contains_key(&channel_id);
 		if channel_exists {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				"temporary_channel_id collision for the same peer!".to_owned(),
