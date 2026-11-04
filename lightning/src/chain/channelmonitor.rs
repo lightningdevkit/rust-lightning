@@ -3822,6 +3822,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		Ok(())
 	}
 
+	/// Returns the txid of the confirmed transaction which spends the funding output and, if it
+	/// has not reached its confirmation threshold yet, the height at which it confirmed.
+	fn confirmed_funding_spend(&self) -> Option<(Txid, Option<u32>)> {
+		self.funding_spend_confirmed.map(|txid| (txid, None)).or_else(|| {
+			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
+				OnchainEvent::FundingSpendConfirmation { .. } => {
+					Some((event.txid, Some(event.height)))
+				},
+				_ => None,
+			})
+		})
+	}
+
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
 	///
@@ -3844,16 +3857,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				(payment_preimage.clone(), payment_info.clone().into_iter().collect())
 			});
 
-		let confirmed_spend_info = self.funding_spend_confirmed
-			.map(|txid| (txid, None))
-			.or_else(|| {
-				self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
-					OnchainEvent::FundingSpendConfirmation { .. } => Some((event.txid, Some(event.height))),
-					_ => None,
-				})
-			});
 		let (confirmed_spend_txid, confirmed_spend_height) =
-			if let Some((txid, height)) = confirmed_spend_info {
+			if let Some((txid, height)) = self.confirmed_funding_spend() {
 				(txid, height)
 			} else {
 				return;
