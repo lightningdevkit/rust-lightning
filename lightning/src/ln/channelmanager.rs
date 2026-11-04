@@ -7458,8 +7458,13 @@ where
 							};
 						}
 					}
+					return;
 				}
-				return;
+				// If the entry is an unfunded channel it cannot be the one the HTLC was received
+				// on. Rather, the channel was closed and the counterparty has since opened a new
+				// channel reusing its ID as the `temporary_channel_id` (which we allow as the set
+				// of `ChannelMonitor`s is what prevents duplicates). Fall through and claim the
+				// HTLC against the closed channel's `ChannelMonitor` below.
 			}
 		}
 
