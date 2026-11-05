@@ -3492,8 +3492,9 @@ impl PendingFunding {
 				.funding
 				.get_funding_txid()
 				.expect("negotiated candidates should have a funding txid");
-			// The `splice_locked` we sent always refers to the confirmed candidate, as it is
-			// cleared if that candidate is ever unconfirmed by a reorg.
+			// The `splice_locked` we sent always refers to the confirmed candidate: one sent after
+			// reaching the minimum depth is cleared if that candidate is unconfirmed by a reorg,
+			// while a zero-conf candidate remains locked (and reported here) regardless.
 			let splice_locked_sent = self.sent_funding_txid == Some(txid);
 			if confirmations == 0 && !splice_locked_sent {
 				return None;
@@ -12770,15 +12771,26 @@ where
 				// Check if the splice funding transaction was unconfirmed
 				if funding.get_funding_tx_confirmations(height) == 0 {
 					funding.funding_tx_confirmation_height = 0;
-					if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
-						if Some(sent_funding_txid) == funding.get_funding_txid() {
-							log_warn!(
-								logger,
-								"Unconfirming sent splice_locked txid {} for channel {}",
-								sent_funding_txid,
-								&self.context.channel_id,
-							);
-							pending_splice.sent_funding_txid = None;
+					funding.short_channel_id = None;
+					funding.funding_tx_confirmed_in = None;
+
+					// A `splice_locked` sent once the funding reached its minimum depth is no longer
+					// valid, so withdraw it until the funding re-confirms. A zero-conf splice was
+					// locked without any confirmations and stays locked, just as a zero-conf channel
+					// does when its funding is unconfirmed.
+					let minimum_depth = self.context.minimum_depth(funding)
+						.expect("ChannelContext::minimum_depth should be set for FundedChannel");
+					if minimum_depth > 0 {
+						if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+							if Some(sent_funding_txid) == funding.get_funding_txid() {
+								log_warn!(
+									logger,
+									"Unconfirming sent splice_locked txid {} for channel {}",
+									sent_funding_txid,
+									&self.context.channel_id,
+								);
+								pending_splice.sent_funding_txid = None;
+							}
 						}
 					}
 				}
