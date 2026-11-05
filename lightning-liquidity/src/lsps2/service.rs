@@ -46,12 +46,14 @@ use lightning::ln::channelmanager::{AChannelManager, InterceptId};
 use lightning::ln::msgs::{ErrorAction, LightningError};
 use lightning::ln::types::ChannelId;
 use lightning::util::errors::APIError;
-use lightning::util::logger::Level;
+use lightning::util::logger::{DebugBytes, Level};
 use lightning::util::ser::Writeable;
 use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
 
 use lightning_types::payment::PaymentHash;
 
+use bitcoin::hashes::sha256::Hash as Sha256;
+use bitcoin::hashes::{Hash, HashEngine};
 use bitcoin::secp256k1::PublicKey;
 use bitcoin::Transaction;
 
@@ -69,12 +71,27 @@ const MAX_TOTAL_PENDING_REQUESTS: usize = 1000;
 const MAX_TOTAL_PEERS: usize = 100000;
 
 /// Server-side configuration options for JIT channels.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LSPS2ServiceConfig {
 	/// Used to calculate the promise for channel parameters supplied to clients.
 	///
 	/// Note: If this changes then old promises given out will be considered invalid.
 	pub promise_secret: [u8; 32],
+}
+
+impl core::fmt::Debug for LSPS2ServiceConfig {
+	fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+		// Anyone who knows `promise_secret` can forge `opening_fee_params` we'd accept in a `buy`
+		// request, so never print it. Print a salted fingerprint instead, which still allows
+		// telling two configs apart in logs.
+		let mut engine = Sha256::engine();
+		engine.input(b"LDK LSPS2ServiceConfig Debug Fingerprint");
+		engine.input(&self.promise_secret);
+		let fingerprint = Sha256::from_engine(engine).to_byte_array();
+		f.debug_struct("LSPS2ServiceConfig")
+			.field("promise_secret_fingerprint", &format_args!("{}", DebugBytes(&fingerprint[..8])))
+			.finish_non_exhaustive()
+	}
 }
 
 /// Information about the initial payment size and JIT channel opening fee.
@@ -3095,5 +3112,22 @@ mod tests {
 			broadcast_allowed,
 			"Broadcast was not allowed even though all the skimmed fees were collected"
 		);
+	}
+
+	#[test]
+	fn service_config_debug_does_not_leak_promise_secret() {
+		// The promise secret must never make it into logs, so ensure the `Debug` implementation
+		// prints only a fingerprint and not the secret itself.
+		let config = LSPS2ServiceConfig { promise_secret: [42; 32] };
+		let debug_str = format!("{:?}", config);
+		assert_eq!(
+			debug_str,
+			"LSPS2ServiceConfig { promise_secret_fingerprint: 0b86a0f184fe302a, .. }"
+		);
+		assert!(!debug_str.contains(&crate::utils::hex_str(&config.promise_secret)));
+
+		// Distinct secrets must get distinct fingerprints.
+		let other_config = LSPS2ServiceConfig { promise_secret: [43; 32] };
+		assert_ne!(debug_str, format!("{:?}", other_config));
 	}
 }
