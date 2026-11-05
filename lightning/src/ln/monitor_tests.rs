@@ -13,11 +13,11 @@
 
 use crate::sign::{ecdsa::EcdsaChannelSigner, OutputSpender, SignerProvider, SpendableOutputDescriptor};
 use crate::chain::{BlockLocator, Watch};
-use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitor, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, CLTV_CLAIM_BUFFER, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
+use crate::chain::channelmonitor::{Balance, BalanceSource, ChannelMonitor, ChannelMonitorUpdateStep, HolderCommitmentTransactionBalance, MonitorEvent, ANTI_REORG_DELAY, ARCHIVAL_DELAY_BLOCKS, CLTV_CLAIM_BUFFER, COUNTERPARTY_CLAIMABLE_WITHIN_BLOCKS_PINNABLE, LATENCY_GRACE_PERIOD_BLOCKS};
 use crate::chain::transaction::OutPoint;
 use crate::chain::chaininterface::{ConfirmationTarget, LowerBoundedFeeEstimator, compute_feerate_sat_per_1000_weight};
 use crate::events::bump_transaction::BumpTransactionEvent;
-use crate::events::{Event, ClosureReason, HTLCHandlingFailureType};
+use crate::events::{Event, EventsProvider, ClosureReason, HTLCHandlingFailureType, ReplayEvent};
 use crate::ln::channel;
 use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
@@ -3867,4 +3867,126 @@ fn test_onchain_preimage_after_fail_back_before_backwards_timeout() {
 	nodes[0].node.handle_update_fulfill_htlc(node_b_id, update_fulfill);
 	do_commitment_signed_dance(&nodes[0], &nodes[1], &htlc_updates.commitment_signed, false, false);
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
+}
+
+#[test]
+fn test_onchain_claim_of_offchain_claimed_htlc_balance() {
+	// Tests that if our counterparty claims an outbound HTLC off-chain (i.e. we've handled their
+	// `update_fulfill_htlc` and `commitment_signed`, generating a `PaymentSent` event which the
+	// user has not yet processed) and then force-closes with a commitment transaction which still
+	// contains the HTLC, sweeping it on-chain with an HTLC-success transaction, our
+	// `ChannelMonitor` still records the on-chain HTLC spend once it reaches `ANTI_REORG_DELAY`
+	// confirmations. Failing to do so would leave a phantom `Balance` for the swept HTLC output
+	// around forever, preventing the monitor from ever being archived.
+	//
+	// Also tests that the on-chain claim is still surfaced to the `ChannelManager` despite the
+	// off-chain claim's `MonitorEvent` being unacked, so that the payment's path is resolved at
+	// runtime rather than only on the next restart.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let legacy_cfg = test_legacy_channel_config();
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg)]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (_, _, chan_id, funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+
+	let (preimage, payment_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+
+	nodes[1].node.claim_funds(preimage, Default::default());
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], payment_hash, 10_000_000);
+
+	// Deliver B's `update_fulfill_htlc` and `commitment_signed` to A, but withhold A's responding
+	// RAA and CS, leaving the HTLC present in B's latest holder commitment transaction. A now has
+	// a `PaymentSent` event pending as well as an unacked `MonitorEvent` for the off-chain claim.
+	let mut updates = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	nodes[0].node.handle_update_fulfill_htlc(node_b_id, updates.update_fulfill_htlcs.remove(0));
+	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &updates.commitment_signed);
+	check_added_monitors(&nodes[0], 1);
+	let _a_raa_cs = get_revoke_commit_msgs(&nodes[0], &node_b_id);
+	// Process the off-chain monitor event while keeping `PaymentSent` unhandled.
+	nodes[0].node.process_pending_events(&|_: Event| Err(ReplayEvent()));
+
+	let unacked_events = get_monitor!(nodes[0], chan_id).list_unacked_monitor_events();
+	assert!(
+		unacked_events.iter().any(|(_, ev)| matches!(ev, MonitorEvent::HTLCEvent(..))),
+		"expected an unacked off-chain claim MonitorEvent: {unacked_events:?}",
+	);
+
+	// B force-closes, broadcasting its latest commitment transaction, which contains the HTLC.
+	let message = "Closed".to_owned();
+	nodes[1].node.force_close_broadcasting_latest_txn(&chan_id, &node_a_id, message.clone()).unwrap();
+	check_added_monitors(&nodes[1], 1);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 1_000_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+
+	// B's monitor broadcasts its commitment transaction along with the HTLC-success transaction
+	// sweeping the HTLC (it already has the preimage).
+	let (commitment_tx, htlc_success_tx) = {
+		let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+		assert_eq!(txn.len(), 2);
+		let commitment_tx = txn.remove(0);
+		check_spends!(commitment_tx, funding_tx);
+		assert_eq!(commitment_tx.output.len(), 3); // to_self, to_remote, and the HTLC
+		let htlc_success_tx = txn.remove(0);
+		check_spends!(htlc_success_tx, commitment_tx);
+		(commitment_tx, htlc_success_tx)
+	};
+
+	// Confirm B's commitment and HTLC-success transactions on B, discarding any rebroadcasts.
+	mine_transaction(&nodes[1], &commitment_tx);
+	mine_transaction(&nodes[1], &htlc_success_tx);
+	let _ = nodes[1].tx_broadcaster.txn_broadcast();
+
+	// Confirm B's commitment and HTLC-success transactions on A.
+	mine_transaction(&nodes[0], &commitment_tx);
+	nodes[0].node.process_pending_events(&|_: Event| Err(ReplayEvent()));
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+	mine_transaction(&nodes[0], &htlc_success_tx);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+	// The HTLC-success spend of the HTLC output has now been irrevocably confirmed, so A must not
+	// report a `Balance` for the swept HTLC output.
+	let balances = get_monitor!(nodes[0], chan_id).get_claimable_balances();
+	assert!(
+		!balances.iter().any(|bal| matches!(bal, Balance::MaybeTimeoutClaimableHTLC { .. })),
+		"the counterparty's on-chain HTLC claim should have resolved the HTLC balance: {balances:?}",
+	);
+
+	let unacked_events = get_monitor!(nodes[0], chan_id).list_unacked_monitor_events();
+	let claims: Vec<_> = unacked_events.iter().filter_map(|(_, ev)| match ev {
+		MonitorEvent::HTLCEvent(upd) if upd.payment_hash == payment_hash => Some(upd),
+		_ => None,
+	}).collect();
+	assert_eq!(claims.len(), 2, "{unacked_events:?}");
+	assert_eq!(claims.iter().filter(|upd| upd.from_onchain).count(), 1);
+
+	// Finally, process A's pending events. In addition to `PaymentSent` and `ChannelClosed`, the
+	// counterparty's on-chain claim must have resolved the payment's path even though the
+	// off-chain claim's `MonitorEvent` was still unacked when the HTLC-success transaction
+	// confirmed: a `PaymentPathSuccessful` event is generated and, once it is processed, a
+	// `ReleasePaymentComplete` monitor update is issued for the swept HTLC.
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3, "{events:?}");
+	assert!(
+		events.iter().any(|ev| matches!(ev, Event::PaymentSent { .. })),
+		"{events:?}",
+	);
+	assert!(
+		events.iter().any(|ev| matches!(ev, Event::PaymentPathSuccessful { .. })),
+		"{events:?}",
+	);
+	assert!(
+		events.iter().any(|ev| matches!(ev, Event::ChannelClosed { .. })),
+		"{events:?}",
+	);
+	check_added_monitors(&nodes[0], 1);
+	// Processing the events acks the claim's `MonitorEvent`s.
+	assert!(get_monitor!(nodes[0], chan_id).list_unacked_monitor_events().is_empty());
 }

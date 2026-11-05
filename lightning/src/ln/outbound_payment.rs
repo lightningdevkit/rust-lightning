@@ -261,7 +261,8 @@ impl PendingOutboundPayment {
 	// invoice but have not locked in HTLCs for the payment yet.
 	fn is_pre_htlc_lock_in(&self) -> bool {
 		match self {
-			PendingOutboundPayment::AwaitingInvoice { .. }
+			PendingOutboundPayment::AwaitingOffer { .. }
+			| PendingOutboundPayment::AwaitingInvoice { .. }
 			| PendingOutboundPayment::InvoiceReceived { .. }
 			| PendingOutboundPayment::StaticInvoiceReceived { .. } => true,
 			_ => false,
@@ -2407,53 +2408,88 @@ impl OutboundPayments {
 		}
 	}
 
-	#[rustfmt::skip]
 	pub(super) fn claim_htlc<L: Logger>(
-		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage, bolt12_invoice: Option<PaidBolt12Invoice>,
-		session_priv: SecretKey, path: Path, from_onchain: bool, ev_completion_action: &mut Option<EventCompletionAction>,
+		&self, payment_id: PaymentId, payment_preimage: PaymentPreimage,
+		bolt12_invoice: Option<PaidBolt12Invoice>, session_priv: SecretKey, path: Path,
+		channel_is_closed: bool, from_monitor_event: bool, best_block_height: u32,
+		ev_completion_action: &mut Option<EventCompletionAction>,
 		pending_events: &Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 		logger: &WithContext<L>,
-	)
-	where
-	{
+	) {
 		let mut session_priv_bytes = [0; 32];
 		session_priv_bytes.copy_from_slice(&session_priv[..]);
 		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
 		let mut pending_events = pending_events.lock().unwrap();
+
+		if outbounds.get(&payment_id).map_or(true, |payment| payment.is_pre_htlc_lock_in()) {
+			let payment_sent_pending = pending_events.iter().any(|(ev, _)| {
+				matches!(ev, events::Event::PaymentSent { payment_id: ev_id, .. } if *ev_id == Some(payment_id))
+			});
+			if !payment_sent_pending {
+				// If a `ChannelMonitor` resolved an HTLC we have no record of locking in HTLCs for, it's
+				// possible we were deserialized from a stale `ChannelManager` that predates the payment.
+				// Re-add the payment to ensure we don't fail to surface the payment's resolution to the
+				// user, even though it's possible that a duplicate `PaymentSent` event may result if the
+				// manager or the monitor is not persisted in between the user processing the event and a
+				// node restart.
+				debug_assert!(from_monitor_event);
+				insert_from_monitor_on_startup(
+					&mut outbounds,
+					payment_id,
+					payment_preimage.into(),
+					session_priv_bytes,
+					&path,
+					best_block_height,
+					logger,
+				);
+			}
+		}
+
 		if let hash_map::Entry::Occupied(mut payment) = outbounds.entry(payment_id) {
 			if !payment.get().is_fulfilled() {
 				let payment_hash = PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array());
 				log_info!(logger, "Payment with id {} and hash {} sent!", payment_id, payment_hash);
 				let fee_paid_msat = payment.get().get_pending_fee_msat();
 				let amount_msat = payment.get().total_msat();
-				pending_events.push_back((events::Event::PaymentSent {
-					payment_id: Some(payment_id),
-					payment_preimage,
-					payment_hash,
-					amount_msat,
-					fee_paid_msat,
-					bolt12_invoice: bolt12_invoice,
-				}, ev_completion_action.take()));
+				pending_events.push_back((
+					events::Event::PaymentSent {
+						payment_id: Some(payment_id),
+						payment_preimage,
+						payment_hash,
+						amount_msat,
+						fee_paid_msat,
+						bolt12_invoice,
+					},
+					ev_completion_action.take(),
+				));
 				payment.get_mut().mark_fulfilled();
 			}
 
-			if from_onchain {
-				// We currently immediately remove HTLCs which were fulfilled on-chain.
+			if channel_is_closed {
+				// We currently immediately remove HTLCs sent over closed channels.
 				// This could potentially lead to removing a pending payment too early,
 				// with a reorg of one block causing us to re-add the fulfilled payment on
 				// restart.
 				if payment.get_mut().remove(&session_priv_bytes, Some(&path)) {
-					let payment_hash = Some(PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array()));
-					pending_events.push_back((events::Event::PaymentPathSuccessful {
-						payment_id,
-						payment_hash,
-						path,
-						hold_times: Vec::new(),
-					}, ev_completion_action.take()));
+					let payment_hash =
+						Some(PaymentHash(Sha256::hash(&payment_preimage.0).to_byte_array()));
+					pending_events.push_back((
+						events::Event::PaymentPathSuccessful {
+							payment_id,
+							payment_hash,
+							path,
+							hold_times: Vec::new(),
+						},
+						ev_completion_action.take(),
+					));
 				}
 			}
 		} else {
-			log_trace!(logger, "Received duplicative fulfill for HTLC with payment_preimage {}", &payment_preimage);
+			log_trace!(
+				logger,
+				"Received duplicative fulfill for HTLC with payment_preimage {}",
+				&payment_preimage
+			);
 		}
 	}
 
@@ -2812,64 +2848,79 @@ impl OutboundPayments {
 		&self, payment_id: PaymentId, payment_hash: PaymentHash, session_priv_bytes: [u8; 32],
 		path: &Path, best_block_height: u32, logger: &WithContext<L>,
 	) {
-		let path_amt = path.final_value_msat();
-		let path_fee = path.fee_msat();
+		let mut outbounds = self.pending_outbound_payments.lock().unwrap();
+		insert_from_monitor_on_startup(
+			&mut outbounds,
+			payment_id,
+			payment_hash,
+			session_priv_bytes,
+			path,
+			best_block_height,
+			logger,
+		)
+	}
+}
 
-		macro_rules! new_retryable {
-			() => {
-				PendingOutboundPayment::Retryable {
-					retry_strategy: None,
-					attempts: PaymentAttempts::new(),
-					payment_params: None,
-					session_privs: hash_set_from_iter([session_priv_bytes]),
-					payment_hash,
-					payment_secret: None, // only used for retries, and we'll never retry on startup
-					payment_metadata: None, // only used for retries, and we'll never retry on startup
-					keysend_preimage: None, // only used for retries, and we'll never retry on startup
-					invoice_request: None, // only used for retries, and we'll never retry on startup
-					bolt12_invoice: None, // only used for retries, and we'll never retry on startup!
-					custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
-					pending_amt_msat: path_amt,
-					pending_fee_msat: Some(path_fee),
-					total_msat: path_amt,
-					onion_total_msat: path_amt,
-					starting_block_height: best_block_height,
-					remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
-				}
+fn insert_from_monitor_on_startup<L: Logger>(
+	outbounds: &mut HashMap<PaymentId, PendingOutboundPayment>, payment_id: PaymentId,
+	payment_hash: PaymentHash, session_priv_bytes: [u8; 32], path: &Path, best_block_height: u32,
+	logger: &WithContext<L>,
+) {
+	let path_amt = path.final_value_msat();
+	let path_fee = path.fee_msat();
+
+	macro_rules! new_retryable {
+		() => {
+			PendingOutboundPayment::Retryable {
+				retry_strategy: None,
+				attempts: PaymentAttempts::new(),
+				payment_params: None,
+				session_privs: hash_set_from_iter([session_priv_bytes]),
+				payment_hash,
+				payment_secret: None, // only used for retries, and we'll never retry on startup
+				payment_metadata: None, // only used for retries, and we'll never retry on startup
+				keysend_preimage: None, // only used for retries, and we'll never retry on startup
+				invoice_request: None, // only used for retries, and we'll never retry on startup
+				bolt12_invoice: None, // only used for retries, and we'll never retry on startup!
+				custom_tlvs: Vec::new(), // only used for retries, and we'll never retry on startup
+				pending_amt_msat: path_amt,
+				pending_fee_msat: Some(path_fee),
+				total_msat: path_amt,
+				onion_total_msat: path_amt,
+				starting_block_height: best_block_height,
+				remaining_max_total_routing_fee_msat: None, // only used for retries, and we'll never retry on startup
 			}
 		}
+	}
 
-		match self.pending_outbound_payments.lock().unwrap().entry(payment_id) {
-			hash_map::Entry::Occupied(mut entry) => {
-				let newly_added = match entry.get() {
-					PendingOutboundPayment::AwaitingOffer { .. }
-					| PendingOutboundPayment::AwaitingInvoice { .. }
-					| PendingOutboundPayment::InvoiceReceived { .. }
-					| PendingOutboundPayment::StaticInvoiceReceived { .. } => {
-						// If we've reached this point, it means we initiated a payment to a BOLT 12 invoice and
-						// locked the htlc(s) into the `ChannelMonitor`(s), but failed to persist the
-						// `ChannelManager` after transitioning from this state to `Retryable` prior to shutdown.
-						// Therefore, we need to move this payment to `Retryable` now to avoid double-paying if
-						// the recipient sends a duplicate invoice or release_held_htlc onion message.
-						*entry.get_mut() = new_retryable!();
-						true
-					},
-					PendingOutboundPayment::Legacy { .. }
-					| PendingOutboundPayment::Retryable { .. }
-					| PendingOutboundPayment::Fulfilled { .. }
-					| PendingOutboundPayment::Abandoned { .. } => {
-						entry.get_mut().insert(session_priv_bytes, &path)
-					},
-				};
-				log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
-					if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
-			},
-			hash_map::Entry::Vacant(entry) => {
-				entry.insert(new_retryable!());
-				log_info!(logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
-					path_amt, payment_hash,  log_bytes!(session_priv_bytes));
-			},
-		}
+	match outbounds.entry(payment_id) {
+		hash_map::Entry::Occupied(mut entry) => {
+			let newly_added = match entry.get() {
+				PendingOutboundPayment::AwaitingOffer { .. }
+				| PendingOutboundPayment::AwaitingInvoice { .. }
+				| PendingOutboundPayment::InvoiceReceived { .. }
+				| PendingOutboundPayment::StaticInvoiceReceived { .. } => {
+					// If we've reached this point, it means we initiated a payment to a BOLT 12 invoice and
+					// locked the htlc(s) into the `ChannelMonitor`(s), but failed to persist the
+					// `ChannelManager` after transitioning from this state to `Retryable` prior to shutdown.
+					// Therefore, we need to move this payment to `Retryable` now to avoid double-paying if
+					// the recipient sends a duplicate invoice or release_held_htlc onion message.
+					*entry.get_mut() = new_retryable!();
+					true
+				},
+				PendingOutboundPayment::Legacy { .. }
+				| PendingOutboundPayment::Retryable { .. }
+				| PendingOutboundPayment::Fulfilled { .. }
+				| PendingOutboundPayment::Abandoned { .. } => entry.get_mut().insert(session_priv_bytes, &path),
+			};
+			log_info!(logger, "{} a pending payment path for {} msat for session priv {} on an existing pending payment with payment hash {}",
+				if newly_added { "Added" } else { "Had" }, path_amt, log_bytes!(session_priv_bytes), payment_hash);
+		},
+		hash_map::Entry::Vacant(entry) => {
+			entry.insert(new_retryable!());
+			log_info!(logger, "Added a pending payment for {} msat with payment hash {} for path with session priv {}",
+				path_amt, payment_hash,  log_bytes!(session_priv_bytes));
+		},
 	}
 }
 

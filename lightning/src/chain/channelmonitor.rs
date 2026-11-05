@@ -193,11 +193,12 @@ pub(super) fn monitor_event_id(event: &MonitorEvent) -> u128 {
 	let mut engine = Sha256::engine();
 	match event {
 		MonitorEvent::HTLCEvent(upd) => {
-			0u8.write(&mut engine).unwrap();
-			SentHTLCId::from_source(&upd.source).write(&mut engine).unwrap();
-			// A claim and a failure of the same HTLC must not share an ID, so that acking one never
-			// removes the other.
-			engine.input(&[upd.payment_preimage.is_some() as u8]);
+			let htlc_id = SentHTLCId::from_source(&upd.source);
+			return htlc_monitor_event_id(
+				htlc_id,
+				upd.payment_preimage.is_some(),
+				upd.from_onchain,
+			);
 		},
 		MonitorEvent::HolderForceClosed(outpoint)
 		| MonitorEvent::HolderForceClosedWithInfo { outpoint, .. } => {
@@ -212,6 +213,25 @@ pub(super) fn monitor_event_id(event: &MonitorEvent) -> u128 {
 			engine.input(&monitor_update_id.to_be_bytes());
 		},
 	}
+	monitor_event_id_from_engine(engine)
+}
+
+/// Derives the [`monitor_event_id`] of the [`MonitorEvent::HTLCEvent`] that would be generated for
+/// the given HTLC.
+pub(crate) fn htlc_monitor_event_id(
+	htlc_id: SentHTLCId, is_claim: bool, from_onchain: bool,
+) -> u128 {
+	let mut engine = Sha256::engine();
+	0u8.write(&mut engine).unwrap();
+	htlc_id.write(&mut engine).unwrap();
+	// A claim and a failure of the same HTLC, or an on-chain and an off-chain resolution of it, must
+	// not share an ID, so that acking one never removes the other.
+	engine.input(&[is_claim as u8]);
+	engine.input(&[from_onchain as u8]);
+	monitor_event_id_from_engine(engine)
+}
+
+fn monitor_event_id_from_engine(engine: bitcoin::hashes::sha256::HashEngine) -> u128 {
 	let mut id_bytes = [0u8; 16];
 	id_bytes.copy_from_slice(&Sha256::from_engine(engine).to_byte_array()[..16]);
 	u128::from_be_bytes(id_bytes)
@@ -284,21 +304,29 @@ impl_writeable_tlv_based_enum_upgradable_legacy!(MonitorEvent,
 	// 6 was `UpdateFailed` until LDK 0.0.117
 );
 
-/// Simple structure sent back by `chain::Watch` when an HTLC from a forward channel is detected on
-/// chain. Used to update the corresponding HTLC in the backward channel. Failing to pass the
-/// preimage claim backward will lead to loss of funds.
+/// Simple structure sent back by `chain::Watch` when an outbound HTLC is durably resolved. If the
+/// HTLC was a forward, use this to update the corresponding HTLC in the backward channel. Failing
+/// to pass the preimage claim backward will lead to loss of funds.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct HTLCUpdate {
 	pub(crate) payment_hash: PaymentHash,
 	pub(crate) payment_preimage: Option<PaymentPreimage>,
 	pub(crate) source: HTLCSource,
 	pub(crate) htlc_value_satoshis: u64,
+	/// Whether the HTLC resolution was observed on-chain, as opposed to being irrevocably
+	/// committed off-chain via the commitment dance. Useful for setting
+	/// [`Event::PaymentForwarded::claim_from_onchain_tx`].
+	///
+	/// Also used to decide whether to persist this update's [`MonitorEvent::HTLCEvent`], since
+	/// off-chain HTLC events should not be persisted for LDK 0.3-.
+	pub(crate) from_onchain: bool,
 }
 impl_ser_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, htlc_value_satoshis, required),
 	(2, source, required),
 	(4, payment_preimage, option),
+	(11, from_onchain, (default_value, true)), // Added in 0.4
 });
 
 /// If an output goes from claimable only by us to claimable by us or our counterparty within this
@@ -1740,7 +1768,9 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			.pending_monitor_events
 			.iter()
 			.filter(|(_, ev)| match ev {
-				MonitorEvent::HTLCEvent(_) => true,
+				// LDK versions prior to 0.4 treat any `HTLCEvent` as an on-chain event, which may lead to
+				// incorrect behavior, so don't write off-chain `HTLCEvent`s for those versions.
+				MonitorEvent::HTLCEvent(upd) => upd.from_onchain,
 				MonitorEvent::HolderForceClosed(_) => true,
 				MonitorEvent::HolderForceClosedWithInfo { .. } => true,
 				_ => false,
@@ -1750,6 +1780,9 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 	)?;
 	for (_, event) in channel_monitor.pending_monitor_events.iter() {
 		match event {
+			// LDK versions prior to 0.4 treat any `HTLCEvent` as an on-chain event, which may lead to
+			// incorrect behavior, so don't write off-chain `HTLCEvent`s for those versions.
+			MonitorEvent::HTLCEvent(upd) if !upd.from_onchain => {},
 			MonitorEvent::HTLCEvent(upd) => {
 				0u8.write(writer)?;
 				upd.write(writer)?;
@@ -1808,6 +1841,12 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			.pending_monitor_events
 			.iter()
 			.map(|(_, ev)| ev)
+			// LDK versions prior to 0.4 treat any `HTLCEvent` as an on-chain event, which may lead to
+			// incorrect behavior, so don't write off-chain `HTLCEvent`s for those versions.
+			.filter(|ev| match ev {
+				MonitorEvent::HTLCEvent(upd) => upd.from_onchain,
+				_ => true,
+			})
 			.chain(holder_force_closed_compat.as_ref()),
 	));
 	let pending_mon_evs_with_ids = Some(Iterable(
@@ -3321,6 +3360,24 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		res
 	}
 
+	/// Returns the ID of an unacked [`MonitorEvent`] that resolves the given outbound HTLC via claim,
+	/// if any. Such an HTLC may no longer appear in [`Self::get_all_current_outbound_htlcs`] if the
+	/// commitment transactions it was a part of have since been revoked.
+	pub(crate) fn pending_claim_event_id(&self, htlc_id: SentHTLCId) -> Option<u128> {
+		let us = self.inner.lock().unwrap();
+		us.pending_monitor_events.iter().chain(us.provided_monitor_events.iter()).find_map(
+			|(id, ev)| match ev {
+				MonitorEvent::HTLCEvent(upd)
+					if upd.payment_preimage.is_some()
+						&& htlc_id == SentHTLCId::from_source(&upd.source) =>
+				{
+					Some(*id)
+				},
+				_ => None,
+			},
+		)
+	}
+
 	/// Gets the set of outbound HTLCs which hit the chain and ultimately were claimed by us via
 	/// the timeout path and reached [`ANTI_REORG_DELAY`] confirmations. This is used to determine
 	/// if an HTLC has failed without the `ChannelManager` having seen it prior to being persisted.
@@ -3920,20 +3977,39 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		self.prev_holder_htlc_data = Some(htlc_data);
 
 		for (claimed_htlc_id, claimed_preimage) in claimed_htlcs {
-			#[cfg(debug_assertions)]
-			{
-				let cur_counterparty_htlcs = self
-					.funding
-					.counterparty_claimable_outpoints
-					.get(&self.funding.current_counterparty_commitment_txid.unwrap())
-					.unwrap();
-				assert!(cur_counterparty_htlcs.iter().any(|(_, source_opt)| {
+			let htlc_opt = self
+				.funding
+				.counterparty_claimable_outpoints
+				.get(&self.funding.current_counterparty_commitment_txid.unwrap())
+				.unwrap()
+				.iter()
+				.find_map(|(htlc, source_opt)| {
 					if let Some(source) = source_opt {
-						SentHTLCId::from_source(source) == *claimed_htlc_id
-					} else {
-						false
+						if SentHTLCId::from_source(source) == *claimed_htlc_id {
+							return Some((htlc, source));
+						}
 					}
-				}));
+					None
+				});
+			debug_assert!(htlc_opt.is_some());
+			if let Some((htlc, source)) = htlc_opt {
+				let event = MonitorEvent::HTLCEvent(HTLCUpdate {
+					payment_hash: htlc.payment_hash,
+					payment_preimage: Some(*claimed_preimage),
+					source: *source.clone(),
+					htlc_value_satoshis: htlc.amount_msat / 1000,
+					from_onchain: false,
+				});
+				let event_id = monitor_event_id(&event);
+				// A replayed update must not queue the same event twice.
+				let already_queued = self
+					.pending_monitor_events
+					.iter()
+					.chain(self.provided_monitor_events.iter())
+					.any(|(id, _)| *id == event_id);
+				if !already_queued {
+					self.pending_monitor_events.push((event_id, event));
+				}
 			}
 			self.counterparty_fulfilled_htlcs.insert(*claimed_htlc_id, *claimed_preimage);
 		}
@@ -4686,6 +4762,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					payment_preimage: None,
 					payment_hash: *payment_hash,
 					htlc_value_satoshis,
+					// Even though the HTLC was originally failed off-chain, mark it as on-chain failed
+					// because the channel is now closed and we want LDK 0.3- to read this event (see
+					// `HTLCUpdate::from_onchain`).
+					from_onchain: true,
 				}),
 			);
 		}
@@ -4775,6 +4855,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source: source.clone(),
 						htlc_value_satoshis,
+						from_onchain: true,
 					}),
 				);
 				self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
@@ -6115,6 +6196,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source,
 						htlc_value_satoshis,
+						from_onchain: true,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 						commitment_tx_output_idx,
@@ -6224,6 +6306,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
 						htlc_value_satoshis: htlc.amount_msat / 1000,
+						from_onchain: true,
 					}));
 				}
 			}
@@ -6702,14 +6785,23 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					};
 					self.pending_monitor_events.retain(not_htlc_fail);
 					self.provided_monitor_events.retain(not_htlc_fail);
-					if !self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter()).any(
-						|(_, update)| if let &MonitorEvent::HTLCEvent(ref upd) = update { upd.source == source } else { false }) {
-						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(HTLCUpdate {
-							source,
-							payment_preimage: Some(payment_preimage),
-							payment_hash,
-							htlc_value_satoshis: amount_msat / 1000,
-						}));
+					let update = HTLCUpdate {
+						source,
+						payment_preimage: Some(payment_preimage),
+						payment_hash,
+						htlc_value_satoshis: amount_msat / 1000,
+						from_onchain: true,
+					};
+					// Note that we compare the entire `HTLCUpdate` here when deciding whether the new event
+					// is a duplicate: this allows us to queue an on-chain HTLC update even if an off-chain
+					// update for the same HTLC is already pending unacked. Otherwise, if an outbound HTLC
+					// was first fulfilled off-chain then later fulfilled on-chain, we would only surface
+					// `PaymentPathSuccessful` + delete its outbound payments entry entry after a restart,
+					// since for off-chain claims those are only done after RAA.
+					let already_queued = self.pending_monitor_events.iter().chain(self.provided_monitor_events.iter()).any(
+						|(_, ev)| matches!(ev, MonitorEvent::HTLCEvent(upd) if *upd == update));
+					if !already_queued {
+						push_monitor_event(&mut self.pending_monitor_events, MonitorEvent::HTLCEvent(update));
 					}
 				} else {
 					self.onchain_events_awaiting_threshold_conf.retain(|ref entry| {

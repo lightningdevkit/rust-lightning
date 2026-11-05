@@ -13,7 +13,7 @@
 use crate::blinded_path::payment::{
 	BlindedPaymentPath, DummyTlvs, ForwardNode, PaymentContext, ReceiveTlvs, TrampolineForwardTlvs,
 };
-use crate::chain::channelmonitor::{ChannelMonitor, HTLC_FAIL_BACK_BUFFER};
+use crate::chain::channelmonitor::{ChannelMonitor, MonitorEvent, HTLC_FAIL_BACK_BUFFER};
 use crate::chain::transaction::OutPoint;
 use crate::chain::{BlockLocator, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 use crate::events::bump_transaction::sync::BumpTransactionEventHandlerSync;
@@ -1328,7 +1328,20 @@ pub fn check_added_monitors<CM: AChannelManager, H: NodeHolder<CM = CM>>(node: &
 	if let Some(chain_monitor) = node.chain_monitor() {
 		let mut added_monitors = chain_monitor.added_monitors.lock().unwrap();
 		let n = added_monitors.len();
-		assert_eq!(n, count, "expected {} monitors to be added, not {}", count, n);
+		if n != count {
+			let recent = chain_monitor.recent_monitor_updates.lock().unwrap();
+			let mut desc = String::new();
+			for (i, (chan_id, update)) in recent.iter().take(n).enumerate() {
+				desc += &format!(
+					"\n  [{}] chan={} update_id={} steps={:?}",
+					i, chan_id, update.update_id, update.updates
+				);
+			}
+			panic!(
+				"expected {} monitors to be added, not {}. Last {} updates (most recent first):{}",
+				count, n, n, desc
+			);
+		}
 		added_monitors.clear();
 	}
 }
@@ -3048,6 +3061,32 @@ macro_rules! expect_payment_claimed {
 	};
 }
 
+/// Returns the number of unacked [`MonitorEvent::HTLCEvent`]s for the given payment hash across
+/// all of `node`'s channel monitors.
+fn count_unacked_htlc_monitor_events<CM: AChannelManager, H: NodeHolder<CM = CM>>(
+	node: &H, payment_hash: &PaymentHash,
+) -> usize {
+	node.chain_monitor()
+		.map(|chain_monitor| {
+			chain_monitor
+				.chain_monitor
+				.list_monitors()
+				.iter()
+				.map(|channel_id| {
+					let monitor = chain_monitor.chain_monitor.get_monitor(*channel_id).unwrap();
+					monitor
+						.list_unacked_monitor_events()
+						.iter()
+						.filter(
+							|(_, ev)| matches!(ev, MonitorEvent::HTLCEvent(upd) if upd.payment_hash == *payment_hash),
+						)
+						.count()
+				})
+				.sum()
+		})
+		.unwrap_or(0)
+}
+
 /// Inspect events to assert that a payment was sent. If this was a BOLT 12 payment, the BOLT 12 invoice is returned. If
 /// per-path claims are expected, the events for each path are returned as well.
 pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
@@ -3070,6 +3109,10 @@ pub fn expect_payment_sent<CM: AChannelManager, H: NodeHolder<CM = CM>>(
 	if expect_post_ev_mon_update {
 		check_added_monitors(node, 1);
 	}
+	// Releasing the `PaymentSent` event should have acked the claimed HTLC(s)' `MonitorEvent`s.
+	let mon_ev_count = count_unacked_htlc_monitor_events(node, &expected_payment_hash);
+	assert_eq!(0, mon_ev_count, "expected no HTLC monitor events after the PaymentSent event");
+
 	// We return the invoice because some test may want to check the invoice details.
 	let invoice;
 	let mut path_events = Vec::new();
@@ -4330,6 +4373,7 @@ pub fn pass_claimed_payment_along_route_from_ev(
 				};
 				let commitment = &next_msgs.as_ref().unwrap().1;
 				do_commitment_signed_dance($node, $prev_node, commitment, false, false);
+				assert!($node.node.get_and_clear_pending_events().is_empty());
 				next_msgs = new_next_msgs;
 			}};
 		}
@@ -4361,6 +4405,18 @@ pub fn pass_claimed_payment_along_route_from_ev(
 		if !skip_last {
 			last_update_fulfill_dance!(origin_node, expected_route.first().unwrap());
 		}
+	}
+
+	if !skip_last {
+		// Each fulfilled path has an unacked `MonitorEvent` until the origin processes its
+		// events. Processing `PaymentSent` must acknowledge all of these claims.
+		let payment_hash = PaymentHash(Sha256::hash(&our_payment_preimage.0).to_byte_array());
+		let mon_ev_count = count_unacked_htlc_monitor_events(origin_node, &payment_hash);
+		assert_eq!(
+			expected_paths.len(),
+			mon_ev_count,
+			"expected an HTLC monitor event per fulfilled path prior to PaymentSent event"
+		);
 	}
 
 	// Ensure that claim_funds is idempotent.
