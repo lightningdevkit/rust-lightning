@@ -697,7 +697,12 @@ where
 		let monitor_states = self.monitors.read().unwrap();
 		for (_, monitor_state) in monitor_states.iter().filter(|(channel_id, _)| {
 			for chan in ignored_channels {
-				if chan.channel_id == **channel_id {
+				// Until a V1-established channel is funded, its `channel_id` is a temporary ID
+				// chosen by its opener, which is only unique among that peer's still-open
+				// channels and can thus collide with the ID of an unrelated (e.g. closed)
+				// channel's monitor. A channel which hasn't been funded has no
+				// `ChannelMonitor` yet, so it can never legitimately cause us to skip one.
+				if chan.funding_txo.is_some() && chan.channel_id == **channel_id {
 					return false;
 				}
 			}
