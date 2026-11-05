@@ -3099,6 +3099,9 @@ impl MaybeReadable for Event {
 							node_id: next_node_id_legacy,
 						}])),
 					});
+					if prev_htlcs.is_empty() || next_htlcs.is_empty() {
+						return Err(msgs::DecodeError::InvalidValue);
+					}
 					Ok(Some(Event::PaymentForwarded {
 						prev_htlcs,
 						next_htlcs,
