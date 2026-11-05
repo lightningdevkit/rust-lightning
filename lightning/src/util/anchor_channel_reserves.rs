@@ -240,9 +240,11 @@ pub fn get_supportable_anchor_channels(
 	let mut total_fractional_amount = Amount::from_sat(0);
 	let mut num_whole_utxos = 0;
 	for utxo in utxos {
-		let spend_fee = context
-			.upper_bound_fee_rate
-			.fee_wu(Weight::from_wu(BASE_INPUT_WEIGHT + utxo.satisfaction_weight))
+		let spend_fee = BASE_INPUT_WEIGHT
+			.checked_add(utxo.satisfaction_weight)
+			.and_then(|input_weight| {
+				context.upper_bound_fee_rate.fee_wu(Weight::from_wu(input_weight))
+			})
 			.unwrap_or(Amount::MAX);
 		let amount = utxo.output.value.checked_sub(spend_fee).unwrap_or(Amount::MIN);
 		if amount >= reserve_per_channel {
