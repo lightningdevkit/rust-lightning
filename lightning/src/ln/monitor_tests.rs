@@ -311,6 +311,81 @@ fn archive_fully_resolved_monitors() {
 }
 
 #[test]
+fn unfunded_channel_with_reused_id_does_not_hide_balances() {
+	// Test that an inbound channel which hasn't been funded yet, and whose counterparty-chosen
+	// `temporary_channel_id` matches the `channel_id` of a closed channel, doesn't cause
+	// `ChainMonitor::get_claimable_balances` to skip the closed channel's monitor when the caller
+	// passes `list_channels()` as `ignored_channels`.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_id).remove(0);
+
+	let message = "Channel force-closed".to_owned();
+	nodes[0].node.force_close_broadcasting_latest_txn(&chan_id, &nodes[1].node.get_our_node_id(), message.clone()).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	check_closed_broadcast(&nodes[0], 1, true);
+	let reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event(&nodes[0], 1, reason, false, &[nodes[1].node.get_our_node_id()], 100_000);
+
+	mine_transaction(&nodes[0], &commitment_tx);
+	mine_transaction(&nodes[1], &commitment_tx);
+	let reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, reason, false, &[nodes[0].node.get_our_node_id()], 100_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	let closed_chan_balances =
+		nodes[0].chain_monitor.chain_monitor.get_monitor(chan_id).unwrap().get_claimable_balances();
+	assert!(!closed_chan_balances.is_empty());
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]), closed_chan_balances);
+
+	// nodes[1] now requests a new channel, reusing the closed channel's ID as the
+	// `temporary_channel_id`, which nodes[0] accepts while it is still unfunded.
+	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 100_000, 0, 42, Some(chan_id), None).unwrap();
+	let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_open_channel(nodes[1].node.get_our_node_id(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
+
+	let channels = nodes[0].node.list_channels();
+	assert_eq!(channels.len(), 1);
+	assert_eq!(channels[0].channel_id, chan_id);
+	assert!(channels[0].funding_txo.is_none());
+
+	// The unfunded channel has no `ChannelMonitor`, so ignoring it must not hide the balances of
+	// the closed channel which happens to share its ID.
+	let ignored_channels: Vec<_> = channels.iter().collect();
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&ignored_channels), closed_chan_balances);
+
+	// Once the new channel is funded it gets a `ChannelMonitor` of its own, under its final ID,
+	// which is ignored while the closed channel's balances remain visible.
+	nodes[1].node.handle_accept_channel(nodes[0].node.get_our_node_id(), &accept_channel);
+	let (temporary_channel_id, tx, funding_outpoint) =
+		create_funding_transaction(&nodes[1], &nodes[0].node.get_our_node_id(), 100_000, 42);
+	nodes[1].node.funding_transaction_generated(temporary_channel_id, nodes[0].node.get_our_node_id(), tx.clone()).unwrap();
+	check_added_monitors(&nodes[1], 0);
+	let funding_created = get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_created(nodes[1].node.get_our_node_id(), &funding_created);
+	check_added_monitors(&nodes[0], 1);
+	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
+	let funding_signed = get_event_msg!(nodes[0], MessageSendEvent::SendFundingSigned, nodes[1].node.get_our_node_id());
+	nodes[1].node.handle_funding_signed(nodes[0].node.get_our_node_id(), &funding_signed);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+
+	let channels = nodes[0].node.list_channels();
+	assert_eq!(channels.len(), 1);
+	assert_ne!(channels[0].channel_id, chan_id);
+	assert_eq!(channels[0].funding_txo, Some(funding_outpoint));
+	let ignored_channels: Vec<_> = channels.iter().collect();
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&ignored_channels), closed_chan_balances);
+	assert_eq!(nodes[0].chain_monitor.chain_monitor.list_monitors().len(), 2);
+}
+
+#[test]
 fn archive_monitor_with_pending_closure_event() {
 	// Test that we don't archive a `ChannelMonitor` which still has a closure `MonitorEvent` that
 	// the `ChannelManager` hasn't processed yet.
