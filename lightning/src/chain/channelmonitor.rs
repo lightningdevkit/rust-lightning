@@ -6098,6 +6098,27 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		// Claims of irrevocably spent HTLC outputs can never confirm.
+		if let Some((txid, _)) = self.confirmed_funding_spend() {
+			let best_height = self.best_block.height;
+			let resolved_outputs = self.htlcs_resolved_on_chain.iter()
+				.filter_map(|htlc| htlc.commitment_tx_output_idx);
+			// An HTLC spend which waits for a CSV delay is irrevocable after `ANTI_REORG_DELAY`
+			// confirmations, before it reaches `htlcs_resolved_on_chain`.
+			let irrevocably_spent_outputs = self.onchain_events_awaiting_threshold_conf.iter()
+				.filter_map(|entry| match entry.event {
+					OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, .. }
+						if entry.height + ANTI_REORG_DELAY - 1 <= best_height =>
+					{
+						Some(commitment_tx_output_idx)
+					},
+					_ => None,
+				});
+			let spent_outpoints = resolved_outputs.chain(irrevocably_spent_outputs)
+				.map(|vout| BitcoinOutPoint { txid, vout });
+			self.onchain_tx_handler.abandon_spent_outpoints(spent_outpoints, best_height, logger);
+		}
+
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, conf_height, self.best_block.height, broadcaster, conf_target,

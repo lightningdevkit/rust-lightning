@@ -997,19 +997,17 @@ fn do_retry_with_no_persist(confirm_before_reload: bool) {
 	mine_transaction(&nodes[0], &bs_htlc_claim_txn);
 	expect_payment_sent(&nodes[0], payment_preimage_1, None, true, true);
 	connect_blocks(&nodes[0], TEST_FINAL_CLTV * 4 + 20);
-	let (first_htlc_timeout_tx, second_htlc_timeout_tx) = {
+	let htlc_timeout_tx = {
 		let mut txn = nodes[0].tx_broadcaster.unique_txn_broadcast();
-		assert_eq!(txn.len(), 2);
-		(txn.remove(0), txn.remove(0))
+		assert_eq!(txn.len(), 1);
+		txn.pop().unwrap()
 	};
-	check_spends!(first_htlc_timeout_tx, as_commitment_tx);
-	check_spends!(second_htlc_timeout_tx, as_commitment_tx);
-	if first_htlc_timeout_tx.input[0].previous_output == bs_htlc_claim_txn.input[0].previous_output
-	{
-		confirm_transaction(&nodes[0], &second_htlc_timeout_tx);
-	} else {
-		confirm_transaction(&nodes[0], &first_htlc_timeout_tx);
-	}
+	check_spends!(htlc_timeout_tx, as_commitment_tx);
+	assert_ne!(
+		htlc_timeout_tx.input[0].previous_output,
+		bs_htlc_claim_txn.input[0].previous_output
+	);
+	confirm_transaction(&nodes[0], &htlc_timeout_tx);
 	nodes[0].tx_broadcaster.clear();
 	let conditions = PaymentFailedConditions::new().from_mon_update();
 	expect_payment_failed_conditions(&nodes[0], payment_hash, false, conditions);
