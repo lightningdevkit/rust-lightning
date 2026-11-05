@@ -10460,6 +10460,63 @@ fn test_overlapping_tx_init_rbf_disconnects() {
 }
 
 #[test]
+fn test_tx_init_rbf_during_initial_splice_negotiation_disconnects() {
+	// A tx_init_rbf received during the first splice negotiation, i.e., without any negotiated
+	// candidate to RBF, must not exit quiescence while leaving the negotiation in progress, so
+	// disconnect instead of aborting.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	complete_splice_handshake(&nodes[0], &nodes[1]);
+	let _ = get_event_msg!(nodes[0], MessageSendEvent::SendTxAddInput, node_id_1);
+
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(added_value.to_sat() as i64),
+	};
+
+	// Both the initiator and the acceptor of the ongoing negotiation disconnect.
+	for (node, counterparty_node_id) in [(&nodes[0], node_id_1), (&nodes[1], node_id_0)] {
+		node.node.handle_tx_init_rbf(counterparty_node_id, &tx_init_rbf);
+
+		let msg_events = node.node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+		match &msg_events[0] {
+			MessageSendEvent::HandleError {
+				action: msgs::ErrorAction::DisconnectPeerWithWarning { msg },
+				..
+			} => assert_eq!(
+				msg.data,
+				"Received tx_init_rbf while a funding negotiation is already in progress"
+			),
+			_ => panic!("Expected DisconnectPeerWithWarning, got {:?}", msg_events[0]),
+		}
+	}
+
+	nodes[0].node.peer_disconnected(node_id_1);
+	nodes[1].node.peer_disconnected(node_id_0);
+
+	expect_splice_failed_events(
+		&nodes[0],
+		&channel_id,
+		funding_contribution,
+		NegotiationFailureReason::PeerDisconnected,
+	);
+}
+
+#[test]
 fn test_splice_rbf_both_contribute_tiebreak() {
 	let min_rbf_feerate = FEERATE_FLOOR_SATS_PER_KW as u64 + 25;
 	let feerate = FeeRate::from_sat_per_kwu(min_rbf_feerate);

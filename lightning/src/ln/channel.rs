@@ -14102,6 +14102,20 @@ where
 			return Err(ChannelError::WarnAndDisconnect("Quiescence needed for RBF".to_owned()));
 		}
 
+		// This must be checked before anything returning `ChannelError::Abort`, as our caller exits
+		// quiescence on those, which would leave a funding negotiation in progress (e.g., the
+		// first splice round, which has no negotiated candidates yet) outside of quiescence.
+		if self
+			.pending_splice
+			.as_ref()
+			.is_some_and(|pending_splice| pending_splice.funding_negotiation.is_some())
+		{
+			return Err(ChannelError::WarnAndDisconnect(
+				"Received tx_init_rbf while a funding negotiation is already in progress"
+					.to_owned(),
+			));
+		}
+
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(ChannelError::Abort(AbortReason::InternalError(
 				"Commitment point needs to be advanced once before RBF".into(),
@@ -14126,13 +14140,6 @@ where
 					"No pending splice available to RBF".into(),
 				))
 			})?;
-
-		if pending_splice.funding_negotiation.is_some() {
-			return Err(ChannelError::WarnAndDisconnect(
-				"Received tx_init_rbf while a funding negotiation is already in progress"
-					.to_owned(),
-			));
-		}
 
 		if pending_splice.received_funding_txid.is_some() {
 			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
