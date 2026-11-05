@@ -3993,6 +3993,8 @@ fn do_test_propose_splice_while_disconnected(use_0conf: bool) {
 	let mut config = test_default_channel_config();
 	if use_0conf {
 		config.channel_handshake_limits.trust_own_funding_0conf = true;
+		config.channel_config.inbound_splice_min_depth = 0;
+		config.channel_config.outbound_splice_min_depth = 0;
 	}
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
@@ -6408,14 +6410,16 @@ fn test_monitor_restore_sends_tx_signatures_before_splice_locked() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	config.channel_config.inbound_splice_min_depth = 0;
+	config.channel_config.outbound_splice_min_depth = 0;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
 
-	// The channel must be 0-conf so that the splice funding, which inherits the channel's
-	// minimum depth, locks as soon as tx_signatures are exchanged.
+	// The splice minimum depth must be zero so that the splice locks in as soon as tx_signatures
+	// are exchanged.
 	let initial_channel_value_sat = 100_000;
 	let (funding_tx, channel_id) =
 		open_zero_conf_channel_with_value(&nodes[0], &nodes[1], None, initial_channel_value_sat, 0);
@@ -10343,6 +10347,49 @@ fn test_splice_rbf_zeroconf_rejected() {
 }
 
 #[test]
+fn test_splice_rbf_zero_conf_splice_setting_rejected() {
+	// Test that tx_init_rbf is rejected when a splice minimum-depth setting of zero allows a
+	// splice to lock in before its funding transaction confirms, even if the channel itself is not
+	// zero-conf. The check happens before the pending_splice check, so we don't need to complete a
+	// splice — just enter quiescence and send tx_init_rbf.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_config.outbound_splice_min_depth = 0;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	// Enter quiescence (node 0 initiates).
+	reenter_quiescence(&nodes[0], &nodes[1], &channel_id);
+
+	// Node 0 sends tx_init_rbf, but the channel has a zero-conf splice setting, so it should be
+	// rejected.
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: 0,
+		feerate_sat_per_1000_weight: 500,
+		funding_output_contribution: Some(50_000),
+	};
+
+	nodes[1].node.handle_tx_init_rbf(node_id_0, &tx_init_rbf);
+
+	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	assert_eq!(
+		tx_abort_data(&tx_abort),
+		format!(
+			"Rejecting RBF attempt: Channel {} has a zero-conf splice setting, cannot RBF",
+			channel_id
+		)
+	);
+}
+
+#[test]
 fn test_overlapping_tx_init_rbf_disconnects() {
 	// A competing tx_init_rbf cannot identify a separate negotiation while the quiescence
 	// initiator's RBF flow is awaiting signatures, so disconnect instead of aborting the active
@@ -11354,6 +11401,8 @@ fn do_test_splice_locked_deferred_during_rbf_signing(
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_config.minimum_depth = 1;
+	config.channel_config.inbound_splice_min_depth = 1;
+	config.channel_config.outbound_splice_min_depth = 1;
 	let (persister_0, persister_1);
 	let (chain_monitor_0, chain_monitor_1);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
@@ -15039,8 +15088,8 @@ fn test_zero_conf_splice_stays_locked_when_unconfirmed() {
 
 #[cfg(test)]
 fn do_test_zero_conf_splice_stays_locked_when_unconfirmed(reorg_via_block_disconnection: bool) {
-	// On a zero-conf channel we send `splice_locked` as soon as the splice is signed, without
-	// waiting for it to confirm. If the splice then confirms but is reorged out while the
+	// With a splice minimum depth of zero we send `splice_locked` as soon as the splice is signed,
+	// without waiting for it to confirm. If the splice then confirms but is reorged out while the
 	// counterparty's `splice_locked` is still outstanding, our lock did not depend on that
 	// confirmation and must stay in effect: the unconfirmation must not re-send `splice_locked`,
 	// whether the reorg is reported through `Listen` block disconnection or through
@@ -15050,6 +15099,8 @@ fn do_test_zero_conf_splice_stays_locked_when_unconfirmed(reorg_via_block_discon
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	config.channel_config.inbound_splice_min_depth = 0;
+	config.channel_config.outbound_splice_min_depth = 0;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -15144,6 +15195,8 @@ fn test_channel_details_zero_conf_splice() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	config.channel_config.inbound_splice_min_depth = 0;
+	config.channel_config.outbound_splice_min_depth = 0;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -15231,6 +15284,8 @@ fn test_splice_rbf_does_not_queue_overlapping_contribution_zero_conf() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	config.channel_config.inbound_splice_min_depth = 0;
+	config.channel_config.outbound_splice_min_depth = 0;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
@@ -16075,14 +16130,16 @@ fn test_splice_locked_retransmitted_after_tx_signatures_on_reestablish() {
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	config.channel_config.inbound_splice_min_depth = 0;
+	config.channel_config.outbound_splice_min_depth = 0;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
 
-	// Open a 0-conf channel so that the splice inherits `minimum_depth = 0` and `splice_locked`
-	// is generated as soon as the signing session completes.
+	// Open a 0-conf channel and require zero confirmations for splices so that `splice_locked` is
+	// generated as soon as the signing session completes.
 	let initial_channel_value_sat = 1_000_000;
 	let push_msat = initial_channel_value_sat / 2 * 1000;
 	let (funding_tx, channel_id) = open_zero_conf_channel_with_value(
@@ -17020,4 +17077,267 @@ fn test_splice_rbf_duplicate_txid_rejected() {
 	let candidates = splice_candidates(acceptor, &channel_id);
 	assert_eq!(candidates.len(), 1);
 	assert_eq!(candidate_txid(&candidates[0]), splice_txid);
+}
+
+#[test]
+fn test_configured_inbound_splice_min_depth() {
+	// With `inbound_splice_min_depth` and `outbound_splice_min_depth` set, a splice funded without
+	// any contribution from node 1 locks in at the inbound setting, while node 0, which
+	// contributes, locks in at the outbound setting. Both settings apply independently of the
+	// channel's own `minimum_depth`, which is lower here.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.minimum_depth = 3;
+	config.channel_config.inbound_splice_min_depth = 6;
+	config.channel_config.outbound_splice_min_depth = 8;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value);
+
+	let prev_funding_txid = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_monitor(channel_id)
+		.map(|monitor| monitor.get_funding_txo().txid)
+		.unwrap();
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	// Neither node locks the splice in at the channel's own `minimum_depth`.
+	connect_blocks(&nodes[0], 2);
+	connect_blocks(&nodes[1], 2);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	connect_blocks(&nodes[0], 3);
+	connect_blocks(&nodes[1], 3);
+
+	// At six confirmations node 1, which did not contribute to the splice, locks the splice in at
+	// its `inbound_splice_min_depth`. Node 0, which contributes, requires its
+	// `outbound_splice_min_depth` and does not lock in yet.
+	let splice_locked_for_node_0 =
+		get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_0);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_for_node_0);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+
+	connect_blocks(&nodes[0], 2);
+	connect_blocks(&nodes[1], 2);
+
+	// At eight confirmations node 0 locks the splice in and, having already received node 1's
+	// `splice_locked`, promotes it right away.
+	let mut msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
+	let splice_locked_for_node_1 =
+		if let MessageSendEvent::SendSpliceLocked { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendSpliceLocked");
+		};
+	let announcement_sigs_0 =
+		if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+			msg
+		} else {
+			panic!("Expected SendAnnouncementSignatures");
+		};
+
+	check_added_monitors(&nodes[0], 1);
+	expect_channel_ready_event(&nodes[0], &node_id_1);
+
+	// Node 1 promotes the splice upon receiving node 0's `splice_locked`.
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_for_node_1);
+	let mut msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	if let MessageSendEvent::SendAnnouncementSignatures { msg, .. } = msg_events.remove(0) {
+		nodes[0].node.handle_announcement_signatures(node_id_1, &msg);
+	} else {
+		panic!("Expected SendAnnouncementSignatures");
+	}
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_ready_event(&nodes[1], &node_id_0);
+
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(&msg_events[0], MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	nodes[1].node.handle_announcement_signatures(node_id_0, &announcement_sigs_0);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	assert!(matches!(&msg_events[0], MessageSendEvent::BroadcastChannelAnnouncement { .. }));
+
+	for node in [&nodes[0], &nodes[1]] {
+		node.chain_source.remove_watched_by_txid(prev_funding_txid);
+	}
+}
+
+#[test]
+fn test_configured_splice_min_depth_both_contribute() {
+	// When both parties contribute to a splice, the maximum of `inbound_splice_min_depth` and
+	// `outbound_splice_min_depth` applies on both sides, here locking the splice in at the inbound
+	// setting rather than at the outbound setting or the channel's own `minimum_depth`.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.minimum_depth = 3;
+	config.channel_config.inbound_splice_min_depth = 9;
+	config.channel_config.outbound_splice_min_depth = 6;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value);
+
+	// Both nodes propose a splice; the tie-breaker has node 0 initiate the round, with node 1's
+	// contribution merged into it.
+	let feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
+	let funding_template_0 = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let node_0_funding_contribution =
+		funding_template_0.splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_0).unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, node_0_funding_contribution.clone(), None)
+		.unwrap();
+
+	let funding_template_1 = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
+	let node_1_funding_contribution =
+		funding_template_1.splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_1).unwrap();
+	nodes[1]
+		.node
+		.funding_contributed(&channel_id, &node_id_0, node_1_funding_contribution.clone(), None)
+		.unwrap();
+
+	let stfu_0 = get_event_msg!(nodes[0], MessageSendEvent::SendStfu, node_id_1);
+	let stfu_1 = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
+	nodes[1].node.handle_stfu(node_id_0, &stfu_0);
+	nodes[0].node.handle_stfu(node_id_1, &stfu_1);
+
+	let splice_init = get_event_msg!(nodes[0], MessageSendEvent::SendSpliceInit, node_id_1);
+	nodes[1].node.handle_splice_init(node_id_0, &splice_init);
+	let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
+	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
+	nodes[0].node.handle_splice_ack(node_id_1, &splice_ack);
+
+	let new_funding_script = chan_utils::make_funding_redeemscript(
+		&splice_init.funding_pubkey,
+		&splice_ack.funding_pubkey,
+	)
+	.to_p2wsh();
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		node_0_funding_contribution,
+		Some(node_1_funding_contribution),
+		splice_ack.funding_contribution_satoshis,
+		new_funding_script,
+	);
+	let (splice_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1]).with_acceptor_contribution(),
+	);
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	expect_splice_pending_event(&nodes[1], &node_id_0);
+
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+
+	// Neither node locks the splice in at the channel's own `minimum_depth` nor at the outbound
+	// setting, both of which are lower than the inbound setting applied here.
+	connect_blocks(&nodes[0], 5);
+	connect_blocks(&nodes[1], 5);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	lock_splice_after_blocks(&nodes[0], &nodes[1], 3);
+}
+
+#[test]
+fn test_default_splice_min_depth_on_zero_conf_channel() {
+	// Splices no longer inherit a zero-conf channel's `minimum_depth` of zero: by default both
+	// splice minimum-depth settings are six, so both sides of a splice-in initiated and funded by
+	// node 0 lock in at six confirmations -- node 0 because it contributes, requiring the outbound
+	// setting, and node 1 because it is funded without any contribution from it.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (funding_tx, channel_id) =
+		open_zero_conf_channel_with_value(&nodes[0], &nodes[1], None, initial_channel_value_sat, 0);
+	mine_transaction(&nodes[0], &funding_tx);
+	mine_transaction(&nodes[1], &funding_tx);
+
+	// Exchange the channel's `announcement_signatures` now that its original funding is deep
+	// enough, so they don't interleave with the splice's once it locks in.
+	connect_blocks(&nodes[0], 5);
+	connect_blocks(&nodes[1], 5);
+	let announcement_sigs_0 =
+		get_event_msg!(nodes[0], MessageSendEvent::SendAnnouncementSignatures, node_id_1);
+	let announcement_sigs_1 =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_id_0);
+	nodes[1].node.handle_announcement_signatures(node_id_0, &announcement_sigs_0);
+	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_1);
+	assert!(matches!(
+		nodes[0].node.get_and_clear_pending_msg_events().last(),
+		Some(MessageSendEvent::BroadcastChannelAnnouncement { .. })
+	));
+	assert!(matches!(
+		nodes[1].node.get_and_clear_pending_msg_events().last(),
+		Some(MessageSendEvent::BroadcastChannelAnnouncement { .. })
+	));
+
+	let prev_funding_txid = funding_tx.compute_txid();
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value);
+
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let (splice_tx, _) = splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Despite the channel being zero-conf, no `splice_locked` is sent at signing.
+	mine_transaction(&nodes[0], &splice_tx);
+	mine_transaction(&nodes[1], &splice_tx);
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	connect_blocks(&nodes[0], 5);
+	connect_blocks(&nodes[1], 5);
+
+	let splice_locked_for_node_1 =
+		get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1);
+	lock_splice(&nodes[0], &nodes[1], &splice_locked_for_node_1, false, &[]);
+
+	for node in [&nodes[0], &nodes[1]] {
+		node.chain_source.remove_watched_by_txid(prev_funding_txid);
+	}
 }
