@@ -1,0 +1,10 @@
+# API Updates
+
+ * `ChannelConfig` has two new fields, `inbound_splice_min_depth` and
+   `outbound_splice_min_depth`, configuring the number of confirmations required before a
+   splice is locked in, separately from the channel's `ChannelHandshakeConfig::minimum_depth`.
+   The maximum of the settings for each side which contributes inputs or outputs to the splice
+   applies: splices we contribute to require at least `outbound_splice_min_depth`
+   confirmations, while splices the counterparty contributes to require at least
+   `inbound_splice_min_depth`. Both default to `6`. Note that setting either to zero means
+   splices cannot be RBFed.
