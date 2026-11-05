@@ -681,11 +681,11 @@ where
 				let prevtx = self.source.get_prevtx(utxo.outpoint).await?;
 				let prevtx_id = prevtx.compute_txid();
 				if prevtx_id != utxo.outpoint.txid
-					|| prevtx.output.get(utxo.outpoint.vout as usize).is_none()
+					|| prevtx.output.get(utxo.outpoint.vout as usize) != Some(&utxo.output)
 				{
 					log_error!(
 						self.logger,
-						"Tx {} from wallet source doesn't contain output referenced by outpoint: {}",
+						"Tx {} from wallet source doesn't match output referenced by outpoint: {}",
 						prevtx_id,
 						utxo.outpoint,
 					);
