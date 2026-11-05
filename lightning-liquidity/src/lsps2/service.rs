@@ -2062,6 +2062,7 @@ where
 		jit_channel.set_funding_tx(funding_tx);
 
 		self.broadcast_funding_transaction_if_applies(jit_channel);
+		peer_state.needs_persist = true;
 		Ok(())
 	}
 
@@ -2111,6 +2112,7 @@ where
 		jit_channel.set_funding_tx_broadcast_safe(true);
 
 		self.broadcast_funding_transaction_if_applies(jit_channel);
+		peer_state.needs_persist = true;
 		Ok(())
 	}
 
