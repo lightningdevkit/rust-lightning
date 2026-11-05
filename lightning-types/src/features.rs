@@ -1176,22 +1176,31 @@ impl<T: sealed::Context> Features<T> {
 
 	/// Returns the set of required features unknown by `other`, as their bit position.
 	pub fn required_unknown_bits_from(&self, other: &Self) -> Vec<u64> {
-		let mut unknown_bits = Vec::new();
+		self.required_unknown_bits_from_iter(other).collect()
+	}
 
+	/// Returns an iterator over the bit positions of the required features unknown by `other`.
+	///
+	/// Unlike [`Self::required_unknown_bits_from`] this does not allocate, which allows callers
+	/// that only need a few of the bits to bound the work to finding them via
+	/// [`Iterator::take`].
+	///
+	/// This is not exported to bindings users as iterators are not supported in the bindings.
+	pub fn required_unknown_bits_from_iter<'a>(
+		&'a self, other: &'a Self,
+	) -> impl Iterator<Item = u64> + 'a {
 		// Bitwise AND-ing with all even bits set except for known features will select required
 		// unknown features.
-		self.flags.iter().enumerate().for_each(|(i, &byte)| {
+		self.flags.iter().enumerate().flat_map(move |(i, &byte)| {
 			let unknown_features = unset_features_mask_at_position(other, i);
-			if byte & unknown_features != 0 {
-				for bit in (0..8).step_by(2) {
-					if ((byte & unknown_features) >> bit) & 1 == 1 {
-						unknown_bits.push((i as u64) * 8 + bit);
-					}
+			(0..8).step_by(2).filter_map(move |bit| {
+				if ((byte & unknown_features) >> bit) & 1 == 1 {
+					Some((i as u64) * 8 + bit)
+				} else {
+					None
 				}
-			}
-		});
-
-		unknown_bits
+			})
+		})
 	}
 
 	/// Returns true if this `Features` object contains unknown feature flags which are set as
