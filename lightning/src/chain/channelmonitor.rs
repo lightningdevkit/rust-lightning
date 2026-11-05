@@ -5491,7 +5491,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				log_error!(logger, "Got broadcast of revoked counterparty HTLC transaction, spending {}:{}", htlc_txid, idx);
 				let revk_outp = RevokedOutput::build(
 					per_commitment_point, per_commitment_key, tx.output[idx].value,
-					self.funding.channel_parameters.clone(), height,
+					funding_spent.channel_parameters.clone(), height,
 				);
 				let justice_package = PackageTemplate::build_package(
 					htlc_txid, idx as u32, PackageSolvingData::RevokedOutput(revk_outp),
