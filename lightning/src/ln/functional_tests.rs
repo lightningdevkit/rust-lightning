@@ -1757,17 +1757,8 @@ pub fn test_htlc_on_chain_success() {
 			_ => panic!("Unexpected event"),
 		}
 	}
-	// HTLC timeout claims for non-anchor channels are only aggregated when claimed from the
-	// remote commitment transaction.
-	let mut node_txn = nodes[0].tx_broadcaster.txn_broadcast();
-	assert_eq!(node_txn.len(), 2);
-	for tx in node_txn.iter() {
-		check_spends!(tx, node_a_commitment_tx[0]);
-		assert_ne!(tx.lock_time, LockTime::ZERO);
-		assert_eq!(tx.input[0].witness.last().unwrap().len(), OFFERED_HTLC_SCRIPT_WEIGHT);
-		assert!(tx.output[0].script_pubkey.is_p2wsh()); // revokeable output
-	}
-	assert_ne!(node_txn[0].input[0].previous_output, node_txn[1].input[0].previous_output);
+	// nodes[0] doesn't try to time out the HTLCs which nodes[1] claimed on chain.
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
 }
 
 fn do_test_htlc_on_chain_timeout(connect_style: ConnectStyle) {
