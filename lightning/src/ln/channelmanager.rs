@@ -178,7 +178,7 @@ use core::cell::RefCell;
 use core::convert::Infallible;
 use core::hash::{Hash, Hasher};
 use core::ops::Deref;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use core::time::Duration;
 use core::{cmp, mem};
 
@@ -3174,8 +3174,7 @@ pub struct ChannelManager<
 	#[cfg(any(test, feature = "_test_utils"))]
 	pub(crate) pending_events: Mutex<VecDeque<(events::Event, Option<EventCompletionAction>)>>,
 
-	/// A simple atomic flag to ensure only one task at a time can be processing events asynchronously.
-	pending_events_processor: AtomicBool,
+	pending_events_processor: AtomicU32,
 
 	/// A simple atomic flag to ensure only one task at a time can be processing HTLC forwards via
 	/// [`Self::process_pending_htlc_forwards`].
@@ -3719,12 +3718,11 @@ macro_rules! try_channel_entry {
 	};
 }
 
-/// Releases the event-processing flag when dropped, such that dropping the future driving an
-/// async handler mid-`await` cannot leave event processing disabled for the lifetime of the
-/// manager. The guard is disarmed once the flag is released normally, which happens with the
-/// `pending_events` lock acquired.
+/// Releases the event-processing claim when dropped, such that dropping the future driving an
+/// async handler mid-`await` cannot leave event processing blocked for the lifetime of the
+/// manager. The guard is disarmed once processing finishes and the claim is released normally.
 struct EventProcessingGuard<'a> {
-	processor_flag: &'a AtomicBool,
+	processor_counter: &'a AtomicU32,
 	event_persist_notifier: &'a Notifier,
 	armed: bool,
 }
@@ -3732,7 +3730,9 @@ struct EventProcessingGuard<'a> {
 impl Drop for EventProcessingGuard<'_> {
 	fn drop(&mut self) {
 		if self.armed {
-			self.processor_flag.store(false, Ordering::Release);
+			// Concurrent callers that returned early are counted in the counter as well, so it
+			// must be reset entirely rather than only decremented.
+			self.processor_counter.store(0, Ordering::Release);
 			self.event_persist_notifier.notify();
 		}
 	}
@@ -3741,19 +3741,20 @@ impl Drop for EventProcessingGuard<'_> {
 #[rustfmt::skip]
 macro_rules! process_events_body {
 	($self: expr, $event_to_handle: expr, $handle_event: expr) => {
+		if $self.pending_events_processor.fetch_add(1, Ordering::AcqRel) != 0 {
+			// If we're not the first event processor to get here, just return early, the
+			// increment we just did will be treated as "go around again" at the end.
+			return;
+		}
+
+		let mut processor_guard = EventProcessingGuard {
+			processor_counter: &$self.pending_events_processor,
+			event_persist_notifier: &$self.event_persist_notifier,
+			armed: true,
+		};
+
 		let mut handling_failed = false;
-		let mut processed_all_events = false;
-		while !handling_failed && !processed_all_events {
-			if $self.pending_events_processor.compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed).is_err() {
-				return;
-			}
-
-			let mut processor_guard = EventProcessingGuard {
-				processor_flag: &$self.pending_events_processor,
-				event_persist_notifier: &$self.event_persist_notifier,
-				armed: true,
-			};
-
+		loop {
 			let mut result;
 
 			{
@@ -3782,6 +3783,7 @@ macro_rules! process_events_body {
 			}
 
 			let mut post_event_actions = Vec::new();
+			let mut had_post_event_actions = false;
 
 			let mut num_handled_events = 0;
 			for (event, action_opt) in pending_events {
@@ -3805,16 +3807,7 @@ macro_rules! process_events_body {
 				}
 			}
 
-			{
-				let mut pending_events = $self.pending_events.lock().unwrap();
-				pending_events.drain(..num_handled_events);
-				processed_all_events = pending_events.is_empty();
-				// Note that the flag is only released here with the `pending_events` lock acquired,
-				// ensuring another processor which acquires it cannot clone the queue until after
-				// the events we handled were drained.
-				$self.pending_events_processor.store(false, Ordering::Release);
-				processor_guard.armed = false;
-			}
+			$self.pending_events.lock().unwrap().drain(..num_handled_events);
 
 			if !post_event_actions.is_empty() {
 				// `handle_post_event_actions` may update channel state, so take the total
@@ -3824,7 +3817,7 @@ macro_rules! process_events_body {
 				let _read_guard = $self.total_consistency_lock.read().unwrap();
 				$self.handle_post_event_actions(post_event_actions);
 				// If we had some actions, go around again as we may have more events now
-				processed_all_events = false;
+				had_post_event_actions = true;
 			}
 
 			match result {
@@ -3836,7 +3829,36 @@ macro_rules! process_events_body {
 					$self.event_persist_notifier.notify(),
 				NotifyOption::SkipPersistNoEvents => {},
 			}
+
+			let second_call_detected = $self.pending_events_processor.fetch_sub(1, Ordering::AcqRel) != 1;
+			// Go around again whenever a second call was detected, even if the queue looked
+			// empty: the callers that returned early may have pushed events just before their
+			// call, and a push racing with a queue check here would be missed by both sides
+			// once we release the counter below.
+			if !handling_failed && (had_post_event_actions || second_call_detected) {
+				if second_call_detected {
+					// The calls that came in while we were running are still counted; reset the
+					// counter to just our own claim as we handle their events going around again.
+					$self.pending_events_processor.store(1, Ordering::Release);
+				} else if $self.pending_events_processor
+					.compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
+					.is_err()
+				{
+					// Another call re-took the event processor and will handle any remaining
+					// events.
+					break;
+				}
+				continue;
+			}
+			if second_call_detected {
+				// Only reachable after a handling error, so release the claims of the
+				// concurrent callers that returned early; the remaining events will be
+				// replayed on the next invocation.
+				$self.pending_events_processor.store(0, Ordering::Release);
+			}
+			break;
 		}
+		processor_guard.armed = false;
 	}
 }
 
@@ -4091,7 +4113,7 @@ impl<
 			skip_monitor_update_assertion: AtomicBool::new(false),
 
 			pending_events: Mutex::new(VecDeque::new()),
-			pending_events_processor: AtomicBool::new(false),
+			pending_events_processor: AtomicU32::new(0),
 			pending_htlc_forwards_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(Vec::new()),
 			total_consistency_lock: RwLock::new(()),
@@ -21502,7 +21524,7 @@ impl<
 			skip_monitor_update_assertion: AtomicBool::new(false),
 
 			pending_events: Mutex::new(pending_events_read),
-			pending_events_processor: AtomicBool::new(false),
+			pending_events_processor: AtomicU32::new(0),
 			pending_htlc_forwards_processor: AtomicBool::new(false),
 			pending_background_events: Mutex::new(pending_background_events),
 			total_consistency_lock: RwLock::new(()),
@@ -23146,9 +23168,9 @@ mod tests {
 				Box::pin(nodes[1].node.process_pending_events_async(blocked_handler));
 			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
 			assert!(handler_invoked.get());
-			assert!(nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+			assert_ne!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 		}
-		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 
 		// A fresh processor, as a restarted background task would be, now delivers the event and
 		// can handle it successfully.
@@ -23167,7 +23189,7 @@ mod tests {
 		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
 		assert!(accepted.get());
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
-		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 
 		// The same recovery works through the synchronous processing interface.
 		use crate::events::EventsProvider;
@@ -23183,9 +23205,9 @@ mod tests {
 			let mut processing =
 				Box::pin(nodes[1].node.process_pending_events_async(blocked_handler));
 			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
-			assert!(nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+			assert_ne!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 		}
-		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 
 		let accepted = Cell::new(false);
 		let node = nodes[1].node;
@@ -23201,7 +23223,7 @@ mod tests {
 		node.process_pending_events(&retry_handler);
 		assert!(accepted.get());
 		get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id);
-		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 	}
 
 	// Test that events handled before a cancellation are replayed on the retry, and that events
@@ -23258,9 +23280,9 @@ mod tests {
 				Box::pin(nodes[1].node.process_pending_events_async(partially_blocking_handler));
 			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
 			assert_eq!(events_handled.get(), 2);
-			assert!(nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+			assert_ne!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 		}
-		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 
 		// On the retry both events are delivered - the first one replayed, which handlers already
 		// have to tolerate - and both inbound channels are accepted successfully.
@@ -23286,7 +23308,7 @@ mod tests {
 		assert_eq!(accepted.get(), 2);
 		let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
 		assert_eq!(msg_events.len(), 2, "{msg_events:?}");
-		assert!(!nodes[1].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[1].node.pending_events_processor.load(Ordering::Acquire), 0);
 	}
 
 	// Test that a cancellation does not lose or repeat an event's post-event actions, and that
@@ -23334,9 +23356,9 @@ mod tests {
 			let mut processing =
 				Box::pin(nodes[0].node.process_pending_events_async(blocked_handler));
 			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
-			assert!(nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+			assert_ne!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 		}
-		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 		check_added_monitors(&nodes[0], 0);
 
 		let completing_handler = |event: Event| async move {
@@ -23348,7 +23370,7 @@ mod tests {
 		let mut retry = Box::pin(nodes[0].node.process_pending_events_async(completing_handler));
 		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
 		check_added_monitors(&nodes[0], 1);
-		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 
 		// Cancel after a `PaymentSent` was handled but before its queue entry was drained: the
 		// collected post-event action is dropped without running, and the retry must run it exactly
@@ -23375,9 +23397,9 @@ mod tests {
 				Box::pin(nodes[0].node.process_pending_events_async(partially_blocking_handler));
 			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
 			assert_eq!(events_handled.get(), 2);
-			assert!(nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+			assert_ne!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 		}
-		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 		// The first `PaymentSent`'s completion action was collected but never ran, and both queued
 		// events remain undrained.
 		check_added_monitors(&nodes[0], 0);
@@ -23386,7 +23408,7 @@ mod tests {
 		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
 		// Each `PaymentSent` completion action ran exactly once.
 		check_added_monitors(&nodes[0], 2);
-		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 
 		// Cancel after the `PaymentSent` post-event action already ran: the retry must deliver the
 		// remaining event without repeating the action.
@@ -23406,16 +23428,16 @@ mod tests {
 				nodes[0].node.process_pending_events_async(blocked_on_path_successful_handler),
 			);
 			assert!(matches!(processing.as_mut().poll(&mut context), Poll::Pending));
-			assert!(nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+			assert_ne!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 		}
-		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 		check_added_monitors(&nodes[0], 1);
 
 		let mut retry = Box::pin(nodes[0].node.process_pending_events_async(completing_handler));
 		assert!(matches!(retry.as_mut().poll(&mut context), Poll::Ready(())));
 		// The already-run post-event action must not run again.
 		check_added_monitors(&nodes[0], 0);
-		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 
 		// Uninterrupted async processing handles a fresh set of events just like the synchronous
 		// interface does.
@@ -23424,7 +23446,7 @@ mod tests {
 			Box::pin(nodes[0].node.process_pending_events_async(completing_handler));
 		assert!(matches!(processing.as_mut().poll(&mut context), Poll::Ready(())));
 		check_added_monitors(&nodes[0], 1);
-		assert!(!nodes[0].node.pending_events_processor.load(Ordering::Acquire));
+		assert_eq!(nodes[0].node.pending_events_processor.load(Ordering::Acquire), 0);
 	}
 }
 
