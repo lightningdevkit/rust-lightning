@@ -65,15 +65,18 @@ macro_rules! basepoint_impl {
 	};
 }
 macro_rules! key_impl {
-	($BasepointT:ty, $KeyName:expr) => {
+	($BasepointT:ty, $KeyName:expr, $BasepointOwner:expr) => {
 		doc_comment! {
-			concat!("Derive a public ", $KeyName, " using one node's `per_commitment_point` and its countersignatory's `basepoint`"),
+			concat!(
+			"Derive a public ", $KeyName, " for a commitment transaction using the `per_commitment_point`\n",
+			"of that commitment transaction's broadcaster and ", $BasepointOwner
+			),
 			pub fn from_basepoint<T: secp256k1::Signing>(
 				secp_ctx: &Secp256k1<T>,
-				countersignatory_basepoint: &$BasepointT,
+				basepoint: &$BasepointT,
 				per_commitment_point: &PublicKey,
 			) -> Self {
-				Self(derive_public_key(secp_ctx, per_commitment_point, &countersignatory_basepoint.0))
+				Self(derive_public_key(secp_ctx, per_commitment_point, &basepoint.0))
 			}
 		}
 
@@ -130,7 +133,11 @@ key_read_write!(DelayedPaymentBasepoint);
 pub struct DelayedPaymentKey(pub PublicKey);
 
 impl DelayedPaymentKey {
-	key_impl!(DelayedPaymentBasepoint, "delayedpubkey");
+	key_impl!(
+		DelayedPaymentBasepoint,
+		"delayedpubkey",
+		"that same broadcaster's own [`DelayedPaymentBasepoint`] (*not* its countersignatory's)."
+	);
 }
 key_read_write!(DelayedPaymentKey);
 
@@ -157,7 +164,14 @@ key_read_write!(HtlcBasepoint);
 pub struct HtlcKey(pub PublicKey);
 
 impl HtlcKey {
-	key_impl!(HtlcBasepoint, "htlcpubkey");
+	key_impl!(
+		HtlcBasepoint,
+		"htlcpubkey",
+		"the [`HtlcBasepoint`] of the party whose HTLC key is being derived.\n\
+		\n\
+		Note that the HTLC keys of both the broadcaster and its countersignatory are derived using\n\
+		the broadcaster's `per_commitment_point`."
+	);
 }
 key_read_write!(HtlcKey);
 
