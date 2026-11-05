@@ -647,6 +647,22 @@ pub struct ChannelConfig {
 	/// [`PaymentClaimable::counterparty_skimmed_fee_msat`]: crate::events::Event::PaymentClaimable::counterparty_skimmed_fee_msat
 	//  TODO: link to bLIP when it's merged
 	pub accept_underpaying_htlcs: bool,
+	/// The minimum number of confirmations we will wait for before sending `splice_locked` for a
+	/// splice which we do not contribute any inputs or outputs to.
+	///
+	/// Note that setting this to zero means the splice can be considered locked in before its
+	/// funding transaction confirms, so RBFing splices will not be possible.
+	///
+	/// Default value: `6`
+	pub inbound_splice_min_depth: u32,
+	/// The minimum number of confirmations we will wait for before sending `splice_locked` for a
+	/// splice which we contribute inputs or outputs to.
+	///
+	/// Note that setting this to zero means the splice can be considered locked in before its
+	/// funding transaction confirms, so RBFing splices will not be possible.
+	///
+	/// Default value: `6`
+	pub outbound_splice_min_depth: u32,
 }
 
 impl ChannelConfig {
@@ -674,6 +690,12 @@ impl ChannelConfig {
 		if let Some(accept_underpaying_htlcs) = update.accept_underpaying_htlcs {
 			self.accept_underpaying_htlcs = accept_underpaying_htlcs;
 		}
+		if let Some(inbound_splice_min_depth) = update.inbound_splice_min_depth {
+			self.inbound_splice_min_depth = inbound_splice_min_depth;
+		}
+		if let Some(outbound_splice_min_depth) = update.outbound_splice_min_depth {
+			self.outbound_splice_min_depth = outbound_splice_min_depth;
+		}
 	}
 }
 
@@ -687,6 +709,8 @@ impl Default for ChannelConfig {
 			max_dust_htlc_exposure: MaxDustHTLCExposure::FeeRateMultiplier(10000),
 			force_close_avoidance_max_fee_satoshis: 1000,
 			accept_underpaying_htlcs: false,
+			inbound_splice_min_depth: 6,
+			outbound_splice_min_depth: 6,
 		}
 	}
 }
@@ -708,6 +732,8 @@ impl crate::util::ser::Writeable for ChannelConfig {
 			// LegacyChannelConfig. To make sure that serialization is not compatible with this one, we use
 			// the next required type of 10, which if seen by the old serialization will always fail.
 			(10, self.force_close_avoidance_max_fee_satoshis, required),
+			(13, self.inbound_splice_min_depth, required),
+			(15, self.outbound_splice_min_depth, required),
 		});
 		Ok(())
 	}
@@ -722,6 +748,8 @@ impl crate::util::ser::Readable for ChannelConfig {
 		let mut max_dust_htlc_exposure_msat = None;
 		let mut max_dust_htlc_exposure_enum = None;
 		let mut force_close_avoidance_max_fee_satoshis = 1000;
+		let mut inbound_splice_min_depth = 6;
+		let mut outbound_splice_min_depth = 6;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			(1, accept_underpaying_htlcs, (default_value, false)),
@@ -731,6 +759,8 @@ impl crate::util::ser::Readable for ChannelConfig {
 			// Has always been written, but became optionally read in 0.0.116
 			(6, max_dust_htlc_exposure_msat, option),
 			(10, force_close_avoidance_max_fee_satoshis, required),
+			(13, inbound_splice_min_depth, (default_value, 6u32)),
+			(15, outbound_splice_min_depth, (default_value, 6u32)),
 		});
 		let max_dust_htlc_fixed_limit = max_dust_htlc_exposure_msat.unwrap_or(5_000_000);
 		let max_dust_htlc_exposure_msat = max_dust_htlc_exposure_enum
@@ -742,6 +772,8 @@ impl crate::util::ser::Readable for ChannelConfig {
 			cltv_expiry_delta,
 			max_dust_htlc_exposure: max_dust_htlc_exposure_msat,
 			force_close_avoidance_max_fee_satoshis,
+			inbound_splice_min_depth,
+			outbound_splice_min_depth,
 		})
 	}
 }
@@ -771,6 +803,16 @@ pub struct ChannelConfigUpdate {
 	/// If set, allows this channel's counterparty to skim an additional fee off this node's inbound HTLCs. See
 	/// [`ChannelConfig::accept_underpaying_htlcs`].
 	pub accept_underpaying_htlcs: Option<bool>,
+
+	/// The minimum number of confirmations we will wait for before sending `splice_locked` for a
+	/// splice which we do not contribute any inputs or outputs to. See
+	/// [`ChannelConfig::inbound_splice_min_depth`].
+	pub inbound_splice_min_depth: Option<u32>,
+
+	/// The minimum number of confirmations we will wait for before sending `splice_locked` for a
+	/// splice which we contribute inputs or outputs to. See
+	/// [`ChannelConfig::outbound_splice_min_depth`].
+	pub outbound_splice_min_depth: Option<u32>,
 }
 
 impl From<ChannelConfig> for ChannelConfigUpdate {
@@ -786,6 +828,8 @@ impl From<ChannelConfig> for ChannelConfigUpdate {
 				config.force_close_avoidance_max_fee_satoshis,
 			),
 			accept_underpaying_htlcs: Some(config.accept_underpaying_htlcs),
+			inbound_splice_min_depth: Some(config.inbound_splice_min_depth),
+			outbound_splice_min_depth: Some(config.outbound_splice_min_depth),
 		}
 	}
 }
@@ -830,6 +874,8 @@ impl crate::util::ser::Writeable for LegacyChannelConfig {
 			(5, self.options.max_dust_htlc_exposure, required),
 			(6, self.commit_upfront_shutdown_pubkey, required),
 			(8, self.options.forwarding_fee_base_msat, required),
+			(13, self.options.inbound_splice_min_depth, (default_value, 6u32)),
+			(15, self.options.outbound_splice_min_depth, (default_value, 6u32)),
 		});
 		Ok(())
 	}
@@ -845,6 +891,8 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 		let mut commit_upfront_shutdown_pubkey = false;
 		let mut forwarding_fee_base_msat = 0;
 		let mut max_dust_htlc_exposure_enum = None;
+		let mut inbound_splice_min_depth = 6;
+		let mut outbound_splice_min_depth = 6;
 		read_tlv_fields!(reader, {
 			(0, forwarding_fee_proportional_millionths, required),
 			// Has always been written, but became optionally read in 0.0.116
@@ -855,6 +903,8 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 			(5, max_dust_htlc_exposure_enum, option),
 			(6, commit_upfront_shutdown_pubkey, required),
 			(8, forwarding_fee_base_msat, required),
+			(13, inbound_splice_min_depth, (default_value, 6u32)),
+			(15, outbound_splice_min_depth, (default_value, 6u32)),
 		});
 		let max_dust_htlc_exposure_msat_fixed_limit =
 			max_dust_htlc_exposure_msat_fixed_limit.unwrap_or(5_000_000);
@@ -869,6 +919,8 @@ impl crate::util::ser::Readable for LegacyChannelConfig {
 				force_close_avoidance_max_fee_satoshis,
 				forwarding_fee_base_msat,
 				accept_underpaying_htlcs: false,
+				inbound_splice_min_depth,
+				outbound_splice_min_depth,
 			},
 			announce_for_forwarding,
 			commit_upfront_shutdown_pubkey,
