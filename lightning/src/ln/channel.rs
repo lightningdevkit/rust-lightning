@@ -3425,6 +3425,17 @@ impl PendingFunding {
 				.any(|output| committed_output_scripts.contains(&output))
 	}
 
+	/// Whether the round under negotiation includes a contribution of ours: one we initiated
+	/// always does, and a counterparty-initiated round does when our queued contribution was
+	/// merged into it or a prior round's contribution was carried into it. A negotiation read
+	/// from data written before our contribution was stored alongside it is only known to
+	/// include ours when we initiated it.
+	fn is_negotiating_our_contribution(&self) -> bool {
+		self.funding_negotiation.as_ref().is_some_and(|funding_negotiation| {
+			funding_negotiation.is_initiator() || self.negotiation_contribution.is_some()
+		})
+	}
+
 	/// Our most recent contribution across rounds, including any round still under negotiation.
 	fn latest_contribution(&self) -> Option<&FundingContribution> {
 		self.negotiation_contribution.as_ref().or_else(|| {
@@ -13238,16 +13249,17 @@ where
 		}
 
 		if let Some(pending_splice) = &self.pending_splice {
-			if let Some(funding_negotiation) = &pending_splice.funding_negotiation {
-				debug_assert!(self.context.channel_state.is_quiescent());
-				if funding_negotiation.is_initiator() {
-					return Err(APIError::APIMisuseError {
-						err: format!(
-							"Channel {} cannot be spliced as one is currently being negotiated",
-							self.context.channel_id(),
-						),
-					});
-				}
+			debug_assert!(
+				pending_splice.funding_negotiation.is_none()
+					|| self.context.channel_state.is_quiescent()
+			);
+			if pending_splice.is_negotiating_our_contribution() {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} cannot be spliced as one is currently being negotiated",
+						self.context.channel_id(),
+					),
+				});
 			}
 		}
 
@@ -13464,8 +13476,7 @@ where
 			None => self
 				.pending_splice
 				.as_ref()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
-				.is_some_and(|funding_negotiation| funding_negotiation.is_initiator()),
+				.is_some_and(|pending_splice| pending_splice.is_negotiating_our_contribution()),
 		};
 		if already_contributing {
 			return Err(match contribution.unique_contributions() {
@@ -13578,16 +13589,16 @@ where
 			}
 		}
 
-		// A queued splice never coexists with a negotiation we initiated: we return early above if
-		// one is already in flight, and a queued action is cleared the moment it becomes our
-		// negotiation at quiescence. It may coexist with a counterparty-initiated negotiation (e.g.
-		// queuing our own contribution while accepting their splice), so we only rule out our own.
+		// A splice queued here never coexists with a negotiation that includes a contribution of
+		// ours: we return early above if one is already in flight, and a queued action is cleared
+		// the moment it becomes our negotiation at quiescence. It may coexist with a
+		// counterparty-initiated negotiation we did not contribute to (e.g. queuing our own
+		// contribution while accepting their splice), so we only rule out our own.
 		debug_assert!(
 			self.pending_splice
 				.as_ref()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
-				.map_or(true, |funding_negotiation| !funding_negotiation.is_initiator()),
-			"A queued splice must not coexist with a funding negotiation we initiated",
+				.map_or(true, |pending_splice| !pending_splice.is_negotiating_our_contribution()),
+			"A queued splice must not coexist with a funding negotiation we contributed to",
 		);
 
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
