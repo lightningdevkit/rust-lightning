@@ -12853,16 +12853,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (err, splice_failure) = err.into_parts();
 		if let Some((splice_funding_failed, reason)) = splice_failure {
 			let pending_events = &mut self.pending_events.lock().unwrap();
-			pending_events.extend(
-				splice_negotiation_failed_events(
-					channel_id,
-					*counterparty_node_id,
-					user_channel_id,
-					splice_funding_failed,
-					reason,
-				)
-				.map(|event| (event, None)),
-			);
+			for splice_funding_failed in splice_funding_failed {
+				pending_events.extend(
+					splice_negotiation_failed_events(
+						channel_id,
+						*counterparty_node_id,
+						user_channel_id,
+						splice_funding_failed,
+						reason.clone(),
+					)
+					.map(|event| (event, None)),
+				);
+			}
 		}
 		MsgHandleErrInternal::from_chan_no_close(err, channel_id)
 	}
@@ -14299,7 +14301,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Ok(())
 						},
 						Err(err) => {
-							debug_assert!(err.splice_funding_failed.is_none());
+							debug_assert!(err.splice_funding_failed.is_empty());
 							Err(self.handle_interactive_tx_msg_err(
 								err,
 								msg.channel_id,

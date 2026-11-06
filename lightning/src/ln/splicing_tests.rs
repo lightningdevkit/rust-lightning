@@ -5347,12 +5347,26 @@ fn fail_queued_splice_during_counterparty_splice_on_channel_close() {
 /// be adjusted down to node 0's feerate, so it stays queued and node 1's earlier contribution is
 /// carried into node 0's round instead.
 ///
-/// Returns node 0's contribution, node 1's earlier contribution, node 1's queued bump, the pending
-/// splice transaction, and its funding script.
+#[cfg(test)]
+struct CarriedContributionRbf {
+	/// Node 0's contribution to the RBF round it initiated.
+	contribution_0: FundingContribution,
+	/// Node 1's contribution to the pending splice, carried into node 0's round.
+	carried_contribution: FundingContribution,
+	/// Node 1's fee bump, left queued behind node 0's round.
+	queued_bump: FundingContribution,
+	/// The pending splice transaction node 0's round replaces.
+	splice_tx: Transaction,
+	/// The funding script of the pending splice, reused by node 0's round.
+	new_funding_script: ScriptBuf,
+	/// Node 1's acknowledgement of node 0's RBF.
+	tx_ack_rbf: msgs::TxAckRbf,
+}
+
 #[cfg(test)]
 fn carry_contribution_into_counterparty_rbf_with_queued_bump<'a, 'b, 'c>(
 	nodes: &[Node<'a, 'b, 'c>], channel_id: ChannelId,
-) -> (FundingContribution, FundingContribution, FundingContribution, Transaction, ScriptBuf) {
+) -> CarriedContributionRbf {
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
 
@@ -5414,7 +5428,14 @@ fn carry_contribution_into_counterparty_rbf_with_queued_bump<'a, 'b, 'c>(
 	assert_eq!(candidates[2].status, SpliceCandidateStatus::WaitingOnQuiescence);
 	assert_eq!(candidates[2].contribution, Some(queued_bump.clone()));
 
-	(contribution_0, contribution_1, queued_bump, splice_tx, new_funding_script)
+	CarriedContributionRbf {
+		contribution_0,
+		carried_contribution: contribution_1,
+		queued_bump,
+		splice_tx,
+		new_funding_script,
+		tx_ack_rbf,
+	}
 }
 
 #[test]
@@ -5435,7 +5456,7 @@ fn fail_carried_and_queued_splice_contributions_on_channel_close() {
 	// fee bump when force closing.
 	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
-	let (_, carried_contribution, queued_bump, _, _) =
+	let CarriedContributionRbf { carried_contribution, queued_bump, .. } =
 		carry_contribution_into_counterparty_rbf_with_queued_bump(&nodes, channel_id);
 	// Node 0 starts constructing the transaction; that message is never delivered.
 	nodes[0].node.get_and_clear_pending_msg_events();
@@ -5501,6 +5522,134 @@ fn fail_carried_and_queued_splice_contributions_on_channel_close() {
 
 	check_closed_broadcast(&nodes[1], 1, true);
 	check_added_monitors(&nodes[1], 1);
+}
+
+#[test]
+fn cancel_funding_contributed_aborts_carried_contribution_and_queued_bump() {
+	// A counterparty-initiated RBF round can carry our earlier contribution while a fee bump of
+	// ours stays queued behind it. Cancelling once the round is ready for signing aborts the round
+	// and drops the queued bump, failing both, so that nothing of ours is left pending.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let CarriedContributionRbf {
+		contribution_0,
+		carried_contribution,
+		queued_bump,
+		splice_tx,
+		new_funding_script,
+		tx_ack_rbf,
+	} = carry_contribution_into_counterparty_rbf_with_queued_bump(&nodes, channel_id);
+
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		contribution_0.clone(),
+		Some(carried_contribution.clone()),
+		tx_ack_rbf.funding_output_contribution.unwrap(),
+		new_funding_script,
+	);
+
+	// Node 0 signs. Node 1 is asked to sign once it has node 0's commitment signature.
+	let event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = event
+	{
+		let partially_signed_tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+		nodes[0]
+			.node
+			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+			.unwrap();
+	} else {
+		unreachable!();
+	}
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	let commitment_signed = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
+		updates.commitment_signed[0].clone()
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	nodes[1].node.handle_commitment_signed(node_id_0, &commitment_signed);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	let _ = get_event!(nodes[1], Event::FundingTransactionReadyForSigning);
+
+	// Cancelling fails the carried contribution and the queued bump. The carried contribution
+	// reuses only what the pending splice committed to, so nothing of it is discarded; the bump
+	// releases the output it added.
+	nodes[1].node.cancel_funding_contributed(&channel_id, &node_id_0).unwrap();
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3, "{events:?}");
+	match &events[0] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::LocallyCanceled);
+			let contribution = contribution.as_ref().unwrap();
+			assert!(contribution.contributed_inputs().is_empty());
+			assert_eq!(
+				contribution.contribution().contributed_inputs().collect::<Vec<_>>(),
+				carried_contribution.contributed_inputs().collect::<Vec<_>>()
+			);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+	let bump_outputs = queued_bump
+		.reserved_outputs()
+		.map(|output| output.script_pubkey.clone())
+		.collect::<Vec<_>>();
+	assert_eq!(bump_outputs.len(), 1);
+	match &events[1] {
+		Event::DiscardFunding {
+			channel_id: cid,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(*cid, channel_id);
+			assert!(inputs.is_empty());
+			assert_eq!(*outputs, bump_outputs);
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+	match &events[2] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::LocallyCanceled);
+			assert_eq!(contribution.as_ref().unwrap().contribution(), &queued_bump);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+
+	// Only the pending splice remains on node 1, which may contribute again.
+	assert_no_queued_splice(&nodes[1], &channel_id);
+	let candidates = splice_candidates(&nodes[1], &channel_id);
+	assert_eq!(candidates.len(), 1, "{candidates:?}");
+	assert_eq!(candidate_txid(&candidates[0]), splice_tx.compute_txid());
+	assert!(nodes[1].node.splice_channel(&channel_id, &node_id_0).is_ok());
+
+	// Node 0's round is aborted as well.
+	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
+	let reason = NegotiationFailureReason::CounterpartyAborted {
+		msg: UntrustedString("Manually aborted funding negotiation".into()),
+	};
+	expect_splice_failed_events(&nodes[0], &channel_id, contribution_0, reason);
+	let tx_abort = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
+	let candidates = splice_candidates(&nodes[0], &channel_id);
+	assert_eq!(candidates.len(), 1, "{candidates:?}");
+	assert_eq!(candidate_txid(&candidates[0]), splice_tx.compute_txid());
 }
 
 #[test]
