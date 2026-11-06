@@ -3949,9 +3949,10 @@ pub enum SpliceContributionError {
 	/// No funded channel with the given `channel_id` exists with the given `counterparty_node_id`:
 	/// the channel was closed or never funded, or the ids are wrong. Nothing remains to splice.
 	ChannelUnavailable,
-	/// A contribution of ours is already queued or under negotiation on the channel. Wait for that
-	/// attempt to resolve, or cancel it with [`ChannelManager::cancel_funding_contributed`], before
-	/// obtaining a fresh [`FundingTemplate`].
+	/// A contribution of ours is already queued or under negotiation on the channel, whether we or
+	/// the counterparty initiated the round negotiating it. Wait for that attempt to resolve, or
+	/// cancel it with [`ChannelManager::cancel_funding_contributed`], before obtaining a fresh
+	/// [`FundingTemplate`].
 	ContributionPending,
 	/// The channel refused the contribution, ending the splice attempt before negotiation began.
 	/// The reason takes the place of the [`Event::SpliceNegotiationFailed`] emitted for attempts
@@ -5314,7 +5315,7 @@ impl<
 		}
 	}
 
-	/// Cancels an in-flight [`FundingContribution`].
+	/// Cancels every pending [`FundingContribution`] of ours on the channel.
 	///
 	/// This is primarily useful after receiving an [`Event::FundingTransactionReadyForSigning`] for
 	/// a [`FundingContribution`] you no longer wish to proceed with. This may be called for any
@@ -5322,13 +5323,20 @@ impl<
 	/// [`ChannelManager::funding_contributed`] call up until
 	/// [`ChannelManager::funding_transaction_signed`].
 	///
+	/// Each canceled contribution is reported with an [`Event::SpliceNegotiationFailed`] carrying
+	/// [`NegotiationFailureReason::LocallyCanceled`]. A round whose signatures were already sent
+	/// through [`ChannelManager::funding_transaction_signed`] can no longer be aborted; only a
+	/// contribution queued behind it is canceled.
+	///
 	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
-	/// `counterparty_node_id` is provided, or [`APIMisuseError`] otherwise with the error details.
-	/// As with [`ChannelManager::funding_transaction_signed`], either error may be returned simply
+	/// `counterparty_node_id` is provided, or [`APIMisuseError`] when there is no contribution of
+	/// ours to cancel, with the error details. As with
+	/// [`ChannelManager::funding_transaction_signed`], either error may be returned simply
 	/// because the funding negotiation failed while its
 	/// [`Event::FundingTransactionReadyForSigning`] was being handled.
 	///
 	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
+	/// [`NegotiationFailureReason::LocallyCanceled`]: events::NegotiationFailureReason::LocallyCanceled
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn cancel_funding_contributed(
