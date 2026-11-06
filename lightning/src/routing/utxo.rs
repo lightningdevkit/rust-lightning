@@ -513,7 +513,9 @@ impl PendingChecks {
 	/// messages already in-flight may still have to be handled for various reasons.
 	pub(super) fn too_many_checks_pending(&self) -> bool {
 		let mut pending_checks = self.internal.lock().unwrap();
-		if pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS {
+		if pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS
+			|| pending_checks.pending_states.len() > Self::MAX_PENDING_LOOKUPS
+		{
 			// If we have many channel checks pending, ensure we don't have any dangling checks
 			// (i.e. checks where the user told us they'd call back but drop'd the `UtxoFuture`
 			// instead) before we commit to applying backpressure.
@@ -523,6 +525,7 @@ impl PendingChecks {
 				!channels.is_empty()
 			});
 			pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS
+				|| pending_checks.pending_states.len() > Self::MAX_PENDING_LOOKUPS
 		} else {
 			false
 		}
@@ -1145,6 +1148,39 @@ mod tests {
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(!network_graph.pending_checks.too_many_checks_pending());
+	}
+
+	#[test]
+	fn test_checks_backpressure_same_scid_replacements() {
+		// Distinct announcements for the same SCID should not be able to bypass async lookup
+		// backpressure by replacing the single entry in the `channels` map.
+		let secp_ctx = Secp256k1::new();
+		let (chain_source, network_graph) = get_network();
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let mut futures = Vec::new();
+
+		for i in 0..=PendingChecks::MAX_PENDING_LOOKUPS {
+			let future = UtxoFuture::new(Arc::new(Notifier::new()));
+			futures.push(future.clone());
+			*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future);
+
+			let announcement = get_signed_channel_announcement(
+				|msg| msg.excess_data.push(i as u8),
+				node_1_privkey,
+				node_2_privkey,
+				&secp_ctx,
+			);
+			network_graph
+				.update_channel_from_announcement(&announcement, &Some(&chain_source))
+				.unwrap_err();
+		}
+
+		assert_eq!(
+			chain_source.get_utxo_call_count.load(Ordering::Relaxed),
+			1 + PendingChecks::MAX_PENDING_LOOKUPS
+		);
+		assert!(network_graph.pending_checks.too_many_checks_pending());
 	}
 
 	#[test]
