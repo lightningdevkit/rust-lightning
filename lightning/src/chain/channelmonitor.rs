@@ -224,8 +224,6 @@ pub(crate) fn htlc_monitor_event_id(
 	let mut engine = Sha256::engine();
 	0u8.write(&mut engine).unwrap();
 	htlc_id.write(&mut engine).unwrap();
-	// A claim and a failure of the same HTLC, or an on-chain and an off-chain resolution of it, must
-	// not share an ID, so that acking one never removes the other.
 	engine.input(&[is_claim as u8]);
 	engine.input(&[from_onchain as u8]);
 	monitor_event_id_from_engine(engine)
