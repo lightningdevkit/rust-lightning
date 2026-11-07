@@ -13825,7 +13825,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if let Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 				channel_funding_outpoint: _,
 				channel_id: ev_channel_id,
- 				counterparty_node_id: ev_counterparty_node_id,
+				counterparty_node_id: ev_counterparty_node_id,
 				monitor_event_source: _,
 			}) = action {
 				*ev_channel_id == channel_id && *ev_counterparty_node_id == counterparty_node_id
