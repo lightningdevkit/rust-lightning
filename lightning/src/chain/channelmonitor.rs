@@ -197,7 +197,7 @@ pub(super) fn monitor_event_id(event: &MonitorEvent) -> u128 {
 			return htlc_monitor_event_id(
 				htlc_id,
 				upd.payment_preimage.is_some(),
-				upd.from_onchain,
+				upd.update_originated_in_monitor,
 			);
 		},
 		MonitorEvent::HolderForceClosed(outpoint)
@@ -317,14 +317,14 @@ pub struct HTLCUpdate {
 	///
 	/// Also used to decide whether to persist this update's [`MonitorEvent::HTLCEvent`], since
 	/// off-chain HTLC events should not be persisted for LDK 0.3-.
-	pub(crate) from_onchain: bool,
+	pub(crate) update_originated_in_monitor: bool,
 }
 impl_ser_tlv_based!(HTLCUpdate, {
 	(0, payment_hash, required),
 	(1, htlc_value_satoshis, required),
 	(2, source, required),
 	(4, payment_preimage, option),
-	(11, from_onchain, (default_value, true)), // Added in 0.4
+	(11, update_originated_in_monitor, (default_value, true)), // Added in 0.4
 });
 
 /// If an output goes from claimable only by us to claimable by us or our counterparty within this
@@ -1768,7 +1768,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			.filter(|(_, ev)| match ev {
 				// LDK versions prior to 0.4 treat any `HTLCEvent` as an on-chain event, which may lead to
 				// incorrect behavior, so don't write off-chain `HTLCEvent`s for those versions.
-				MonitorEvent::HTLCEvent(upd) => upd.from_onchain,
+				MonitorEvent::HTLCEvent(upd) => upd.update_originated_in_monitor,
 				MonitorEvent::HolderForceClosed(_) => true,
 				MonitorEvent::HolderForceClosedWithInfo { .. } => true,
 				_ => false,
@@ -1780,7 +1780,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 		match event {
 			// LDK versions prior to 0.4 treat any `HTLCEvent` as an on-chain event, which may lead to
 			// incorrect behavior, so don't write off-chain `HTLCEvent`s for those versions.
-			MonitorEvent::HTLCEvent(upd) if !upd.from_onchain => {},
+			MonitorEvent::HTLCEvent(upd) if !upd.update_originated_in_monitor => {},
 			MonitorEvent::HTLCEvent(upd) => {
 				0u8.write(writer)?;
 				upd.write(writer)?;
@@ -1842,7 +1842,7 @@ pub(crate) fn write_chanmon_internal<Signer: EcdsaChannelSigner, W: Writer>(
 			// LDK versions prior to 0.4 treat any `HTLCEvent` as an on-chain event, which may lead to
 			// incorrect behavior, so don't write off-chain `HTLCEvent`s for those versions.
 			.filter(|ev| match ev {
-				MonitorEvent::HTLCEvent(upd) => upd.from_onchain,
+				MonitorEvent::HTLCEvent(upd) => upd.update_originated_in_monitor,
 				_ => true,
 			})
 			.chain(holder_force_closed_compat.as_ref()),
@@ -3996,7 +3996,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					payment_preimage: Some(*claimed_preimage),
 					source: *source.clone(),
 					htlc_value_satoshis: htlc.amount_msat / 1000,
-					from_onchain: false,
+					update_originated_in_monitor: false,
 				});
 				let event_id = monitor_event_id(&event);
 				// A replayed update must not queue the same event twice.
@@ -4767,8 +4767,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					htlc_value_satoshis,
 					// Even though the HTLC was originally failed off-chain, mark it as on-chain failed
 					// because the channel is now closed and we want LDK 0.3- to read this event (see
-					// `HTLCUpdate::from_onchain`).
-					from_onchain: true,
+					// `HTLCUpdate::update_originated_in_monitor`).
+					update_originated_in_monitor: true,
 				}),
 			);
 		}
@@ -4858,7 +4858,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source: source.clone(),
 						htlc_value_satoshis,
-						from_onchain: true,
+						update_originated_in_monitor: true,
 					}),
 				);
 				self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
@@ -6199,7 +6199,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						source,
 						htlc_value_satoshis,
-						from_onchain: true,
+						update_originated_in_monitor: true,
 					}));
 					self.htlcs_resolved_on_chain.push(IrrevocablyResolvedHTLC {
 						commitment_tx_output_idx,
@@ -6309,7 +6309,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: None,
 						payment_hash: htlc.payment_hash,
 						htlc_value_satoshis: htlc.amount_msat / 1000,
-						from_onchain: true,
+						update_originated_in_monitor: true,
 					}));
 				}
 			}
@@ -6814,7 +6814,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 						payment_preimage: Some(payment_preimage),
 						payment_hash,
 						htlc_value_satoshis: amount_msat / 1000,
-						from_onchain: true,
+						update_originated_in_monitor: true,
 					};
 					// Note that we compare the entire `HTLCUpdate` here when deciding whether the new event
 					// is a duplicate: this allows us to queue an on-chain HTLC update even if an off-chain

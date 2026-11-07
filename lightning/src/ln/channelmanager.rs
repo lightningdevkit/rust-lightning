@@ -14643,7 +14643,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Some(htlc_update.payment_hash),
 						);
 						if let Some(preimage) = htlc_update.payment_preimage {
-							let is_channel_closed = htlc_update.from_onchain
+							let is_channel_closed = htlc_update.update_originated_in_monitor
 								// This check is racy, but that's ok because the worst that can happen if the
 								// channel closes later on is that we've queued the wrong EventCompletionAction
 								// below, which could leave the payment dangling until the next restart.
@@ -14687,7 +14687,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 												funding_outpoint,
 												counterparty_node_id,
 												is_channel_closed,
-												htlc_update.from_onchain,
+												htlc_update.update_originated_in_monitor,
 											));
 									}
 								}
@@ -14706,7 +14706,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									preimage,
 									htlc_update.htlc_value_satoshis * 1000,
 									None,
-									htlc_update.from_onchain,
+									htlc_update.update_originated_in_monitor,
 									counterparty_node_id,
 									funding_outpoint,
 									channel_id,

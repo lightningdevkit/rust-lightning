@@ -3965,7 +3965,7 @@ fn test_onchain_claim_of_offchain_claimed_htlc_balance() {
 		_ => None,
 	}).collect();
 	assert_eq!(claims.len(), 2, "{unacked_events:?}");
-	assert_eq!(claims.iter().filter(|upd| upd.from_onchain).count(), 1);
+	assert_eq!(claims.iter().filter(|upd| upd.update_originated_in_monitor).count(), 1);
 
 	// Finally, process A's pending events. In addition to `PaymentSent` and `ChannelClosed`, the
 	// counterparty's on-chain claim must have resolved the payment's path even though the
