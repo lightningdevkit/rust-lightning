@@ -1758,8 +1758,6 @@ pub(crate) struct PaymentCompleteUpdate {
 	channel_funding_outpoint: OutPoint,
 	channel_id: ChannelId,
 	htlc_id: SentHTLCId,
-	/// The [`MonitorEvent`] which reported the HTLC resolution behind the event this action is
-	/// attached to, if any. It is acknowledged once the event has been handled.
 	monitor_event_source: Option<MonitorEventSource>,
 }
 
@@ -1778,8 +1776,6 @@ pub(crate) enum EventCompletionAction {
 		// Was required until LDK 0.2. Always filled in as `Some`.
 		channel_funding_outpoint: Option<OutPoint>,
 		channel_id: ChannelId,
-		/// The [`MonitorEvent`] which reported the HTLC resolution behind the event this action
-		/// is attached to, if any. It is acknowledged once the event has been handled.
 		monitor_event_source: Option<MonitorEventSource>,
 	},
 
@@ -1819,8 +1815,6 @@ impl EventCompletionAction {
 		}
 	}
 
-	/// The [`MonitorEvent`] to acknowledge once the event this action is attached to has been
-	/// handled, if any.
 	fn monitor_event_source(&self) -> Option<MonitorEventSource> {
 		match self {
 			Self::ReleaseRAAChannelMonitorUpdate { monitor_event_source, .. } => {
