@@ -2177,19 +2177,19 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
 }
 
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
-	tx: &Transaction, get_output: F,
+	tx: &Transaction, get_output: F, allow_nonstandard: bool,
 ) {
 	if tx.version == TxVersion::non_standard(3) {
-		assert!(tx.weight().to_wu() <= TRUC_MAX_WEIGHT);
+		assert!(allow_nonstandard || tx.weight().to_wu() <= TRUC_MAX_WEIGHT);
 	} else {
-		assert!(tx.weight().to_wu() <= MAX_STANDARD_TX_WEIGHT as u64);
+		assert!(allow_nonstandard || tx.weight().to_wu() <= MAX_STANDARD_TX_WEIGHT as u64);
 	}
 	let mut p2a_output_below_dust = false;
 	let mut has_p2a_output = false;
 	for outp in tx.output.iter() {
 		let is_p2a = outp.script_pubkey == crate::ln::chan_utils::shared_anchor_script_pubkey();
 		has_p2a_output |= is_p2a;
-		if outp.value < outp.script_pubkey.minimal_non_dust() {
+		if !allow_nonstandard && outp.value < outp.script_pubkey.minimal_non_dust() {
 			if p2a_output_below_dust || !is_p2a {
 				panic!("Spending tx output didn't meet dust limit");
 			}
@@ -2200,7 +2200,7 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	for input in tx.input.iter() {
 		let output = get_output(&input.previous_output).unwrap();
 		if output.script_pubkey == crate::ln::chan_utils::shared_anchor_script_pubkey() {
-			assert!(input.witness.is_empty());
+			assert!(allow_nonstandard || input.witness.is_empty());
 		}
 		total_value_in += output.value.to_sat();
 	}
@@ -2216,7 +2216,10 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	// 0FC commitment transactions will have their fee bumped by a child, so don't require that
 	// they meet the 1sat/vB minimum.
 	} else if !has_p2a_output {
-		let min_fee = (tx.weight().to_wu() as u64).div_ceil(4); // One sat per vbyte (ie per weight/4, rounded up)
+		let mut min_fee = (tx.weight().to_wu() as u64).div_ceil(4); // One sat per vbyte (ie per weight/4, rounded up)
+		if allow_nonstandard {
+			min_fee = 0;
+		}
 		assert!(total_value_out + min_fee <= total_value_in);
 	}
 	tx.verify(get_output).unwrap();
@@ -2225,6 +2228,9 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 #[macro_export]
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
+		$crate::check_spends!($tx, $($spends_txn),* ; allow_nonstandard: false)
+	};
+	($tx: expr, $($spends_txn: expr),*; allow_nonstandard: $allow_nonstandard: expr) => {
 		{
 			$(
 			let mut single_output_below_dust = false;
@@ -2246,9 +2252,9 @@ macro_rules! check_spends {
 				)*
 				None
 			};
-			$crate::ln::functional_test_utils::do_check_spends(&$tx, get_output);
+			$crate::ln::functional_test_utils::do_check_spends(&$tx, get_output, $allow_nonstandard);
 		}
-	}
+	};
 }
 
 pub fn get_closing_signed_broadcast(
