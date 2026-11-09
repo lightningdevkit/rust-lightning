@@ -21027,22 +21027,12 @@ impl<
 							} => {
 								if let Some(preimage) = preimage_opt {
 									let pending_events = Mutex::new(pending_events_read);
-									// The preimage may have been learned either on- or off-chain, so use
-									// the ID of whichever claim event is pending, if any. Otherwise, as
-									// the channel is closed, any later claim event will be from on-chain.
-									let event_id =
-										monitor.pending_claim_event_id(htlc_id).unwrap_or_else(
-											|| htlc_monitor_event_id(htlc_id, true, true),
-										);
 									let update = PaymentCompleteUpdate {
 										counterparty_node_id: monitor.get_counterparty_node_id(),
 										channel_funding_outpoint: monitor.get_funding_txo(),
 										channel_id: monitor.channel_id(),
 										htlc_id,
-										monitor_event_source: Some(MonitorEventSource {
-											event_id,
-											channel_id: monitor.channel_id(),
-										}),
+										monitor_event_source: None,
 									};
 									let mut compl_action = Some(
 									EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
