@@ -157,6 +157,148 @@ pub(crate) async fn do_test_data_migration_async<
 	}
 }
 
+// Restores read, write, and execute permissions on the given paths when dropped, so
+// that a test failing partway through does not leave inaccessible directories behind.
+#[cfg(not(target_os = "windows"))]
+pub(crate) struct RestorePermissions<'a, P: AsRef<std::path::Path>>(pub(crate) &'a [P]);
+
+#[cfg(not(target_os = "windows"))]
+impl<P: AsRef<std::path::Path>> Drop for RestorePermissions<'_, P> {
+	fn drop(&mut self) {
+		use std::fs;
+		use std::os::unix::fs::PermissionsExt;
+
+		for path in self.0 {
+			let _ = fs::set_permissions(path.as_ref(), fs::Permissions::from_mode(0o755));
+		}
+	}
+}
+
+// Check that listing a missing namespace succeeds with an empty result, while listing a
+// populated namespace, a non-directory namespace path, and a namespace that cannot be
+// looked up or enumerated behave as documented.
+pub(crate) fn do_list_error_propagation<K: KVStoreSync + MigratableKVStoreSync>(
+	kv_store: &K, data_dir: &std::path::Path,
+) {
+	use std::fs;
+
+	// A missing data directory or namespace lists as empty.
+	assert!(kv_store.list("missingprimary", "missingsecondary").unwrap().is_empty());
+	assert!(kv_store.list_all_keys().unwrap().is_empty());
+
+	// A populated namespace lists its keys through both listing paths.
+	kv_store.write("primary", "secondary", "key", vec![1]).unwrap();
+	assert_eq!(kv_store.list("primary", "secondary").unwrap(), vec!["key".to_string()]);
+	assert_eq!(
+		kv_store.list_all_keys().unwrap(),
+		vec![("primary".to_string(), "secondary".to_string(), "key".to_string())]
+	);
+
+	// A namespace path that is not a directory fails to list rather than listing as empty.
+	let primary_path = data_dir.join("notdirprimary");
+	fs::create_dir_all(&primary_path).unwrap();
+	fs::write(primary_path.join("notdirsecondary"), b"").unwrap();
+	kv_store.list("notdirprimary", "notdirsecondary").unwrap_err();
+
+	// A namespace whose lookup or enumeration fails fails to list rather than
+	// listing as empty. Windows ignores the read-only flag for directories, so
+	// this is Unix-only.
+	#[cfg(not(target_os = "windows"))]
+	{
+		use std::os::unix::fs::PermissionsExt;
+
+		let primary_path = data_dir.join("permprimary");
+		let secondary_path = primary_path.join("permsecondary");
+		kv_store.write("permprimary", "permsecondary", "key", vec![1]).unwrap();
+		let restore_paths = [&primary_path, &secondary_path];
+		let _restore_permissions = RestorePermissions(&restore_paths);
+
+		// With the primary namespace inaccessible, listing the secondary namespace
+		// fails to look the latter up.
+		fs::set_permissions(&primary_path, fs::Permissions::from_mode(0o0)).unwrap();
+		if fs::read_dir(&secondary_path).is_ok() {
+			// The effective privileges (e.g., running as root) bypass the permission
+			// check, so the failure case cannot be exercised; restore access and skip it.
+			fs::set_permissions(&primary_path, fs::Permissions::from_mode(0o755)).unwrap();
+		} else {
+			kv_store.list("permprimary", "permsecondary").unwrap_err();
+
+			// With the secondary namespace itself inaccessible, enumerating it fails,
+			// both when listing it directly and as part of listing all keys.
+			fs::set_permissions(&primary_path, fs::Permissions::from_mode(0o755)).unwrap();
+			fs::set_permissions(&secondary_path, fs::Permissions::from_mode(0o0)).unwrap();
+			kv_store.list("permprimary", "permsecondary").unwrap_err();
+			kv_store.list_all_keys().unwrap_err();
+
+			fs::set_permissions(&secondary_path, fs::Permissions::from_mode(0o755)).unwrap();
+			assert!(kv_store.list("permprimary", "permsecondary").is_ok());
+			assert!(kv_store.list_all_keys().is_ok());
+		}
+	}
+}
+
+#[cfg(feature = "tokio")]
+pub(crate) async fn do_list_error_propagation_async<K: lightning::util::persist::KVStore>(
+	kv_store: &K, data_dir: &std::path::Path,
+) {
+	use lightning::util::persist::KVStore;
+	use std::fs;
+
+	// A missing data directory or namespace lists as empty.
+	assert!(KVStore::list(kv_store, "missingprimary", "missingsecondary")
+		.await
+		.unwrap()
+		.is_empty());
+
+	// A populated namespace lists its keys.
+	KVStore::write(kv_store, "primary", "secondary", "key", vec![1]).await.unwrap();
+	assert_eq!(
+		KVStore::list(kv_store, "primary", "secondary").await.unwrap(),
+		vec!["key".to_string()]
+	);
+
+	// A namespace path that is not a directory fails to list rather than listing as empty.
+	let primary_path = data_dir.join("notdirprimaryasync");
+	fs::create_dir_all(&primary_path).unwrap();
+	fs::write(primary_path.join("notdirsecondary"), b"").unwrap();
+	KVStore::list(kv_store, "notdirprimaryasync", "notdirsecondary").await.unwrap_err();
+
+	// A namespace whose lookup or enumeration fails fails to list rather than
+	// listing as empty. Windows ignores the read-only flag for directories, so
+	// this is Unix-only.
+	#[cfg(not(target_os = "windows"))]
+	{
+		use std::os::unix::fs::PermissionsExt;
+
+		let primary_path = data_dir.join("permprimaryasync");
+		let secondary_path = primary_path.join("permsecondary");
+		KVStore::write(kv_store, "permprimaryasync", "permsecondary", "key", vec![1])
+			.await
+			.unwrap();
+		let restore_paths = [&primary_path, &secondary_path];
+		let _restore_permissions = RestorePermissions(&restore_paths);
+
+		// With the primary namespace inaccessible, listing the secondary namespace
+		// fails to look the latter up.
+		fs::set_permissions(&primary_path, fs::Permissions::from_mode(0o0)).unwrap();
+		if fs::read_dir(&secondary_path).is_ok() {
+			// The effective privileges (e.g., running as root) bypass the permission
+			// check, so the failure case cannot be exercised; restore access and skip it.
+			fs::set_permissions(&primary_path, fs::Permissions::from_mode(0o755)).unwrap();
+		} else {
+			KVStore::list(kv_store, "permprimaryasync", "permsecondary").await.unwrap_err();
+
+			// With the secondary namespace itself inaccessible, enumerating it fails.
+			fs::set_permissions(&primary_path, fs::Permissions::from_mode(0o755)).unwrap();
+			fs::set_permissions(&secondary_path, fs::Permissions::from_mode(0o0)).unwrap();
+			KVStore::list(kv_store, "permprimaryasync", "permsecondary").await.unwrap_err();
+
+			fs::set_permissions(&secondary_path, fs::Permissions::from_mode(0o755)).unwrap();
+			assert!(KVStore::list(kv_store, "permprimaryasync", "permsecondary").await.is_ok());
+		}
+	}
+}
+
 // Integration-test the given KVStore implementation. Test relaying a few payments and check that
 // the persisted data is updated the appropriate number of times.
 pub(crate) fn do_test_store<K: KVStoreSync + Sync>(store_0: &K, store_1: &K) {

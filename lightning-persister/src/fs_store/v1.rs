@@ -110,7 +110,8 @@ mod tests {
 	#[cfg(feature = "tokio")]
 	use crate::test_utils::do_test_data_migration_async;
 	use crate::test_utils::{
-		do_read_write_remove_list_persist, do_test_data_migration, do_test_store,
+		do_list_error_propagation, do_read_write_remove_list_persist, do_test_data_migration,
+		do_test_store,
 	};
 
 	use lightning::chain::chainmonitor::Persist;
@@ -199,6 +200,33 @@ mod tests {
 	}
 
 	#[test]
+	fn list_error_propagation() {
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_list_error_propagation");
+		let fs_store = FilesystemStore::new(temp_path.clone());
+		do_list_error_propagation(&fs_store, &temp_path);
+	}
+
+	#[cfg(feature = "tokio")]
+	#[tokio::test]
+	async fn list_error_propagation_async() {
+		use crate::test_utils::do_list_error_propagation_async;
+		use lightning::util::persist::KVStore;
+
+		let mut temp_path = std::env::temp_dir();
+		temp_path.push("test_list_error_propagation_async");
+		let fs_store = FilesystemStore::new(temp_path.clone());
+
+		// A missing data directory or namespace lists as empty.
+		assert!(KVStore::list(&fs_store, "missingprimary", "missingsecondary")
+			.await
+			.unwrap()
+			.is_empty());
+
+		do_list_error_propagation_async(&fs_store, &temp_path).await;
+	}
+
+	#[test]
 	fn list_all_keys_skips_leftover_store_artifacts() {
 		let mut temp_path = std::env::temp_dir();
 		temp_path.push("test_list_all_keys_skips_leftover_store_artifacts");
@@ -275,6 +303,76 @@ mod tests {
 		assert!(
 			read_channel_monitors(&store, nodes[0].keys_manager, nodes[0].keys_manager).is_err()
 		);
+	}
+
+	// Test that recovery of a stored monitor propagates a failure to enumerate its
+	// stored updates, rather than treating the namespace as empty and silently
+	// recovering an outdated monitor. Windows ignores the read-only flag for
+	// directories, so this test is Unix-only.
+	#[cfg(not(target_os = "windows"))]
+	#[test]
+	fn monitor_recovery_fails_when_update_listing_fails() {
+		use lightning::util::persist::MonitorUpdatingPersister;
+		use std::os::unix::fs::PermissionsExt;
+
+		// Use a path in the system temporary directory, so that a failure partway
+		// through this test does not leave a directory with restricted permissions
+		// behind in the working tree.
+		let mut data_dir = std::env::temp_dir();
+		data_dir.push("test_monitor_recovery_update_listing_failure");
+		let store = FilesystemStore::new(data_dir);
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let persister = MonitorUpdatingPersister::new(
+			&store,
+			&chanmon_cfgs[0].logger,
+			11,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			node_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+		// The stored monitor recovers, applying its stored differential updates.
+		let monitors = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(monitors.len(), 1);
+		let latest_update_id = monitors[0].1.get_latest_update_id();
+		assert!(latest_update_id > 0);
+		let monitor_key = monitors[0].1.persistence_key().to_string();
+
+		// The base monitor remains readable, but looking up the namespace holding its
+		// stored updates fails, which recovery must propagate rather than treat as an
+		// empty update list.
+		let updates_path = store.get_data_dir().join("monitor_updates");
+		let restore_paths = [&updates_path];
+		let _restore_permissions = crate::test_utils::RestorePermissions(&restore_paths);
+		fs::set_permissions(&updates_path, fs::Permissions::from_mode(0o0)).unwrap();
+		if fs::read_dir(updates_path.join(&monitor_key)).is_ok() {
+			// The effective privileges (e.g., running as root) bypass the permission
+			// check, so the failure case cannot be exercised; restore access and skip it.
+			fs::set_permissions(&updates_path, fs::Permissions::from_mode(0o755)).unwrap();
+			return;
+		}
+		assert!(persister.read_all_channel_monitors_with_updates().is_err());
+
+		// With access restored, recovery again succeeds and applies the updates.
+		fs::set_permissions(&updates_path, fs::Permissions::from_mode(0o755)).unwrap();
+		let monitors = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(monitors[0].1.get_latest_update_id(), latest_update_id);
 	}
 
 	#[test]
