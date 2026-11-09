@@ -14980,6 +14980,7 @@ fn test_zero_conf_splice_stays_locked_when_unconfirmed() {
 	do_test_zero_conf_splice_stays_locked_when_unconfirmed(true);
 }
 
+#[cfg(test)]
 fn do_test_zero_conf_splice_stays_locked_when_unconfirmed(reorg_via_block_disconnection: bool) {
 	// On a zero-conf channel we send `splice_locked` as soon as the splice is signed, without
 	// waiting for it to confirm. If the splice then confirms but is reorged out while the
