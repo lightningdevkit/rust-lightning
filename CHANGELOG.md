@@ -1,3 +1,68 @@
+# 0.2.8 - XXX, 2026 - "Rising Tide"
+
+## API Updates
+ * `RouteHop::maybe_announced_channel` is now `false` for route hint hops which
+   do not match a known public channel, even if the hop's endpoints share a
+   public channel (#5503).
+
+## Bug Fixes
+ * A malicious counterparty can no longer cause us to broadcast an invalid
+   cooperative close transaction, avoiding the need to manually broadcast the
+   latest state via the `ChannelMonitor` (#5507, #5532).
+ * `ChannelMonitor` now better avoids attempting to claim HTLC outputs which
+   have already been spent on-chain, avoiding attempts at double-spends or
+   spurious `Event::BumpTransaction`s (#5501).
+ * Payments to one-hop blinded paths terminating with CLN nodes no longer fail
+   due to incorrect CLTV expiry (#5126).
+ * A memory leak in the synchronous `BackgroundProcessor` was fixed (#5508).
+ * Paying a malicious BOLT 11 invoice can no longer cause us to remove a public
+   channel from the network graph until restart (#5503).
+ * If a node restarts while a channel is cooperatively closing with remaining
+   pending inbound HTLC(s), the HTLC(s) can now be correctly failed, avoiding
+   force-closure (#5080).
+ * Dropping the `ChannelManager::process_pending_events_async` future no longer
+   results in later event processing calls being spuriously ignored (#5264).
+ * SCID aliases now more durably avoid collisions with the real SCIDs, fixing a
+   very rare panic and `ChannelManager` deserialization failure (#5070).
+ * BOLT 11 invoices with an amount of >= 18,446,745 BTC and no SI prefix are now
+   rejected, rather than being treated as though they had no amount (#5338).
+ * `AnchorDescriptor::tx_input_witness` now returns an empty witness for
+   zero-fee-commitment channels, as anything else is non-standard (#5510).
+ * `PeerManager` now cooperates with the gossip validator to more strictly limit
+   the number of in-flight gossip validation requests (#5526).
+ * `PeerManager` now more robustly limits its per-peer message queues (#5241).
+ * `FilesystemStore` better handles I/O errors in list operations (#5270).
+ * Serialized `UnsignedInvoiceRequest` and `UnsignedBolt12Invoice` now
+   include experimental TLVs (#5291).
+ * `Bolt11Invoice`s which differ only in the signature's recovery ID, and thus
+   in the recovered payee, no longer compare as equal via `Ord` (#5516).
+
+## Security
+0.2.8 fixes XXX
+
+ * A channel counterparty which sends a spurious cooperative close signing
+   message while a channel fee update remains pending can no longer cause LDK to
+   spuriously panic (#5533).
+ * A channel counterparty which claims on-chain HTLCs with non-minimal witnesses
+   can no longer cause LDK to spuriously panic (#5531).
+ * A counterparty which reuses a previous funding outpoint can no longer cause
+   LDK to panic when using the `MonitorUpdatingPersister` (#5540).
+ * A malicious node with access to an LSPS2 JIT client's invoice can no longer
+   cause LDK's LSPS2 JIT service to panic with a divide-by-zero (#5538).
+ * A malicious node with access to an LSPS2 JIT client's invoice can no longer
+   cause LDK's LSPS2 JIT service to fail to open a channel (#5524).
+ * A channel counterparty sending redundant `announcement_signatures` messages
+   can no longer cause a blowup in our outbound bandwidth utilization,
+   potentially leading to DoS (#5529).
+ * A channel counterparty which has two channels with us and sends us an MPP
+   payment over both can no longer cause `ChannelManager` to panic on
+   deserialization after one of the channels has been archived (#5528).
+
+Thanks to Project Loupe, Anthropic's OSS Scanner, Erick Cestari, Matt Morehouse,
+Martin Saposnic, and Dickson Wu for reporting issues fixed in this release, some
+of them duplicatively.
+
+
 # 0.2.7 - Oct 1, 2026 - "LLMs vs Fuzzers"
 
 ## Bug Fixes
