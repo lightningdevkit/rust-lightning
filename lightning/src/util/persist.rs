@@ -126,6 +126,10 @@ pub const OUTPUT_SWEEPER_PERSISTENCE_KEY: &str = "output_sweeper";
 /// updates applied to be current) with another implementation.
 pub const MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL: &[u8] = &[0xFF; 2];
 
+/// The maximum number of stale monitor update removals a single
+/// `cleanup_stale_updates_for_monitor_to` call will issue in parallel.
+const MAX_PARALLEL_REMOVES: usize = 50;
+
 /// Provides an interface that allows storage and retrieval of persisted values that are associated
 /// with given keys.
 ///
@@ -1611,12 +1615,23 @@ impl<
 	) -> Result<(), io::Error> {
 		let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
 		let updates = self.kv_store.list(primary, monitor_key).await?;
+		let mut remove_futures = Vec::with_capacity(MAX_PARALLEL_REMOVES);
 		for update in updates {
 			let update_name = UpdateName::new(update)?;
 			// if the update_id is lower than the stored monitor, delete
 			if update_name.0 <= latest_update_id {
-				self.kv_store.remove(primary, monitor_key, update_name.as_str(), lazy).await?;
+				remove_futures.push(ResultFuture::Pending(Box::pin(async move {
+					self.kv_store.remove(primary, monitor_key, update_name.as_str(), lazy).await
+				})));
+				if remove_futures.len() == MAX_PARALLEL_REMOVES {
+					for res in MultiResultFuturePoller::new(mem::take(&mut remove_futures)).await {
+						res?;
+					}
+				}
 			}
+		}
+		for res in MultiResultFuturePoller::new(remove_futures).await {
+			res?;
 		}
 		Ok(())
 	}
