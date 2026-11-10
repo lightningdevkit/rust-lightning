@@ -1078,6 +1078,7 @@ where
 	) -> Result<(), APIError> {
 		let event_queue_notifier = self.pending_events.notifier();
 		let mut should_persist = None;
+		let mut forward_result = Ok(());
 
 		if let Some(counterparty_node_id) =
 			self.peer_by_intercept_scid.read().unwrap().get(&intercept_scid)
@@ -1141,30 +1142,21 @@ where
 								event_queue_notifier.enqueue(event);
 							},
 							Ok(Some(HTLCInterceptedAction::ForwardHTLC(channel_id))) => {
-								self.channel_manager.get_cm().forward_intercepted_htlc(
-									intercept_id,
+								forward_result = self.forward_htlcs(
+									counterparty_node_id,
 									&channel_id,
-									*counterparty_node_id,
-									expected_outbound_amount_msat,
-								)?;
+									[(intercept_id, expected_outbound_amount_msat)],
+								);
 							},
 							Ok(Some(HTLCInterceptedAction::ForwardPayment(
 								channel_id,
-								FeePayment { opening_fee_msat, htlcs },
+								fee_payment,
 							))) => {
-								let amounts_to_forward_msat =
-									calculate_amount_to_forward_per_htlc(&htlcs, opening_fee_msat);
-
-								for (intercept_id, amount_to_forward_msat) in
-									amounts_to_forward_msat
-								{
-									self.channel_manager.get_cm().forward_intercepted_htlc(
-										intercept_id,
-										&channel_id,
-										*counterparty_node_id,
-										amount_to_forward_msat,
-									)?;
-								}
+								forward_result = self.forward_fee_payment(
+									counterparty_node_id,
+									jit_channel,
+									ForwardPaymentAction(channel_id, fee_payment),
+								);
 							},
 							Ok(None) => {},
 							Err(e) => {
@@ -1205,7 +1197,7 @@ where
 			})?;
 		}
 
-		Ok(())
+		forward_result
 	}
 
 	/// Forward [`Event::HTLCHandlingFailed`] event parameter into this function.
@@ -1222,6 +1214,7 @@ where
 		&self, failure_type: HTLCHandlingFailureType,
 	) -> Result<(), APIError> {
 		let mut should_persist = None;
+		let mut forward_result = Ok(());
 		// The failure names the intercept scid but not the HTLC, so only the HTLCs the channel
 		// manager no longer holds are dropped. Several payments, each split over several HTLCs,
 		// share one intercept scid, and a failure on that scid says nothing about the rest of them.
@@ -1265,32 +1258,16 @@ where
 								.get_mut(&intercept_scid)
 							{
 								match jit_channel.htlc_handling_failed() {
-									Ok(Some(ForwardPaymentAction(
-										channel_id,
-										FeePayment { opening_fee_msat, htlcs },
-									))) => {
-										let amounts_to_forward_msat =
-											calculate_amount_to_forward_per_htlc(
-												&htlcs,
-												opening_fee_msat,
-											);
-
-										for (intercept_id, amount_to_forward_msat) in
-											amounts_to_forward_msat
-										{
-											self.channel_manager
-												.get_cm()
-												.forward_intercepted_htlc(
-													intercept_id,
-													&channel_id,
-													*counterparty_node_id,
-													amount_to_forward_msat,
-												)?;
-										}
+									Ok(Some(forward_payment)) => {
+										forward_result = self.forward_fee_payment(
+											counterparty_node_id,
+											jit_channel,
+											forward_payment,
+										);
 									},
 									Ok(None) => {},
 									Err(e) => {
-										return Err(APIError::APIMisuseError {
+										forward_result = Err(APIError::APIMisuseError {
 											err: format!("Unable to fail HTLC: {}.", e.err),
 										});
 									},
@@ -1315,7 +1292,7 @@ where
 			})?;
 		}
 
-		Ok(())
+		forward_result
 	}
 
 	/// Forward [`Event::PaymentForwarded`] event parameter into this function.
@@ -1612,6 +1589,7 @@ where
 		&self, user_channel_id: u128, channel_id: &ChannelId, counterparty_node_id: &PublicKey,
 	) -> Result<(), APIError> {
 		let mut should_persist = false;
+		let mut forward_result = Ok(());
 		{
 			let mut peer_by_channel_id = self.peer_by_channel_id.write().unwrap();
 			peer_by_channel_id.insert(*channel_id, *counterparty_node_id);
@@ -1628,23 +1606,12 @@ where
 						peer_state.outbound_channels_by_intercept_scid.get_mut(&intercept_scid)
 					{
 						match jit_channel.channel_ready(*channel_id) {
-							Ok(Some(ForwardPaymentAction(
-								channel_id,
-								FeePayment { opening_fee_msat, htlcs },
-							))) => {
-								let amounts_to_forward_msat =
-									calculate_amount_to_forward_per_htlc(&htlcs, opening_fee_msat);
-
-								for (intercept_id, amount_to_forward_msat) in
-									amounts_to_forward_msat
-								{
-									self.channel_manager.get_cm().forward_intercepted_htlc(
-										intercept_id,
-										&channel_id,
-										*counterparty_node_id,
-										amount_to_forward_msat,
-									)?;
-								}
+							Ok(Some(forward_payment)) => {
+								forward_result = self.forward_fee_payment(
+									counterparty_node_id,
+									jit_channel,
+									forward_payment,
+								);
 							},
 							Ok(None) => {},
 							Err(e) => {
@@ -1692,7 +1659,63 @@ where
 			})?;
 		}
 
+		forward_result
+	}
+
+	/// Forwards the given intercepted HTLCs over `channel_id`, in order. If one of them cannot be
+	/// forwarded, it and all the ones after it are failed back right away instead of being held
+	/// until they time out.
+	fn forward_htlcs(
+		&self, counterparty_node_id: &PublicKey, channel_id: &ChannelId,
+		htlcs: impl IntoIterator<Item = (InterceptId, u64)>,
+	) -> Result<(), APIError> {
+		let channel_manager = self.channel_manager.get_cm();
+		let mut htlcs = htlcs.into_iter();
+		while let Some((intercept_id, amount_to_forward_msat)) = htlcs.next() {
+			if let Err(e) = channel_manager.forward_intercepted_htlc(
+				intercept_id,
+				channel_id,
+				*counterparty_node_id,
+				amount_to_forward_msat,
+			) {
+				// An HTLC that is no longer held has already been failed back.
+				let _ = channel_manager.fail_intercepted_htlc(intercept_id);
+				for (intercept_id, _) in htlcs {
+					let _ = channel_manager.fail_intercepted_htlc(intercept_id);
+				}
+				return Err(e);
+			}
+		}
 		Ok(())
+	}
+
+	/// Forwards a payment while skimming the opening fee from it. A payment that cannot be
+	/// forwarded will never resolve, so it is treated as having failed and the next payment that
+	/// is ready to pay the fee is forwarded in its place. Returns the first forwarding error.
+	fn forward_fee_payment(
+		&self, counterparty_node_id: &PublicKey, jit_channel: &mut OutboundJITChannel,
+		forward_payment: ForwardPaymentAction,
+	) -> Result<(), APIError> {
+		let mut result = Ok(());
+		let mut next_payment = Some(forward_payment);
+		while let Some(ForwardPaymentAction(channel_id, FeePayment { opening_fee_msat, htlcs })) =
+			next_payment.take()
+		{
+			let amounts_to_forward_msat =
+				calculate_amount_to_forward_per_htlc(&htlcs, opening_fee_msat);
+			if let Err(e) =
+				self.forward_htlcs(counterparty_node_id, &channel_id, amounts_to_forward_msat)
+			{
+				if result.is_ok() {
+					result = Err(e);
+				}
+				next_payment =
+					jit_channel.htlc_handling_failed().map_err(|e| APIError::APIMisuseError {
+						err: format!("Unable to fail unforwardable payment: {}", e.err),
+					})?;
+			}
+		}
+		result
 	}
 
 	fn handle_get_info_request(

@@ -3156,6 +3156,222 @@ fn client_trusts_lsp_end_to_end_test() {
 	expect_payment_sent(&payer_node, preimage.unwrap(), Some(total_fee_msat), true, true);
 }
 
+/// Forwarding the fee payment can fail after the JIT channel became ready, e.g. because a held
+/// HTLC already timed out at the channel manager by the time we learn that the channel is ready.
+/// The payment must then be treated as failed rather than vanish from the JIT channel's state, so
+/// that the next attempt to pay can still complete over the channel.
+#[test]
+fn failed_fee_payment_forward_releases_held_htlcs() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+
+	let mut client_node_config = test_default_channel_config();
+	client_node_config.channel_config.accept_underpaying_htlcs = true;
+
+	let node_chanmgrs = create_node_chanmgrs(
+		3,
+		&node_cfgs,
+		&[Some(service_node_config), Some(client_node_config), None],
+	);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 42;
+	let cltv_expiry_delta: u32 = 144;
+	let payment_size_msat = Some(1_000_000);
+	let fee_base_msat = 1000;
+
+	execute_lsps2_dance(
+		&service_node,
+		&client_node,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+		128,
+	);
+
+	let invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"pay-again-after-forward-failure",
+		3600,
+	)
+	.unwrap();
+
+	let pay_invoice = |payment_id: PaymentId| {
+		let mut params = OptionalBolt11PaymentParams::default();
+		params.retry_strategy = Retry::Attempts(0);
+		payer_node.node.pay_for_bolt11_invoice(&invoice, payment_id, None, params).unwrap();
+		check_added_monitors(&payer_node, 1);
+		let mut events = payer_node.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		let ev = SendEvent::from_event(events.remove(0));
+
+		service_node.inner.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+		do_commitment_signed_dance(
+			&service_node.inner,
+			&payer_node,
+			&ev.commitment_msg,
+			false,
+			true,
+		);
+		service_node.inner.node.process_pending_htlc_forwards();
+
+		let events = service_node.inner.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match &events[0] {
+			Event::HTLCIntercepted {
+				intercept_id,
+				requested_next_hop_scid,
+				payment_hash,
+				expected_outbound_amount_msat,
+				inbound_amount_msat,
+				..
+			} => {
+				assert_eq!(*requested_next_hop_scid, intercept_scid);
+				service_handler
+					.htlc_intercepted(
+						*requested_next_hop_scid,
+						*intercept_id,
+						*expected_outbound_amount_msat,
+						*payment_hash,
+						*inbound_amount_msat,
+					)
+					.unwrap();
+				(*intercept_id, *payment_hash, *expected_outbound_amount_msat)
+			},
+			other => panic!("Expected HTLCIntercepted event, got: {:?}", other),
+		}
+	};
+
+	let first_payment_id = PaymentId([1; 32]);
+	let (intercept_id, payment_hash, expected_outbound_amount_msat) = pay_invoice(first_payment_id);
+
+	match service_node.liquidity_manager.next_event().unwrap() {
+		LiquidityEvent::LSPS2Service(LSPS2ServiceEvent::OpenChannel { .. }) => {},
+		other => panic!("Expected OpenChannel event, got: {:?}", other),
+	};
+
+	let (channel_id, _funding_tx) = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		&expected_outbound_amount_msat,
+		true,
+	);
+
+	// The channel open took so long that the channel manager times out the held HTLC and fails
+	// it back on its own. We learn of the channel becoming ready before we get to process that
+	// failure, so the JIT channel still believes the HTLC to be held when it tries to forward it.
+	let mut timed_out = false;
+	for _ in 0..200 {
+		connect_blocks(&service_node.inner, 1);
+		connect_blocks(&client_node.inner, 1);
+		connect_blocks(&payer_node, 1);
+		let events = service_node.inner.node.get_and_clear_pending_events();
+		if events.is_empty() {
+			continue;
+		}
+		assert_eq!(events.len(), 1, "{:?}", events);
+		match &events[0] {
+			Event::HTLCHandlingFailed {
+				failure_type: HTLCHandlingFailureType::InvalidForward { requested_forward_scid },
+				..
+			} => {
+				assert_eq!(*requested_forward_scid, intercept_scid);
+			},
+			other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+		}
+		timed_out = true;
+		break;
+	}
+	assert!(timed_out, "The held HTLC must time out at the channel manager");
+	assert!(!service_node.inner.node.is_intercepted_htlc_pending(intercept_id));
+
+	let result = service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id);
+	assert!(result.is_err(), "Failing to forward the fee payment must be reported");
+	assert!(service_node.inner.node.get_and_clear_pending_events().is_empty());
+
+	// The failure reaches the payer ...
+	service_node.inner.node.process_pending_htlc_forwards();
+	let updates = get_htlc_update_msgs(&service_node.inner, &payer_node_id);
+	check_added_monitors(&service_node.inner, 1);
+	assert_eq!(updates.update_fail_htlcs.len(), 1);
+	payer_node.node.handle_update_fail_htlc(service_node_id, &updates.update_fail_htlcs[0]);
+	do_commitment_signed_dance(
+		&payer_node,
+		&service_node.inner,
+		&updates.commitment_signed,
+		false,
+		true,
+	);
+	let events = payer_node.node.get_and_clear_pending_events();
+	assert!(
+		events.iter().any(|ev| matches!(ev,
+			Event::PaymentFailed { payment_id, .. } if *payment_id == first_payment_id)),
+		"Expected the first payment to fail, got {:?}",
+		events
+	);
+
+	// ... which pays again. The new attempt is forwarded over the channel that is already open,
+	// rather than queued behind a fee payment that is no longer in flight.
+	let (_, second_payment_hash, _) = pay_invoice(PaymentId([2; 32]));
+	assert_eq!(second_payment_hash, payment_hash);
+	assert!(service_node.liquidity_manager.next_event().is_none());
+
+	service_node.inner.node.process_pending_htlc_forwards();
+	let pay_event = {
+		{
+			let mut added_monitors =
+				service_node.inner.chain_monitor.added_monitors.lock().unwrap();
+			assert_eq!(added_monitors.len(), 1, "The new payment must be forwarded");
+			added_monitors.clear();
+		}
+		let mut events = service_node.inner.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1);
+		SendEvent::from_event(events.remove(0))
+	};
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::PaymentClaimable { payment_hash: ph, amount_msat, .. } => {
+			assert_eq!(*ph, payment_hash);
+			assert_eq!(*amount_msat, payment_size_msat.unwrap() - fee_base_msat);
+		},
+		other => panic!("Expected PaymentClaimable event on client, got: {:?}", other),
+	};
+}
+
 // Checks that the negotiated `max_client_to_self_delay` carried by the `OpenChannel` event is
 // enforced when applied to `create_channel`'s handshake limits: a client `accept_channel` delay
 // above the negotiated maximum is rejected even when below the operator's global limit, a
