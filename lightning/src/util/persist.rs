@@ -1173,6 +1173,10 @@ where
 	///
 	/// Loading a large number of monitors will be faster if done in parallel. You can use this
 	/// function to accomplish this. Take care to limit the number of parallel readers.
+	///
+	/// Note that this is not sufficient to use on startup: stale updates stored for keys whose
+	/// monitor has been archived are only removed by
+	/// [`MonitorUpdatingPersister::read_all_channel_monitors_with_updates`].
 	pub fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
 	) -> Result<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
@@ -1390,8 +1394,11 @@ impl<
 	///
 	/// For v2 channels, the hex-encoded [`ChannelId`] is used directly for `monitor_key` instead.
 	///
-	/// Loading a large number of monitors will be faster if done in parallel. You can use this
-	/// function to accomplish this. Take care to limit the number of parallel readers.
+	/// Note that this is not sufficient to use on startup: stale updates stored for keys whose
+	/// monitor has been archived are only removed by
+	/// [`Self::read_all_channel_monitors_with_updates`], which also parallelizes reads across
+	/// monitors, making it the preferred way to load a large number of monitors. This method is
+	/// mostly useful as a utility for reading a single monitor.
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
 	) -> Result<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
