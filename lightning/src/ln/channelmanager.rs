@@ -18339,9 +18339,16 @@ where
 							}
 						}
 
-						let mut channels_without_preimage = payment_claim
-							.mpp_parts
-							.iter()
+						// A part's channel may have been closed and its `ChannelMonitor` archived
+						// since the claim was stored, in which case its HTLCs were fully resolved
+						// on-chain prior to archival. There is thus nothing left to claim against,
+						// and no `ChannelMonitorUpdate` ID to build an update with, so we skip such
+						// parts entirely.
+						let claim_parts = payment_claim.mpp_parts.iter().filter(|htlc_info| {
+							args.channel_monitors.contains_key(&htlc_info.channel_id)
+						});
+						let mut channels_without_preimage = claim_parts
+							.clone()
 							.map(|htlc_info| (htlc_info.counterparty_node_id, htlc_info.channel_id))
 							.collect::<Vec<_>>();
 						// If we have multiple MPP parts which were received over the same channel,
@@ -18391,7 +18398,7 @@ where
 							}
 						}
 
-						for part in payment_claim.mpp_parts.iter() {
+						for part in claim_parts {
 							let pending_mpp_claim = pending_claim_ptr_opt.as_ref().map(|ptr| {
 								(
 									part.counterparty_node_id,

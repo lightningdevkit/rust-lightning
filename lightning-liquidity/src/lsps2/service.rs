@@ -986,7 +986,8 @@ where
 	/// Will do nothing if the intercept scid does not match any of the ones we gave out.
 	///
 	/// Will fail the intercepted HTLC if the payer asked us to forward more than the HTLC
-	/// delivered, or if it is no longer pending and what it delivered is therefore unknown.
+	/// delivered, if it asked us to forward zero, or if it is no longer pending and what it
+	/// delivered is therefore unknown.
 	///
 	/// [`Event::HTLCIntercepted`]: lightning::events::Event::HTLCIntercepted
 	/// [`LSPS2ServiceEvent::OpenChannel`]: crate::lsps2::event::LSPS2ServiceEvent::OpenChannel
@@ -1017,11 +1018,14 @@ where
 						// `expected_outbound_amount_msat` is the `amt_to_forward` of the payer's
 						// own onion, so it says nothing about what actually arrived. Everything
 						// below sizes channel opens and forwards from it, which would let a payer
-						// have us spend our own funds. Reject the HTLC here, before the state
-						// machine sees it, so neither the client's JIT channel nor anything
+						// have us spend our own funds, and a zero-value HTLC would break the
+						// proportional fee split further down. Reject the HTLC here, before the
+						// state machine sees it, so neither the client's JIT channel nor anything
 						// already queued on it is disturbed -- the `Err` arm below would retire
 						// the intercept scid.
-						if expected_outbound_amount_msat > inbound_amount_msat {
+						if expected_outbound_amount_msat == 0
+							|| expected_outbound_amount_msat > inbound_amount_msat
+						{
 							self.channel_manager.get_cm().fail_intercepted_htlc(intercept_id)?;
 							return Err(APIError::APIMisuseError {
 								err: format!(
@@ -1210,6 +1214,7 @@ where
 		&self, next_channel_id: ChannelId, skimmed_fee_msat: u64,
 	) -> Result<(), APIError> {
 		let mut should_persist = None;
+		let mut forward_err = None;
 		if let Some(counterparty_node_id) =
 			self.peer_by_channel_id.read().unwrap().get(&next_channel_id)
 		{
@@ -1227,13 +1232,17 @@ where
 						{
 							match jit_channel.payment_forwarded(skimmed_fee_msat) {
 								Ok(Some(ForwardHTLCsAction(channel_id, htlcs))) => {
+									// The fee is paid, so a failed forward must not block finalizing.
 									for htlc in htlcs {
-										self.channel_manager.get_cm().forward_intercepted_htlc(
-											htlc.intercept_id,
-											&channel_id,
-											*counterparty_node_id,
-											htlc.expected_outbound_amount_msat,
-										)?;
+										if let Err(e) =
+											self.channel_manager.get_cm().forward_intercepted_htlc(
+												htlc.intercept_id,
+												&channel_id,
+												*counterparty_node_id,
+												htlc.expected_outbound_amount_msat,
+											) {
+											forward_err.get_or_insert(e);
+										}
 									}
 								},
 								Ok(None) => {},
@@ -1275,7 +1284,10 @@ where
 			})?;
 		}
 
-		Ok(())
+		match forward_err {
+			Some(e) => Err(e),
+			None => Ok(()),
+		}
 	}
 
 	/// Abandons a pending JIT‐open flow for `user_channel_id`, removing all local state.
@@ -2129,9 +2141,16 @@ fn calculate_amount_to_forward_per_htlc(
 	let mut fee_remaining_msat = total_fee_msat;
 	let mut per_htlc_forwards = vec![];
 	for (index, htlc) in htlcs.iter().enumerate() {
-		let proportional_fee_amt_msat = (total_fee_msat as u128
-			* htlc.expected_outbound_amount_msat as u128
-			/ total_expected_outbound_msat as u128) as u64;
+		// A zero total cannot proportion the fee, but a positive fee was already rejected
+		// above, so there is nothing to skim anyway. Zero-value HTLCs can only be queued from
+		// state persisted by versions that admitted them, and forwarding them unskimmed makes
+		// the channel manager fail them back.
+		let proportional_fee_amt_msat = if total_expected_outbound_msat == 0 {
+			0
+		} else {
+			(total_fee_msat as u128 * htlc.expected_outbound_amount_msat as u128
+				/ total_expected_outbound_msat as u128) as u64
+		};
 
 		let mut actual_fee_amt_msat = core::cmp::min(fee_remaining_msat, proportional_fee_amt_msat);
 		actual_fee_amt_msat =
@@ -2480,6 +2499,23 @@ mod tests {
 				(htlcs[2].intercept_id, 1),
 			]
 		);
+	}
+
+	#[test]
+	fn test_calculate_amount_to_forward_zero_total() {
+		// A nonempty set of HTLCs with a zero total cannot proportion the fee, but with a zero
+		// fee there is nothing to skim either. The HTLCs are forwarded unskimmed instead of
+		// dividing by zero; the channel manager fails the resulting zero-value forwards back.
+		let zero_total_htlcs = vec![InterceptedHTLC {
+			intercept_id: InterceptId([0; 32]),
+			expected_outbound_amount_msat: 0,
+			payment_hash: PaymentHash([0; 32]),
+		}];
+		assert_eq!(
+			calculate_amount_to_forward_per_htlc(&zero_total_htlcs, 0),
+			vec![(zero_total_htlcs[0].intercept_id, 0)]
+		);
+		assert_eq!(calculate_amount_to_forward_per_htlc(&[], 0), vec![]);
 	}
 
 	#[test]
