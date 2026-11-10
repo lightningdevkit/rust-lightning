@@ -1935,6 +1935,7 @@ impl<
 						&self.message_handler.custom_message_handler,
 					)
 					.ok();
+					debug_assert!(msg_to_handle.is_some());
 					debug_assert!(peer.pending_read_is_header);
 					debug_assert_eq!(peer.pending_read_buffer_pos, 0);
 				} else {
