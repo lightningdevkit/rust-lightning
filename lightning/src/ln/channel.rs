@@ -8577,7 +8577,15 @@ where
 			}
 		}
 
-		if !self.context.channel_state.is_awaiting_remote_revoke() {
+		// `AWAITING_REMOTE_REVOKE` is set as soon as we build a new counterparty commitment, but
+		// the corresponding `commitment_signed` may still be held back pending a monitor update or
+		// our signer, in which case our counterparty cannot have received it yet. If we accepted
+		// an RAA anyway, we'd step the counterparty commitment number forward and the eventual
+		// `commitment_signed` would sign a commitment the `ChannelMonitor` has never seen.
+		if !self.context.channel_state.is_awaiting_remote_revoke()
+			|| self.context.monitor_pending_commitment_signed
+			|| self.context.signer_pending_commitment_update
+		{
 			// Our counterparty seems to have burned their coins to us (by revoking a state when we
 			// haven't given them a new commitment transaction to broadcast). We should probably
 			// take advantage of this by updating our channel monitor, sending them an error, and
