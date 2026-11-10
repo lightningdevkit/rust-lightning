@@ -20,6 +20,9 @@
  * If a node restarts while a channel is cooperatively closing with remaining
    pending inbound HTLC(s), the HTLC(s) can now be correctly failed, avoiding
    force-closure (#5080).
+ * Delays in handling `Event::OpenChannelRequest` can no longer cause pending
+   channels to be lost (or, at worst, delays in the many-minutes can no longer
+   lead to funds-loss, #5545).
  * Dropping the `ChannelManager::process_pending_events_async` future no longer
    results in later event processing calls being spuriously ignored (#5264).
  * SCID aliases now more durably avoid collisions with the real SCIDs, fixing a
@@ -40,6 +43,9 @@
 ## Security
 0.2.8 fixes XXX
 
+ * Multiple payments for the same payment hash can no longer cause LDK to
+   generate a spurious `PaymentClaimed` event or fail to deserialize the
+   `ChannelManager` in rare cases on startup (#5541).
  * A channel counterparty which sends a spurious cooperative close signing
    message while a channel fee update remains pending can no longer cause LDK to
    spuriously panic (#5533).
@@ -47,6 +53,8 @@
    can no longer cause LDK to spuriously panic (#5531).
  * A counterparty which reuses a previous funding outpoint can no longer cause
    LDK to panic when using the `MonitorUpdatingPersister` (#5540).
+ * A counterparty contributing an input with no witness to a splice on an
+   outbound channel can no longer cause us to panic (#5536).
  * A malicious node with access to an LSPS2 JIT client's invoice can no longer
    cause LDK's LSPS2 JIT service to panic with a divide-by-zero (#5538).
  * A malicious node with access to an LSPS2 JIT client's invoice can no longer
