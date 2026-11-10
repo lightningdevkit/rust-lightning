@@ -1064,10 +1064,8 @@ fn poll_sync_future<F: Future>(future: F) -> F::Output {
 ///
 /// # Reading channel state from storage
 ///
-/// Channel state can be reconstructed by calling
-/// [`MonitorUpdatingPersister::read_all_channel_monitors_with_updates`]. Alternatively, users can
-/// list channel monitors themselves and load channels individually using
-/// [`MonitorUpdatingPersister::read_channel_monitor_with_updates`].
+/// Channel state is reconstructed by loading all stored monitors, along with any stored
+/// updates for them, using [`MonitorUpdatingPersister::read_all_channel_monitors_with_updates`].
 ///
 /// # Pruning stale channel updates
 ///
