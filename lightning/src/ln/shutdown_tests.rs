@@ -28,6 +28,7 @@ use crate::types::string::UntrustedString;
 use crate::util::config::UserConfig;
 use crate::util::errors::APIError;
 use crate::util::ser::Writeable;
+use crate::util::test_channel_signer::SignerOp;
 use crate::util::test_utils;
 use crate::util::test_utils::OnGetShutdownScriptpubkey;
 
@@ -83,6 +84,69 @@ fn pre_funding_lock_shutdown_test() {
 	check_closed_event(&nodes[0], 1, reason_a, &[node_b_id], 8000000);
 	let reason_b = ClosureReason::CounterpartyInitiatedCooperativeClosure;
 	check_closed_event(&nodes[1], 1, reason_b, &[node_a_id], 8000000);
+}
+
+#[test]
+fn closing_signed_with_pending_peer_fee_does_not_panic() {
+	do_test_closing_signed_with_pending_peer_fee(false);
+}
+
+#[test]
+fn signer_pending_closing_with_pending_peer_fee_does_not_panic() {
+	do_test_closing_signed_with_pending_peer_fee(true);
+}
+
+fn do_test_closing_signed_with_pending_peer_fee(signer_pending: bool) {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let funder_id = nodes[0].node.get_our_node_id();
+	let victim_id = nodes[1].node.get_our_node_id();
+	let chan_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+	let feerate_per_kw = get_feerate!(nodes[1], nodes[0], chan_id);
+
+	nodes[0].node.close_channel(&chan_id, &victim_id).unwrap();
+	let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, victim_id);
+	nodes[1].node.handle_shutdown(funder_id, &shutdown);
+	let shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, funder_id);
+	nodes[0].node.handle_shutdown(victim_id, &shutdown);
+	let closing = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, victim_id);
+
+	if signer_pending {
+		nodes[1].disable_channel_signer_op(&funder_id, &chan_id, SignerOp::SignClosingTransaction);
+		nodes[1].node.handle_closing_signed(funder_id, &closing);
+		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		check_added_monitors(&nodes[1], 0);
+	}
+
+	// Fee updates can still be committed during shutdown, but must not remain pending when
+	// negotiating the closing transaction.
+	nodes[1]
+		.node
+		.handle_update_fee(funder_id, &msgs::UpdateFee { channel_id: chan_id, feerate_per_kw });
+	assert_eq!(nodes[1].node.list_channels().len(), 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	check_added_monitors(&nodes[1], 0);
+
+	let err = if signer_pending {
+		nodes[1].enable_channel_signer_op(&funder_id, &chan_id, SignerOp::SignClosingTransaction);
+		nodes[1].node.signer_unblocked(Some((funder_id, chan_id)));
+		"Cannot retry closing_signed while there is still a pending fee update"
+	} else {
+		nodes[1].node.handle_closing_signed(funder_id, &closing);
+		"Remote end sent us a closing_signed while there was still a pending fee update"
+	};
+	assert!(nodes[1].node.list_channels().is_empty());
+	check_added_monitors(&nodes[1], 1);
+	let errors = check_closed_broadcast(&nodes[1], 1, true);
+	assert_eq!(errors.len(), 1);
+	assert_eq!(errors[0].channel_id, chan_id);
+	assert_eq!(errors[0].data, err);
+	let reason = ClosureReason::ProcessingError { err: err.to_owned() };
+	check_closed_events(&nodes[1], &[ExpectedCloseEvent::from_id_reason(chan_id, false, reason)]);
 }
 
 #[test]
