@@ -3,8 +3,9 @@
 mod common;
 
 use common::{
-	create_service_and_client_nodes_with_kv_stores, create_service_client_and_payer_nodes,
-	get_lsps_message, LSPSNodes, LSPSNodesWithPayer, LiquidityNode,
+	create_service_and_client_nodes_with_kv_stores,
+	create_service_client_and_payer_nodes_with_kv_stores, get_lsps_message, LSPSNodes,
+	LSPSNodesWithPayer, LiquidityNode,
 };
 
 use lightning::events::{ClosureReason, Event, HTLCHandlingFailureType};
@@ -104,12 +105,24 @@ fn setup_test_lsps2_nodes<'a, 'b, 'c>(
 fn setup_test_lsps2_nodes_with_payer<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>,
 ) -> (LSPSNodesWithPayer<'a, 'b, 'c>, [u8; 32]) {
+	setup_test_lsps2_nodes_with_payer_and_kv_stores(
+		nodes,
+		Arc::new(TestStore::new(false)),
+		Arc::new(TestStore::new(false)),
+	)
+}
+
+fn setup_test_lsps2_nodes_with_payer_and_kv_stores<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>, service_kv_store: Arc<TestStore>, client_kv_store: Arc<TestStore>,
+) -> (LSPSNodesWithPayer<'a, 'b, 'c>, [u8; 32]) {
 	let (promise_secret, service_config, client_config) = build_lsps2_configs();
-	let lsps_nodes = create_service_client_and_payer_nodes(
+	let lsps_nodes = create_service_client_and_payer_nodes_with_kv_stores(
 		nodes,
 		service_config,
 		client_config,
 		Arc::new(DefaultTimeProvider),
+		service_kv_store,
+		client_kv_store,
 	);
 	(lsps_nodes, promise_secret)
 }
@@ -724,6 +737,894 @@ fn htlc_declaring_more_than_delivered_is_failed_back() {
 		}) => assert_eq!(scid, intercept_scid),
 		other => panic!("Unexpected event: {:?}", other),
 	};
+}
+
+/// Pays the given invoice from the payer, delivers the HTLC to the service node, and returns the
+/// intercepted HTLC's id and payment hash.
+fn intercept_payment_for_invoice(
+	payer_node: &Node, service_node: &Node, invoice: &Bolt11Invoice, intercept_scid: u64,
+	amount_msat: u64,
+) -> (InterceptId, PaymentHash) {
+	let payer_node_id = payer_node.node.get_our_node_id();
+	payer_node
+		.node
+		.pay_for_bolt11_invoice(
+			invoice,
+			PaymentId(invoice.payment_hash().0),
+			Some(amount_msat),
+			OptionalBolt11PaymentParams::default(),
+		)
+		.unwrap();
+
+	check_added_monitors(payer_node, 1);
+	let events = payer_node.node.get_and_clear_pending_msg_events();
+	let ev = SendEvent::from_event(events[0].clone());
+	service_node.node.handle_update_add_htlc(payer_node_id, &ev.msgs[0]);
+	do_commitment_signed_dance(service_node, payer_node, &ev.commitment_msg, false, true);
+	service_node.node.process_pending_htlc_forwards();
+
+	let events = service_node.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::HTLCIntercepted {
+			intercept_id,
+			requested_next_hop_scid,
+			payment_hash,
+			expected_outbound_amount_msat,
+			inbound_amount_msat,
+			..
+		} => {
+			assert_eq!(*requested_next_hop_scid, intercept_scid);
+			assert_eq!(*expected_outbound_amount_msat, amount_msat);
+			assert_eq!(*inbound_amount_msat, amount_msat);
+			(*intercept_id, *payment_hash)
+		},
+		other => panic!("Expected HTLCIntercepted, got {:?}", other),
+	}
+}
+
+/// Takes the service node's pending forward of an intercepted HTLC to the client.
+fn take_forward_to_client(service_node: &Node) -> SendEvent {
+	{
+		let mut added_monitors = service_node.chain_monitor.added_monitors.lock().unwrap();
+		assert_eq!(added_monitors.len(), 1);
+		added_monitors.clear();
+	}
+	let mut msg_events = service_node.node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	SendEvent::from_event(msg_events.remove(0))
+}
+
+/// Fails a payment back from the service node to the payer and asserts the payer saw it fail.
+fn propagate_failure_to_payer(service_node: &Node, payer_node: &Node, payment_hash: PaymentHash) {
+	let payer_node_id = payer_node.node.get_our_node_id();
+	let service_node_id = service_node.node.get_our_node_id();
+	let fail_msgs = get_htlc_update_msgs(service_node, &payer_node_id);
+	payer_node.node.handle_update_fail_htlc(service_node_id, &fail_msgs.update_fail_htlcs[0]);
+	do_commitment_signed_dance(payer_node, service_node, &fail_msgs.commitment_signed, true, true);
+	let events = payer_node.node.get_and_clear_pending_events();
+	for ev in &events {
+		if let Event::PaymentPathFailed { payment_hash: failed_payment_hash, .. } = ev {
+			assert_eq!(*failed_payment_hash, payment_hash);
+		}
+	}
+	assert!(events.iter().any(|ev| matches!(ev, Event::PaymentPathFailed { .. })));
+}
+
+/// Rewrites the persisted LSPS2 peer state for `counterparty_node_id`, replacing the payment
+/// queue of the peer's single JIT channel awaiting a fee payment with `entries`, as a version
+/// that admitted zero-value HTLCs could have persisted.
+fn seed_persisted_payment_queue(
+	kv_store: &TestStore, counterparty_node_id: &PublicKey,
+	entries: &[(InterceptId, u64, PaymentHash)],
+) {
+	use lightning::util::persist::KVStoreSync;
+	use lightning_liquidity::persist::{
+		LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+		LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+	};
+
+	fn read_bigsize(bytes: &[u8], pos: &mut usize) -> u64 {
+		let byte = bytes[*pos];
+		*pos += 1;
+		match byte {
+			0xff => {
+				let res = u64::from_be_bytes(bytes[*pos..*pos + 8].try_into().unwrap());
+				*pos += 8;
+				res
+			},
+			0xfe => {
+				let res = u32::from_be_bytes(bytes[*pos..*pos + 4].try_into().unwrap());
+				*pos += 4;
+				u64::from(res)
+			},
+			0xfd => {
+				let res = u16::from_be_bytes(bytes[*pos..*pos + 2].try_into().unwrap());
+				*pos += 2;
+				u64::from(res)
+			},
+			n => u64::from(n),
+		}
+	}
+
+	fn write_bigsize(val: u64) -> Vec<u8> {
+		match val {
+			0..=0xfc => vec![val as u8],
+			0xfd..=0xffff => {
+				let mut out = vec![0xfdu8];
+				out.extend_from_slice(&(val as u16).to_be_bytes());
+				out
+			},
+			0x10000..=0xffffffff => {
+				let mut out = vec![0xfeu8];
+				out.extend_from_slice(&(val as u32).to_be_bytes());
+				out
+			},
+			_ => {
+				let mut out = vec![0xffu8];
+				out.extend_from_slice(&val.to_be_bytes());
+				out
+			},
+		}
+	}
+
+	struct TlvRecord {
+		typ: u64,
+		value: Vec<u8>,
+	}
+
+	fn read_tlv_stream(bytes: &[u8]) -> Vec<TlvRecord> {
+		let mut pos = 0;
+		let stream_len = read_bigsize(bytes, &mut pos) as usize;
+		let end = pos + stream_len;
+		let mut records = Vec::new();
+		while pos < end {
+			let typ = read_bigsize(bytes, &mut pos);
+			let len = read_bigsize(bytes, &mut pos) as usize;
+			records.push(TlvRecord { typ, value: bytes[pos..pos + len].to_vec() });
+			pos += len;
+		}
+		assert_eq!(pos, end);
+		records
+	}
+
+	fn write_tlv_stream(records: &[TlvRecord]) -> Vec<u8> {
+		let body_len: usize = records
+			.iter()
+			.map(|r| {
+				write_bigsize(r.typ).len()
+					+ write_bigsize(r.value.len() as u64).len()
+					+ r.value.len()
+			})
+			.sum();
+		let mut out = write_bigsize(body_len as u64);
+		for record in records {
+			out.extend(write_bigsize(record.typ));
+			out.extend(write_bigsize(record.value.len() as u64));
+			out.extend_from_slice(&record.value);
+		}
+		out
+	}
+
+	let key = counterparty_node_id.to_string();
+	let blob = kv_store
+		.read(
+			LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key,
+		)
+		.unwrap();
+
+	// Walk down to the JIT channel's state: record 0 of the peer state holds the
+	// `outbound_channels_by_intercept_scid` map, which holds a single channel keyed by its
+	// intercept scid, whose state record holds the awaited fee payment.
+	let peer_records = read_tlv_stream(&blob);
+	let channel_map = &peer_records.iter().find(|r| r.typ == 0).unwrap().value;
+	assert_eq!(u16::from_be_bytes(channel_map[0..2].try_into().unwrap()), 1);
+	let intercept_scid = u64::from_be_bytes(channel_map[2..10].try_into().unwrap());
+	let channel_records = read_tlv_stream(&channel_map[10..]);
+	let state = &channel_records.iter().find(|r| r.typ == 0).unwrap().value;
+	assert_eq!(state[0], 6, "Expected the JIT channel to await a fee payment");
+	let state_records = read_tlv_stream(&state[1..]);
+
+	// Serialize the entries the way `PaymentQueue`'s `optional_vec` would: a single record
+	// holding the concatenated `PaymentQueueEntry` streams.
+	let mut payments = Vec::new();
+	for (intercept_id, expected_outbound_amount_msat, payment_hash) in entries {
+		let htlc = write_tlv_stream(&[
+			TlvRecord { typ: 0, value: intercept_id.0.to_vec() },
+			TlvRecord { typ: 2, value: expected_outbound_amount_msat.to_be_bytes().to_vec() },
+			TlvRecord { typ: 4, value: payment_hash.0.to_vec() },
+		]);
+		payments.extend_from_slice(&write_tlv_stream(&[
+			TlvRecord { typ: 0, value: payment_hash.0.to_vec() },
+			TlvRecord { typ: 2, value: htlc },
+		]));
+	}
+
+	let new_queue = write_tlv_stream(&[TlvRecord { typ: 0, value: payments }]);
+	let new_state_records = state_records
+		.iter()
+		.map(|r| {
+			if r.typ == 0 {
+				TlvRecord { typ: 0, value: new_queue.clone() }
+			} else {
+				TlvRecord { typ: r.typ, value: r.value.clone() }
+			}
+		})
+		.collect::<Vec<_>>();
+	let mut new_state = vec![6u8];
+	new_state.extend_from_slice(&write_tlv_stream(&new_state_records));
+	let new_channel_records = channel_records
+		.iter()
+		.map(|r| {
+			if r.typ == 0 {
+				TlvRecord { typ: 0, value: new_state.clone() }
+			} else {
+				TlvRecord { typ: r.typ, value: r.value.clone() }
+			}
+		})
+		.collect::<Vec<_>>();
+	let new_channel_map = [
+		&[0u8, 1][..],
+		&intercept_scid.to_be_bytes()[..],
+		write_tlv_stream(&new_channel_records).as_slice(),
+	]
+	.concat();
+	let new_peer_records = peer_records
+		.iter()
+		.map(|r| {
+			if r.typ == 0 {
+				TlvRecord { typ: 0, value: new_channel_map.clone() }
+			} else {
+				TlvRecord { typ: r.typ, value: r.value.clone() }
+			}
+		})
+		.collect::<Vec<_>>();
+	kv_store
+		.write(
+			LIQUIDITY_MANAGER_PERSISTENCE_PRIMARY_NAMESPACE,
+			LSPS2_SERVICE_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key,
+			write_tlv_stream(&new_peer_records),
+		)
+		.unwrap();
+}
+
+#[test]
+fn zero_outgoing_retry_is_failed_back_and_order_preserved() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[Some(service_node_config), None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer(nodes);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 45u128;
+	let cltv_expiry_delta: u32 = 144;
+	// A variable-size order on an offer whose fee parameters compute to a zero opening fee
+	// accepts payments of any size.
+	let payment_size_msat = None;
+	let fee_base_msat: u64 = 0;
+
+	execute_lsps2_dance(
+		&service_node,
+		&client_node,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+		128,
+	);
+
+	let invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"zero-outgoing-retry",
+		3600,
+	)
+	.unwrap();
+
+	let initial_amount_msat = 1_000_000;
+	let (intercept_id, payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_node.inner,
+		&invoice,
+		intercept_scid,
+		initial_amount_msat,
+	);
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			intercept_id,
+			initial_amount_msat,
+			payment_hash,
+			initial_amount_msat,
+		)
+		.unwrap();
+
+	// Open the JIT channel and forward the initial payment to the client.
+	let (channel_id, _funding_tx) = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		&initial_amount_msat,
+		true,
+	);
+
+	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let pay_event = take_forward_to_client(&service_node.inner);
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::PaymentClaimable { .. } => {},
+		other => panic!("Expected PaymentClaimable, got {:?}", other),
+	}
+
+	// The client rejects the payment, failing it back over the JIT channel and leaving the
+	// channel awaiting a retry payment.
+	client_node.inner.node.fail_htlc_backwards(&payment_hash);
+	client_node.inner.node.process_pending_htlc_forwards();
+	check_added_monitors(&client_node.inner, 1);
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::HTLCHandlingFailed {
+			failure_type: HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash },
+			..
+		} => assert_eq!(*failed_payment_hash, payment_hash),
+		other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+	}
+	let fail_msgs = get_htlc_update_msgs(&client_node.inner, &service_node_id);
+	assert_eq!(fail_msgs.update_fail_htlcs.len(), 1);
+	service_node
+		.inner
+		.node
+		.handle_update_fail_htlc(client_node_id, &fail_msgs.update_fail_htlcs[0]);
+	do_commitment_signed_dance(
+		&service_node.inner,
+		&client_node.inner,
+		&fail_msgs.commitment_signed,
+		true,
+		true,
+	);
+
+	let failure_type = {
+		let events = service_node.inner.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events.into_iter().next().unwrap() {
+			Event::HTLCHandlingFailed { failure_type, .. } => failure_type,
+			other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+		}
+	};
+	match &failure_type {
+		HTLCHandlingFailureType::Forward { channel_id: failed_channel_id, .. } => {
+			assert_eq!(*failed_channel_id, channel_id)
+		},
+		other => panic!("Expected forward failure, got {:?}", other),
+	}
+	service_node.inner.node.process_pending_htlc_forwards();
+	check_added_monitors(&service_node.inner, 1);
+	propagate_failure_to_payer(&service_node.inner, &payer_node, payment_hash);
+	service_handler.htlc_handling_failed(failure_type).unwrap();
+
+	// A retry intercepted for the same SCID with a positive incoming amount but a zero
+	// `amt_to_forward` in the payer's onion is failed back ...
+	let retry_invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"zero-outgoing-retry-2",
+		3600,
+	)
+	.unwrap();
+
+	let retry_amount_msat = 600_000;
+	let (retry_intercept_id, retry_payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_node.inner,
+		&retry_invoice,
+		intercept_scid,
+		retry_amount_msat,
+	);
+
+	let result = service_handler.htlc_intercepted(
+		intercept_scid,
+		retry_intercept_id,
+		0,
+		retry_payment_hash,
+		retry_amount_msat,
+	);
+	match result {
+		Err(APIError::APIMisuseError { err }) => {
+			assert!(err.contains("declares 0msat to forward"), "unexpected error: {}", err)
+		},
+		other => panic!("Expected APIMisuseError, got {:?}", other),
+	}
+
+	let events = service_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match &events[0] {
+		Event::HTLCHandlingFailed {
+			failure_type: HTLCHandlingFailureType::InvalidForward { requested_forward_scid },
+			..
+		} => assert_eq!(*requested_forward_scid, intercept_scid),
+		other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+	}
+	assert!(service_node.inner.node.fail_intercepted_htlc(retry_intercept_id).is_err());
+	service_node.inner.node.process_pending_htlc_forwards();
+	check_added_monitors(&service_node.inner, 1);
+	propagate_failure_to_payer(&service_node.inner, &payer_node, retry_payment_hash);
+
+	// ... while the order is preserved: a subsequent honest retry is forwarded to the client.
+	let honest_invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"zero-outgoing-retry-3",
+		3600,
+	)
+	.unwrap();
+
+	let honest_amount_msat = 800_000;
+	let (honest_intercept_id, honest_payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_node.inner,
+		&honest_invoice,
+		intercept_scid,
+		honest_amount_msat,
+	);
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			honest_intercept_id,
+			honest_amount_msat,
+			honest_payment_hash,
+			honest_amount_msat,
+		)
+		.unwrap();
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let pay_event = take_forward_to_client(&service_node.inner);
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::PaymentClaimable { payment_hash: claimed_payment_hash, .. } => {
+			assert_eq!(*claimed_payment_hash, honest_payment_hash);
+		},
+		other => panic!("Expected PaymentClaimable, got {:?}", other),
+	}
+}
+
+#[test]
+fn stale_zero_value_queue_entry_is_failed_back() {
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let mut service_node_config = test_default_channel_config();
+	service_node_config.htlc_interception_flags = HTLCInterceptionFlags::ToInterceptSCIDs as u8;
+
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[Some(service_node_config), None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let service_kv_store = Arc::new(TestStore::new(false));
+	let (lsps_nodes, promise_secret) = setup_test_lsps2_nodes_with_payer_and_kv_stores(
+		nodes,
+		Arc::clone(&service_kv_store),
+		Arc::new(TestStore::new(false)),
+	);
+	let LSPSNodesWithPayer { ref service_node, ref client_node, ref payer_node } = lsps_nodes;
+
+	let service_node_id = service_node.inner.node.get_our_node_id();
+	let client_node_id = client_node.inner.node.get_our_node_id();
+
+	let service_handler = service_node.liquidity_manager.lsps2_service_handler().unwrap();
+
+	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
+
+	let intercept_scid = service_node.node.get_intercept_scid();
+	let user_channel_id = 45u128;
+	let cltv_expiry_delta: u32 = 144;
+	// A variable-size order on an offer whose fee parameters compute to a zero opening fee
+	// accepts payments of any size.
+	let payment_size_msat = None;
+	let fee_base_msat: u64 = 0;
+
+	execute_lsps2_dance(
+		&service_node,
+		&client_node,
+		intercept_scid,
+		user_channel_id,
+		cltv_expiry_delta,
+		promise_secret,
+		payment_size_msat,
+		fee_base_msat,
+		128,
+	);
+
+	let invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"stale-zero-entry",
+		3600,
+	)
+	.unwrap();
+
+	// The initial payment is forwarded to the client, who rejects it, leaving the JIT channel
+	// awaiting a retry payment with an empty payment queue.
+	let initial_amount_msat = 1_000_000;
+	let (intercept_id, payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_node.inner,
+		&invoice,
+		intercept_scid,
+		initial_amount_msat,
+	);
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			intercept_id,
+			initial_amount_msat,
+			payment_hash,
+			initial_amount_msat,
+		)
+		.unwrap();
+
+	let (channel_id, _funding_tx) = create_channel_with_manual_broadcast(
+		&service_node_id,
+		&client_node_id,
+		&service_node,
+		&client_node,
+		user_channel_id,
+		&initial_amount_msat,
+		true,
+	);
+
+	service_handler.channel_ready(user_channel_id, &channel_id, &client_node_id).unwrap();
+	service_node.inner.node.process_pending_htlc_forwards();
+
+	let pay_event = take_forward_to_client(&service_node.inner);
+	client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+	do_commitment_signed_dance(
+		&client_node.inner,
+		&service_node.inner,
+		&pay_event.commitment_msg,
+		false,
+		true,
+	);
+	client_node.inner.node.process_pending_htlc_forwards();
+
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::PaymentClaimable { .. } => {},
+		other => panic!("Expected PaymentClaimable, got {:?}", other),
+	}
+
+	client_node.inner.node.fail_htlc_backwards(&payment_hash);
+	client_node.inner.node.process_pending_htlc_forwards();
+	check_added_monitors(&client_node.inner, 1);
+	let client_events = client_node.inner.node.get_and_clear_pending_events();
+	assert_eq!(client_events.len(), 1);
+	match &client_events[0] {
+		Event::HTLCHandlingFailed {
+			failure_type: HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash },
+			..
+		} => assert_eq!(*failed_payment_hash, payment_hash),
+		other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+	}
+	let fail_msgs = get_htlc_update_msgs(&client_node.inner, &service_node_id);
+	assert_eq!(fail_msgs.update_fail_htlcs.len(), 1);
+	service_node
+		.inner
+		.node
+		.handle_update_fail_htlc(client_node_id, &fail_msgs.update_fail_htlcs[0]);
+	do_commitment_signed_dance(
+		&service_node.inner,
+		&client_node.inner,
+		&fail_msgs.commitment_signed,
+		true,
+		true,
+	);
+
+	let failure_type = {
+		let events = service_node.inner.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events.into_iter().next().unwrap() {
+			Event::HTLCHandlingFailed { failure_type, .. } => failure_type,
+			other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+		}
+	};
+	match &failure_type {
+		HTLCHandlingFailureType::Forward { channel_id: failed_channel_id, .. } => {
+			assert_eq!(*failed_channel_id, channel_id)
+		},
+		other => panic!("Expected forward failure, got {:?}", other),
+	}
+	service_node.inner.node.process_pending_htlc_forwards();
+	check_added_monitors(&service_node.inner, 1);
+	propagate_failure_to_payer(&service_node.inner, &payer_node, payment_hash);
+	service_handler.htlc_handling_failed(failure_type).unwrap();
+	service_node.liquidity_manager.persist().unwrap();
+
+	// Two more payments are intercepted while the service is "down" for the restart below, so
+	// the channel manager still holds them pending: a payment an older version could have
+	// persisted as a zero-value queue entry, and an honest payment queued behind it.
+	let stale_invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"stale-zero-entry-2",
+		3600,
+	)
+	.unwrap();
+	let stale_amount_msat = 600_000;
+	let (stale_intercept_id, stale_payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_node.inner,
+		&stale_invoice,
+		intercept_scid,
+		stale_amount_msat,
+	);
+
+	let honest_invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"stale-zero-entry-3",
+		3600,
+	)
+	.unwrap();
+	let honest_amount_msat = 700_000;
+	let (honest_intercept_id, honest_payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_node.inner,
+		&honest_invoice,
+		intercept_scid,
+		honest_amount_msat,
+	);
+
+	// Restart the service's liquidity manager against the same nodes, as an upgrade would, and
+	// seed the persisted payment queue with the stale entry ahead of the honest one.
+	let LSPSNodesWithPayer { service_node, client_node, payer_node } = lsps_nodes;
+	let LiquidityNode { inner: service_inner, liquidity_manager: old_service_lm } = service_node;
+	drop(old_service_lm);
+
+	seed_persisted_payment_queue(
+		&service_kv_store,
+		&client_node_id,
+		&[
+			(stale_intercept_id, 0, stale_payment_hash),
+			(honest_intercept_id, honest_amount_msat, honest_payment_hash),
+		],
+	);
+
+	let (_, service_config, _) = build_lsps2_configs();
+	let restarted_lm = LiquidityManagerSync::new_with_custom_time_provider(
+		service_inner.keys_manager,
+		service_inner.keys_manager,
+		service_inner.node,
+		Arc::clone(&service_kv_store),
+		service_inner.tx_broadcaster,
+		Some(service_config),
+		None,
+		Arc::new(DefaultTimeProvider),
+	)
+	.unwrap();
+	let service_handler = restarted_lm.lsps2_service_handler().unwrap();
+
+	// A retry intercepted for the same SCID pops the stale zero-value entry as the fee
+	// payment. There is no fee to skim, so the HTLC is forwarded unskimmed, and the channel
+	// manager fails the zero-value forward back instead of dividing by zero.
+	let retry_invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"stale-zero-entry-4",
+		3600,
+	)
+	.unwrap();
+	let retry_amount_msat = 400_000;
+	let (retry_intercept_id, retry_payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_inner,
+		&retry_invoice,
+		intercept_scid,
+		retry_amount_msat,
+	);
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			retry_intercept_id,
+			retry_amount_msat,
+			retry_payment_hash,
+			retry_amount_msat,
+		)
+		.unwrap();
+	service_inner.node.process_pending_htlc_forwards();
+
+	let failure_type = {
+		let events = service_inner.node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events.into_iter().next().unwrap() {
+			Event::HTLCHandlingFailed { failure_type, .. } => failure_type,
+			other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+		}
+	};
+	match &failure_type {
+		HTLCHandlingFailureType::Forward { channel_id: failed_channel_id, .. } => {
+			assert_eq!(*failed_channel_id, channel_id)
+		},
+		other => panic!("Expected forward failure, got {:?}", other),
+	}
+	service_inner.node.process_pending_htlc_forwards();
+	check_added_monitors(&service_inner, 1);
+	propagate_failure_to_payer(&service_inner, &payer_node, stale_payment_hash);
+	service_handler.htlc_handling_failed(failure_type).unwrap();
+
+	// Fails the payment the client finds claimable back over the JIT channel, and fails it back
+	// to the payer, so the handler can pop the next queued payment.
+	let fail_back_from_client = |payment_hash: PaymentHash| -> HTLCHandlingFailureType {
+		client_node.inner.node.fail_htlc_backwards(&payment_hash);
+		client_node.inner.node.process_pending_htlc_forwards();
+		check_added_monitors(&client_node.inner, 1);
+		let client_events = client_node.inner.node.get_and_clear_pending_events();
+		assert_eq!(client_events.len(), 1);
+		match &client_events[0] {
+			Event::HTLCHandlingFailed {
+				failure_type: HTLCHandlingFailureType::Receive { payment_hash: failed_payment_hash },
+				..
+			} => assert_eq!(*failed_payment_hash, payment_hash),
+			other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+		}
+		let fail_msgs = get_htlc_update_msgs(&client_node.inner, &service_node_id);
+		assert_eq!(fail_msgs.update_fail_htlcs.len(), 1);
+		service_inner.node.handle_update_fail_htlc(client_node_id, &fail_msgs.update_fail_htlcs[0]);
+		do_commitment_signed_dance(
+			&service_inner,
+			&client_node.inner,
+			&fail_msgs.commitment_signed,
+			true,
+			true,
+		);
+		let failure_type = {
+			let events = service_inner.node.get_and_clear_pending_events();
+			assert_eq!(events.len(), 1);
+			match events.into_iter().next().unwrap() {
+				Event::HTLCHandlingFailed { failure_type, .. } => failure_type,
+				other => panic!("Expected HTLCHandlingFailed, got {:?}", other),
+			}
+		};
+		match &failure_type {
+			HTLCHandlingFailureType::Forward { channel_id: failed_channel_id, .. } => {
+				assert_eq!(*failed_channel_id, channel_id)
+			},
+			other => panic!("Expected forward failure, got {:?}", other),
+		}
+		service_inner.node.process_pending_htlc_forwards();
+		check_added_monitors(&service_inner, 1);
+		failure_type
+	};
+
+	// Forwards the payment the handler popped next to the client, which finds it claimable.
+	let forward_to_client = |expected_payment_hash: PaymentHash| {
+		service_inner.node.process_pending_htlc_forwards();
+		let pay_event = take_forward_to_client(&service_inner);
+		client_node.inner.node.handle_update_add_htlc(service_node_id, &pay_event.msgs[0]);
+		do_commitment_signed_dance(
+			&client_node.inner,
+			&service_inner,
+			&pay_event.commitment_msg,
+			false,
+			true,
+		);
+		client_node.inner.node.process_pending_htlc_forwards();
+		let client_events = client_node.inner.node.get_and_clear_pending_events();
+		assert_eq!(client_events.len(), 1);
+		match &client_events[0] {
+			Event::PaymentClaimable { payment_hash: claimed_payment_hash, .. } => {
+				assert_eq!(*claimed_payment_hash, expected_payment_hash);
+			},
+			other => panic!("Expected PaymentClaimable, got {:?}", other),
+		}
+	};
+
+	// The honest payment queued behind the stale entry is forwarded in its place ...
+	forward_to_client(honest_payment_hash);
+	let failure_type = fail_back_from_client(honest_payment_hash);
+	propagate_failure_to_payer(&service_inner, &payer_node, honest_payment_hash);
+	service_handler.htlc_handling_failed(failure_type).unwrap();
+
+	// ... and so is the retry that popped the stale entry. Failing it back, too, leaves the
+	// channel `PendingPayment` again.
+	forward_to_client(retry_payment_hash);
+	let failure_type = fail_back_from_client(retry_payment_hash);
+	propagate_failure_to_payer(&service_inner, &payer_node, retry_payment_hash);
+	service_handler.htlc_handling_failed(failure_type).unwrap();
+
+	// A later positive retry is forwarded as usual.
+	let later_invoice = create_jit_invoice(
+		&client_node,
+		service_node_id,
+		intercept_scid,
+		cltv_expiry_delta,
+		payment_size_msat,
+		"stale-zero-entry-5",
+		3600,
+	)
+	.unwrap();
+	let later_amount_msat = 500_000;
+	let (later_intercept_id, later_payment_hash) = intercept_payment_for_invoice(
+		&payer_node,
+		&service_inner,
+		&later_invoice,
+		intercept_scid,
+		later_amount_msat,
+	);
+	service_handler
+		.htlc_intercepted(
+			intercept_scid,
+			later_intercept_id,
+			later_amount_msat,
+			later_payment_hash,
+			later_amount_msat,
+		)
+		.unwrap();
+	forward_to_client(later_payment_hash);
 }
 
 #[test]
@@ -3033,19 +3934,21 @@ fn client_trusts_lsp_broadcasts_despite_unforwardable_held_htlc() {
 	create_chan_between_nodes_with_value(&payer_node, &service_node.inner, 2_000_000, 100_000);
 
 	let intercept_scid = service_node.node.get_intercept_scid();
-	let user_channel_id = 42;
+	let user_channel_id = 42u128;
 	let cltv_expiry_delta: u32 = 144;
 	let payment_size_msat = Some(1_000_000);
 	let fee_base_msat: u64 = 10_000;
 
 	execute_lsps2_dance(
-		&lsps_nodes,
+		&service_node,
+		&client_node,
 		intercept_scid,
 		user_channel_id,
 		cltv_expiry_delta,
 		promise_secret,
 		payment_size_msat,
 		fee_base_msat,
+		128,
 	);
 
 	let invoice = create_jit_invoice(
