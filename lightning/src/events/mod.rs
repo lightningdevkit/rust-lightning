@@ -3487,6 +3487,11 @@ mod tests {
 /// When using this trait, [`process_pending_events`] will call [`handle_event`] for each pending
 /// event since the last invocation.
 ///
+/// We guarantee that all [`Event`]s that existed at the start of a successful
+/// [`process_pending_events`] call will have been processed once all concurrent
+/// [`process_pending_events`] calls complete, however we do not guarantee that a concurrent call
+/// will complete all pending events before it returns.
+///
 /// In order to ensure no [`Event`]s are lost, implementors of this trait will persist [`Event`]s
 /// and replay any unhandled events on startup. An [`Event`] is considered handled when
 /// [`process_pending_events`] returns `Ok(())`, thus handlers MUST fully handle [`Event`]s and

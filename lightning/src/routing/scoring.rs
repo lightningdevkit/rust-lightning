@@ -1779,11 +1779,13 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for Probabilisti
 		let amount_msat = path.final_value_msat();
 		log_trace!(self.logger, "Scoring path through to SCID {} as having failed at {} msat", short_channel_id, amount_msat);
 		let network_graph = self.network_graph.read_only();
+		let mut prev_node_id = None;
 		for (hop_idx, hop) in path.hops.iter().enumerate() {
 			let target = NodeId::from_pubkey(&hop.pubkey);
 			let channel_directed_from_source = network_graph.channels()
 				.get(&hop.short_channel_id)
-				.and_then(|channel| channel.as_directed_to(&target));
+				.and_then(|channel| channel.as_directed_to(&target))
+				.filter(|(_, source)| prev_node_id.map_or(true, |prev| **source == prev));
 
 			let at_failed_channel = hop.short_channel_id == short_channel_id;
 			if at_failed_channel && hop_idx == 0 {
@@ -1809,10 +1811,11 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for Probabilisti
 							format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 				}
 			} else {
-				log_debug!(self.logger, "Not able to penalize channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
+				log_debug!(self.logger, "Not able to penalize channel with SCID {} as we do not have matching graph info for it (likely a route-hint hop).",
 					hop.short_channel_id);
 			}
 			if at_failed_channel { break; }
+			prev_node_id = Some(target);
 		}
 		self.last_update_time = duration_since_epoch;
 	}
@@ -1823,11 +1826,13 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for Probabilisti
 		log_trace!(self.logger, "Scoring path through SCID {} as having succeeded at {} msat.",
 			path.hops.split_last().map(|(hop, _)| hop.short_channel_id).unwrap_or(0), amount_msat);
 		let network_graph = self.network_graph.read_only();
+		let mut prev_node_id = None;
 		for hop in &path.hops {
 			let target = NodeId::from_pubkey(&hop.pubkey);
 			let channel_directed_from_source = network_graph.channels()
 				.get(&hop.short_channel_id)
-				.and_then(|channel| channel.as_directed_to(&target));
+				.and_then(|channel| channel.as_directed_to(&target))
+				.filter(|(_, source)| prev_node_id.map_or(true, |prev| **source == prev));
 
 			// Only score announced channels.
 			if let Some((channel, source)) = channel_directed_from_source {
@@ -1839,9 +1844,10 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger> ScoreUpdate for Probabilisti
 					.successful(amount_msat, duration_since_epoch,
 						format_args!("SCID {}, towards {:?}", hop.short_channel_id, target), &self.logger);
 			} else {
-				log_debug!(self.logger, "Not able to learn for channel with SCID {} as we do not have graph info for it (likely a route-hint last-hop).",
+				log_debug!(self.logger, "Not able to learn for channel with SCID {} as we do not have matching graph info for it (likely a route-hint hop).",
 					hop.short_channel_id);
 			}
+			prev_node_id = Some(target);
 		}
 		self.last_update_time = duration_since_epoch;
 	}
@@ -3384,6 +3390,25 @@ mod tests {
 		assert_eq!(scorer.channel_penalty_msat(&candidate_41, usage, &params), 128);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_42, usage, &params), 300);
 		assert_eq!(scorer.channel_penalty_msat(&candidate_43, usage, &params), 300);
+	}
+
+	#[test]
+	fn ignores_hop_not_matching_channel_source() {
+		// Channel 43 is between the target and the recipient, so a hop over SCID 43 from the source
+		// to the recipient must not update its liquidity.
+		let logger = TestLogger::new();
+		let network_graph = network_graph(&logger);
+		let decay_params = ProbabilisticScoringDecayParameters::default();
+		let mut scorer = ProbabilisticScorer::new(decay_params, &network_graph, &logger);
+		let path = Path {
+			hops: vec![path_hop(source_pubkey(), 41, 1), path_hop(recipient_pubkey(), 43, 500)],
+			blinded_tail: None,
+		};
+
+		scorer.payment_path_successful(&path, Duration::ZERO);
+		scorer.payment_path_failed(&path, 43, Duration::ZERO);
+		scorer.payment_path_failed(&path, 42, Duration::ZERO);
+		assert_eq!(scorer.estimated_channel_liquidity_range(43, &recipient_node_id()), None);
 	}
 
 	#[test]

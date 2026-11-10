@@ -3493,8 +3493,9 @@ impl PendingFunding {
 				.funding
 				.get_funding_txid()
 				.expect("negotiated candidates should have a funding txid");
-			// The `splice_locked` we sent always refers to the confirmed candidate, as it is
-			// cleared if that candidate is ever unconfirmed by a reorg.
+			// The `splice_locked` we sent always refers to the confirmed candidate: one sent after
+			// reaching the minimum depth is cleared if that candidate is unconfirmed by a reorg,
+			// while a zero-conf candidate remains locked (and reported here) regardless.
 			let splice_locked_sent = self.sent_funding_txid == Some(txid);
 			if confirmations == 0 && !splice_locked_sent {
 				return None;
@@ -3820,6 +3821,8 @@ pub(super) struct ChannelContext<SP: SignerProvider> {
 	/// Our counterparty's channel_announcement signatures provided in announcement_signatures.
 	/// This can be used to rebroadcast the channel_announcement message later.
 	announcement_sigs: Option<(Signature, Signature)>,
+
+	broadcasted_signed_announcement: bool,
 
 	/// lnd has a long-standing bug where, upon reconnection, if the channel is not yet confirmed
 	/// they will not send a channel_reestablish until the channel locks in. Then, they will send a
@@ -4556,6 +4559,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			closing_signed_in_flight: false,
 
 			announcement_sigs: None,
+			broadcasted_signed_announcement: false,
 
 			workaround_lnd_bug_4006: None,
 			funding_locked_txid_sent_in_reestablish: None,
@@ -4867,6 +4871,7 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 			closing_signed_in_flight: false,
 
 			announcement_sigs: None,
+			broadcasted_signed_announcement: false,
 
 			workaround_lnd_bug_4006: None,
 			funding_locked_txid_sent_in_reestablish: None,
@@ -7877,7 +7882,7 @@ where
 	}
 
 	#[inline]
-	fn build_closing_transaction(
+	pub(super) fn build_closing_transaction(
 		&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool,
 	) -> Result<(ClosingTransaction, u64), ChannelError> {
 		assert!(self.context.pending_inbound_htlcs.is_empty());
@@ -10139,10 +10144,13 @@ where
 		if self.context.announcement_sigs_state == AnnouncementSigsState::MessageSent || self.context.announcement_sigs_state == AnnouncementSigsState::Committed {
 			self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 		}
+		self.context.broadcasted_signed_announcement = false;
 
 		// Upon reconnect we have to start the closing_signed dance over, but shutdown messages
 		// will be retransmitted.
 		self.context.last_sent_closing_fee = None;
+		self.context.last_received_closing_sig = None;
+		self.context.signer_pending_closing = false;
 		self.context.pending_counterparty_closing_signed = None;
 		self.context.closing_fee_limits = None;
 
@@ -10602,6 +10610,11 @@ where
 		}
 
 		let (closing_signed, signed_closing_tx, shutdown_result) = if self.context.signer_pending_closing {
+			if self.context.pending_update_fee.is_some() {
+				return Err(ChannelError::close(
+					"Cannot retry closing_signed while there is still a pending fee update".to_owned(),
+				));
+			}
 			debug_assert!(self.context.last_sent_closing_fee.is_some());
 			if let Some((fee, skip_remote_output, fee_range, holder_sig)) = self.context.last_sent_closing_fee.clone() {
 				debug_assert!(holder_sig.is_none());
@@ -11768,6 +11781,12 @@ where
 					.to_owned(),
 			));
 		}
+		if self.context.pending_update_fee.is_some() {
+			return Err(ChannelError::close(
+				"Remote end sent us a closing_signed while there was still a pending fee update"
+					.to_owned(),
+			));
+		}
 		if msg.fee_satoshis > TOTAL_BITCOIN_SUPPLY_SATOSHIS {
 			// this is required to stop potential overflow in build_closing_transaction
 			return Err(ChannelError::close(
@@ -11828,8 +11847,10 @@ where
 		}
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
-		if let Some((last_fee, _, _, Some(sig))) = self.context.last_sent_closing_fee {
-			if last_fee == msg.fee_satoshis {
+		if let Some((last_fee, last_skip_remote_output, _, Some(sig))) =
+			self.context.last_sent_closing_fee
+		{
+			if last_fee == msg.fee_satoshis && last_skip_remote_output == skip_remote_output {
 				let shutdown_result = self.shutdown_result_coop_close();
 				let tx =
 					self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
@@ -11878,6 +11899,15 @@ where
 				};
 				return Ok((closing_signed, signed_tx_shutdown))
 			};
+		}
+
+		if let Some((last_fee, _, _, Some(_))) = self.context.last_sent_closing_fee {
+			if last_fee == msg.fee_satoshis {
+				// The fast path above didn't combine the signatures, which can only mean the
+				// counterparty signed a transaction with a different output set than the one we
+				// signed. Re-sign the transaction they signed instead of reusing our signature.
+				propose_fee!(msg.fee_satoshis);
+			}
 		}
 
 		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) =
@@ -12438,6 +12468,7 @@ where
 		self.context.interactive_tx_signing_session = None;
 		self.pending_splice = None;
 		self.context.announcement_sigs = None;
+		self.context.broadcasted_signed_announcement = false;
 		self.context.announcement_sigs_state = AnnouncementSigsState::NotSent;
 
 		let funding_txo = self
@@ -12776,15 +12807,26 @@ where
 				// Check if the splice funding transaction was unconfirmed
 				if funding.get_funding_tx_confirmations(height) == 0 {
 					funding.funding_tx_confirmation_height = 0;
-					if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
-						if Some(sent_funding_txid) == funding.get_funding_txid() {
-							log_warn!(
-								logger,
-								"Unconfirming sent splice_locked txid {} for channel {}",
-								sent_funding_txid,
-								&self.context.channel_id,
-							);
-							pending_splice.sent_funding_txid = None;
+					funding.short_channel_id = None;
+					funding.funding_tx_confirmed_in = None;
+
+					// A `splice_locked` sent once the funding reached its minimum depth is no longer
+					// valid, so withdraw it until the funding re-confirms. A zero-conf splice was
+					// locked without any confirmations and stays locked, just as a zero-conf channel
+					// does when its funding is unconfirmed.
+					let minimum_depth = self.context.minimum_depth(funding)
+						.expect("ChannelContext::minimum_depth should be set for FundedChannel");
+					if minimum_depth > 0 {
+						if let Some(sent_funding_txid) = pending_splice.sent_funding_txid {
+							if Some(sent_funding_txid) == funding.get_funding_txid() {
+								log_warn!(
+									logger,
+									"Unconfirming sent splice_locked txid {} for channel {}",
+									sent_funding_txid,
+									&self.context.channel_id,
+								);
+								pending_splice.sent_funding_txid = None;
+							}
 						}
 					}
 				}
@@ -13057,6 +13099,12 @@ where
 			)));
 		}
 
+		if self.context.broadcasted_signed_announcement {
+			return Err(ChannelError::Ignore(
+				"Ignoring duplicate announcement_signatures - we already generated a signed channel_announcement for this channel"
+					.to_owned()));
+		}
+
 		let announcement = self.get_channel_announcement(node_signer, chain_hash, user_config)?;
 
 		let msghash = hash_to_message!(&Sha256d::hash(&announcement.encode()[..])[..]);
@@ -13078,7 +13126,9 @@ where
 				"Got announcement_signatures prior to the required six confirmations - we may not have received a block yet that our peer has".to_owned()));
 		}
 
-		self.sign_channel_announcement(node_signer, announcement)
+		let signed_announcement = self.sign_channel_announcement(node_signer, announcement)?;
+		self.context.broadcasted_signed_announcement = true;
+		Ok(signed_announcement)
 	}
 
 	/// Gets a signed channel_announcement for this channel, if we previously received an
@@ -17960,6 +18010,7 @@ impl<'a, 'b, 'c, ES: EntropySource, SP: SignerProvider>
 				closing_signed_in_flight: false,
 
 				announcement_sigs,
+				broadcasted_signed_announcement: false,
 
 				workaround_lnd_bug_4006: None,
 				funding_locked_txid_sent_in_reestablish: None,

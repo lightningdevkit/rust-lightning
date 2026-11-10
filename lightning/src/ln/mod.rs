@@ -77,6 +77,9 @@ mod channel_open_tests;
 mod channel_type_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
+mod closing_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod dual_funding_tests;
 #[cfg(any(test, feature = "_externalize_tests"))]
 #[allow(unused_mut)]

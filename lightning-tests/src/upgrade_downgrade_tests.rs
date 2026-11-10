@@ -13,8 +13,11 @@
 use lightning_0_2::chain::chaininterface::FEERATE_FLOOR_SATS_PER_KW as FEERATE_FLOOR_0_2;
 use lightning_0_2::commitment_signed_dance as commitment_signed_dance_0_2;
 use lightning_0_2::events::bump_transaction::sync::WalletSourceSync as WalletSourceSync_0_2;
+use lightning_0_2::events::ClosureReason as ClosureReason_0_2;
 use lightning_0_2::events::Event as Event_0_2;
+use lightning_0_2::expect_payment_claimed as expect_payment_claimed_0_2;
 use lightning_0_2::get_event_msg as get_event_msg_0_2;
+use lightning_0_2::get_local_commitment_txn as get_local_commitment_txn_0_2;
 use lightning_0_2::get_monitor as get_monitor_0_2;
 use lightning_0_2::ln::channelmanager::PaymentId as PaymentId_0_2;
 use lightning_0_2::ln::channelmanager::RecipientOnionFields as RecipientOnionFields_0_2;
@@ -1509,4 +1512,102 @@ fn upgrade_zero_fee_commitments_from_0_2() {
 	// The channel is still usable across the swap.
 	claim_payment(&nodes[0], &[&nodes[1]], preimage);
 	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+}
+
+#[test]
+fn upgrade_with_claim_of_spent_htlc_output() {
+	// LDK 0.2 rebuilds the claims of all HTLC outputs on our confirmed commitment transaction when
+	// it learns a preimage, including outputs our counterparty has already irrevocably spent. Test
+	// that such a claim never fires after an upgrade.
+	let (node_a_ser, mon_a_ser, node_a_blocks, outbound_htlc_expiry, inbound_hash);
+	{
+		let chanmon_cfgs = lightning_0_2_utils::create_chanmon_cfgs(2);
+		let node_cfgs = lightning_0_2_utils::create_node_cfgs(2, &chanmon_cfgs);
+		let mut config = lightning_0_2_utils::test_default_channel_config();
+		config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = true;
+		config.manually_accept_inbound_channels = true;
+		let configs = [Some(config.clone()), Some(config)];
+		let node_chanmgrs = lightning_0_2_utils::create_node_chanmgrs(2, &node_cfgs, &configs);
+		let nodes = lightning_0_2_utils::create_network(2, &node_cfgs, &node_chanmgrs);
+		let node_a_id = nodes[0].node.get_our_node_id();
+		let node_b_id = nodes[1].node.get_our_node_id();
+
+		lightning_0_2_utils::provide_anchor_reserves(&nodes);
+		let chan_id = lightning_0_2_utils::create_chan_between_nodes_with_value(
+			&nodes[0],
+			&nodes[1],
+			1_000_000,
+			500_000_000,
+		)
+		.3;
+
+		// B claims the HTLC we offer, but we never learn its preimage off-chain.
+		let (outbound_preimage, outbound_hash, ..) =
+			lightning_0_2_utils::route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+		outbound_htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1;
+		let (inbound_preimage, inbound_hash_0_2, ..) =
+			lightning_0_2_utils::route_payment(&nodes[1], &[&nodes[0]], 20_000_000);
+		inbound_hash = PaymentHash(inbound_hash_0_2.0);
+		nodes[1].node.claim_funds(outbound_preimage);
+		lightning_0_2_utils::check_added_monitors(&nodes[1], 1);
+		expect_payment_claimed_0_2!(nodes[1], outbound_hash, 10_000_000);
+		lightning_0_2_utils::get_htlc_update_msgs(&nodes[1], &node_a_id);
+
+		let commitment_tx = get_local_commitment_txn_0_2!(&nodes[0], chan_id).pop().unwrap();
+		for (node, counterparty_id) in [(&nodes[0], node_b_id), (&nodes[1], node_a_id)] {
+			lightning_0_2_utils::mine_transaction(node, &commitment_tx);
+			let reason = ClosureReason_0_2::CommitmentTxConfirmed;
+			lightning_0_2_utils::check_closed_event(
+				node,
+				1,
+				reason,
+				false,
+				&[counterparty_id],
+				1_000_000,
+			);
+			lightning_0_2_utils::check_closed_broadcast(node, 1, true);
+			lightning_0_2_utils::check_added_monitors(node, 1);
+		}
+
+		let mut bs_txn = nodes[1].tx_broadcaster.txn_broadcast();
+		bs_txn.retain(|tx| tx.input[0].previous_output.txid == commitment_tx.compute_txid());
+		assert_eq!(bs_txn.len(), 1);
+		lightning_0_2_utils::mine_transaction(&nodes[0], &bs_txn[0]);
+		lightning_0_2_utils::expect_payment_sent(&nodes[0], outbound_preimage, None, true, true);
+		lightning_0_2_utils::connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+		nodes[0].node.claim_funds(inbound_preimage);
+		lightning_0_2_utils::check_added_monitors(&nodes[0], 1);
+		expect_payment_claimed_0_2!(nodes[0], inbound_hash_0_2, 20_000_000);
+		let mut events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+		assert_eq!(events.len(), 1);
+		match events.pop().unwrap() {
+			Event_0_2::BumpTransaction(event) => nodes[0].bump_tx_handler.handle_event(&event),
+			_ => panic!("Unexpected event"),
+		}
+		let htlc_success_tx = nodes[0].tx_broadcaster.txn_broadcast().pop().unwrap();
+		lightning_0_2_utils::mine_transaction(&nodes[0], &htlc_success_tx);
+		lightning_0_2_utils::connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+		node_a_ser = nodes[0].node.encode();
+		mon_a_ser = get_monitor_0_2!(nodes[0], chan_id).encode();
+		node_a_blocks = Arc::clone(&nodes[0].blocks);
+	}
+
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let (persister, chain_mon, node_a);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let config = test_default_channel_config();
+	reload_node!(nodes[0], config, &node_a_ser, &[&mon_a_ser[..]], persister, chain_mon, node_a);
+	nodes[0].blocks = node_a_blocks;
+	expect_payment_claimed!(nodes[0], inbound_hash, 20_000_000);
+	check_added_monitors(&nodes[0], 1);
+
+	connect_blocks(&nodes[0], outbound_htlc_expiry - nodes[0].best_block_info().1);
+	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
+	let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert!(events.is_empty(), "{events:?}");
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
 }
