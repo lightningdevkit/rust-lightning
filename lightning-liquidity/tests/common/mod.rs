@@ -116,9 +116,23 @@ pub(crate) fn create_service_client_and_payer_nodes<'a, 'b, 'c>(
 	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
 	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
 ) -> LSPSNodesWithPayer<'a, 'b, 'c> {
+	create_service_client_and_payer_nodes_with_kv_stores(
+		nodes,
+		service_config,
+		client_config,
+		time_provider,
+		Arc::new(TestStore::new(false)),
+		Arc::new(TestStore::new(false)),
+	)
+}
+
+#[allow(dead_code)]
+pub(crate) fn create_service_client_and_payer_nodes_with_kv_stores<'a, 'b, 'c>(
+	nodes: Vec<Node<'a, 'b, 'c>>, service_config: LiquidityServiceConfig,
+	client_config: LiquidityClientConfig, time_provider: Arc<dyn TimeProvider + Send + Sync>,
+	service_kv_store: Arc<TestStore>, client_kv_store: Arc<TestStore>,
+) -> LSPSNodesWithPayer<'a, 'b, 'c> {
 	assert!(nodes.len() >= 3, "Need three nodes (service, client, payer)");
-	let service_kv_store = Arc::new(TestStore::new(false));
-	let client_kv_store = Arc::new(TestStore::new(false));
 	let (service_node, client_node, payer_opt) = build_service_and_client_nodes(
 		nodes,
 		service_config,
