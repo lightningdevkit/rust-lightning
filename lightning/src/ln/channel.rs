@@ -2481,10 +2481,16 @@ impl<SP: Deref> ChannelContext<SP> where SP::Target: SignerProvider {
 	/// Returns true if this channel is fully established and not known to be closing.
 	/// Allowed in any state (including after shutdown)
 	pub fn is_usable(&self) -> bool {
-		matches!(self.channel_state, ChannelState::ChannelReady(_)) &&
-			!self.channel_state.is_local_shutdown_sent() &&
-			!self.channel_state.is_remote_shutdown_sent() &&
-			!self.monitor_pending_channel_ready
+		self.is_ready_ignoring_shutdown()
+			&& !self.channel_state.is_local_shutdown_sent()
+			&& !self.channel_state.is_remote_shutdown_sent()
+	}
+
+	/// Returns true if this channel is fully established, even if a shutdown is in progress.
+	/// HTLCs can still be failed or claimed while the channel is shutting down.
+	pub fn is_ready_ignoring_shutdown(&self) -> bool {
+		matches!(self.channel_state, ChannelState::ChannelReady(_))
+			&& !self.monitor_pending_channel_ready
 	}
 
 	/// shutdown state returns the state of the channel in its various stages of shutdown
@@ -4350,7 +4356,9 @@ impl<SP: Deref> Channel<SP> where
 	}
 
 	#[inline]
-	fn build_closing_transaction(&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool) -> Result<(ClosingTransaction, u64), ChannelError> {
+	pub(super) fn build_closing_transaction(
+		&self, proposed_total_fee_satoshis: u64, skip_remote_output: bool,
+	) -> Result<(ClosingTransaction, u64), ChannelError> {
 		assert!(self.context.pending_inbound_htlcs.is_empty());
 		assert!(self.context.pending_outbound_htlcs.is_empty());
 		assert!(self.context.pending_update_fee.is_none());
@@ -6871,8 +6879,10 @@ impl<SP: Deref> Channel<SP> where
 		}
 
 		assert!(self.context.shutdown_scriptpubkey.is_some());
-		if let Some((last_fee, _, _, Some(sig))) = self.context.last_sent_closing_fee {
-			if last_fee == msg.fee_satoshis {
+		if let Some((last_fee, last_skip_remote_output, _, Some(sig))) =
+			self.context.last_sent_closing_fee
+		{
+			if last_fee == msg.fee_satoshis && last_skip_remote_output == skip_remote_output {
 				let shutdown_result = self.shutdown_result_coop_close();
 				let tx = self.build_signed_closing_transaction(&mut closing_tx, &msg.signature, &sig);
 				self.context.channel_state = ChannelState::ShutdownComplete;
@@ -6911,7 +6921,18 @@ impl<SP: Deref> Channel<SP> where
 			}
 		}
 
-		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) = msg.fee_range {
+		if let Some((last_fee, _, _, Some(_))) = self.context.last_sent_closing_fee {
+			if last_fee == msg.fee_satoshis {
+				// The fast path above didn't combine the signatures, which can only mean the
+				// counterparty signed a transaction with a different output set than the one we
+				// signed. Re-sign the transaction they signed instead of reusing our signature.
+				propose_fee!(msg.fee_satoshis);
+			}
+		}
+
+		if let Some(msgs::ClosingSignedFeeRange { min_fee_satoshis, max_fee_satoshis }) =
+			msg.fee_range
+		{
 			if msg.fee_satoshis < min_fee_satoshis || msg.fee_satoshis > max_fee_satoshis {
 				return Err(ChannelError::close(format!("Peer sent a bogus closing_signed - suggested fee of {} sat was not in their desired range of {} sat - {} sat", msg.fee_satoshis, min_fee_satoshis, max_fee_satoshis)));
 			}

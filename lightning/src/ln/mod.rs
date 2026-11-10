@@ -60,6 +60,9 @@ mod blinded_payment_tests;
 mod functional_tests;
 #[cfg(test)]
 #[allow(unused_mut)]
+mod closing_tests;
+#[cfg(test)]
+#[allow(unused_mut)]
 mod max_payment_path_len_tests;
 #[cfg(test)]
 #[allow(unused_mut)]

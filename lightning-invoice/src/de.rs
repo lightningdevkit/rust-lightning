@@ -412,17 +412,15 @@ impl FromStr for RawHrp {
 
 		let amount = if !parts.1.is_empty() { Some(parts.1.parse::<u64>()?) } else { None };
 
-		let si_prefix: Option<SiPrefix> = if parts.2.is_empty() {
-			None
-		} else {
-			let si: SiPrefix = parts.2.parse()?;
-			if let Some(amt) = amount {
-				if amt.checked_mul(si.multiplier()).is_none() {
-					return Err(Bolt11ParseError::IntegerOverflowError);
-				}
+		let si_prefix = if parts.2.is_empty() { None } else { Some(parts.2.parse()?) };
+
+		if let Some(amt) = amount {
+			let multiplier =
+				si_prefix.as_ref().map_or(1_000_000_000_000, |si: &SiPrefix| si.multiplier());
+			if amt.checked_mul(multiplier).is_none() {
+				return Err(Bolt11ParseError::IntegerOverflowError);
 			}
-			Some(si)
-		};
+		}
 
 		Ok(RawHrp { currency, raw_amount: amount, si_prefix })
 	}

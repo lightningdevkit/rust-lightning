@@ -74,3 +74,27 @@ impl<F: Future<Output = Result<(), E>> + Unpin, E: Copy + Unpin> Future
 		}
 	}
 }
+
+// If we want to poll a future without an async context to figure out if it has completed or
+// not without awaiting, we need a Waker, which needs a vtable...we fill it with dummy values
+// but sadly there's a good bit of boilerplate here.
+//
+// Waker::noop() would be preferable, but requires an MSRV of 1.85.
+#[cfg(test)]
+pub(crate) fn dummy_waker() -> core::task::Waker {
+	use core::task::{RawWaker, RawWakerVTable, Waker};
+
+	fn dummy_waker_clone(_: *const ()) -> RawWaker {
+		RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)
+	}
+	fn dummy_waker_action(_: *const ()) {}
+
+	const DUMMY_WAKER_VTABLE: RawWakerVTable = RawWakerVTable::new(
+		dummy_waker_clone,
+		dummy_waker_action,
+		dummy_waker_action,
+		dummy_waker_action,
+	);
+
+	unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &DUMMY_WAKER_VTABLE)) }
+}

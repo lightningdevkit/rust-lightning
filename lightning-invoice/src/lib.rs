@@ -591,7 +591,9 @@ impl PartialOrd for Bolt11InvoiceSignature {
 
 impl Ord for Bolt11InvoiceSignature {
 	fn cmp(&self, other: &Self) -> Ordering {
-		self.0.serialize_compact().1.cmp(&other.0.serialize_compact().1)
+		let (self_recovery_id, self_signature) = self.0.serialize_compact();
+		let (other_recovery_id, other_signature) = other.0.serialize_compact();
+		self_signature.cmp(&other_signature).then(self_recovery_id.cmp(&other_recovery_id))
 	}
 }
 
@@ -1364,12 +1366,14 @@ impl Bolt11Invoice {
 		Ok(())
 	}
 
-	/// Check that amount is a whole number of millisatoshis
+	/// Check that amount is a whole number of millisatoshis and can be represented
 	fn check_amount(&self) -> Result<(), Bolt11SemanticError> {
 		if let Some(amount_pico_btc) = self.amount_pico_btc() {
 			if amount_pico_btc % 10 != 0 {
 				return Err(Bolt11SemanticError::ImpreciseAmount);
 			}
+		} else if self.signed_invoice.hrp.raw_amount.is_some() {
+			return Err(Bolt11SemanticError::ImpreciseAmount);
 		}
 		Ok(())
 	}
@@ -1874,7 +1878,8 @@ pub enum Bolt11SemanticError {
 	/// The invoice's signature is invalid
 	InvalidSignature,
 
-	/// The invoice's amount was not a whole number of millisatoshis
+	/// The invoice's amount was not a whole number of millisatoshis or is too large to be
+	/// represented.
 	ImpreciseAmount,
 }
 
@@ -1890,7 +1895,7 @@ impl Display for Bolt11SemanticError {
 			Bolt11SemanticError::InvalidFeatures => f.write_str("The invoice's features are invalid"),
 			Bolt11SemanticError::InvalidRecoveryId => f.write_str("The recovery id doesn't fit the signature/pub key"),
 			Bolt11SemanticError::InvalidSignature => f.write_str("The invoice's signature is invalid"),
-			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis"),
+			Bolt11SemanticError::ImpreciseAmount => f.write_str("The invoice's amount was not a whole number of millisatoshis or is too large to be represented"),
 		}
 	}
 }
@@ -2242,6 +2247,58 @@ mod test {
 	}
 
 	#[test]
+	fn test_amount_without_si_prefix() {
+		use crate::TaggedField::*;
+		use crate::{
+			Bolt11Invoice, Bolt11ParseError, Bolt11SemanticError, Currency,
+			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, Sha256,
+		};
+		use bitcoin::secp256k1::{Secp256k1, SecretKey};
+		use lightning_types::features::Bolt11InvoiceFeatures;
+
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let mut payment_secret_features = Bolt11InvoiceFeatures::empty();
+		payment_secret_features.set_payment_secret_required();
+
+		// An amount without an SI prefix that overflows pico BTC cannot be reported in
+		// millisatoshis either, so `from_signed` needs to reject it even though invoices built
+		// this way bypass the overflow check in `RawHrp::from_str`.
+		let invoice =
+			RawBolt11Invoice {
+				hrp: RawHrp {
+					currency: Currency::Bitcoin,
+					raw_amount: Some(184_467_441),
+					si_prefix: None,
+				},
+				data: RawDataPart {
+					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+					tagged_fields: vec![
+						crate::TaggedField::PaymentHash(Sha256(
+								sha256::Hash::from_str(
+									"0001020304050607080900010203040506070809000102030405060708090102",
+								)
+								.unwrap(),
+							),
+						)
+						.into(),
+						Description(crate::Description::new("Test".to_owned()).unwrap()).into(),
+						crate::TaggedField::PaymentSecret(lightning_types::payment::PaymentSecret([21; 32]))
+							.into(),
+						crate::TaggedField::Features(payment_secret_features).into(),
+					],
+				},
+			}
+			.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
+			.unwrap();
+		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::ImpreciseAmount));
+
+		// Amounts without an SI prefix are denominated in BTC and converted to pico BTC just like
+		// amounts carrying one, so anything above `u64::MAX / 1_000_000_000_000` BTC is rejected.
+		assert_eq!("lnbc18446744".parse::<RawHrp>().unwrap().raw_amount, Some(18_446_744));
+		assert_eq!("lnbc18446745".parse::<RawHrp>(), Err(Bolt11ParseError::IntegerOverflowError));
+	}
+
+	#[test]
 	fn test_builder_fail() {
 		use crate::*;
 		use bitcoin::secp256k1::PublicKey;
@@ -2508,5 +2565,52 @@ mod test {
 
 		assert_eq!(field10.partial_cmp(&field11).unwrap(), std::cmp::Ordering::Less);
 		assert_eq!(field20.partial_cmp(&field21).unwrap(), std::cmp::Ordering::Less);
+	}
+
+	#[test]
+	fn invoice_signature_ordering_includes_recovery_id() {
+		use crate::{
+			Bolt11Invoice, Bolt11InvoiceSignature, Currency, InvoiceBuilder, PaymentSecret,
+			SignedRawBolt11Invoice,
+		};
+		use bitcoin::hashes::{sha256, Hash};
+		use bitcoin::secp256k1::ecdsa::{RecoverableSignature, RecoveryId};
+		use bitcoin::secp256k1::{Secp256k1, SecretKey};
+		use core::cmp::Ordering;
+		use core::time::Duration;
+
+		let secp_ctx = Secp256k1::new();
+		let private_key = SecretKey::from_slice(&[42; 32]).unwrap();
+		let invoice = InvoiceBuilder::new(Currency::Bitcoin)
+			.description("Test".to_string())
+			.payment_hash(sha256::Hash::from_slice(&[0; 32]).unwrap())
+			.payment_secret(PaymentSecret([21; 32]))
+			.min_final_cltv_expiry_delta(144)
+			.duration_since_epoch(Duration::from_secs(1234567))
+			.build_signed(|hash| secp_ctx.sign_ecdsa_recoverable(hash, &private_key))
+			.unwrap();
+
+		let (raw_invoice, hash, signature) = invoice.into_signed_raw().into_parts();
+		let (recovery_id, signature_bytes) = signature.0.serialize_compact();
+		let alternate_recovery_id = RecoveryId::from_i32(recovery_id.to_i32() ^ 1).unwrap();
+		let alternate_signature =
+			RecoverableSignature::from_compact(&signature_bytes, alternate_recovery_id).unwrap();
+
+		let original = Bolt11Invoice::from_signed(SignedRawBolt11Invoice {
+			raw_invoice: raw_invoice.clone(),
+			hash,
+			signature,
+		})
+		.unwrap();
+		let alternate = Bolt11Invoice::from_signed(SignedRawBolt11Invoice {
+			raw_invoice,
+			hash,
+			signature: Bolt11InvoiceSignature(alternate_signature),
+		})
+		.unwrap();
+
+		assert_ne!(original.get_payee_pub_key(), alternate.get_payee_pub_key());
+		assert_ne!(original, alternate);
+		assert_ne!(original.cmp(&alternate), Ordering::Equal);
 	}
 }

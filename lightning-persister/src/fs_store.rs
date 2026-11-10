@@ -308,11 +308,18 @@ impl KVStore for FilesystemStore {
 		let prefixed_dest = self.get_dest_dir_path(primary_namespace, secondary_namespace)?;
 		let mut keys = Vec::new();
 
-		if !Path::new(&prefixed_dest).exists() {
-			return Ok(Vec::new());
-		}
+		let dir = match fs::read_dir(&prefixed_dest) {
+			Ok(dir) => dir,
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+				// A missing namespace is treated as empty.
+				return Ok(Vec::new());
+			},
+			// Propagate permission, I/O, and other lookup failures rather than
+			// masking them with an empty result.
+			Err(e) => return Err(e.into()),
+		};
 
-		for entry in fs::read_dir(&prefixed_dest)? {
+		for entry in dir {
 			let entry = entry?;
 			let p = entry.path();
 
@@ -433,13 +440,17 @@ fn get_key_from_dir_entry(p: &Path, base_path: &Path) -> Result<String, lightnin
 impl MigratableKVStore for FilesystemStore {
 	fn list_all_keys(&self) -> Result<Vec<(String, String, String)>, lightning::io::Error> {
 		let prefixed_dest = &self.data_dir;
-		if !prefixed_dest.exists() {
-			return Ok(Vec::new());
-		}
-
+		let primary_dir = match fs::read_dir(prefixed_dest) {
+			Ok(dir) => dir,
+			Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+				// A missing data directory is treated as empty.
+				return Ok(Vec::new());
+			},
+			Err(e) => return Err(e.into()),
+		};
 		let mut keys = Vec::new();
 
-		'primary_loop: for primary_entry in fs::read_dir(prefixed_dest)? {
+		'primary_loop: for primary_entry in primary_dir {
 			let primary_path = primary_entry?.path();
 			if dir_entry_is_store_artifact(&primary_path) {
 				continue 'primary_loop;

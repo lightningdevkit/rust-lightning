@@ -410,10 +410,13 @@ pub struct RouteHop {
 	pub cltv_expiry_delta: u32,
 	/// Indicates whether this hop is possibly announced in the public network graph.
 	///
-	/// Will be `true` if there is a possibility that the channel is publicly known, i.e., if we
-	/// either know for sure it's announced in the public graph, or if any public channels exist
-	/// for which the given `short_channel_id` could be an alias for. Will be `false` if we believe
-	/// the channel to be unannounced.
+	/// Will be `true` if the channel was sourced from the public network graph or is one of our
+	/// announced channels. Will be `false` for route hint hops whose `short_channel_id` did not
+	/// resolve to a known public channel towards the hop's target, e.g., because it is an alias
+	/// which isn't trusted to refer to a public channel.
+	///
+	/// If this is `false`, a failure at this hop will never cause the channel with the given
+	/// `short_channel_id` to be removed from the network graph.
 	///
 	/// Will be `true` for objects serialized with LDK version 0.0.116 and before.
 	pub maybe_announced_channel: bool,
@@ -1305,7 +1308,8 @@ pub struct OneHopBlindedPathCandidate<'a> {
 	/// Information about the blinded path including the fee, HTLC amount limits, and
 	/// cryptographic material required to build an HTLC terminating with the given path.
 	///
-	/// Note that the [`BlindedPayInfo`] is ignored here.
+	/// Note that the fees in the [`BlindedPayInfo`] are ignored here, while its CLTV expiry delta
+	/// is used.
 	///
 	/// This is not exported to bindings users as lifetimes are not expressible in most languages.
 	///
@@ -1355,8 +1359,9 @@ pub enum CandidateRouteHop<'a> {
 	/// returning `None` from [`CandidateRouteHop::target`]), in this case we do actually know the
 	/// payee's identity - it's the introduction point!
 	///
-	/// [`BlindedPayInfo`] provided for 1-hop blinded paths is ignored because it is meant to apply
-	/// to the hops *between* the introduction node and the destination.
+	/// The fees in the [`BlindedPayInfo`] provided for 1-hop blinded paths are ignored because they
+	/// are meant to apply to the hops *between* the introduction node and the destination. The CLTV
+	/// expiry delta is used, since the recipient folds its `min_final_cltv_expiry_delta` into it.
 	///
 	/// This primarily exists to track that we need to included a blinded path at the end of our
 	/// [`Route`], even though it doesn't actually add an additional hop in the payment.
@@ -1431,7 +1436,9 @@ impl<'a> CandidateRouteHop<'a> {
 			CandidateRouteHop::PublicHop(hop) => hop.info.direction().cltv_expiry_delta as u32,
 			CandidateRouteHop::PrivateHop(hop) => hop.hint.cltv_expiry_delta as u32,
 			CandidateRouteHop::Blinded(hop) => hop.hint.payinfo.cltv_expiry_delta as u32,
-			CandidateRouteHop::OneHopBlinded(_) => 0,
+			// The recipient folds its `min_final_cltv_expiry_delta` into this delta (BOLT 4), so
+			// it applies even when the introduction node is the recipient.
+			CandidateRouteHop::OneHopBlinded(hop) => hop.hint.payinfo.cltv_expiry_delta as u32,
 		}
 	}
 
@@ -3421,21 +3428,16 @@ where L::Target: Logger {
 			.filter(|(h, _)| h.candidate.short_channel_id().is_some())
 		{
 			let target = hop.candidate.target().expect("target is defined when short_channel_id is defined");
-			let maybe_announced_channel = if let CandidateRouteHop::PublicHop(_) = hop.candidate {
-				// If we sourced the hop from the graph we're sure the target node is announced.
-				true
-			} else if let CandidateRouteHop::FirstHop(first_hop) = &hop.candidate {
+			let maybe_announced_channel = match &hop.candidate {
+				// If we sourced the hop from the graph we're sure the channel is announced.
+				CandidateRouteHop::PublicHop(_) => true,
 				// If this is a first hop we also know if it's announced.
-				first_hop.details.is_announced
-			} else {
-				// If we sourced it any other way, we double-check the network graph to see if
-				// there are announced channels between the endpoints. If so, the hop might be
-				// referring to any of the announced channels, as its `short_channel_id` might be
-				// an alias, in which case we don't take any chances here.
-				network_graph.node(&target).map_or(false, |hop_node|
-					hop_node.channels.iter().any(|scid| network_graph.channel(*scid)
-							.map_or(false, |c| c.as_directed_from(&hop.candidate.source()).is_some()))
-				)
+				CandidateRouteHop::FirstHop(first_hop) => first_hop.details.is_announced,
+				// Otherwise, the hop came from a route hint. Its `short_channel_id` may be an alias
+				// for a public channel, but it may also mean something else entirely, e.g. a channel
+				// an LSP will open once paid, so a failure here doesn't mean any public channel with
+				// the same SCID failed.
+				_ => false,
 			};
 
 			hops.push(RouteHop {
@@ -5579,7 +5581,7 @@ mod tests {
 
 		// MPP to a 1-hop blinded path for nodes[2]
 		let bolt12_features = channelmanager::provided_bolt12_invoice_features(&config);
-		let blinded_payinfo = BlindedPayInfo { // These fields are ignored for 1-hop blinded paths
+		let blinded_payinfo = BlindedPayInfo { // The fees and HTLC limits are ignored for 1-hop blinded paths
 			fee_base_msat: 0,
 			fee_proportional_millionths: 0,
 			htlc_minimum_msat: 0,
@@ -7799,11 +7801,10 @@ mod tests {
 		if tail.hops.len() > 1 {
 			assert_eq!(final_hop.fee_msat,
 				blinded_payinfo.fee_base_msat as u64 + blinded_payinfo.fee_proportional_millionths as u64 * tail.final_value_msat / 1000000);
-			assert_eq!(final_hop.cltv_expiry_delta, blinded_payinfo.cltv_expiry_delta as u32);
 		} else {
 			assert_eq!(final_hop.fee_msat, 0);
-			assert_eq!(final_hop.cltv_expiry_delta, 0);
 		}
+		assert_eq!(final_hop.cltv_expiry_delta, blinded_payinfo.cltv_expiry_delta as u32);
 	}
 
 	#[test]

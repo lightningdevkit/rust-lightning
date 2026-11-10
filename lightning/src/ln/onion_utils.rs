@@ -790,10 +790,12 @@ where
 			// entirely, but we can't be confident in that, as it would allow any node to get us to
 			// completely ban one of its counterparties. Instead, we simply remove the channel in
 			// question.
-			network_update = Some(NetworkUpdate::ChannelFailure {
-				short_channel_id: failing_route_hop.short_channel_id,
-				is_permanent: true,
-			});
+			if failing_route_hop.maybe_announced_channel {
+				network_update = Some(NetworkUpdate::ChannelFailure {
+					short_channel_id: failing_route_hop.short_channel_id,
+					is_permanent: true,
+				});
+			}
 		} else if error_code & NODE == NODE {
 			let is_permanent = error_code & PERM == PERM;
 			network_update =
@@ -801,10 +803,12 @@ where
 			short_channel_id = Some(route_hop.short_channel_id);
 		} else if error_code & PERM == PERM {
 			if !payment_failed {
-				network_update = Some(NetworkUpdate::ChannelFailure {
-					short_channel_id: failing_route_hop.short_channel_id,
-					is_permanent: true,
-				});
+				if failing_route_hop.maybe_announced_channel {
+					network_update = Some(NetworkUpdate::ChannelFailure {
+						short_channel_id: failing_route_hop.short_channel_id,
+						is_permanent: true,
+					});
+				}
 				short_channel_id = Some(failing_route_hop.short_channel_id);
 			}
 		} else if error_code & UPDATE == UPDATE {
