@@ -6358,6 +6358,9 @@ where
 			},
 		};
 
+		let is_user_built_funding = funding.is_outbound()
+			&& funding.channel_transaction_parameters.splice_parent_funding_txid.is_none();
+
 		// Check if the transaction is the expected funding transaction, and if it is,
 		// check that it pays the right amount to the right script.
 		if funding.funding_tx_confirmation_height == 0 {
@@ -6366,7 +6369,7 @@ where
 				let txo_idx = funding_txo.index as usize;
 				if txo_idx >= tx.output.len() || tx.output[txo_idx].script_pubkey != funding.get_funding_redeemscript().to_p2wsh() ||
 						tx.output[txo_idx].value.to_sat() != funding.get_value_satoshis() {
-					if funding.is_outbound() {
+					if is_user_built_funding {
 						// If we generated the funding transaction and it doesn't match what it
 						// should, the client is really broken and we should just panic and
 						// tell them off. That said, because hash collisions happen with high
@@ -6379,7 +6382,7 @@ where
 					let err_reason = "funding tx had wrong script/value or output index";
 					return Err(ClosureReason::ProcessingError { err: err_reason.to_owned() });
 				} else {
-					if funding.is_outbound() {
+					if is_user_built_funding {
 						if !tx.is_coinbase() {
 							for input in tx.input.iter() {
 								if input.witness.is_empty() {

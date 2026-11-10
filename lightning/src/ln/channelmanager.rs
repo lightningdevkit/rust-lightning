@@ -1335,6 +1335,10 @@ pub(crate) enum MonitorUpdateCompletionAction {
 	/// event can be generated.
 	PaymentClaimed {
 		payment_hash: PaymentHash,
+		/// The [`PaymentId`] of the claimed payment. As a payment hash may be reused across
+		/// payments, if this is set an [`events::Event::PaymentClaimed`] is only generated for a
+		/// payment being claimed with this [`PaymentId`].
+		payment_id: Option<PaymentId>,
 		/// A pending MPP claim which hasn't yet completed.
 		///
 		/// Not written to disk.
@@ -1374,6 +1378,7 @@ pub(crate) enum MonitorUpdateCompletionAction {
 impl_writeable_tlv_based_enum_upgradable!(MonitorUpdateCompletionAction,
 	(0, PaymentClaimed) => {
 		(0, payment_hash, required),
+		(1, payment_id, option),
 		(9999999999, pending_mpp_claim, (static_value, None)),
 	},
 	// Note that FreeOtherChannelImmediately should never be written - we were supposed to free
@@ -8936,6 +8941,7 @@ where
 			} else {
 				None
 			};
+			let payment_id = claiming_payment.payment_id;
 			let payment_info = Some(PaymentClaimDetails { mpp_parts, claiming_payment });
 			for htlc in sources {
 				let this_mpp_claim =
@@ -8983,6 +8989,7 @@ where
 						(
 							Some(MonitorUpdateCompletionAction::PaymentClaimed {
 								payment_hash,
+								payment_id,
 								pending_mpp_claim: this_mpp_claim,
 							}),
 							raa_blocker,
@@ -9535,6 +9542,49 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		self.our_network_pubkey
 	}
 
+	/// Queues an [`Event::PaymentClaimed`] for the given claimed payment, unless an identical event
+	/// is already pending.
+	fn queue_payment_claimed_event(&self, payment_hash: PaymentHash, payment: ClaimingPayment) {
+		let ClaimingPayment {
+			amount_msat,
+			payment_purpose: purpose,
+			receiver_node_id,
+			htlcs,
+			sender_intended_value: sender_intended_total_msat,
+			onion_fields,
+			payment_id,
+			durable_preimage_channel,
+		} = payment;
+		let event = events::Event::PaymentClaimed {
+			payment_hash,
+			purpose,
+			amount_msat,
+			receiver_node_id: Some(receiver_node_id),
+			htlcs,
+			sender_intended_total_msat,
+			onion_fields,
+			payment_id,
+		};
+		let action =
+			if let Some((outpoint, counterparty_node_id, channel_id)) = durable_preimage_channel {
+				Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
+					channel_funding_outpoint: Some(outpoint),
+					counterparty_node_id,
+					channel_id,
+				})
+			} else {
+				None
+			};
+		let event_action = (event, action);
+		let mut pending_events = self.pending_events.lock().unwrap();
+		// If we're replaying a claim on startup we may end up duplicating an event that's already
+		// in our queue, so check before we push another one. The `payment_id` should suffice to
+		// ensure we never spuriously drop a second event for a duplicate payment.
+		if !pending_events.contains(&event_action) {
+			pending_events.push_back(event_action);
+		}
+	}
+
 	#[rustfmt::skip]
 	fn handle_monitor_update_completion_actions<I: IntoIterator<Item=MonitorUpdateCompletionAction>>(&self, actions: I) {
 		debug_assert_ne!(self.pending_events.held_by_thread(), LockHeldState::HeldByThread);
@@ -9545,7 +9595,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 
 		for action in actions.into_iter() {
 			match action {
-				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, pending_mpp_claim } => {
+				MonitorUpdateCompletionAction::PaymentClaimed { payment_hash, payment_id, pending_mpp_claim } => {
 					if let Some((counterparty_node_id, chan_id, claim_ptr)) = pending_mpp_claim {
 						let per_peer_state = self.per_peer_state.read().unwrap();
 						per_peer_state.get(&counterparty_node_id).map(|peer_state_mutex| {
@@ -9582,47 +9632,21 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 						});
 					}
 
-					let payment = self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
-					if let Some(ClaimingPayment {
-						amount_msat,
-						payment_purpose: purpose,
-						receiver_node_id,
-						htlcs,
-						sender_intended_value: sender_intended_total_msat,
-						onion_fields,
-						payment_id,
-						durable_preimage_channel,
-					}) = payment {
-						let event = events::Event::PaymentClaimed {
-							payment_hash,
-							purpose,
-							amount_msat,
-							receiver_node_id: Some(receiver_node_id),
-							htlcs,
-							sender_intended_total_msat,
-							onion_fields,
-							payment_id,
-						};
-						let action = if let Some((outpoint, counterparty_node_id, channel_id))
-							= durable_preimage_channel
-						{
-							Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
-								channel_funding_outpoint: Some(outpoint),
-								counterparty_node_id,
-								channel_id,
-							})
-						} else {
-							None
-						};
-						let event_action = (event, action);
-						let mut pending_events = self.pending_events.lock().unwrap();
-						// If we're replaying a claim on startup we may end up duplicating an event
-						// that's already in our queue, so check before we push another one. The
-						// `payment_id` should suffice to ensure we never spuriously drop a second
-						// event for a duplicate payment.
-						if !pending_events.contains(&event_action) {
-							pending_events.push_back(event_action);
+					let payment = {
+						let mut claimable_payments = self.claimable_payments.lock().unwrap();
+						match claimable_payments.pending_claiming_payments.entry(payment_hash) {
+							// The payment being claimed may be a different one which used the
+							// same payment hash, which must wait for its own claim to complete.
+							hash_map::Entry::Occupied(entry)
+								if payment_id.is_none() || entry.get().payment_id == payment_id =>
+							{
+								Some(entry.remove())
+							},
+							_ => None,
 						}
+					};
+					if let Some(payment) = payment {
+						self.queue_payment_claimed_event(payment_hash, payment);
 					}
 				},
 				MonitorUpdateCompletionAction::EmitEventAndFreeOtherChannel {
@@ -10097,6 +10121,16 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			}
 		};
 
+		let channel_entry = match peer_state.channel_by_id.entry(channel_id) {
+			hash_map::Entry::Occupied(entry) => {
+				let channel_id = entry.key();
+				let err_str = format!("Channel with ID {channel_id} already exists");
+				log_error!(logger, "Refusing to accept inbound channel: {}", err_str);
+				return Err(APIError::ChannelUnavailable { err: err_str });
+			},
+			hash_map::Entry::Vacant(entry) => entry,
+		};
+
 		if accept_0conf {
 			// This should have been correctly configured by the call to Inbound(V1/V2)Channel::new.
 			debug_assert!(channel.minimum_depth().unwrap() == 0);
@@ -10143,7 +10177,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			debug_assert!(peer_state.is_connected);
 			peer_state.pending_msg_events.push(message_send_event);
 		}
-		peer_state.channel_by_id.insert(channel_id, channel);
+		channel_entry.insert(channel);
 
 		Ok(())
 	}
@@ -18370,33 +18404,38 @@ where
 						// preimages eventually timing out from ChannelMonitors to prevent us from
 						// doing so forever.
 
-						let claim_found = channel_manager
-							.claimable_payments
-							.lock()
-							.unwrap()
-							.begin_claiming_payment(
-								payment_hash,
-								&channel_manager.node_signer,
-								&channel_manager.logger,
-								&channel_manager.inbound_payment_id_secret,
-								true,
-							);
-						if claim_found.is_err() {
+						{
+							// If the `ChannelManager` was persisted before this payment was
+							// claimed, it may still consider some or all of the payment's HTLCs
+							// claimable. A claimable payment consisting of other HTLCs is a
+							// different payment using the same payment hash, which we leave as-is.
 							let mut claimable_payments =
 								channel_manager.claimable_payments.lock().unwrap();
-							match claimable_payments.pending_claiming_payments.entry(payment_hash) {
-								hash_map::Entry::Occupied(_) => {
-									debug_assert!(
-										false,
-										"Entry was added in begin_claiming_payment"
-									);
-									return Err(DecodeError::InvalidValue);
-								},
-								hash_map::Entry::Vacant(entry) => {
-									entry.insert(payment_claim.claiming_payment);
-								},
+							if let hash_map::Entry::Occupied(claimable) =
+								claimable_payments.claimable_payments.entry(payment_hash)
+							{
+								let is_claimed_payment = claimable.get().htlcs.iter().any(|htlc| {
+									let prev_hop = &htlc.prev_hop;
+									payment_claim.mpp_parts.iter().any(|part| {
+										part.channel_id == prev_hop.channel_id
+											&& part.htlc_id == prev_hop.htlc_id
+									})
+								});
+								if is_claimed_payment {
+									claimable.remove();
+								}
 							}
 						}
+
+						// As the claim is durably in the `ChannelMonitor` it was read from, and is
+						// thus replayed on each startup until the preimage is in the
+						// `ChannelMonitor`s of all the payment's HTLCs, we don't wait on the
+						// `ChannelMonitorUpdate`s below to generate the `PaymentClaimed` event.
+						let claim_id = payment_claim.claiming_payment.payment_id;
+						channel_manager.queue_payment_claimed_event(
+							payment_hash,
+							payment_claim.claiming_payment,
+						);
 
 						for part in claim_parts {
 							let pending_mpp_claim = pending_claim_ptr_opt.as_ref().map(|ptr| {
@@ -18426,6 +18465,7 @@ where
 									(
 										Some(MonitorUpdateCompletionAction::PaymentClaimed {
 											payment_hash,
+											payment_id: claim_id,
 											pending_mpp_claim,
 										}),
 										pending_claim_ptr,
