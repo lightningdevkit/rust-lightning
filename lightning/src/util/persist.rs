@@ -531,6 +531,7 @@ where
 		Vec<(BlockHash, ChannelMonitor<<SP::Target as SignerProvider>::EcdsaSigner>)>,
 		io::Error,
 	> {
+		self.cleanup_archived_monitor_updates()?;
 		let monitor_list = self.kv_store.list(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
@@ -665,6 +666,49 @@ where
 			);
 			io::Error::new(io::ErrorKind::InvalidData, "Failed to read ChannelMonitorUpdate")
 		})
+	}
+
+	// Archiving removes a monitor's updates as well, but stores written by prior versions may
+	// still hold updates for keys whose monitor was archived. If a new monitor is later persisted
+	// under such a key, reading it would apply the archived channel's updates onto it, so they
+	// are removed before any monitor is read. Keys which also have a live monitor are skipped, as
+	// the live monitor's stored updates may still be needed by it.
+	fn cleanup_archived_monitor_updates(&self) -> Result<(), io::Error> {
+		let archived_primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let archived_secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let monitor_primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let monitor_secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let archived_monitor_keys = self.kv_store.list(archived_primary, archived_secondary)?;
+		let live_monitor_keys = self.kv_store.list(monitor_primary, monitor_secondary)?;
+		for monitor_key in archived_monitor_keys {
+			if live_monitor_keys.contains(&monitor_key) {
+				continue;
+			}
+			let updates = self.kv_store.list(
+				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+				&monitor_key,
+			);
+			if let Ok(updates) = updates {
+				for update in updates {
+					if let Ok(update_name) = UpdateName::new(update) {
+						if let Err(e) = self.kv_store.remove(
+							CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+							&monitor_key,
+							update_name.as_str(),
+							false,
+						) {
+							log_error!(
+								self.logger,
+								"Failed to remove stored updates for archived monitor {}, reason: {}",
+								monitor_key,
+								e
+							);
+						}
+					}
+				}
+			}
+		}
+		Ok(())
 	}
 
 	/// Cleans up stale updates for all monitors.
@@ -1556,6 +1600,163 @@ mod tests {
 		)
 		.unwrap();
 		assert!(update_list.is_empty());
+	}
+
+	// Confirm that reading all monitors removes updates left behind for already-archived monitors
+	// by a prior version, as a new monitor may later be persisted under the same key and must not
+	// have the archived channel's updates replayed onto it.
+	#[test]
+	fn read_all_removes_archived_monitors_updates() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			100,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
+		let monitor_key = monitor_name.as_str();
+
+		// Simulate a store written by a prior version, which archived the monitor without removing
+		// its updates.
+		let monitor_bytes = KVStore::read(
+			&kv_store,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		KVStore::write(
+			&kv_store,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+			&monitor_bytes,
+		)
+		.unwrap();
+		KVStore::remove(
+			&kv_store,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+			false,
+		)
+		.unwrap();
+		assert!(!KVStore::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap()
+		.is_empty());
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 0);
+		assert!(KVStore::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap()
+		.is_empty());
+	}
+
+	// Confirm that reading all monitors does not remove the updates stored under a key which also
+	// has a live monitor: a live monitor can share its key with an archived entry (e.g. when a
+	// crash left the archived copy behind before the live monitor was removed) and its stored
+	// updates may still be needed.
+	#[test]
+	fn read_all_keeps_live_monitors_updates() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			100,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = MonitorName::from(monitor.get_funding_txo().0);
+		let monitor_key = monitor_name.as_str();
+
+		// Simulate a crash mid-way through archiving, which left the archived copy in place
+		// without removing the live monitor or its updates.
+		let monitor_bytes = KVStore::read(
+			&kv_store,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		KVStore::write(
+			&kv_store,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+			&monitor_bytes,
+		)
+		.unwrap();
+		assert!(!KVStore::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap()
+		.is_empty());
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		assert!(!KVStore::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap()
+		.is_empty());
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool
