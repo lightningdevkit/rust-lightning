@@ -1353,8 +1353,7 @@ impl<
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
 		let mut futures = Vec::with_capacity(monitor_list.len());
 		// The cleanup only touches keys which have no live monitor under them, so it cannot
-		// interfere with the reads below and is polled alongside them. Its result is mapped to
-		// look like a read which found no monitor, which the result handling below ignores.
+		// interfere with the reads below and is polled alongside them.
 		let cleanup = Arc::clone(&self.0);
 		futures.push(ResultFuture::Pending(self.0.future_spawner.spawn(async move {
 			cleanup.cleanup_archived_monitor_updates().await.map(|()| None)
@@ -1630,8 +1629,7 @@ impl<
 	// Archiving removes a monitor's updates as well, but stores written by prior versions may
 	// still hold updates for keys whose monitor was archived. If a new monitor is later persisted
 	// under such a key, reading it would apply the archived channel's updates onto it, so they
-	// are removed before any monitor is read. Keys which also have a live monitor are skipped, as
-	// the live monitor's stored updates may still be needed by it.
+	// are removed before any monitor is read.
 	async fn cleanup_archived_monitor_updates(&self) -> Result<(), io::Error> {
 		let archived_primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let archived_secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
