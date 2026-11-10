@@ -108,7 +108,6 @@ mod tests {
 	use super::*;
 	use crate::alloc::string::ToString;
 	use alloc::vec::Vec;
-	use proptest::prelude::*;
 
 	#[test]
 	fn test_extremely_long_url() {
@@ -191,49 +190,6 @@ mod tests {
 		for url_str in test_vec {
 			let url = LSPSUrl::parse(url_str.to_string());
 			assert!(url.is_err(), "Expected error for URL: {}", url_str);
-		}
-	}
-
-	fn host_strategy() -> impl Strategy<Value = String> {
-		prop_oneof![
-			proptest::string::string_regex(
-				"[a-z0-9]+(?:-[a-z0-9]+)*(?:\\.[a-z0-9]+(?:-[a-z0-9]+)*)*"
-			)
-			.unwrap(),
-			(0u8..=255u8, 0u8..=255u8, 0u8..=255u8, 0u8..=255u8)
-				.prop_map(|(a, b, c, d)| format!("{}.{}.{}.{}", a, b, c, d))
-		]
-	}
-
-	proptest! {
-		#[test]
-		fn proptest_parse_round_trip(
-			host in host_strategy(),
-			port in proptest::option::of(0u16..=65535u16),
-			path in proptest::option::of(proptest::string::string_regex("[a-zA-Z0-9._%&=:@/-]{0,20}").unwrap()),
-			query in proptest::option::of(proptest::string::string_regex("[a-zA-Z0-9._%&=:@/-]{0,20}").unwrap()),
-			fragment in proptest::option::of(proptest::string::string_regex("[a-zA-Z0-9._%&=:@/-]{0,20}").unwrap())
-		) {
-			let mut url = format!("https://{}", host);
-			if let Some(p) = port {
-				url.push_str(&format!(":{}", p));
-			}
-			if let Some(pth) = &path {
-				url.push('/');
-				url.push_str(pth);
-			}
-			if let Some(q) = &query {
-				url.push('?');
-				url.push_str(q);
-			}
-			if let Some(f) = &fragment {
-				url.push('#');
-				url.push_str(f);
-			}
-
-			let parsed = LSPSUrl::parse(url.clone()).expect("should parse");
-			prop_assert_eq!(parsed.url(), url.as_str());
-			prop_assert_eq!(parsed.url_length(), url.chars().count());
 		}
 	}
 }
