@@ -17055,3 +17055,99 @@ fn splice_abort_releases_wallet_utxos() {
 		.unwrap();
 	assert_eq!(claim_selection.confirmed_utxos, first.inputs());
 }
+
+#[test]
+fn test_splice_rbf_duplicate_txid_rejected() {
+	// A counterparty replaying an earlier negotiation behind a `tx_init_rbf` reconstructs a
+	// transaction we already hold as a candidate. Its fees pass the remote fee tolerance at the
+	// minimum RBF feerate, so we must abort the round on the duplicate txid.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let (acceptor, initiator) = (&nodes[0], &nodes[1]);
+	let node_id_acceptor = acceptor.node.get_our_node_id();
+	let node_id_initiator = initiator.node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 0);
+
+	let added_value = Amount::from_sat(100_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+	let feerate = 1000;
+	let funding_feerate = FeeRate::from_sat_per_kwu(feerate as u64);
+	do_initiate_splice_in_at_feerate(initiator, acceptor, channel_id, added_value, funding_feerate);
+
+	let stfu = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
+	acceptor.node.handle_stfu(node_id_initiator, &stfu);
+	let stfu = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+	initiator.node.handle_stfu(node_id_acceptor, &stfu);
+	let splice_init = get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
+	acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
+	let splice_ack = get_event_msg!(acceptor, MessageSendEvent::SendSpliceAck, node_id_initiator);
+	initiator.node.handle_splice_ack(node_id_acceptor, &splice_ack);
+
+	// Returns whether the message was the initiator's final `tx_complete`.
+	let deliver_construction_msg = |event: &MessageSendEvent| match event {
+		MessageSendEvent::SendTxAddInput { msg, .. } => {
+			acceptor.node.handle_tx_add_input(node_id_initiator, msg);
+			false
+		},
+		MessageSendEvent::SendTxAddOutput { msg, .. } => {
+			acceptor.node.handle_tx_add_output(node_id_initiator, msg);
+			false
+		},
+		MessageSendEvent::SendTxComplete { msg, .. } => {
+			acceptor.node.handle_tx_complete(node_id_initiator, msg);
+			true
+		},
+		_ => panic!("Unexpected construction message {event:?}"),
+	};
+
+	let mut construction_msgs = Vec::new();
+	loop {
+		let mut events = initiator.node.get_and_clear_pending_msg_events();
+		assert_eq!(events.len(), 1, "{events:?}");
+		let event = events.remove(0);
+		let done = deliver_construction_msg(&event);
+		construction_msgs.push(event);
+		if done {
+			break;
+		}
+		let tx_complete =
+			get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+		initiator.node.handle_tx_complete(node_id_acceptor, &tx_complete);
+	}
+	let (splice_tx, splice_locked) =
+		sign_interactive_funding_tx(SignInteractiveFundingTxArgs::new(initiator, acceptor));
+	assert!(splice_locked.is_none());
+	expect_splice_pending_event(initiator, &node_id_acceptor);
+	let splice_txid = splice_tx.compute_txid();
+
+	// Replay the negotiation as an RBF at the minimum feerate.
+	acceptor.node.handle_stfu(node_id_initiator, &msgs::Stfu { channel_id, initiator: true });
+	let _ = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
+	let tx_init_rbf = msgs::TxInitRbf {
+		channel_id,
+		locktime: splice_init.locktime,
+		feerate_sat_per_1000_weight: feerate * 25 / 24,
+		funding_output_contribution: Some(splice_init.funding_contribution_satoshis),
+	};
+	acceptor.node.handle_tx_init_rbf(node_id_initiator, &tx_init_rbf);
+	let _ = get_event_msg!(acceptor, MessageSendEvent::SendTxAckRbf, node_id_initiator);
+	for event in &construction_msgs {
+		if !deliver_construction_msg(event) {
+			let _ = get_event_msg!(acceptor, MessageSendEvent::SendTxComplete, node_id_initiator);
+		}
+	}
+
+	let tx_abort = get_event_msg!(acceptor, MessageSendEvent::SendTxAbort, node_id_initiator);
+	assert_eq!(
+		tx_abort_data(&tx_abort),
+		"Rejecting RBF attempt: Negotiated transaction duplicates a prior candidate",
+	);
+	check_added_monitors(acceptor, 0);
+	let candidates = splice_candidates(acceptor, &channel_id);
+	assert_eq!(candidates.len(), 1);
+	assert_eq!(candidate_txid(&candidates[0]), splice_txid);
+}
