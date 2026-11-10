@@ -824,10 +824,7 @@ struct Peer {
 	stashed_read_data: Option<Vec<u8>>,
 	/// A gossip message which we declined to process because the routing message handler's
 	/// processing queue was high, to be handled once the queue has drained, stored as the
-	/// plaintext bytes of the message (without its 16-byte MAC). We cannot store the ciphertext
-	/// as the decryption key stream has already been rolled past it. Any bytes which followed it
-	/// on the wire are in `stashed_read_data`, and reads from the peer are paused until both
-	/// have been processed.
+	/// plaintext bytes of the message (without its 16-byte MAC).
 	stashed_gossip_msg: Option<Vec<u8>>,
 	stashed_read_processing: bool,
 
@@ -1135,13 +1132,8 @@ pub struct PeerManager<
 	gossip_processing_backlogged: AtomicBool,
 	gossip_processing_backlog_lifted: AtomicBool,
 	/// A FIFO queue of the descriptors of peers for which we have stashed a gossip message
-	/// because the routing message handler's processing queue was high. We process their stashed
-	/// messages in the order they became blocked so that one peer cannot starve others of gossip
-	/// processing.
-	///
-	/// Entries are added when a peer becomes gossip-blocked and removed when we process its
-	/// stashed messages, so there is at most one entry per peer. Note that the mutex here must
-	/// never be held while taking a lock on a `Peer`.
+	/// because the routing message handler's processing queue was high. Note that the mutex
+	/// here must never be held while taking a lock on a `Peer`.
 	gossip_blocked_peers: Mutex<VecDeque<Descriptor>>,
 
 	node_signer: NS,
