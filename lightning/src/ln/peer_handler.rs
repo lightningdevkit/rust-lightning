@@ -1599,8 +1599,11 @@ where
 							if let Some(update_b) = update_b_option {
 								let _ = self.enqueue_message(peer, &update_b);
 							}
+							// The `short_channel_id` is peer-supplied gossip data and may be
+							// `u64::MAX`, so saturate rather than wrapping the cursor back
+							// to zero.
 							peer.sync_status = InitSyncTracker::ChannelsSyncing(
-								announce.contents.short_channel_id + 1,
+								announce.contents.short_channel_id.saturating_add(1),
 							);
 						} else {
 							peer.sync_status =
@@ -4566,6 +4569,39 @@ mod tests {
 		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 54);
 		assert_eq!(cfgs[1].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 108);
 		assert_eq!(cfgs[1].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 54);
+	}
+
+	#[test]
+	fn test_gossip_backfill_max_scid_does_not_wrap() {
+		// A channel_announcement with a short_channel_id of u64::MAX is peer-controlled gossip
+		// data, so backfilling it to a fully-syncing peer must not overflow (or wrap) the
+		// backfill cursor when it is advanced past the announcement.
+		let cfgs = create_peermgr_cfgs(2);
+		cfgs[0].routing_handler.request_full_sync.store(true, Ordering::Release);
+		cfgs[1].routing_handler.announcement_available_for_sync.store(true, Ordering::Release);
+		*cfgs[1].routing_handler.next_scid_for_sync.lock().unwrap() = Some(u64::MAX);
+		let peers = create_network(2, &cfgs);
+
+		let (mut fd_a, fd_b) = establish_connection(&peers[0], &peers[1]);
+
+		// The handshake delivers peer 0's full-sync request to peer 1, so this drains the
+		// channel messages peer 1 backfills in response.
+		peers[1].process_events();
+		let a_read_data = fd_b.outbound_data.lock().unwrap().split_off(0);
+		assert!(!a_read_data.is_empty());
+		peers[0].read_event(&mut fd_a, &a_read_data).unwrap();
+		peers[0].process_events();
+
+		// A further sync round must not send more channel messages: the cursor saturates onto
+		// the "no more channels" sentinel rather than wrapping to zero and restarting backfill.
+		peers[1].process_events();
+		let a_read_data = fd_b.outbound_data.lock().unwrap().split_off(0);
+		if !a_read_data.is_empty() {
+			peers[0].read_event(&mut fd_a, &a_read_data).unwrap();
+		}
+
+		assert_eq!(cfgs[0].routing_handler.chan_anns_recvd.load(Ordering::Acquire), 1);
+		assert_eq!(cfgs[0].routing_handler.chan_upds_recvd.load(Ordering::Acquire), 2);
 	}
 
 	#[test]

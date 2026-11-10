@@ -8,8 +8,13 @@ RUSTC_MINOR_VERSION=$(rustc --version | awk '{ split($2,a,"."); print a[2] }')
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
-	# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
-	[ "$RUSTC_MINOR_VERSION" -lt 70 ] && cargo update -p tokio --precise "1.38.1" --verbose
+	if [ "$RUSTC_MINOR_VERSION" -lt 70 ]; then
+		# Starting with version 1.39.0, the `tokio` crate has an MSRV of rustc 1.70.0
+		cargo update -p tokio --precise "1.38.1" --verbose
+	elif [ "$RUSTC_MINOR_VERSION" -lt 85 ]; then
+		# Starting with version 1.54.0, the `tokio` crate has an MSRV of rustc 1.85.
+		cargo update -p tokio --precise "1.53.3" --quiet
+	fi
 
 	# Starting with version 1.0.229, the `serde_derive` crate has an MSRV of rustc 1.71.
 	[ "$RUSTC_MINOR_VERSION" -lt 71 ] && cargo update -p serde --precise "1.0.228" --verbose

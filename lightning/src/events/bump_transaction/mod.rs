@@ -106,7 +106,7 @@ impl AnchorDescriptor {
 			)
 		} else {
 			debug_assert!(tx_params.channel_type_features.supports_anchor_zero_fee_commitments());
-			Witness::from_slice(&[&[]])
+			Witness::new()
 		}
 	}
 }
@@ -763,6 +763,7 @@ where
 			.channel_derivation_parameters
 			.transaction_parameters
 			.channel_type_features;
+		let commitment_txid = commitment_tx.compute_txid();
 		let anchor_input_witness_weight = if channel_type.supports_anchor_zero_fee_commitments() {
 			EMPTY_WITNESS_WEIGHT
 		} else {
@@ -776,7 +777,7 @@ where
 		);
 		if commitment_tx_feerate_sat_per_1000_weight >= package_target_feerate_sat_per_1000_weight {
 			log_debug!(self.logger, "Pre-signed commitment {} already has feerate {} sat/kW above required {} sat/kW, broadcasting.",
-				commitment_tx.compute_txid(), commitment_tx_feerate_sat_per_1000_weight,
+				commitment_txid, commitment_tx_feerate_sat_per_1000_weight,
 				package_target_feerate_sat_per_1000_weight);
 			self.broadcaster.broadcast_transactions(&[&commitment_tx]);
 			return Ok(());
@@ -821,7 +822,21 @@ where
 					// increase the max_tx_weight by the same delta here.
 					+ commitment_tx_weight,
 				)
-				.await?;
+				.await
+				.map_err(|()| {
+					// Keyed-anchor commitments may still confirm using their
+					// existing fees. Zero-fee commitments require a funded
+					// child to be relayed.
+					if channel_type.supports_anchors_zero_fee_htlc_tx() {
+						log_warn!(
+							self.logger,
+							"Funding the anchor child transaction failed; broadcasting pre-signed commitment {} at its own feerate of {} sat/kW",
+							commitment_txid,
+							commitment_tx_feerate_sat_per_1000_weight,
+						);
+						self.broadcaster.broadcast_transactions(&[&commitment_tx]);
+					}
+				})?;
 
 			let version = if channel_type.supports_anchor_zero_fee_commitments() {
 				Version::non_standard(3)
@@ -943,7 +958,7 @@ where
 				self.logger,
 				"Broadcasting anchor transaction {} to bump channel close with txid {}",
 				anchor_txid,
-				commitment_tx.compute_txid()
+				commitment_txid,
 			);
 			self.broadcaster.broadcast_transactions(&[&commitment_tx, &anchor_tx]);
 			return Ok(());
@@ -1406,5 +1421,25 @@ mod tests {
 		};
 
 		assert_eq!(anchor_descriptor.previous_utxo().script_pubkey, expected_script_pubkey);
+	}
+
+	#[test]
+	fn test_anchor_descriptor_p2a_witness_is_empty() {
+		let mut transaction_parameters = ChannelTransactionParameters::test_dummy(42_000_000);
+		transaction_parameters.channel_type_features =
+			ChannelTypeFeatures::anchors_zero_fee_commitments();
+
+		let anchor_descriptor = AnchorDescriptor {
+			channel_derivation_parameters: ChannelDerivationParameters {
+				value_satoshis: 42_000_000,
+				keys_id: [42; 32],
+				transaction_parameters,
+			},
+			outpoint: OutPoint::null(),
+			value: Amount::from_sat(ANCHOR_OUTPUT_VALUE_SATOSHI),
+		};
+
+		let dummy_sig = secp256k1::ecdsa::Signature::from_compact(&[1; 64]).unwrap();
+		assert!(anchor_descriptor.tx_input_witness(&dummy_sig).is_empty());
 	}
 }

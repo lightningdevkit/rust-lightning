@@ -751,6 +751,57 @@ impl<ChannelSigner: EcdsaChannelSigner> OnchainTxHandler<ChannelSigner> {
 		found_claim
 	}
 
+	/// Stops claiming `spent_outpoints`, which must be spent by transactions with at least
+	/// [`ANTI_REORG_DELAY`] confirmations. A pending claim which also spends other outpoints is
+	/// rebuilt without the spent ones once `cur_height` is passed to
+	/// [`Self::update_claims_view_from_matched_txn`].
+	pub(super) fn abandon_spent_outpoints<I: IntoIterator<Item = BitcoinOutPoint>, L: Logger>(
+		&mut self, spent_outpoints: I, cur_height: u32, logger: &L,
+	) {
+		for outpoint in spent_outpoints {
+			if let Some((claim_id, _)) = self.claimable_outpoints.get(&outpoint).copied() {
+				// An outpoint which was split out of a claim maps to it until its spend has
+				// `ANTI_REORG_DELAY` confirmations, so check that the claim still spends it.
+				let claim = self.pending_claim_requests.get_mut(&claim_id);
+				if let Some(claim) = claim.filter(|claim| claim.outpoints().contains(&&outpoint)) {
+					log_info!(
+						logger,
+						"Abandoning claim of irrevocably spent outpoint {}",
+						outpoint
+					);
+					self.pending_claim_events.retain(|(id, _)| *id != claim_id);
+					if claim.outpoints().len() == 1 {
+						self.pending_claim_requests.remove(&claim_id);
+						// Outpoints which were split out of the claim can still map to it.
+						self.claimable_outpoints.retain(|_, (id, _)| *id != claim_id);
+					} else {
+						claim.split_package(&outpoint);
+						claim.set_timer(cur_height);
+						self.claimable_outpoints.remove(&outpoint);
+					}
+				}
+			}
+			self.locktimed_packages.retain(|_, claims| {
+				claims.retain_mut(|claim| {
+					if !claim.outpoints().contains(&&outpoint) {
+						return true;
+					}
+					log_info!(
+						logger,
+						"Abandoning claim of irrevocably spent outpoint {}",
+						outpoint
+					);
+					if claim.outpoints().len() == 1 {
+						return false;
+					}
+					claim.split_package(&outpoint);
+					true
+				});
+				!claims.is_empty()
+			});
+		}
+	}
+
 	/// Upon channelmonitor.block_connected(..) or upon provision of a preimage on the forward link
 	/// for this channel, provide new relevant on-chain transactions and/or new claim requests.
 	/// Together with `update_claims_view_from_matched_txn` this used to be named

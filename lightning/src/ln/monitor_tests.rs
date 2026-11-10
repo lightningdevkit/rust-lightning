@@ -4029,3 +4029,160 @@ fn test_ladder_preimage_htlc_claims() {
 	expect_payment_sent(&nodes[0], payment_preimage2, None, true, false);
 	check_added_monitors(&nodes[0], 1);
 }
+
+fn do_test_no_claim_for_resolved_holder_htlc_output(p2a_anchor: bool) {
+	// Test that once our counterparty's claim of an HTLC output on our confirmed commitment
+	// transaction is irrevocably confirmed, we never try to claim that output again, even after a
+	// preimage for another HTLC makes us rebuild the claims for the commitment transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = !p2a_anchor;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	config.manually_accept_inbound_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let (_, _, _, chan_id, funding_tx) =
+		create_chan_between_nodes_with_value(&nodes[0], &nodes[1], 1_000_000, 500_000_000);
+
+	// B claims the HTLC we offer, but we never learn its preimage off-chain.
+	let (outbound_preimage, outbound_hash, ..) = route_payment(&nodes[0], &[&nodes[1]], 10_000_000);
+	let outbound_htlc_expiry = nodes[0].best_block_info().1 + TEST_FINAL_CLTV + 1;
+	let (inbound_preimage, inbound_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], 20_000_000);
+	nodes[1].node.claim_funds(outbound_preimage);
+	check_added_monitors(&nodes[1], 1);
+	expect_payment_claimed!(nodes[1], outbound_hash, 10_000_000);
+	get_htlc_update_msgs(&nodes[1], &node_a_id);
+
+	let commitment_tx = get_local_commitment_txn!(&nodes[0], chan_id).pop().unwrap();
+	check_spends!(commitment_tx, funding_tx);
+	mine_transaction(&nodes[0], &commitment_tx);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, &[node_b_id], 1_000_000);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+	mine_transaction(&nodes[1], &commitment_tx);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, false, &[node_a_id], 1_000_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	let mut bs_txn = nodes[1].tx_broadcaster.txn_broadcast();
+	bs_txn.retain(|tx| tx.input[0].previous_output.txid == commitment_tx.compute_txid());
+	assert_eq!(bs_txn.len(), 1);
+	let bs_preimage_claim = bs_txn.pop().unwrap();
+	check_spends!(bs_preimage_claim, commitment_tx);
+	mine_transaction(&nodes[0], &bs_preimage_claim);
+	expect_payment_sent(&nodes[0], outbound_preimage, None, true, true);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	// Claiming the HTLC we received rebuilds the claims for the HTLC outputs of our commitment
+	// transaction. Only the received HTLC gets a claim.
+	nodes[0].node.claim_funds(inbound_preimage);
+	check_added_monitors(&nodes[0], 1);
+	expect_payment_claimed!(nodes[0], inbound_hash, 20_000_000);
+	let mut events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match events.pop().unwrap() {
+		Event::BumpTransaction(event) => nodes[0].bump_tx_handler.handle_event(&event),
+		event => panic!("Unexpected event {event:?}"),
+	}
+	let htlc_success_tx = nodes[0].tx_broadcaster.txn_broadcast().pop().unwrap();
+	check_spends!(htlc_success_tx, commitment_tx, coinbase_tx);
+	mine_transaction(&nodes[0], &htlc_success_tx);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+
+	// When the HTLC we offered expires, we must not try to claim its output, which B spent.
+	connect_blocks(&nodes[0], outbound_htlc_expiry - nodes[0].best_block_info().1);
+	let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert!(events.is_empty(), "{events:?}");
+	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
+	let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert!(events.is_empty(), "{events:?}");
+	assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+}
+
+#[test]
+fn test_no_claim_for_resolved_holder_htlc_output() {
+	do_test_no_claim_for_resolved_holder_htlc_output(false);
+	do_test_no_claim_for_resolved_holder_htlc_output(true);
+}
+
+fn do_test_claim_split_from_resolved_holder_htlc_output(p2a_anchor: bool) {
+	// Test that once our HTLC-Success transaction for an HTLC output on our confirmed commitment
+	// transaction is irrevocably confirmed, a later preimage for another HTLC only makes us claim
+	// that other HTLC's output.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = !p2a_anchor;
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = p2a_anchor;
+	config.manually_accept_inbound_channels = true;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let coinbase_tx = provide_anchor_reserves(&nodes);
+	let (_, _, _, chan_id, _) =
+		create_chan_between_nodes_with_value(&nodes[0], &nodes[1], 1_000_000, 500_000_000);
+	let (first_preimage, first_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], 10_000_000);
+	let (second_preimage, second_hash, ..) = route_payment(&nodes[1], &[&nodes[0]], 20_000_000);
+
+	let commitment_tx = get_local_commitment_txn!(&nodes[0], chan_id).pop().unwrap();
+	mine_transaction(&nodes[0], &commitment_tx);
+	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, &[node_b_id], 1_000_000);
+	check_closed_broadcast(&nodes[0], 1, true);
+	check_added_monitors(&nodes[0], 1);
+
+	nodes[0].node.claim_funds(first_preimage);
+	check_added_monitors(&nodes[0], 1);
+	expect_payment_claimed!(nodes[0], first_hash, 10_000_000);
+	let mut events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match events.pop().unwrap() {
+		Event::BumpTransaction(event) => nodes[0].bump_tx_handler.handle_event(&event),
+		event => panic!("Unexpected event {event:?}"),
+	}
+	let first_htlc_success_tx = nodes[0].tx_broadcaster.txn_broadcast().pop().unwrap();
+	check_spends!(first_htlc_success_tx, commitment_tx, coinbase_tx);
+	mine_transaction(&nodes[0], &first_htlc_success_tx);
+	connect_blocks(&nodes[0], ANTI_REORG_DELAY - 1);
+	assert!(nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events().is_empty());
+
+	// After the next block, the claim must only spend the second HTLC's output.
+	nodes[0].node.claim_funds(second_preimage);
+	check_added_monitors(&nodes[0], 1);
+	expect_payment_claimed!(nodes[0], second_hash, 20_000_000);
+	nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().clear();
+
+	connect_blocks(&nodes[0], 1);
+	nodes[0].chain_monitor.chain_monitor.rebroadcast_pending_claims();
+	let mut events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1, "{events:?}");
+	match events.pop().unwrap() {
+		Event::BumpTransaction(event) => {
+			if let BumpTransactionEvent::HTLCResolution { htlc_descriptors, .. } = &event {
+				assert_eq!(htlc_descriptors.len(), 1, "{htlc_descriptors:?}");
+				assert_eq!(htlc_descriptors[0].htlc.payment_hash, second_hash);
+			} else {
+				panic!("Unexpected event {event:?}");
+			}
+			nodes[0].bump_tx_handler.handle_event(&event);
+		},
+		event => panic!("Unexpected event {event:?}"),
+	}
+	let second_htlc_success_tx = nodes[0].tx_broadcaster.txn_broadcast().pop().unwrap();
+	check_spends!(second_htlc_success_tx, commitment_tx, coinbase_tx, first_htlc_success_tx);
+	let first_htlc_outpoint = first_htlc_success_tx.input[0].previous_output;
+	assert!(second_htlc_success_tx.input.iter().all(|i| i.previous_output != first_htlc_outpoint));
+}
+
+#[test]
+fn test_claim_split_from_resolved_holder_htlc_output() {
+	do_test_claim_split_from_resolved_holder_htlc_output(false);
+	do_test_claim_split_from_resolved_holder_htlc_output(true);
+}

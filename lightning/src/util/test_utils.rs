@@ -1497,6 +1497,9 @@ pub struct TestRoutingMessageHandler {
 	pub pending_events: Mutex<Vec<MessageSendEvent>>,
 	pub request_full_sync: AtomicBool,
 	pub announcement_available_for_sync: AtomicBool,
+	/// Overrides the `short_channel_id` of the announcement served by
+	/// [`msgs::RoutingMessageHandler::get_next_channel_announcement`], if set.
+	pub next_scid_for_sync: Mutex<Option<u64>>,
 	pub conn_tracker: ConnectionTracker,
 }
 
@@ -1509,6 +1512,7 @@ impl TestRoutingMessageHandler {
 			pending_events,
 			request_full_sync: AtomicBool::new(false),
 			announcement_available_for_sync: AtomicBool::new(false),
+			next_scid_for_sync: Mutex::new(None),
 			conn_tracker: ConnectionTracker::new(),
 		}
 	}
@@ -1536,9 +1540,11 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	) -> Option<(msgs::ChannelAnnouncement, Option<msgs::ChannelUpdate>, Option<msgs::ChannelUpdate>)>
 	{
 		if self.announcement_available_for_sync.load(Ordering::Acquire) {
-			let chan_upd_1 = get_dummy_channel_update(starting_point);
-			let chan_upd_2 = get_dummy_channel_update(starting_point);
-			let chan_ann = get_dummy_channel_announcement(starting_point);
+			let short_channel_id =
+				self.next_scid_for_sync.lock().unwrap().unwrap_or(starting_point);
+			let chan_upd_1 = get_dummy_channel_update(short_channel_id);
+			let chan_upd_2 = get_dummy_channel_update(short_channel_id);
+			let chan_ann = get_dummy_channel_announcement(short_channel_id);
 
 			Some((chan_ann, Some(chan_upd_1), Some(chan_upd_2)))
 		} else {

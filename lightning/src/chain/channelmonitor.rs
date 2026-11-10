@@ -3818,6 +3818,19 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 		Ok(())
 	}
 
+	/// Returns the txid of the confirmed transaction which spends the funding output and, if it
+	/// has not reached its confirmation threshold yet, the height at which it confirmed.
+	fn confirmed_funding_spend(&self) -> Option<(Txid, Option<u32>)> {
+		self.funding_spend_confirmed.map(|txid| (txid, None)).or_else(|| {
+			self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
+				OnchainEvent::FundingSpendConfirmation { .. } => {
+					Some((event.txid, Some(event.height)))
+				},
+				_ => None,
+			})
+		})
+	}
+
 	/// Provides a payment_hash->payment_preimage mapping. Will be automatically pruned when all
 	/// commitment_tx_infos which contain the payment hash have been revoked.
 	///
@@ -3843,16 +3856,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				(payment_preimage.clone(), payment_info.clone().into_iter().collect())
 			});
 
-		let confirmed_spend_info = self.funding_spend_confirmed
-			.map(|txid| (txid, None))
-			.or_else(|| {
-				self.onchain_events_awaiting_threshold_conf.iter().find_map(|event| match event.event {
-					OnchainEvent::FundingSpendConfirmation { .. } => Some((event.txid, Some(event.height))),
-					_ => None,
-				})
-			});
 		let (confirmed_spend_txid, confirmed_spend_height) =
-			if let Some((txid, height)) = confirmed_spend_info {
+			if let Some((txid, height)) = self.confirmed_funding_spend() {
 				(txid, height)
 			} else {
 				return;
@@ -5906,6 +5911,27 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			}
 		}
 
+		// Claims of irrevocably spent HTLC outputs can never confirm.
+		if let Some((txid, _)) = self.confirmed_funding_spend() {
+			let best_height = self.best_block.height;
+			let resolved_outputs = self.htlcs_resolved_on_chain.iter()
+				.filter_map(|htlc| htlc.commitment_tx_output_idx);
+			// An HTLC spend which waits for a CSV delay is irrevocable after `ANTI_REORG_DELAY`
+			// confirmations, before it reaches `htlcs_resolved_on_chain`.
+			let irrevocably_spent_outputs = self.onchain_events_awaiting_threshold_conf.iter()
+				.filter_map(|entry| match entry.event {
+					OnchainEvent::HTLCSpendConfirmation { commitment_tx_output_idx, .. }
+						if entry.height + ANTI_REORG_DELAY - 1 <= best_height =>
+					{
+						Some(commitment_tx_output_idx)
+					},
+					_ => None,
+				});
+			let spent_outpoints = resolved_outputs.chain(irrevocably_spent_outputs)
+				.map(|vout| BitcoinOutPoint { txid, vout });
+			self.onchain_tx_handler.abandon_spent_outpoints(spent_outpoints, best_height, logger);
+		}
+
 		let conf_target = self.closure_conf_target();
 		self.onchain_tx_handler.update_claims_view_from_requests(
 			claimable_outpoints, conf_height, self.best_block.height, broadcaster, conf_target,
@@ -6385,6 +6411,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 	fn get_spendable_outputs(&self, funding_spent: &FundingScope, tx: &Transaction) -> Vec<SpendableOutputDescriptor> {
 		let mut spendable_outputs = Vec::new();
 		for (i, outp) in tx.output.iter().enumerate() {
+			// Spendable output descriptors cannot represent indices larger than u16::MAX.
+			if i > u16::MAX as usize { break; }
 			if outp.script_pubkey == self.destination_script {
 				spendable_outputs.push(SpendableOutputDescriptor::StaticOutput {
 					outpoint: OutPoint { txid: tx.compute_txid(), index: i as u16 },

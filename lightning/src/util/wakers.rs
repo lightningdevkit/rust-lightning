@@ -132,7 +132,10 @@ pub(crate) struct FutureState {
 	// setting `callbacks_made` itself).
 	callbacks: Vec<Box<dyn FutureCallback>>,
 	std_future_callbacks: Vec<(usize, StdWaker)>,
-	callbacks_with_state: Vec<Box<dyn Fn(&Arc<Mutex<FutureState>>) -> () + Send>>,
+	// `callbacks_with_state` entries are tagged with the address of the `Sleeper` wait which
+	// installed them. That address is unique among installed callbacks, as a wait keeps the
+	// tagged allocation alive until it has removed its callbacks.
+	callbacks_with_state: Vec<(usize, Box<dyn Fn(&Arc<Mutex<FutureState>>) -> () + Send>)>,
 	complete: bool,
 	callbacks_made: bool,
 	next_idx: usize,
@@ -148,7 +151,7 @@ fn complete_future(this: &Arc<Mutex<FutureState>>) -> bool {
 	for (_, waker) in state.std_future_callbacks.drain(..) {
 		waker.0.wake();
 	}
-	for callback in state.callbacks_with_state.drain(..) {
+	for (_, callback) in state.callbacks_with_state.drain(..) {
 		(callback)(this);
 	}
 	state.complete = true;
@@ -291,6 +294,7 @@ impl Sleeper {
 	fn setup_wait(&self) -> (Arc<Condvar>, Arc<Mutex<Option<Arc<Mutex<FutureState>>>>>) {
 		let cv = Arc::new(Condvar::new());
 		let notified_fut_mtx = Arc::new(Mutex::new(None));
+		let wait_id = Arc::as_ptr(&notified_fut_mtx) as usize;
 		{
 			for notifier_mtx in self.notifiers.iter() {
 				let cv_ref = Arc::clone(&cv);
@@ -300,13 +304,27 @@ impl Sleeper {
 					*notified_fut_mtx.lock().unwrap() = Some(Arc::clone(&notifier_mtx));
 					break;
 				}
-				notifier.callbacks_with_state.push(Box::new(move |notifier_ref| {
-					*notified_fut_ref.lock().unwrap() = Some(Arc::clone(notifier_ref));
-					cv_ref.notify_all();
-				}));
+				notifier.callbacks_with_state.push((
+					wait_id,
+					Box::new(move |notifier_ref| {
+						*notified_fut_ref.lock().unwrap() = Some(Arc::clone(notifier_ref));
+						cv_ref.notify_all();
+					}),
+				));
 			}
 		}
 		(cv, notified_fut_mtx)
+	}
+
+	/// Removes the callbacks which [`Self::setup_wait`] installed on the futures which did not
+	/// wake us, ensuring they do not accumulate across waits on futures which never complete.
+	fn remove_wait_callbacks(
+		&self, notified_fut_mtx: &Arc<Mutex<Option<Arc<Mutex<FutureState>>>>>,
+	) {
+		let wait_id = Arc::as_ptr(notified_fut_mtx) as usize;
+		for notifier_mtx in self.notifiers.iter() {
+			notifier_mtx.lock().unwrap().callbacks_with_state.retain(|(id, _)| *id != wait_id);
+		}
 	}
 
 	/// Wait until one of the [`Future`]s registered with this [`Sleeper`] has completed.
@@ -318,6 +336,7 @@ impl Sleeper {
 			.take()
 			.expect("CV wait shouldn't have returned until the notifying future was set");
 		notified_fut.lock().unwrap().callbacks_made = true;
+		self.remove_wait_callbacks(&notified_fut_mtx);
 	}
 
 	/// Wait until one of the [`Future`]s registered with this [`Sleeper`] has completed or the
@@ -329,13 +348,20 @@ impl Sleeper {
 			match cv.wait_timeout_while(notified_fut_mtx.lock().unwrap(), max_wait, |fut_opt| {
 				fut_opt.is_none()
 			}) {
-				Ok((_, e)) if e.timed_out() => return false,
+				Ok((notified_fut, e)) if e.timed_out() => {
+					// The lock must be dropped before we remove the callbacks, as one of them
+					// may fire concurrently and take it while we hold a future state's lock.
+					mem::drop(notified_fut);
+					self.remove_wait_callbacks(&notified_fut_mtx);
+					return false;
+				},
 				Ok((mut notified_fut, _)) => notified_fut
 					.take()
 					.expect("CV wait shouldn't have returned until the notifying future was set"),
 				Err(_) => panic!("Previous panic while a lock was held led to a lock panic"),
 			};
 		notified_fut.lock().unwrap().callbacks_made = true;
+		self.remove_wait_callbacks(&notified_fut_mtx);
 		true
 	}
 }
@@ -791,6 +817,29 @@ mod tests {
 		Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future()).wait();
 		assert!(!Sleeper::from_two_futures(&notifier_a.get_future(), &notifier_b.get_future())
 			.wait_timeout(Duration::from_millis(10)));
+	}
+
+	#[test]
+	#[cfg(feature = "std")]
+	fn sleeper_cleans_callbacks_for_non_waking_futures() {
+		// Tests that the callbacks a `Sleeper` installs on the futures which did not wake it are
+		// dropped once the wait returns, rather than accumulating one per wait on each future
+		// which never completes.
+		let notifier_a = Notifier::new();
+		let notifier_b = Notifier::new();
+		let notifier_b_state = Arc::clone(&notifier_b.get_future().state);
+
+		for _ in 0..3 {
+			notifier_a.notify();
+			assert!(Sleeper::from_two_futures(&notifier_b.get_future(), &notifier_a.get_future())
+				.wait_timeout(Duration::from_millis(1)));
+			assert!(notifier_b_state.lock().unwrap().callbacks_with_state.is_empty());
+		}
+
+		// The same applies if the wait times out without any future waking us.
+		assert!(!Sleeper::from_single_future(&notifier_b.get_future())
+			.wait_timeout(Duration::from_millis(1)));
+		assert!(notifier_b_state.lock().unwrap().callbacks_with_state.is_empty());
 	}
 
 	#[test]
