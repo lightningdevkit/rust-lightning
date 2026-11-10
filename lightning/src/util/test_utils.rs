@@ -1653,6 +1653,8 @@ pub struct TestRoutingMessageHandler {
 	/// Overrides the `short_channel_id` of the announcement served by
 	/// [`msgs::RoutingMessageHandler::get_next_channel_announcement`], if set.
 	pub next_scid_for_sync: Mutex<Option<u64>>,
+	/// When set, [`msgs::RoutingMessageHandler::processing_queue_high`] returns `true`.
+	pub gossip_backlogged: AtomicBool,
 	pub conn_tracker: ConnectionTracker,
 }
 
@@ -1666,6 +1668,7 @@ impl TestRoutingMessageHandler {
 			request_full_sync: AtomicBool::new(false),
 			announcement_available_for_sync: AtomicBool::new(false),
 			next_scid_for_sync: Mutex::new(None),
+			gossip_backlogged: AtomicBool::new(false),
 			conn_tracker: ConnectionTracker::new(),
 		}
 	}
@@ -1736,7 +1739,7 @@ impl msgs::RoutingMessageHandler for TestRoutingMessageHandler {
 	}
 
 	fn processing_queue_high(&self) -> bool {
-		false
+		self.gossip_backlogged.load(Ordering::Relaxed)
 	}
 }
 
