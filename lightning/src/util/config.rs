@@ -27,7 +27,11 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// Also used when splicing the channel for the number of confirmations needed before sending a
 	/// `splice_locked` message to the counterparty. The spliced funds are considered locked in when
-	/// both parties have exchanged `splice_locked`.
+	/// both parties have exchanged `splice_locked`. Splices use the value in effect when the splice
+	/// is negotiated, rather than the value configured when the channel was opened, so updating
+	/// this via [`ChannelManager::set_current_config`] affects splices on existing channels, too.
+	/// Zero-confirmation splices are only possible on channels accepted from a trusted peer with
+	/// zero confirmations via [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`].
 	///
 	/// A lower-bound of `1` is applied, requiring all channels to have a confirmed commitment
 	/// transaction before operation. If you wish to accept channels with zero confirmations, see
@@ -38,6 +42,7 @@ pub struct ChannelHandshakeConfig {
 	///
 	/// [`ChannelManager::accept_inbound_channel`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel
 	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf
+	/// [`ChannelManager::set_current_config`]: crate::ln::channelmanager::ChannelManager::set_current_config
 	pub minimum_depth: u32,
 	/// Set to the number of blocks we require our counterparty to wait to claim their money (ie
 	/// the number of blocks we have to punish our counterparty if they broadcast a revoked
@@ -351,7 +356,16 @@ pub struct ChannelHandshakeLimits {
 	/// Thus, this effectively acts as a `min_minimum_depth`, with the only possible values being
 	/// `true` (`0`) and `false` (`1`).
 	///
+	/// This only applies to the initial funding transaction of a channel. Splices are never
+	/// covered by this trust and always require
+	/// [`ChannelHandshakeConfig::minimum_depth`] confirmations, unless the channel was accepted
+	/// from a trusted peer with zero confirmations via
+	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`], in which case splices on the
+	/// channel may also lock in with zero confirmations.
+	///
 	/// Default value: `true`
+	///
+	/// [`ChannelManager::accept_inbound_channel_from_trusted_peer_0conf`]: crate::ln::channelmanager::ChannelManager::accept_inbound_channel_from_trusted_peer_0conf
 	pub trust_own_funding_0conf: bool,
 	/// Set to force an incoming channel to match our announced channel preference in
 	/// [`ChannelHandshakeConfig::announce_for_forwarding`].

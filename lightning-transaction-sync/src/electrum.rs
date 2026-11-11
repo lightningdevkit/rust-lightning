@@ -277,18 +277,6 @@ where
 		for (txid, watch_script_pubkeys) in &sync_state.watched_transactions {
 			match self.client.transaction_get(&txid) {
 				Ok(tx) => {
-					// Bitcoin Core's Merkle tree implementation has no way to discern between
-					// internal and leaf node entries. As a consequence it is susceptible to an
-					// attacker injecting additional transactions by crafting 64-byte
-					// transactions matching an inner Merkle node's hash (see
-					// https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
-					// To protect against this (highly unlikely) attack vector, we check that the
-					// transaction is at least 65 bytes in length.
-					if tx.total_size() == 64 {
-						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
-						continue;
-					}
-
 					watched_txs.push((txid, tx.clone()));
 					// We watch an output's script_pubkey of the transaction of interest in order
 					// to retrieve the associated script history, before narrowing down our search
@@ -324,12 +312,15 @@ where
 		let num_tx_lookups = watched_script_pubkeys.len();
 		debug_assert_eq!(num_tx_lookups, watched_txs.len());
 
-		for output in sync_state.watched_outputs.values() {
-			watched_script_pubkeys.push(output.script_pubkey.clone());
+		for script_pubkey in sync_state.watched_outputs.values().flatten() {
+			watched_script_pubkeys.push(script_pubkey.clone());
 		}
 
 		let num_output_spend_lookups = watched_script_pubkeys.len() - num_tx_lookups;
-		debug_assert_eq!(num_output_spend_lookups, sync_state.watched_outputs.len());
+		debug_assert_eq!(
+			num_output_spend_lookups,
+			sync_state.watched_outputs.values().flatten().count()
+		);
 
 		match self.client.batch_script_get_history(watched_script_pubkeys.iter().map(|s| s.deref()))
 		{
@@ -363,9 +354,11 @@ where
 					}
 				}
 
-				for (watched_output, script_history) in
-					sync_state.watched_outputs.values().zip(output_results)
-				{
+				let watched_outpoints =
+					sync_state.watched_outputs.iter().flat_map(|(outpoint, script_pubkeys)| {
+						script_pubkeys.iter().map(move |_| outpoint)
+					});
+				for (watched_outpoint, script_history) in watched_outpoints.zip(output_results) {
 					for possible_output_spend in script_history {
 						if possible_output_spend.height <= 0 {
 							// Skip if it's a an unconfirmed entry.
@@ -381,9 +374,7 @@ where
 							Ok(tx) => {
 								let mut is_spend = false;
 								for txin in &tx.input {
-									let watched_outpoint =
-										watched_output.outpoint.into_bitcoin_outpoint();
-									if txin.previous_output == watched_outpoint {
+									if txin.previous_output == *watched_outpoint {
 										is_spend = true;
 										break;
 									}
@@ -530,6 +521,10 @@ where
 
 	fn register_output(&self, output: WatchedOutput) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.outputs.insert(output.outpoint.into_bitcoin_outpoint(), output);
+		locked_queue
+			.outputs
+			.entry(output.outpoint.into_bitcoin_outpoint())
+			.or_default()
+			.insert(output.script_pubkey);
 	}
 }

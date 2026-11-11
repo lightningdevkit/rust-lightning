@@ -1,6 +1,8 @@
-# 0.2.8 - XXX, 2026 - "Rising Tide"
+# 0.2.8 - Nov 10, 2026 - "Rising Tide"
 
 ## API Updates
+ * Due to a gap in the defined APIs, it is now no longer possible to accept a
+   splice with zero confirmations on an outbound channel (#5563).
  * `RouteHop::maybe_announced_channel` is now `false` for route hint hops which
    do not match a known public channel, even if the hop's endpoints share a
    public channel (#5503).
@@ -41,8 +43,28 @@
    in the recovered payee, no longer compare as equal via `Ord` (#5516).
 
 ## Security
-0.2.8 fixes XXX
+0.2.8 fixes several funds-loss vulnerabilities for nodes with untrusted
+counterparties, a fee-overpayment vulnerability for nodes paying static BOLT 12
+invoices, as well as several DoS vulnerabilities for nodes acting as an
+LSPS2 service or with untrusted counterparties.
 
+ * A malicious counterparty can no longer cause LDK to fail to claim a forwarded
+   HTLC on a force-closed channel by re-using the channel_id (#5562).
+ * Splices on outbound channels initially opened with
+   `ChannelHandshakeLimits::trust_own_funding_0conf` set no longer spuriously
+   confirm with zero confirmations (#5563).
+ * A malicious peer can no longer prevent LDK from detecting relevant on-chain
+   transactions when syncing the chain using electrum (#5557).
+ * Paying a static BOLT 12 invoice through a malicious node no longer spuriously
+   ignores the default fee limits when they are not overridden (#5558).
+ * A malicious counterparty can no longer cause LDK to sign differing commitment
+   transactions at the same index, leading to potential loss of funds when using
+   async signing or async persistence (#5561).
+ * Nonstandard transactions that are exactly 64 bytes are no longer ignored in
+   electrum and esplora sync, preventing funds theft via HTLC claims (#5559).
+ * A malicious counterparty spending the P2A output in a zero-fee-commitment
+   channel with a nonstandard padded witness can no longer cause LDK to not
+   claim other outputs on the commitment transaction (#5560).
  * Multiple payments for the same payment hash can no longer cause LDK to
    generate a spurious `PaymentClaimed` event or fail to deserialize the
    `ChannelManager` in rare cases on startup (#5541).

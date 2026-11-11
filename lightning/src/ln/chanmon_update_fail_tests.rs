@@ -4545,6 +4545,104 @@ fn test_claim_to_closed_channel_blocks_forwarded_preimage_removal() {
 }
 
 #[test]
+fn test_claim_to_closed_channel_with_reused_temporary_channel_id() {
+	// A new, unfunded channel may sit in `channel_by_id` under the ID of a closed channel if that
+	// ID is reused as the `temporary_channel_id`. We reject such `open_channel`s from our
+	// counterparty as we may still need to update the closed channel's `ChannelMonitor`, but if
+	// an unfunded channel shares its ID anyway, previously, when we then had to claim an HTLC
+	// which had been received on the closed channel we'd find the unfunded channel, conclude
+	// there was nothing to do, and never write the preimage to the closed channel's
+	// `ChannelMonitor`, losing the HTLC once it timed out on-chain.
+	// This tests that we reject such `open_channel`s, and that claims still reach the closed
+	// channel's `ChannelMonitor` if an unfunded channel shares its ID anyway.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let legacy_cfg = test_default_channel_config();
+	let node_chanmgrs =
+		create_node_chanmgrs(3, &node_cfgs, &[Some(legacy_cfg.clone()), Some(legacy_cfg), None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+
+	// First open channels, route a payment, and force-close the first hop.
+	let chan_a =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 500_000_000);
+	let chan_b =
+		create_announced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 500_000_000);
+
+	let (payment_preimage, payment_hash, ..) =
+		route_payment(&nodes[0], &[&nodes[1], &nodes[2]], 1_000_000);
+
+	let message = "Channel force-closed".to_owned();
+	nodes[0]
+		.node
+		.force_close_broadcasting_latest_txn(&chan_a.2, &node_b_id, message.clone())
+		.unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let a_reason = ClosureReason::HolderForceClosed { broadcasted_latest_txn: Some(true), message };
+	check_closed_event(&nodes[0], 1, a_reason, false, &[node_b_id], 1000000);
+	check_closed_broadcast(&nodes[0], 1, true);
+
+	let as_commit_tx = nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0);
+	assert_eq!(as_commit_tx.len(), 1);
+
+	mine_transaction(&nodes[1], &as_commit_tx[0]);
+	let b_reason = ClosureReason::CommitmentTxConfirmed;
+	check_closed_event(&nodes[1], 1, b_reason, false, &[node_a_id], 1000000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	// Now have A try to open a new channel with B, reusing the closed channel's ID as the
+	// `temporary_channel_id`. B should reject it as it may still need to update the closed
+	// channel's `ChannelMonitor`.
+	nodes[0].node.create_channel(node_b_id, 100_000, 0, 42, Some(chan_a.2), None).unwrap();
+	let open_channel = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	nodes[1].node.handle_open_channel(node_a_id, &open_channel);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError {
+			action: msgs::ErrorAction::SendErrorMessage { msg },
+			node_id,
+		} => {
+			assert_eq!(*node_id, node_a_id);
+			assert_eq!(msg.channel_id, chan_a.2);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Still, have B itself open a new (never funded) channel to A under the closed channel's ID
+	// so that an unfunded channel sits in `channel_by_id` under that ID.
+	nodes[1].node.create_channel(node_a_id, 100_000, 0, 42, Some(chan_a.2), None).unwrap();
+	get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
+
+	// Claim the payment on C and give B the preimage for it. B must write the preimage to the
+	// closed channel A's `ChannelMonitor` (rather than doing nothing because it found the
+	// unfunded channel under the same ID), and release the `Event::PaymentForwarded` once it
+	// has.
+	nodes[2].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[2], 1);
+	expect_payment_claimed!(nodes[2], payment_hash, 1_000_000);
+
+	let mut updates = get_htlc_update_msgs(&nodes[2], &node_b_id);
+	nodes[1].node.handle_update_fulfill_htlc(node_c_id, updates.update_fulfill_htlcs.remove(0));
+	check_added_monitors(&nodes[1], 1);
+	assert!(get_monitor!(nodes[1], chan_a.2).get_stored_preimages().contains_key(&payment_hash));
+	expect_payment_forwarded!(nodes[1], nodes[0], nodes[2], None, true, false);
+
+	// With the preimage durably in channel A's `ChannelMonitor` the RAA for channel B is no
+	// longer blocked and we can let the preimage go from channel B's `ChannelMonitor`.
+	do_commitment_signed_dance(&nodes[1], &nodes[2], &updates.commitment_signed, false, false);
+	assert!(!get_monitor!(nodes[1], chan_b.2)
+		.get_all_current_outbound_htlcs()
+		.iter()
+		.any(|(_, (_, preimage))| *preimage == Some(payment_preimage)));
+}
+
+#[test]
 fn test_claim_to_closed_channel_blocks_claimed_event() {
 	// One of the last features for async persistence we implemented was the correct blocking of
 	// event(s) until the preimage for a claimed HTLC is durably on disk in a ChannelMonitor for a

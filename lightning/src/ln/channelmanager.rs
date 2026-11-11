@@ -9230,8 +9230,14 @@ where
 							};
 						},
 					}
+					return;
 				}
-				return;
+				// If the entry is an unfunded channel it cannot be the one the HTLC was received
+				// on. Rather, the channel was closed and a new, unfunded channel has since been
+				// opened under the same ID (e.g. we opened a channel ourselves reusing the closed
+				// channel's ID as its `temporary_channel_id`; the set of `ChannelMonitor`s is
+				// what prevents duplicates on-chain). Fall through and claim the HTLC against the
+				// closed channel's `ChannelMonitor` below.
 			}
 		}
 
@@ -10308,7 +10314,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		}
 
 		let channel_id = common_fields.temporary_channel_id;
-		let channel_exists = peer_state.has_channel(&channel_id);
+		// Closed channels which may still need `ChannelMonitorUpdate`s (e.g. to claim HTLCs) are
+		// tracked by their ID as well, so don't let a new channel share an ID with one of those.
+		let channel_exists = peer_state.has_channel(&channel_id)
+			|| peer_state.closed_channel_monitor_update_ids.contains_key(&channel_id);
 		if channel_exists {
 			return Err(MsgHandleErrInternal::send_err_msg_no_close(
 				"temporary_channel_id collision for the same peer!".to_owned(),
@@ -12016,9 +12025,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				}
 
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let minimum_depth = self.config.read().unwrap().channel_handshake_config.minimum_depth;
 					let init_res = funded_channel.splice_init(
 						msg, our_funding_contribution, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
+						&self.get_our_node_id(), minimum_depth, &self.logger
 					);
 					let splice_ack_msg = try_channel_entry!(self, peer_state, init_res, chan_entry);
 					peer_state.pending_msg_events.push(MessageSendEvent::SendSpliceAck {
@@ -12053,9 +12063,10 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 				), msg.channel_id)),
 			hash_map::Entry::Occupied(mut chan_entry) => {
 				if let Some(ref mut funded_channel) = chan_entry.get_mut().as_funded_mut() {
+					let minimum_depth = self.config.read().unwrap().channel_handshake_config.minimum_depth;
 					let splice_ack_res = funded_channel.splice_ack(
 						msg, &self.signer_provider, &self.entropy_source,
-						&self.get_our_node_id(), &self.logger
+						&self.get_our_node_id(), minimum_depth, &self.logger
 					);
 					let tx_msg_opt = try_channel_entry!(self, peer_state, splice_ack_res, chan_entry);
 					if let Some(tx_msg) = tx_msg_opt {

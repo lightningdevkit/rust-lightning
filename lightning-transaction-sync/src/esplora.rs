@@ -307,10 +307,10 @@ where
 			}
 		}
 
-		for (_, output) in &sync_state.watched_outputs {
+		for outpoint in sync_state.watched_outputs.keys() {
 			if let Some(output_status) = maybe_await!(self
 				.client
-				.get_output_status(&output.outpoint.txid, output.outpoint.index as u64))?
+				.get_output_status(&outpoint.txid, outpoint.vout as u64))?
 			{
 				if let Some(spending_txid) = output_status.txid {
 					if let Some(spending_tx_status) = output_status.status {
@@ -384,22 +384,6 @@ where
 				if tx.compute_txid() != txid {
 					log_error!(self.logger, "Retrieved transaction for txid {} doesn't match expectations. This should not happen. Please verify server integrity.", txid);
 					return Err(InternalError::Failed);
-				}
-
-				// Bitcoin Core's Merkle tree implementation has no way to discern between
-				// internal and leaf node entries. As a consequence it is susceptible to an
-				// attacker injecting additional transactions by crafting 64-byte
-				// transactions matching an inner Merkle node's hash (see
-				// https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
-				// To protect against this (highly unlikely) attack vector, we check that the
-				// transaction is at least 65 bytes in length.
-				if tx.total_size() == 64 {
-					log_error!(
-						self.logger,
-						"Skipping transaction {} due to retrieving potentially invalid tx data.",
-						txid
-					);
-					return Ok(None);
 				}
 
 				if let Some(block_height) = known_block_height {
@@ -491,6 +475,52 @@ where
 
 	fn register_output(&self, output: WatchedOutput) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.outputs.insert(output.outpoint.into_bitcoin_outpoint(), output);
+		locked_queue
+			.outputs
+			.entry(output.outpoint.into_bitcoin_outpoint())
+			.or_default()
+			.insert(output.script_pubkey);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+	use bitcoin::hashes::Hash;
+	use bitcoin::{BlockHash, ScriptBuf, Txid};
+	use lightning::chain::transaction::OutPoint as LnOutPoint;
+	use lightning::util::test_utils::TestLogger;
+
+	#[test]
+	fn register_output_dedups_on_script_pubkey() {
+		let logger = TestLogger::new();
+		let tx_sync = EsploraSyncClient::new("http://localhost:3000".to_string(), &logger);
+
+		let outpoint = LnOutPoint { txid: Txid::all_zeros(), index: 0 };
+		let script_pubkey = ScriptBuf::from(vec![0x51]);
+		let other_script_pubkey = ScriptBuf::from(vec![0x52]);
+
+		// The same output may be registered with varying `block_hash`es, e.g., on restart.
+		tx_sync.register_output(WatchedOutput {
+			block_hash: None,
+			outpoint,
+			script_pubkey: script_pubkey.clone(),
+		});
+		tx_sync.register_output(WatchedOutput {
+			block_hash: Some(BlockHash::all_zeros()),
+			outpoint,
+			script_pubkey: script_pubkey.clone(),
+		});
+		tx_sync.register_output(WatchedOutput {
+			block_hash: None,
+			outpoint,
+			script_pubkey: other_script_pubkey.clone(),
+		});
+
+		let queue = tx_sync.queue.lock().unwrap();
+		let scripts = &queue.outputs[&outpoint.into_bitcoin_outpoint()];
+		assert_eq!(scripts.len(), 2);
+		assert!(scripts.contains(&script_pubkey));
+		assert!(scripts.contains(&other_script_pubkey));
 	}
 }
