@@ -65,9 +65,6 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # lock_api 0.4.13 requires rustc 1.64.0
 [ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p lock_api --precise "0.4.12" --verbose
 
-# rustix 1.1.5 requires rustc 1.65.0
-[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p rustix --precise "1.1.4" --verbose
-
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking the workspace, except lightning-transaction-sync."
@@ -92,6 +89,8 @@ pushd lightning-tests
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p proc-macro2 --precise "1.0.103" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 71 ] && cargo update -p unicode-ident --precise 1.0.22
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p libc --precise 0.2.183 --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p cc --precise "1.4.0" --verbose
+[ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p find-msvc-tools --precise "0.1.9" --verbose
 cargo test
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 popd
@@ -154,9 +153,6 @@ pushd no-std-check
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p syn --precise "2.0.106" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p quote --precise "1.0.41" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p proc-macro2 --precise "1.0.103" --verbose
-[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p serde_json --precise "1.0.145" --verbose
-[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p itoa --precise "1.0.15" --verbose
-[ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p ryu --precise "1.0.20" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 71 ] && cargo update -p unicode-ident --precise "1.0.22" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p libc --precise "0.2.183" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 64 ] && cargo update -p cc --precise "1.4.0" --verbose
