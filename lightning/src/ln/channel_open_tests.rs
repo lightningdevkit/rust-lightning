@@ -1172,6 +1172,8 @@ pub fn test_accept_inbound_channel_config_override() {
 			max_dust_htlc_exposure_msat: None,
 			force_close_avoidance_max_fee_satoshis: None,
 			accept_underpaying_htlcs: None,
+			inbound_splice_min_depth: None,
+			outbound_splice_min_depth: None,
 		}),
 	};
 	let events = nodes[1].node.get_and_clear_pending_events();

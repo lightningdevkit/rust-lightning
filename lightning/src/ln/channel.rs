@@ -2158,6 +2158,14 @@ where
 			},
 			ChannelPhase::Funded(chan) => {
 				if let Some(pending_splice) = chan.pending_splice.as_mut() {
+					// Candidates are identified by their txid, so each one must be distinct.
+					if pending_splice.negotiated_candidates.iter().any(|candidate| {
+						candidate.funding.get_funding_txid() == Some(funding_outpoint.txid)
+					}) {
+						return Err(AbortReason::RbfUnavailable(
+							"Negotiated transaction duplicates a prior candidate".to_owned(),
+						));
+					}
 					let funding_negotiation = pending_splice.funding_negotiation.take();
 					if let Some(FundingNegotiation::ConstructingTransaction {
 						mut funding,
@@ -5111,6 +5119,23 @@ impl<SP: SignerProvider> ChannelContext<SP> {
 
 	pub(super) fn minimum_depth(&self, funding: &FundingScope) -> Option<u32> {
 		funding.minimum_depth_override.or(self.minimum_depth)
+	}
+
+	/// Returns the minimum depth a splice negotiated with `signing_session` must reach before we
+	/// send `splice_locked`.
+	///
+	/// The effective minimum depth is the maximum of the settings for each side which contributes
+	/// inputs or outputs to the splice: our outbound setting if we do, our inbound setting if the
+	/// counterparty does.
+	fn splice_minimum_depth(&self, signing_session: &InteractiveTxSigningSession) -> u32 {
+		let mut min_depth = 0;
+		if signing_session.has_local_contribution() {
+			min_depth = min_depth.max(self.config.options.outbound_splice_min_depth);
+		}
+		if signing_session.has_remote_contribution() {
+			min_depth = min_depth.max(self.config.options.inbound_splice_min_depth);
+		}
+		min_depth
 	}
 
 	/// Gets the "user_id" value passed into the construction of this channel. It has no special
@@ -9488,7 +9513,15 @@ where
 			}
 		}
 
-		if !self.context.channel_state.is_awaiting_remote_revoke() {
+		// `AWAITING_REMOTE_REVOKE` is set as soon as we build a new counterparty commitment, but
+		// the corresponding `commitment_signed` may still be held back pending a monitor update or
+		// our signer, in which case our counterparty cannot have received it yet. If we accepted
+		// an RAA anyway, we'd step the counterparty commitment number forward and the eventual
+		// `commitment_signed` would sign a commitment the `ChannelMonitor` has never seen.
+		if !self.context.channel_state.is_awaiting_remote_revoke()
+			|| self.context.monitor_pending_commitment_signed
+			|| self.context.signer_pending_commitment_update
+		{
 			// Our counterparty seems to have burned their coins to us (by revoking a state when we
 			// haven't given them a new commitment transaction to broadcast). We should probably
 			// take advantage of this by updating our channel monitor, sending them an error, and
@@ -9883,12 +9916,15 @@ where
 					funding.get_funding_txo().expect("funding outpoint should be set");
 				let channel_type = funding.get_channel_type().clone();
 				let funding_redeem_script = funding.get_funding_redeemscript();
-				let has_local_contribution = self
-					.context
-					.interactive_tx_signing_session
-					.as_ref()
+				let signing_session = self.context.interactive_tx_signing_session.as_ref();
+				let has_local_contribution = signing_session
 					.map(|signing_session| signing_session.has_local_contribution())
 					.unwrap_or(false);
+
+				if let Some(signing_session) = signing_session {
+					funding.minimum_depth_override =
+						Some(self.context.splice_minimum_depth(signing_session));
+				}
 
 				let contribution = pending_splice.negotiation_contribution.take();
 				pending_splice
@@ -13323,6 +13359,7 @@ where
 		} else if self.pending_splice.as_ref().is_some_and(|pending_splice| {
 			pending_splice.has_confirmed_candidate()
 				|| pending_splice.received_funding_txid.is_some()
+				|| pending_splice.sent_funding_txid.is_some()
 		}) {
 			// The pending candidate can no longer be replaced. Return a fresh template so
 			// that any non-overlapping contribution waits for it to lock instead of being
@@ -13373,9 +13410,19 @@ where
 
 	/// Returns whether this channel can ever RBF, independent of splice state.
 	fn is_rbf_compatible(&self) -> Result<(), String> {
-		if self.context.minimum_depth(&self.funding) == Some(0) {
+		// Only the channel's own minimum depth decides this, not any override applied to the
+		// current funding scope, which may reflect the depth a completed splice required.
+		if self.context.minimum_depth == Some(0) {
 			return Err(format!(
 				"Channel {} has option_zeroconf, cannot RBF",
+				self.context.channel_id(),
+			));
+		}
+		if self.context.config.options.inbound_splice_min_depth == 0
+			|| self.context.config.options.outbound_splice_min_depth == 0
+		{
+			return Err(format!(
+				"Channel {} has a zero-conf splice setting, cannot RBF",
 				self.context.channel_id(),
 			));
 		}
@@ -13390,13 +13437,14 @@ where
 			Some(pending_splice) => pending_splice,
 			None => return false,
 		};
-		// A zero-conf channel can never RBF, and a candidate that is already locking can no longer
-		// be replaced.
+		// A zero-conf channel can never RBF, and a candidate that has confirmed, or for which
+		// `splice_locked` was exchanged in either direction, can no longer be replaced.
 		if self.is_rbf_compatible().is_err() {
 			return false;
 		}
 		if pending_splice.has_confirmed_candidate()
 			|| pending_splice.received_funding_txid.is_some()
+			|| pending_splice.sent_funding_txid.is_some()
 		{
 			return false;
 		}
@@ -13443,6 +13491,13 @@ where
 		if pending_splice.received_funding_txid.is_some() {
 			return Err(format!(
 				"Channel {} counterparty already sent splice_locked, cannot RBF",
+				self.context.channel_id(),
+			));
+		}
+
+		if pending_splice.sent_funding_txid.is_some() {
+			return Err(format!(
+				"Channel {} already sent splice_locked, cannot RBF",
 				self.context.channel_id(),
 			));
 		}
@@ -14094,6 +14149,20 @@ where
 			return Err(ChannelError::WarnAndDisconnect("Quiescence needed for RBF".to_owned()));
 		}
 
+		// This must be checked before anything returning `ChannelError::Abort`, as our caller exits
+		// quiescence on those, which would leave a funding negotiation in progress (e.g., the
+		// first splice round, which has no negotiated candidates yet) outside of quiescence.
+		if self
+			.pending_splice
+			.as_ref()
+			.is_some_and(|pending_splice| pending_splice.funding_negotiation.is_some())
+		{
+			return Err(ChannelError::WarnAndDisconnect(
+				"Received tx_init_rbf while a funding negotiation is already in progress"
+					.to_owned(),
+			));
+		}
+
 		if self.holder_commitment_point.current_point().is_none() {
 			return Err(ChannelError::Abort(AbortReason::InternalError(
 				"Commitment point needs to be advanced once before RBF".into(),
@@ -14119,16 +14188,15 @@ where
 				))
 			})?;
 
-		if pending_splice.funding_negotiation.is_some() {
-			return Err(ChannelError::WarnAndDisconnect(
-				"Received tx_init_rbf while a funding negotiation is already in progress"
-					.to_owned(),
-			));
-		}
-
 		if pending_splice.received_funding_txid.is_some() {
 			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
 				"Already received splice_locked".into(),
+			)));
+		}
+
+		if pending_splice.sent_funding_txid.is_some() {
+			return Err(ChannelError::Abort(AbortReason::RbfUnavailable(
+				"Already sent splice_locked".into(),
 			)));
 		}
 

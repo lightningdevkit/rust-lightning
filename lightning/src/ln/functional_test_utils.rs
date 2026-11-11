@@ -2062,6 +2062,51 @@ pub fn create_announced_chan_between_nodes_with_value<'a, 'b, 'c: 'd, 'd>(
 	(chan_announcement.1, chan_announcement.2, chan_announcement.3, chan_announcement.4)
 }
 
+/// Constructs a `revoke_and_ack` which `node`'s counterparty would send if it had received and
+/// processed a `commitment_signed` from `node`, without `node` ever sending one.
+///
+/// The returned message revokes `node`'s current holder commitment, so it is only accepted by the
+/// counterparty if its signer is still willing to release the corresponding secrets here.
+#[cfg(any(test, feature = "_externalize_tests"))]
+pub fn forge_counterparty_raa(
+	node: &Node, counterparty_node_id: &PublicKey, channel_id: &ChannelId,
+) -> msgs::RevokeAndACK {
+	use crate::ln::channel::Channel;
+	use crate::sign::ChannelSigner;
+	use bitcoin::secp256k1::Secp256k1;
+
+	let per_commitment_secret;
+	let next_per_commitment_point;
+	{
+		let per_peer_state = node.node.per_peer_state.read().unwrap();
+		let guard = per_peer_state.get(counterparty_node_id).unwrap().lock().unwrap();
+		let keys =
+			guard.channel_by_id.get(channel_id).and_then(Channel::as_funded).unwrap().get_signer();
+
+		const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+
+		// Make signer believe we got a counterparty signature, so that it allows the revocation
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		per_commitment_secret = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER).unwrap();
+
+		// Must revoke without gaps
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 1).unwrap();
+
+		keys.get_enforcement_state().last_holder_commitment -= 1;
+		let sec = keys.release_commitment_secret(INITIAL_COMMITMENT_NUMBER - 2).unwrap();
+		let key = SecretKey::from_slice(&sec).unwrap();
+		next_per_commitment_point = PublicKey::from_secret_key(&Secp256k1::new(), &key);
+	}
+
+	msgs::RevokeAndACK {
+		channel_id: *channel_id,
+		per_commitment_secret,
+		next_per_commitment_point,
+		release_htlc_message_paths: Vec::new(),
+	}
+}
+
 pub fn create_unannounced_chan_between_nodes_with_value<'a, 'b, 'c, 'd>(
 	nodes: &'a Vec<Node<'b, 'c, 'd>>, a: usize, b: usize, channel_value: u64, push_msat: u64,
 ) -> (msgs::ChannelReady, Transaction) {
@@ -2177,19 +2222,19 @@ pub fn update_nodes_with_chan_announce<'a, 'b, 'c, 'd>(
 }
 
 pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
-	tx: &Transaction, get_output: F,
+	tx: &Transaction, get_output: F, allow_nonstandard: bool,
 ) {
 	if tx.version == TxVersion::non_standard(3) {
-		assert!(tx.weight().to_wu() <= TRUC_MAX_WEIGHT);
+		assert!(allow_nonstandard || tx.weight().to_wu() <= TRUC_MAX_WEIGHT);
 	} else {
-		assert!(tx.weight().to_wu() <= MAX_STANDARD_TX_WEIGHT as u64);
+		assert!(allow_nonstandard || tx.weight().to_wu() <= MAX_STANDARD_TX_WEIGHT as u64);
 	}
 	let mut p2a_output_below_dust = false;
 	let mut has_p2a_output = false;
 	for outp in tx.output.iter() {
 		let is_p2a = outp.script_pubkey == crate::ln::chan_utils::shared_anchor_script_pubkey();
 		has_p2a_output |= is_p2a;
-		if outp.value < outp.script_pubkey.minimal_non_dust() {
+		if !allow_nonstandard && outp.value < outp.script_pubkey.minimal_non_dust() {
 			if p2a_output_below_dust || !is_p2a {
 				panic!("Spending tx output didn't meet dust limit");
 			}
@@ -2200,7 +2245,7 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	for input in tx.input.iter() {
 		let output = get_output(&input.previous_output).unwrap();
 		if output.script_pubkey == crate::ln::chan_utils::shared_anchor_script_pubkey() {
-			assert!(input.witness.is_empty());
+			assert!(allow_nonstandard || input.witness.is_empty());
 		}
 		total_value_in += output.value.to_sat();
 	}
@@ -2216,7 +2261,10 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 	// 0FC commitment transactions will have their fee bumped by a child, so don't require that
 	// they meet the 1sat/vB minimum.
 	} else if !has_p2a_output {
-		let min_fee = (tx.weight().to_wu() as u64).div_ceil(4); // One sat per vbyte (ie per weight/4, rounded up)
+		let mut min_fee = (tx.weight().to_wu() as u64).div_ceil(4); // One sat per vbyte (ie per weight/4, rounded up)
+		if allow_nonstandard {
+			min_fee = 0;
+		}
 		assert!(total_value_out + min_fee <= total_value_in);
 	}
 	tx.verify(get_output).unwrap();
@@ -2225,6 +2273,9 @@ pub fn do_check_spends<F: Fn(&bitcoin::transaction::OutPoint) -> Option<TxOut>>(
 #[macro_export]
 macro_rules! check_spends {
 	($tx: expr, $($spends_txn: expr),*) => {
+		$crate::check_spends!($tx, $($spends_txn),* ; allow_nonstandard: false)
+	};
+	($tx: expr, $($spends_txn: expr),*; allow_nonstandard: $allow_nonstandard: expr) => {
 		{
 			$(
 			let mut single_output_below_dust = false;
@@ -2246,9 +2297,9 @@ macro_rules! check_spends {
 				)*
 				None
 			};
-			$crate::ln::functional_test_utils::do_check_spends(&$tx, get_output);
+			$crate::ln::functional_test_utils::do_check_spends(&$tx, get_output, $allow_nonstandard);
 		}
-	}
+	};
 }
 
 pub fn get_closing_signed_broadcast(

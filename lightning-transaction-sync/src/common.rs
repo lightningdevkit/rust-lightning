@@ -8,9 +8,9 @@
 use bitcoin::block::Header;
 use bitcoin::{BlockHash, OutPoint, ScriptBuf, Transaction, Txid};
 use lightning::chain::channelmonitor::ANTI_REORG_DELAY;
-use lightning::chain::{Confirm, WatchedOutput};
+use lightning::chain::Confirm;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Deref;
 
 // Represents the current state.
@@ -22,11 +22,12 @@ pub(crate) struct SyncState {
 	// bogus `script_pubkey` which must not override a previously-registered one.
 	pub watched_transactions: HashMap<Txid, Vec<ScriptBuf>>,
 	// Outputs that were previously processed, but must not be forgotten yet as
-	// as we still need to monitor any spends on-chain.
-	pub watched_outputs: HashMap<OutPoint, WatchedOutput>,
+	// we still need to monitor any spends on-chain. Keep all registered `script_pubkey`s as some
+	// may be bogus.
+	pub watched_outputs: HashMap<OutPoint, BTreeSet<ScriptBuf>>,
 	// Outputs for which we previously saw a spend on-chain but kept around until the spends reach
 	// sufficient depth.
-	pub outputs_spends_pending_threshold_conf: Vec<(Txid, u32, OutPoint, WatchedOutput)>,
+	pub outputs_spends_pending_threshold_conf: Vec<(Txid, u32, OutPoint, BTreeSet<ScriptBuf>)>,
 	// The tip hash observed during our last sync.
 	pub last_sync_hash: Option<BlockHash>,
 	// Indicates whether we need to resync, e.g., after encountering an error.
@@ -58,9 +59,12 @@ impl SyncState {
 			// If a previously-confirmed output spend is unconfirmed, re-add the watched output to
 			// the tracking map.
 			self.outputs_spends_pending_threshold_conf.retain(
-				|(conf_txid, _, prev_outpoint, output)| {
+				|(conf_txid, _, prev_outpoint, script_pubkeys)| {
 					if txid == *conf_txid {
-						self.watched_outputs.insert(*prev_outpoint, output.clone());
+						self.watched_outputs
+							.entry(*prev_outpoint)
+							.or_default()
+							.extend(script_pubkeys.iter().cloned());
 						false
 					} else {
 						true
@@ -108,8 +112,9 @@ pub(crate) struct FilterQueue {
 	// registered multiple times with different `script_pubkey`s, in which case we keep all of
 	// them, as some may be bogus.
 	pub transactions: HashMap<Txid, Vec<ScriptBuf>>,
-	// Outputs that were registered via the `Filter` interface and have to be processed.
-	pub outputs: HashMap<OutPoint, WatchedOutput>,
+	// Outputs that were registered via the `Filter` interface and have to be processed. Keep all
+	// registered `script_pubkey`s as some may be bogus.
+	pub outputs: HashMap<OutPoint, BTreeSet<ScriptBuf>>,
 }
 
 impl FilterQueue {
@@ -139,14 +144,12 @@ impl FilterQueue {
 		if !self.outputs.is_empty() {
 			pending_registrations = true;
 
-			sync_state.watched_outputs.extend(self.outputs.drain());
+			for (outpoint, script_pubkeys) in self.outputs.drain() {
+				sync_state.watched_outputs.entry(outpoint).or_default().extend(script_pubkeys);
+			}
 		}
 		pending_registrations
 	}
-}
-
-pub(crate) fn is_potentially_unsafe_merkle_leaf(tx: &Transaction) -> bool {
-	tx.base_size() == 64
 }
 
 #[derive(Debug)]

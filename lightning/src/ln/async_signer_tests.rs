@@ -351,6 +351,64 @@ fn do_test_async_commitment_signature_for_commitment_signed_revoke_and_ack(
 }
 
 #[test]
+fn test_raa_before_commitment_signed_sent_async_signer() {
+	// Test that we reject an RAA which arrives after we've built our counterparty's next
+	// commitment transaction but before we've actually sent them the `commitment_signed` for it,
+	// here because our signer cannot yet produce the commitment signature. This covers the
+	// `signer_pending_commitment_update` disjunct of the check in `revoke_and_ack`;
+	// `test_counterparty_raa_before_commitment_signed_sent` covers the
+	// `monitor_pending_commitment_signed` disjunct.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+
+	// Node A sends an HTLC and a `commitment_signed`, which node B processes while its signer
+	// cannot sign the `commitment_signed` node B owes node A.
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let send_event =
+		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+	nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
+
+	nodes[1].disable_channel_signer_op(
+		&node_a_id,
+		&channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &send_event.commitment_msg);
+	check_added_monitors(&nodes[1], 1);
+
+	// Node B responds with its `revoke_and_ack` but holds back its `commitment_signed` until its
+	// signer is available. We drop the `revoke_and_ack` as node A's state is irrelevant here.
+	let _ = get_event_msg!(nodes[1], MessageSendEvent::SendRevokeAndACK, node_a_id);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Node A now revokes its current commitment as if it had received node B's
+	// `commitment_signed`, which node B has not yet sent.
+	let raa = forge_counterparty_raa(&nodes[0], &node_b_id, &channel_id);
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
+	assert_eq!(
+		check_closed_broadcast(&nodes[1], 1, true).pop().unwrap().data,
+		"Received an unexpected revoke_and_ack"
+	);
+	check_added_monitors(&nodes[1], 1);
+	let reason =
+		ClosureReason::ProcessingError { err: "Received an unexpected revoke_and_ack".to_string() };
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
+}
+
+#[test]
 fn test_funding_signed_0conf() {
 	do_test_funding_signed_0conf(vec![
 		SignerOp::GetPerCommitmentPoint,

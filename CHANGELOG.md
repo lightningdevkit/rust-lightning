@@ -152,6 +152,142 @@ GitHub regularly.
    for still-active splices (#4902).
 
 
+# 0.2.8 - Nov 10, 2026 - "Rising Tide"
+
+## API Updates
+ * Due to a gap in the defined APIs, it is now no longer possible to accept a
+   splice with zero confirmations on an outbound channel (#5563).
+ * `RouteHop::maybe_announced_channel` is now `false` for route hint hops which
+   do not match a known public channel, even if the hop's endpoints share a
+   public channel (#5503).
+
+## Bug Fixes
+ * A malicious counterparty can no longer cause us to broadcast an invalid
+   cooperative close transaction, avoiding the need to manually broadcast the
+   latest state via the `ChannelMonitor` (#5507, #5532).
+ * `ChannelMonitor` now better avoids attempting to claim HTLC outputs which
+   have already been spent on-chain, avoiding attempts at double-spends or
+   spurious `Event::BumpTransaction`s (#5501).
+ * Payments to one-hop blinded paths terminating with CLN nodes no longer fail
+   due to incorrect CLTV expiry (#5126).
+ * A memory leak in the synchronous `BackgroundProcessor` was fixed (#5508).
+ * Paying a malicious BOLT 11 invoice can no longer cause us to remove a public
+   channel from the network graph until restart (#5503).
+ * If a node restarts while a channel is cooperatively closing with remaining
+   pending inbound HTLC(s), the HTLC(s) can now be correctly failed, avoiding
+   force-closure (#5080).
+ * Delays in handling `Event::OpenChannelRequest` can no longer cause pending
+   channels to be lost (or, at worst, delays in the many-minutes can no longer
+   lead to funds-loss, #5545).
+ * Dropping the `ChannelManager::process_pending_events_async` future no longer
+   results in later event processing calls being spuriously ignored (#5264).
+ * SCID aliases now more durably avoid collisions with the real SCIDs, fixing a
+   very rare panic and `ChannelManager` deserialization failure (#5070).
+ * BOLT 11 invoices with an amount of >= 18,446,745 BTC and no SI prefix are now
+   rejected, rather than being treated as though they had no amount (#5338).
+ * `AnchorDescriptor::tx_input_witness` now returns an empty witness for
+   zero-fee-commitment channels, as anything else is non-standard (#5510).
+ * `PeerManager` now cooperates with the gossip validator to more strictly limit
+   the number of in-flight gossip validation requests (#5526).
+ * `PeerManager` now more robustly limits its per-peer message queues (#5241).
+ * `FilesystemStore` better handles I/O errors in list operations (#5270).
+ * Serialized `UnsignedInvoiceRequest` and `UnsignedBolt12Invoice` now
+   include experimental TLVs (#5291).
+ * `Bolt11Invoice`s which differ only in the signature's recovery ID, and thus
+   in the recovered payee, no longer compare as equal via `Ord` (#5516).
+
+## Security
+0.2.8 fixes several funds-loss vulnerabilities for nodes with untrusted
+counterparties, a fee-overpayment vulnerability for nodes paying static BOLT 12
+invoices, as well as several DoS vulnerabilities for nodes acting as an
+LSPS2 service or with untrusted counterparties.
+
+ * A malicious counterparty can no longer cause LDK to fail to claim a forwarded
+   HTLC on a force-closed channel by re-using the channel_id (#5562).
+ * Splices on outbound channels initially opened with
+   `ChannelHandshakeLimits::trust_own_funding_0conf` set no longer spuriously
+   confirm with zero confirmations (#5563).
+ * A malicious peer can no longer prevent LDK from detecting relevant on-chain
+   transactions when syncing the chain using electrum (#5557).
+ * Paying a static BOLT 12 invoice through a malicious node no longer spuriously
+   ignores the default fee limits when they are not overridden (#5558).
+ * A malicious counterparty can no longer cause LDK to sign differing commitment
+   transactions at the same index, leading to potential loss of funds when using
+   async signing or async persistence (#5561).
+ * Nonstandard transactions that are exactly 64 bytes are no longer ignored in
+   electrum and esplora sync, preventing funds theft via HTLC claims (#5559).
+ * A malicious counterparty spending the P2A output in a zero-fee-commitment
+   channel with a nonstandard padded witness can no longer cause LDK to not
+   claim other outputs on the commitment transaction (#5560).
+ * Multiple payments for the same payment hash can no longer cause LDK to
+   generate a spurious `PaymentClaimed` event or fail to deserialize the
+   `ChannelManager` in rare cases on startup (#5541).
+ * A channel counterparty which sends a spurious cooperative close signing
+   message while a channel fee update remains pending can no longer cause LDK to
+   spuriously panic (#5533).
+ * A channel counterparty which claims on-chain HTLCs with non-minimal witnesses
+   can no longer cause LDK to spuriously panic (#5531).
+ * A counterparty which reuses a previous funding outpoint can no longer cause
+   LDK to panic when using the `MonitorUpdatingPersister` (#5540).
+ * A counterparty contributing an input with no witness to a splice on an
+   outbound channel can no longer cause us to panic (#5536).
+ * A malicious node with access to an LSPS2 JIT client's invoice can no longer
+   cause LDK's LSPS2 JIT service to panic with a divide-by-zero (#5538).
+ * A malicious node with access to an LSPS2 JIT client's invoice can no longer
+   cause LDK's LSPS2 JIT service to fail to open a channel (#5524).
+ * A channel counterparty sending redundant `announcement_signatures` messages
+   can no longer cause a blowup in our outbound bandwidth utilization,
+   potentially leading to DoS (#5529).
+ * A channel counterparty which has two channels with us and sends us an MPP
+   payment over both can no longer cause `ChannelManager` to panic on
+   deserialization after one of the channels has been archived (#5528).
+
+Thanks to Project Loupe, Anthropic's OSS Scanner, Erick Cestari, Matt Morehouse,
+Martin Saposnic, and Dickson Wu for reporting issues fixed in this release, some
+of them duplicatively.
+
+
+# 0.2.7 - Oct 1, 2026 - "LLMs vs Fuzzers"
+
+## Bug Fixes
+ * Counterparties which both claim an HTLC and add a new HTLC in a single
+   commitment update are no longer at risk of a spurious force-close (#5043).
+ * When force-closing a channel which had an in-flight `ChannelMonitorUpdate`
+   from a counterparty's state revocation blocked by another action (pending
+   event, async `ChannelMonitorUpdate` on another channel, etc), we no longer
+   forget to fail HTLCs which were removed in the revocation back (#5050).
+ * When loading with a stale `ChannelManager` which had in-flight
+   `ChannelMonitorUpdate`s blocked by another action (pending event, async
+   `ChannelMonitorUpdate` on another channel, etc), we no longer fail an HTLC
+   backwards which could still be claimed on-chain by our counterparty (#5046).
+ * A race no longer exists when a channel which was force-closed by discovering
+   a commitment transaction on-chain can lead to the force-closure of other
+   channels or `Event::PaymentClaimed` missing until restart (#5030).
+ * In rare cases where a block is connected and immediately reorged out,
+   it is no longer possible for a phantom `Balance` to remain, preventing
+   `ChannelMonitor` archival (#5007).
+
+## Security
+0.2.7 fixes a funds-theft vulnerability that can be exploited by a malicious
+channel counterparty, a funds-theft vulnerability that can be exploited by an
+LSPS2 client, and a denial-of-service vulnerability that can be exploited by
+a malicious channel counterparty.
+ * If a counterparty acknowledges a channel state update then reconnects and
+   pretends not to have received it, they can no longer cause us to sign a
+   conflicting commitment transaction at the same index, avoiding a potential
+   avenue for funds-theft (#5057).
+   Thanks to both Project Loupe and Nishant Bansal for independently reporting
+   this issue.
+ * An HTLC intercepted for the LSPS2 JIT flow can no longer lie about its amount
+   and cause us to open a channel and forward more than the inbound HTLC
+   provided us (#5042).
+   Thanks to Aziz Pulatov from LQWD for reporting this issue.
+ * When accepting an inbound channel, our counterparty can no longer construct
+   the funding transaction to cause `lightning-transaction-sync`'s
+   Electrum-based sync to pull a substantial quantity of transactions (#4867).
+   Thanks to Project Loupe for reporting this issue.
+
+
 # 0.2.6 - Sep 9, 2026 - "The More You Dig"
 
 ## Bug Fixes
