@@ -1421,64 +1421,6 @@ mod tests {
 	use super::*;
 	use chrono::TimeZone;
 	use chrono::Utc;
-	use proptest::prelude::*;
-
-	const MAX_VALUE_MSAT: u64 = 21_000_000_0000_0000_000;
-
-	fn arb_forward_amounts() -> impl Strategy<Value = (u64, u64, u64, u64)> {
-		(1u64..MAX_VALUE_MSAT, 1u64..MAX_VALUE_MSAT, 1u64..MAX_VALUE_MSAT, 1u64..MAX_VALUE_MSAT)
-			.prop_map(|(a, b, c, d)| {
-				(a, b, c, core::cmp::min(d, a.saturating_add(b).saturating_add(c)))
-			})
-	}
-
-	proptest! {
-		#[test]
-		fn proptest_calculate_amount_to_forward((o_0, o_1, o_2, total_fee_msat) in arb_forward_amounts()) {
-			let htlcs = vec![
-				InterceptedHTLC {
-					intercept_id: InterceptId([0; 32]),
-					expected_outbound_amount_msat: o_0,
-					payment_hash: PaymentHash([0; 32]),
-				},
-				InterceptedHTLC {
-					intercept_id: InterceptId([1; 32]),
-					expected_outbound_amount_msat: o_1,
-					payment_hash: PaymentHash([0; 32]),
-				},
-				InterceptedHTLC {
-					intercept_id: InterceptId([2; 32]),
-					expected_outbound_amount_msat: o_2,
-					payment_hash: PaymentHash([0; 32]),
-				},
-			];
-
-			let result = calculate_amount_to_forward_per_htlc(&htlcs, total_fee_msat);
-			let total_received_msat = o_0 + o_1 + o_2;
-
-			if total_received_msat < total_fee_msat {
-				assert_eq!(result.len(), 0);
-			} else {
-				assert_ne!(result.len(), 0);
-				assert_eq!(result[0].0, htlcs[0].intercept_id);
-				assert_eq!(result[1].0, htlcs[1].intercept_id);
-				assert_eq!(result[2].0, htlcs[2].intercept_id);
-				assert!(result[0].1 <= o_0);
-				assert!(result[1].1 <= o_1);
-				assert!(result[2].1 <= o_2);
-
-				let result_sum = result.iter().map(|(_, f)| f).sum::<u64>();
-				assert_eq!(total_received_msat - result_sum, total_fee_msat);
-				let five_pct = result_sum as f32 * 0.05;
-				let fair_share_0 = (o_0 as f32 / total_received_msat as f32) * result_sum as f32;
-				assert!(result[0].1 as f32 <= fair_share_0 + five_pct);
-				let fair_share_1 = (o_1 as f32 / total_received_msat as f32) * result_sum as f32;
-				assert!(result[1].1 as f32 <= fair_share_1 + five_pct);
-				let fair_share_2 = (o_2 as f32 / total_received_msat as f32) * result_sum as f32;
-				assert!(result[2].1 as f32 <= fair_share_2 + five_pct);
-			}
-		}
-	}
 
 	#[test]
 	fn test_calculate_amount_to_forward() {

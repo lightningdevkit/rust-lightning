@@ -4390,3 +4390,104 @@ fn test_mpp_claim_to_holding_cell() {
 	expect_payment_claimable!(nodes[3], payment_hash_2, payment_secret_2, 400_000);
 	claim_payment(&nodes[2], &[&nodes[3]], preimage_2);
 }
+
+#[test]
+fn test_mpp_claim_completion_with_pending_claim_reusing_payment_hash() {
+	// Once the first `ChannelMonitorUpdate` of an MPP claim completes we generate the
+	// `PaymentClaimed` event, allowing another payment with the same payment hash to be received
+	// and claimed while `ChannelMonitorUpdate`s for the MPP claim's other HTLCs are still pending.
+	// Test that those completing doesn't generate the `PaymentClaimed` for the second payment
+	// before its own `ChannelMonitorUpdate` completed.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let mut config = test_default_channel_config();
+	// Force the first payment to be split across both paths.
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
+		10;
+	let configs: [Option<_>; 4] = core::array::from_fn(|_| Some(config.clone()));
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	let node_b_id = nodes[1].node.get_our_node_id();
+	let node_c_id = nodes[2].node.get_our_node_id();
+	let node_d_id = nodes[3].node.get_our_node_id();
+
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+	create_announced_chan_between_nodes_with_value(&nodes, 0, 2, 100_000, 0);
+	let chan_id_bd = create_announced_chan_between_nodes_with_value(&nodes, 1, 3, 100_000, 0).2;
+	let chan_id_cd = create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 100_000, 0).2;
+
+	let claimable_id = |claimable: Option<Event>| match claimable {
+		Some(Event::PaymentClaimable { payment_id: Some(payment_id), .. }) => payment_id,
+		_ => panic!("Expected a PaymentClaimable"),
+	};
+	let claimed_ids = || -> Vec<PaymentId> {
+		let events = nodes[3].node.get_and_clear_pending_events();
+		let ids = events.into_iter().map(|event| match event {
+			Event::PaymentClaimed { payment_id: Some(payment_id), .. } => payment_id,
+			_ => panic!("Unexpected event {:?}", event),
+		});
+		ids.collect()
+	};
+
+	let amt_msat = 15_000_000;
+	let (route, payment_hash, payment_preimage, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[3], amt_msat);
+	assert_eq!(route.paths.len(), 2);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, PaymentId([1; 32])).unwrap();
+	check_added_monitors(&nodes[0], 2);
+	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
+	let node_b_msgs = remove_first_msg_event_to_node(&node_b_id, &mut send_events);
+	let node_c_msgs = remove_first_msg_event_to_node(&node_c_id, &mut send_events);
+	let path = &[&nodes[1], &nodes[3]];
+	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, node_b_msgs)
+		.with_payment_secret(payment_secret)
+		.without_claimable_event();
+	do_pass_along_path(args);
+	let path = &[&nodes[2], &nodes[3]];
+	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, node_c_msgs)
+		.with_payment_secret(payment_secret);
+	let mpp_id = claimable_id(do_pass_along_path(args));
+
+	// Claim the MPP payment, completing only the first of its two `ChannelMonitorUpdate`s.
+	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[3].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[3], 2);
+	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
+
+	nodes[3].chain_monitor.complete_sole_pending_chan_update(&chan_id_bd);
+	assert_eq!(claimed_ids(), [mpp_id]);
+	// We don't bother delivering the claims to the other nodes.
+	nodes[3].node.get_and_clear_pending_msg_events();
+
+	// Now receive a second payment with the same payment hash over a new channel, and claim it.
+	let chan_id_ad = create_announced_chan_between_nodes_with_value(&nodes, 0, 3, 1_000_000, 0).2;
+	let (route, _, _, _) = get_route_and_payment_hash!(nodes[0], nodes[3], amt_msat);
+	assert_eq!(route.paths.len(), 1);
+	assert_eq!(route.paths[0].hops.len(), 1);
+	let onion = RecipientOnionFields::secret_only(payment_secret);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, PaymentId([2; 32])).unwrap();
+	check_added_monitors(&nodes[0], 1);
+	let mut send_events = nodes[0].node.get_and_clear_pending_msg_events();
+	let node_d_msgs = remove_first_msg_event_to_node(&node_d_id, &mut send_events);
+	let path = &[&nodes[3]];
+	let args = PassAlongPathArgs::new(&nodes[0], path, amt_msat, payment_hash, node_d_msgs)
+		.with_payment_secret(payment_secret);
+	let second_id = claimable_id(do_pass_along_path(args));
+	assert_ne!(mpp_id, second_id);
+
+	chanmon_cfgs[3].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[3].node.claim_funds(payment_preimage);
+	check_added_monitors(&nodes[3], 1);
+	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
+
+	// The MPP claim's last `ChannelMonitorUpdate` completing shouldn't generate an event.
+	nodes[3].chain_monitor.complete_sole_pending_chan_update(&chan_id_cd);
+	assert!(nodes[3].node.get_and_clear_pending_events().is_empty());
+
+	nodes[3].chain_monitor.complete_sole_pending_chan_update(&chan_id_ad);
+	assert_eq!(claimed_ids(), [second_id]);
+
+	nodes[3].node.get_and_clear_pending_msg_events();
+}
