@@ -1,3 +1,75 @@
+# 0.1.14 - Nov 10, 2026 - "The Storm"
+
+## API Updates
+ * `RouteHop::maybe_announced_channel` is now `false` for route hint hops which
+   do not match a known public channel, even if the hop's endpoints share a
+   public channel (#5503).
+
+## Bug Fixes
+ * A malicious counterparty can no longer cause us to broadcast an invalid
+   cooperative close transaction, avoiding the need to manually broadcast the
+   latest state via the `ChannelMonitor` (#5507, #5532).
+ * `ChannelMonitor` now better avoids attempting to claim HTLC outputs which
+   have already been spent on-chain, avoiding attempts at double-spends or
+   spurious `Event::BumpTransaction`s (#5501).
+ * Payments to one-hop blinded paths terminating with CLN nodes no longer fail
+   due to incorrect CLTV expiry (#5126).
+ * A memory leak in the synchronous `BackgroundProcessor` was fixed (#5508).
+ * Paying a malicious BOLT 11 invoice can no longer cause us to remove a public
+   channel from the network graph until restart (#5503).
+ * If a node restarts while a channel is cooperatively closing with remaining
+   pending inbound HTLC(s), the HTLC(s) can now be correctly failed, avoiding
+   force-closure (#5080).
+ * Delays in handling `Event::OpenChannelRequest` can no longer cause pending
+   channels to be lost (or, at worst, delays in the many-minutes can no longer
+   lead to funds-loss, #5545).
+ * Dropping the `ChannelManager::process_pending_events_async` future no longer
+   results in later event processing calls being spuriously ignored (#5264).
+ * SCID aliases now more durably avoid collisions with the real SCIDs, fixing a
+   very rare panic and `ChannelManager` deserialization failure (#5070).
+ * BOLT 11 invoices with an amount of >= 18,446,745 BTC and no SI prefix are now
+   rejected, rather than being treated as though they had no amount (#5338).
+ * `FilesystemStore` better handles I/O errors in list operations (#5270).
+ * Serialized `UnsignedInvoiceRequest` and `UnsignedBolt12Invoice` now
+   include experimental TLVs (#5291).
+ * `Bolt11Invoice`s which differ only in the signature's recovery ID, and thus
+   in the recovered payee, no longer compare as equal via `Ord` (#5516).
+
+## Security
+0.1.14 fixes several funds-loss vulnerabilities as well as several DoS
+vulnerabilities for nodes with untrusted counterparties.
+
+ * A malicious counterparty can no longer cause LDK to fail to claim a forwarded
+   HTLC on a force-closed channel by re-using the channel_id (#5562).
+ * A malicious peer can no longer prevent LDK from detecting relevant on-chain
+   transactions when syncing the chain using electrum (#5557).
+ * A malicious counterparty can no longer cause LDK to sign differing commitment
+   transactions at the same index, leading to potential loss of funds when using
+   async signing or async persistence (#5560).
+ * Nonstandard transactions that are exactly 64 bytes are no longer ignored in
+   electrum and esplora sync, preventing funds theft via HTLC claims (#5559).
+ * Multiple payments for the same payment hash can no longer cause LDK to
+   generate a spurious `PaymentClaimed` event or fail to deserialize the
+   `ChannelManager` in rare cases on startup (#5541).
+ * A channel counterparty which sends a spurious cooperative close signing
+   message while a channel fee update remains pending can no longer cause LDK to
+   spuriously panic (#5533).
+ * A channel counterparty which claims on-chain HTLCs with non-minimal witnesses
+   can no longer cause LDK to spuriously panic (#5531).
+ * A counterparty which reuses a previous funding outpoint can no longer cause
+   LDK to panic when using the `MonitorUpdatingPersister` (#5540).
+ * A channel counterparty sending redundant `announcement_signatures` messages
+   can no longer cause a blowup in our outbound bandwidth utilization,
+   potentially leading to DoS (#5529).
+ * A channel counterparty which has two channels with us and sends us an MPP
+   payment over both can no longer cause `ChannelManager` to panic on
+   deserialization after one of the channels has been archived (#5528).
+
+Thanks to Project Loupe, Anthropic's OSS Scanner, Erick Cestari, Matt Morehouse,
+Martin Saposnic, and Dickson Wu for reporting issues fixed in this release, some
+of them duplicatively.
+
+
 # 0.1.13 - Oct 1, 2026 - "LLMs Fuzz"
 
 ## Bug Fixes
