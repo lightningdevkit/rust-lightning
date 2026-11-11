@@ -2691,6 +2691,14 @@ fn do_test_splice_commitment_broadcast(splice_status: SpliceStatus, claim_htlcs:
 	}
 	check_added_monitors(&nodes[0], 2); // Two `ReleasePaymentComplete` monitor updates
 
+	// When the splice confirms but the channel closes before it's locked, the monitor promotes it
+	// once it's irrevocably confirmed, so the initial funding is no longer being tracked.
+	if splice_status == SpliceStatus::Confirmed {
+		for node in &nodes {
+			node.chain_source.remove_watched_by_txid(initial_funding_tx.compute_txid());
+		}
+	}
+
 	// When the splice never confirms and we see a commitment transaction broadcast and confirm for
 	// the current funding instead, we should expect to see an `Event::DiscardFunding` for the
 	// splice transaction.
@@ -8622,6 +8630,230 @@ fn test_splice_rbf_discard_unique_contribution() {
 
 	// Node 1 (non-contributing acceptor) has no contributions to discard.
 	assert!(result.node_b_discarded.is_empty());
+}
+
+#[test]
+fn test_splice_rbf_discard_after_close_with_confirmed_candidate() {
+	do_test_splice_rbf_discard_after_close_with_confirmed_candidate(false);
+	do_test_splice_rbf_discard_after_close_with_confirmed_candidate(true);
+}
+
+#[cfg(test)]
+fn do_test_splice_rbf_discard_after_close_with_confirmed_candidate(
+	counterparty_commitment_confirms: bool,
+) {
+	// Verify that if an RBF candidate confirms while the channel is still open, but the channel
+	// closes before `splice_locked` is exchanged, the `ChannelMonitor` still promotes the confirmed
+	// candidate once it's irrevocably confirmed and emits a `DiscardFunding` for the replaced one.
+	// The channel is closed either by us force closing, or by the counterparty's commitment
+	// transaction confirming.
+	//
+	// In the latter variant, node 1 sends `splice_locked` before closing, and node 0's outbound
+	// splice minimum depth is lowered so that its manager promotes the candidate right after node
+	// 1's commitment transaction confirms, while the monitor has already seen the funding spend.
+	// The resulting `RenegotiatedFundingLocked` monitor update therefore arrives once the monitor
+	// no longer allows updates, and must be ignored in favor of the monitor's own promotion.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut node_0_config = test_default_channel_config();
+	node_0_config.channel_config.outbound_splice_min_depth = 3;
+	let mut node_1_config = test_default_channel_config();
+	node_1_config.channel_config.inbound_splice_min_depth = 1;
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(node_0_config), Some(node_1_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let initial_channel_value_sat = 100_000;
+	let (_, _, channel_id, initial_funding_tx) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Round 0: Splice-in from node 0.
+	let funding_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+	let round_0_inputs: Vec<_> = funding_contribution.contributed_inputs().collect();
+	assert!(!round_0_inputs.is_empty());
+
+	let (first_splice_tx, new_funding_script) =
+		splice_channel(&nodes[0], &nodes[1], channel_id, funding_contribution);
+
+	// Clear node 0's wallet so round 1 must use different UTXOs.
+	nodes[0].wallet_source.clear_utxos();
+	provide_utxo_reserves(&nodes, 2, added_value * 2);
+
+	// Round 1: RBF with fresh UTXOs.
+	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let funding_contribution = funding_template
+		.without_prior_contribution(rbf_feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(added_value)
+		.unwrap()
+		.build()
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, funding_contribution.clone(), None)
+		.unwrap();
+	let round_1_inputs: Vec<_> = funding_contribution.contributed_inputs().collect();
+	assert_ne!(round_0_inputs, round_1_inputs, "Rounds must use different UTXOs");
+
+	complete_rbf_handshake(&nodes[0], &nodes[1]);
+
+	complete_interactive_funding_negotiation(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		funding_contribution,
+		new_funding_script,
+	);
+
+	let (rbf_tx, splice_locked) = sign_interactive_funding_tx(
+		SignInteractiveFundingTxArgs::new(&nodes[0], &nodes[1])
+			.replacing(first_splice_tx.compute_txid()),
+	);
+	assert!(splice_locked.is_none());
+
+	expect_splice_pending_event(&nodes[0], &node_id_1);
+	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+
+	// The RBF candidate confirms while the channel is still open, but the channel closes before
+	// `splice_locked` is exchanged.
+	mine_transaction(&nodes[0], &rbf_tx);
+	mine_transaction(&nodes[1], &rbf_tx);
+	let rbf_conf_height = nodes[0].best_block_info().1;
+
+	// Node 1 reaches its (lowered) inbound splice minimum depth as the candidate confirms, so it
+	// sends `splice_locked` before the channel closes. Node 0 records it, but waits to reach its
+	// own minimum depth before promoting the candidate.
+	let splice_locked_1 = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_0);
+	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_1);
+
+	if counterparty_commitment_confirms {
+		nodes[1]
+			.node
+			.force_close_broadcasting_latest_txn(&channel_id, &node_id_0, "test".to_owned())
+			.unwrap();
+		let closure_reason = ClosureReason::HolderForceClosed {
+			broadcasted_latest_txn: Some(true),
+			message: "test".to_owned(),
+		};
+		check_closed_event(&nodes[1], 1, closure_reason, &[node_id_0], initial_channel_value_sat);
+		check_closed_broadcast(&nodes[1], 1, true);
+		check_added_monitors(&nodes[1], 1);
+		// Node 1 has no balance in the channel, so its commitment has no anchor to bump and is
+		// broadcast directly.
+		let commitment_tx = {
+			let mut txn = nodes[1].tx_broadcaster.txn_broadcast();
+			assert_eq!(txn.len(), 1);
+			txn.remove(0)
+		};
+		check_spends!(&commitment_tx, &rbf_tx);
+
+		// The commitment transaction is confirmed without processing the resulting monitor events,
+		// so node 0's manager is still unaware of the closure when the candidate reaches its
+		// lowered outbound splice minimum depth in the next block. As that block connects, the
+		// manager promotes the candidate, and the resulting `RenegotiatedFundingLocked` monitor
+		// update arrives once the monitor has already seen the funding spend and no longer allows
+		// updates. The monitor ignores it and promotes the candidate itself once it's irrevocably
+		// confirmed below.
+		mine_transaction_without_consistency_checks(&nodes[0], &commitment_tx);
+		connect_blocks(&nodes[0], 1);
+
+		// The manager promotion locks the candidate in and releases the replaced candidate's
+		// contributions, right before the confirming commitment transaction closes the channel.
+		let events = nodes[0].node.get_and_clear_pending_events();
+		assert_eq!(events.len(), 3, "{events:?}");
+		assert!(
+			events.iter().any(|event| matches!(event,
+			Event::ChannelReady { funding_txo: Some(funding_txo), .. }
+				if funding_txo.txid == rbf_tx.compute_txid())),
+			"{events:?}"
+		);
+		assert!(
+			events.iter().any(|event| matches!(event,
+			Event::DiscardFunding { funding_info: FundingInfo::Contribution { inputs, .. }, .. }
+				if *inputs == round_0_inputs)),
+			"{events:?}"
+		);
+		assert!(
+			events.iter().any(|event| matches!(
+				event,
+				Event::ChannelClosed { reason: ClosureReason::CommitmentTxConfirmed, .. }
+			)),
+			"{events:?}"
+		);
+
+		// Node 0 informs node 1 of the lock, even though the channel is already closed on its
+		// side. The remaining messages are the closure's channel update broadcast and the error
+		// message announcing it.
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 3, "{msg_events:?}");
+		assert!(
+			msg_events
+				.iter()
+				.any(|event| matches!(event, MessageSendEvent::SendSpliceLocked { .. })),
+			"{msg_events:?}"
+		);
+		// Both the late `RenegotiatedFundingLocked` update and the force close update are applied
+		// to the monitor.
+		check_added_monitors(&nodes[0], 2);
+	} else {
+		nodes[0]
+			.node
+			.force_close_broadcasting_latest_txn(&channel_id, &node_id_1, "test".to_owned())
+			.unwrap();
+		let closure_reason = ClosureReason::HolderForceClosed {
+			broadcasted_latest_txn: Some(true),
+			message: "test".to_owned(),
+		};
+		check_closed_event(&nodes[0], 1, closure_reason, &[node_id_1], initial_channel_value_sat);
+		check_closed_broadcast(&nodes[0], 1, true);
+		check_added_monitors(&nodes[0], 1);
+		handle_bump_events(&nodes[0], true, 0);
+		let commitment_tx = {
+			let mut txn = nodes[0].tx_broadcaster.txn_broadcast();
+			assert_eq!(txn.len(), 1);
+			txn.remove(0)
+		};
+		check_spends!(&commitment_tx, &rbf_tx);
+	}
+
+	// Once the RBF candidate is irrevocably confirmed, the replaced candidate is discarded.
+	let promotion_height = rbf_conf_height + ANTI_REORG_DELAY - 1;
+	connect_blocks(&nodes[0], promotion_height - 1 - nodes[0].best_block_info().1);
+	let events = nodes[0].chain_monitor.chain_monitor.get_and_clear_pending_events();
+	assert!(
+		!events.iter().any(|event| matches!(event, Event::DiscardFunding { .. })),
+		"{events:?}"
+	);
+	connect_blocks(&nodes[0], 1);
+	let discarded_inputs: Vec<_> = nodes[0]
+		.chain_monitor
+		.chain_monitor
+		.get_and_clear_pending_events()
+		.into_iter()
+		.filter_map(|event| match event {
+			Event::DiscardFunding {
+				funding_info: FundingInfo::Contribution { inputs, .. },
+				..
+			} => Some(inputs),
+			Event::BumpTransaction(_) => None,
+			_ => panic!("Unexpected event {event:?}"),
+		})
+		.collect();
+	assert_eq!(discarded_inputs, vec![round_0_inputs]);
+
+	// Remove the corresponding outputs and transactions the chain source is watching for the
+	// initial funding and the replaced candidate as they are no longer being tracked.
+	for txid in [initial_funding_tx.compute_txid(), first_splice_tx.compute_txid()] {
+		nodes[0].chain_source.remove_watched_by_txid(txid);
+	}
 }
 
 #[test]

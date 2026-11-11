@@ -1,0 +1,7 @@
+# API Updates
+
+ * When a splice transaction confirms while the channel is still open and the channel then closes
+   before `splice_locked` has been exchanged, the confirmed `FundingScope` is now promoted once the
+   transaction is irrevocably confirmed, emitting `Event::DiscardFunding` for the inputs and outputs
+   of any competing candidates. Previously those inputs stayed reserved until the process restarted
+   (#5552).
