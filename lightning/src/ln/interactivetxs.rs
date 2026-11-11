@@ -716,6 +716,18 @@ impl InteractiveTxSigningSession {
 		self.local_inputs_count() > 0 || self.local_outputs_count() > 0
 	}
 
+	pub fn has_remote_contribution(&self) -> bool {
+		self.remote_inputs_count() > 0 || self.remote_outputs_count() > 0
+	}
+
+	fn remote_outputs_count(&self) -> usize {
+		self.unsigned_tx
+			.output_metadata
+			.iter()
+			.filter(|output| !output.is_local(self.unsigned_tx.holder_is_initiator))
+			.count()
+	}
+
 	pub fn shared_input(&self) -> Option<&TxInMetadata> {
 		self.unsigned_tx.shared_input_index.and_then(|shared_input_index| {
 			self.unsigned_tx.input_metadata.get(shared_input_index as usize)

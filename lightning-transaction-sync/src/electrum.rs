@@ -5,7 +5,7 @@
 // http://opensource.org/licenses/MIT>, at your option. You may not use this file except in
 // accordance with one or both of these licenses.
 
-use crate::common::{is_potentially_unsafe_merkle_leaf, ConfirmedTx, FilterQueue, SyncState};
+use crate::common::{ConfirmedTx, FilterQueue, SyncState};
 use crate::error::{InternalError, TxSyncError};
 
 use electrum_client::utils::validate_merkle_proof;
@@ -282,13 +282,6 @@ impl<L: Logger> ElectrumSyncClient<L> {
 						return Err(InternalError::Failed);
 					}
 
-					// Skip before potentially using an arbitrary returned output to look up the
-					// transaction's script history.
-					if is_potentially_unsafe_merkle_leaf(&tx) {
-						log_error!(self.logger, "Skipping transaction {} due to retrieving potentially invalid tx data.", txid);
-						continue;
-					}
-
 					watched_txs.push((txid, tx.clone()));
 					// We watch an output's script_pubkey of the transaction of interest in order
 					// to retrieve the associated script history, before narrowing down our search
@@ -324,12 +317,15 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		let num_tx_lookups = watched_script_pubkeys.len();
 		debug_assert_eq!(num_tx_lookups, watched_txs.len());
 
-		for output in sync_state.watched_outputs.values() {
-			watched_script_pubkeys.push(output.script_pubkey.clone());
+		for script_pubkey in sync_state.watched_outputs.values().flatten() {
+			watched_script_pubkeys.push(script_pubkey.clone());
 		}
 
 		let num_output_spend_lookups = watched_script_pubkeys.len() - num_tx_lookups;
-		debug_assert_eq!(num_output_spend_lookups, sync_state.watched_outputs.len());
+		debug_assert_eq!(
+			num_output_spend_lookups,
+			sync_state.watched_outputs.values().flatten().count()
+		);
 
 		match self.client.batch_script_get_history(watched_script_pubkeys.iter().map(|s| s.deref()))
 		{
@@ -364,9 +360,11 @@ impl<L: Logger> ElectrumSyncClient<L> {
 					}
 				}
 
-				for (watched_output, script_history) in
-					sync_state.watched_outputs.values().zip(output_results)
-				{
+				let watched_outpoints =
+					sync_state.watched_outputs.iter().flat_map(|(outpoint, script_pubkeys)| {
+						script_pubkeys.iter().map(move |_| outpoint)
+					});
+				for (watched_outpoint, script_history) in watched_outpoints.zip(output_results) {
 					for possible_output_spend in script_history {
 						if possible_output_spend.height <= 0 {
 							// Skip if it's a an unconfirmed entry.
@@ -374,7 +372,7 @@ impl<L: Logger> ElectrumSyncClient<L> {
 						}
 
 						let txid = possible_output_spend.tx_hash;
-						if txid == watched_output.outpoint.txid {
+						if txid == watched_outpoint.txid {
 							// The transaction creating the watched output cannot spend it.
 							continue;
 						}
@@ -391,9 +389,7 @@ impl<L: Logger> ElectrumSyncClient<L> {
 
 								let mut is_spend = false;
 								for txin in &tx.input {
-									let watched_outpoint =
-										watched_output.outpoint.into_bitcoin_outpoint();
-									if txin.previous_output == watched_outpoint {
+									if txin.previous_output == *watched_outpoint {
 										is_spend = true;
 										break;
 									}
@@ -475,19 +471,6 @@ impl<L: Logger> ElectrumSyncClient<L> {
 		&self, tx: &Transaction, prob_conf_height: u32,
 	) -> Result<Option<ConfirmedTx>, InternalError> {
 		let txid = tx.compute_txid();
-		// Bitcoin Core's Merkle tree implementation has no way to discern between internal and
-		// leaf node entries. As a consequence it is susceptible to an attacker injecting
-		// additional transactions by crafting 64-byte transactions matching an inner Merkle
-		// node's hash (see https://web.archive.org/web/20240329003521/https://bitslog.com/2018/06/09/leaf-node-weakness-in-bitcoin-merkle-tree-design/).
-		if is_potentially_unsafe_merkle_leaf(tx) {
-			log_error!(
-				self.logger,
-				"Skipping transaction {} due to retrieving potentially invalid tx data.",
-				txid
-			);
-			return Ok(None);
-		}
-
 		match self.client.transaction_get_merkle(&txid, prob_conf_height as usize) {
 			Ok(merkle_res) => {
 				debug_assert_eq!(prob_conf_height, merkle_res.block_height as u32);
@@ -553,7 +536,11 @@ impl<L: Logger> Filter for ElectrumSyncClient<L> {
 
 	fn register_output(&self, output: WatchedOutput) {
 		let mut locked_queue = self.queue.lock().unwrap();
-		locked_queue.outputs.insert(output.outpoint.into_bitcoin_outpoint(), output);
+		locked_queue
+			.outputs
+			.entry(output.outpoint.into_bitcoin_outpoint())
+			.or_default()
+			.insert(output.script_pubkey);
 	}
 }
 

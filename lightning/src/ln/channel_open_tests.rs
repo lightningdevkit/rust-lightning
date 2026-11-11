@@ -1170,6 +1170,8 @@ pub fn test_accept_inbound_channel_config_override() {
 			max_dust_htlc_exposure_msat: None,
 			force_close_avoidance_max_fee_satoshis: None,
 			accept_underpaying_htlcs: None,
+			inbound_splice_min_depth: None,
+			outbound_splice_min_depth: None,
 		}),
 	};
 	let events = nodes[1].node.get_and_clear_pending_events();
@@ -1471,6 +1473,80 @@ pub fn test_duplicate_funding_err_in_funding() {
 	let reason = ClosureReason::ProcessingError { err };
 	let expected_closing = ExpectedCloseEvent::from_id_reason(real_channel_id, false, reason);
 	check_closed_events(&nodes[1], &[expected_closing]);
+}
+
+#[xtest(feature = "_externalize_tests")]
+pub fn test_stale_inbound_request_does_not_replace_funded_channel() {
+	// Test that a pending inbound channel request whose temporary ID collides with the final ID
+	// of another channel from the same peer cannot replace that channel when accepted. A peer
+	// picks its `temporary_channel_id` freely and knows the final ID of a channel it is opening
+	// before we accept the second request, so the ID has to be rechecked at acceptance time.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let attacker_id = nodes[0].node.get_our_node_id();
+	let victim_id = nodes[1].node.get_our_node_id();
+
+	// Open channel A and get it to the point where the peer knows its final ID, while it is
+	// still indexed under its temporary ID on our side.
+	nodes[0].node.create_channel(victim_id, 100_000, 50_000_000, 42, None, None).unwrap();
+	let open_a = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, victim_id);
+	handle_and_accept_open_channel(&nodes[1], attacker_id, &open_a);
+	let accept_a = get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, attacker_id);
+	nodes[0].node.handle_accept_channel(victim_id, &accept_a);
+
+	let (temp_id_a, funding_tx, funding_outpoint) =
+		create_funding_transaction(&nodes[0], &victim_id, 100_000, 42);
+	let funded_id = ChannelId::v1_from_funding_outpoint(funding_outpoint);
+	nodes[0].node.funding_transaction_generated(temp_id_a, victim_id, funding_tx.clone()).unwrap();
+	let funding_created = get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, victim_id);
+
+	// Queue a second inbound request using A's final channel ID as its temporary ID.
+	let mut open_b = open_a.clone();
+	open_b.common_fields.temporary_channel_id = funded_id;
+	nodes[1].node.handle_open_channel(attacker_id, &open_b);
+	match nodes[1].node.get_and_clear_pending_events().pop().unwrap() {
+		Event::OpenChannelRequest { temporary_channel_id, .. } => {
+			assert_eq!(temporary_channel_id, funded_id);
+		},
+		_ => panic!("Unexpected event"),
+	}
+
+	// Fund channel A, taking over the ID the still-pending request was queued under.
+	nodes[1].node.handle_funding_created(attacker_id, &funding_created);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &attacker_id);
+	let funding_signed = get_event_msg!(nodes[1], MessageSendEvent::SendFundingSigned, attacker_id);
+	nodes[0].node.handle_funding_signed(victim_id, &funding_signed);
+	check_added_monitors(&nodes[0], 1);
+	expect_channel_pending_event(&nodes[0], &victim_id);
+
+	// Complete A without the pending request having been accepted or expired.
+	let (ready, _) =
+		create_chan_between_nodes_with_value_confirm(&nodes[0], &nodes[1], &funding_tx);
+	create_chan_between_nodes_with_value_b(&nodes[0], &nodes[1], &ready);
+	nodes[1].node.get_and_clear_pending_msg_events();
+	nodes[1].node.get_and_clear_pending_events();
+	let original = nodes[1].node.list_usable_channels().pop().unwrap();
+	assert_eq!(original.channel_id, funded_id);
+	assert!(original.funding_txo.is_some());
+
+	// Accepting the stale request must fail without discarding A's state.
+	match nodes[1].node.accept_inbound_channel(&funded_id, &attacker_id, 43, None) {
+		Err(APIError::ChannelUnavailable { .. }) => {},
+		Ok(_) => panic!("Accepting a colliding inbound request must fail"),
+		Err(e) => panic!("Unexpected Error: {:?}", e),
+	}
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	let channels = nodes[1].node.list_channels();
+	assert_eq!(channels.len(), 1);
+	assert_eq!(channels[0].channel_id, funded_id);
+	assert_eq!(channels[0].funding_txo, original.funding_txo);
+	assert_eq!(channels[0].user_channel_id, 42);
+	assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
 }
 
 #[xtest(feature = "_externalize_tests")]
