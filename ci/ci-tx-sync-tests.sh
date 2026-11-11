@@ -9,6 +9,15 @@ pushd lightning-transaction-sync
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
+	# Starting with version 1.54.0, the `tokio` crate has an MSRV of rustc 1.85.
+	[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p tokio --precise "1.53.3" --verbose
+
+	# Starting with version 0.7.20, the `tokio-util` crate has an MSRV of rustc 1.85.
+	[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p tokio-util --precise "0.7.19" --verbose
+
+	# Starting with version 0.8.40, the `encoding_rs` crate has an MSRV of rustc 1.88.
+	[ "$RUSTC_MINOR_VERSION" -lt 88 ] && cargo update -p encoding_rs --precise "0.8.35" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
@@ -19,6 +28,9 @@ PIN_RELEASE_DEPS # pin the release dependencies
 
 # Starting with version 1.2.0, the `idna_adapter` crate has an MSRV of rustc 1.81.0.
 [ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
+
+# Starting with version 1.1.0, the `utf8_iter` crate has an MSRV of rustc 1.83.
+[ "$RUSTC_MINOR_VERSION" -lt 83 ] && cargo update -p utf8_iter --precise "1.0.4" --verbose
 
 # Starting with version 2.12.1, the `indexmap` crate has an MSRV of rustc 1.82.
 [ "$RUSTC_MINOR_VERSION" -lt 82 ] && cargo update -p indexmap --precise "2.11.4" --verbose
