@@ -637,7 +637,8 @@ where
 
 			self.transactions_confirmed_internal(&mut *state_lock, header, txdata, height);
 			if !is_rescan {
-				spending_tx_opt = self.best_block_updated_internal(&mut *state_lock, header, height);
+				spending_tx_opt =
+					self.best_block_updated_internal(&mut *state_lock, header, height);
 			}
 
 			self.persist_state(&*state_lock).unwrap_or_else(|e| {
