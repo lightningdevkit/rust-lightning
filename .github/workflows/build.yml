@@ -257,7 +257,7 @@ jobs:
   linting:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: stable
+      TOOLCHAIN: 1.85.0 # clippy 1.86 added lints which 0.1 does not pass
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
