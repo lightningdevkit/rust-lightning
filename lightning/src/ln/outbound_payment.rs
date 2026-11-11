@@ -1453,8 +1453,9 @@ impl OutboundPayments {
 						.with_user_config_ignoring_fee_limit(*route_params_config);
 					let mut route_params =
 						RouteParameters::from_payment_params_and_value(pay_params, amount_msat);
-					route_params.max_total_routing_fee_msat =
-						route_params_config.max_total_routing_fee_msat;
+					if let Some(max_fee_msat) = route_params_config.max_total_routing_fee_msat {
+						route_params.max_total_routing_fee_msat = Some(max_fee_msat);
+					}
 
 					if let Err(()) = onion_utils::set_max_path_length(
 						&mut route_params,
