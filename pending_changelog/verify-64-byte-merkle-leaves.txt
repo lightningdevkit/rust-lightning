@@ -1,0 +1,9 @@
+# Security
+
+ * `lightning-transaction-sync`'s Electrum and Esplora clients no longer
+   discard transactions whose witness-stripped serialization is exactly 64
+   bytes when syncing confirmed transactions. Genuine mined HTLC claims can
+   have exactly this size, and dropping them prevented us from learning the
+   preimage needed to settle a forwarded HTLC upstream. Their inclusion is
+   verified like that of any other transaction, against the Merkle root
+   committed to by the block header.
