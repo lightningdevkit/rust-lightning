@@ -310,7 +310,7 @@ impl<L: Logger> EsploraSyncClient<L> {
 		for outpoint in sync_state.watched_outputs.keys() {
 			if let Some(output_status) = maybe_await!(self
 				.client
-				.get_output_status(&outpoint.txid, outpoint.index as u64))?
+				.get_output_status(&outpoint.txid, outpoint.vout as u64))?
 			{
 				if let Some(spending_txid) = output_status.txid {
 					if let Some(spending_tx_status) = output_status.status {
