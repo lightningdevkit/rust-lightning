@@ -1643,11 +1643,17 @@ impl<
 			TwoFutureJoiner::new(archived_list_fut, live_list_fut).await;
 		let archived_monitor_keys = archived_list_res?;
 		let live_monitor_keys = live_list_res?;
+		let mut cleanup_futures = Vec::new();
 		for monitor_key in archived_monitor_keys {
 			if live_monitor_keys.contains(&monitor_key) {
 				continue;
 			}
-			self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, false).await?;
+			cleanup_futures.push(ResultFuture::Pending(Box::pin(async move {
+				self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, false).await
+			})));
+		}
+		for cleanup_res in MultiResultFuturePoller::new(cleanup_futures).await {
+			cleanup_res?;
 		}
 		Ok(())
 	}
