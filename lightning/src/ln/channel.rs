@@ -3305,6 +3305,23 @@ impl PendingFunding {
 			.any(|candidate| candidate.funding.funding_tx_confirmation_height != 0)
 	}
 
+	/// The funding of the current negotiation round, if it is awaiting the `tx_signatures`
+	/// exchange. The counterparty can broadcast the splice transaction as soon as it has our
+	/// `tx_signatures`, so it may confirm before it becomes a negotiated candidate.
+	fn funding_awaiting_signatures(&self) -> Option<&FundingScope> {
+		match self.funding_negotiation.as_ref() {
+			Some(FundingNegotiation::AwaitingSignatures { funding, .. }) => Some(funding),
+			_ => None,
+		}
+	}
+
+	fn funding_awaiting_signatures_mut(&mut self) -> Option<&mut FundingScope> {
+		match self.funding_negotiation.as_mut() {
+			Some(FundingNegotiation::AwaitingSignatures { funding, .. }) => Some(funding),
+			_ => None,
+		}
+	}
+
 	/// Whether our contributions form a suffix of the negotiated candidates: once a round includes
 	/// our contribution, every later round carries it forward (so the splice intention is never
 	/// lost).
@@ -9973,7 +9990,7 @@ where
 				{
 					log_info!(
 						logger,
-						"Sending 0conf splice_locked txid {} to our peer",
+						"Sending splice_locked txid {} to our peer upon exchanging tx_signatures",
 						splice_txid,
 					);
 				}
@@ -12652,6 +12669,19 @@ where
 				let mut confirmed_funding_index = None;
 				let mut funding_already_confirmed = false;
 
+				// A splice transaction still awaiting our counterparty's `tx_signatures` may
+				// confirm before the exchange completes. Track its confirmation so it is not
+				// lost once the funding becomes a negotiated candidate, at which point
+				// `splice_locked` may be sent.
+				if let Some(funding) = pending_splice.funding_awaiting_signatures_mut() {
+					self.context.check_for_funding_tx_confirmed(
+						funding, block_hash, tx_confirmation_height, index_in_block, &mut confirmed_tx, logger,
+					)?;
+					if funding.funding_tx_confirmation_height != 0 {
+						funding_already_confirmed = true;
+					}
+				}
+
 				let candidates =
 					pending_splice.negotiated_candidates.iter_mut().map(|candidate| &mut candidate.funding);
 				for (index, funding) in candidates.enumerate() {
@@ -12844,6 +12874,14 @@ where
 		}
 
 		if let Some(pending_splice) = &mut self.pending_splice {
+			if let Some(funding) = pending_splice.funding_awaiting_signatures_mut() {
+				if funding.get_funding_tx_confirmations(height) == 0 {
+					funding.funding_tx_confirmation_height = 0;
+					funding.short_channel_id = None;
+					funding.funding_tx_confirmed_in = None;
+				}
+			}
+
 			let mut confirmed_funding_index = None;
 
 			let candidates = pending_splice.negotiated_candidates.iter().map(|candidate| &candidate.funding);
@@ -12939,8 +12977,13 @@ where
 	}
 
 	pub fn get_relevant_txids(&self) -> impl Iterator<Item = (Txid, u32, Option<BlockHash>)> + '_ {
+		let funding_awaiting_signatures = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_awaiting_signatures());
 		core::iter::once(&self.funding)
 			.chain(self.pending_funding())
+			.chain(funding_awaiting_signatures)
 			.map(|funding| {
 				(
 					funding.get_funding_txid(),
@@ -12967,8 +13010,13 @@ where
 	pub fn transaction_unconfirmed<L: Logger>(
 		&mut self, txid: &Txid, logger: &L,
 	) -> Result<(), ClosureReason> {
-		let unconfirmed_funding = self
-			.funding_and_pending_funding_iter_mut()
+		let funding_awaiting_signatures = self
+			.pending_splice
+			.as_ref()
+			.and_then(|pending_splice| pending_splice.funding_awaiting_signatures());
+		let unconfirmed_funding = core::iter::once(&self.funding)
+			.chain(self.pending_funding())
+			.chain(funding_awaiting_signatures)
 			.find(|funding| funding.get_funding_txid() == Some(*txid));
 
 		if let Some(funding) = unconfirmed_funding {
