@@ -9,6 +9,9 @@ pushd lightning-transaction-sync
 # which we do here.
 # Further crates which appear only as dev-dependencies are pinned further down.
 function PIN_RELEASE_DEPS {
+	# Starting with version 1.54.0, the `tokio` crate has an MSRV of rustc 1.85.
+	[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p tokio --precise "1.53.3" --verbose
+
 	return 0 # Don't fail the script if our rustc is higher than the last check
 }
 
@@ -20,11 +23,17 @@ PIN_RELEASE_DEPS # pin the release dependencies
 # Starting with version 1.2.0, the `idna_adapter` crate has an MSRV of rustc 1.81.0.
 [ "$RUSTC_MINOR_VERSION" -lt 81 ] && cargo update -p idna_adapter --precise "1.1.0" --verbose
 
+# Starting with version 1.1.0, the `utf8_iter` crate has an MSRV of rustc 1.83.
+[ "$RUSTC_MINOR_VERSION" -lt 83 ] && cargo update -p utf8_iter --precise "1.0.4" --verbose
+
 # Starting with version 1.9.0, the `zeroize` crate has an MSRV of rustc 1.85.
 [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p zeroize --precise "1.8.2" --verbose
 
 # Starting with version 0.27.8, the `hyper-rustls` crate has an MSRV of rustc 1.85.
 [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p hyper-rustls --precise "0.27.7" --verbose
+
+# Starting with version 0.1.21, the `hyper-util` crate has an MSRV of rustc 1.85.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p hyper-util --precise "0.1.20" --verbose
 
 # Starting with version 0.1.35, the `jobserver` crate has an MSRV of rustc 1.85.
 [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p jobserver --precise "0.1.34" --verbose
@@ -33,7 +42,9 @@ PIN_RELEASE_DEPS # pin the release dependencies
 # `chacha20` 0.10, `cpufeatures` 0.3, `rand_core` 0.10, `rand_pcg` 0.10 and `getrandom` 0.4, all of
 # which are edition 2024 and thus not even parsable by our MSRV's cargo. `quinn` only reaches us as
 # an unused optional dependency of `reqwest`, so it is never built, but cargo still insists on
-# reading the manifests.
+# reading the manifests. Starting with version 0.11.12, `quinn` requires `quinn-proto` 0.11.18, so
+# it has to be pinned first.
+[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p quinn --precise "0.11.11" --verbose
 [ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p quinn-proto --precise "0.11.15" --verbose
 
 export RUST_BACKTRACE=1
