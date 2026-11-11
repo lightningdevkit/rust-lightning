@@ -45,7 +45,7 @@ vulnerabilities for nodes with untrusted counterparties.
    transactions when syncing the chain using electrum (#5557).
  * A malicious counterparty can no longer cause LDK to sign differing commitment
    transactions at the same index, leading to potential loss of funds when using
-   async signing or async persistence (#5560).
+   async signing or async persistence (#5561).
  * Nonstandard transactions that are exactly 64 bytes are no longer ignored in
    electrum and esplora sync, preventing funds theft via HTLC claims (#5559).
  * Multiple payments for the same payment hash can no longer cause LDK to
