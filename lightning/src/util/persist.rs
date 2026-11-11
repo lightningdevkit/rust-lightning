@@ -73,6 +73,9 @@ pub const CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitors";
 pub const CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE: &str = "";
 /// The primary namespace under which [`ChannelMonitorUpdate`]s will be persisted.
 pub const CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str = "monitor_updates";
+/// The primary namespace under which archived [`ChannelMonitorUpdate`]s will be persisted.
+pub const ARCHIVED_CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE: &str =
+	"archived_monitor_updates";
 
 /// The primary namespace under which archived [`ChannelMonitor`]s will be persisted.
 pub const ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE: &str = "archived_monitors";
@@ -1539,9 +1542,29 @@ impl<
 			list_res?.into_iter().map(|name| UpdateName::new(name)).collect();
 		let mut updates = updates?;
 		updates.sort_unstable();
-		let updates_to_load = updates.iter().filter(|update| update.0 > current_update_id);
-		let mut update_futures = Vec::with_capacity(updates_to_load.clone().count());
-		for update_name in updates_to_load {
+		// Only updates stored contiguously can be replayed -- applying an update past a gap in
+		// the stored updates would panic in `update_monitor`, so per the `Persist` contract,
+		// updates past such a gap are not replayed and are archived instead. The pre-0.1
+		// post-force-close update, identified by a `u64::MAX` `update_id`, is exempt as it never
+		// follows the monitor's `update_id`.
+		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
+		let mut next_update_id = current_update_id.checked_add(1);
+		let mut update_futures = Vec::new();
+		for (idx, update_name) in
+			updates.iter().enumerate().filter(|(_, update)| update.0 > current_update_id)
+		{
+			let is_legacy_update = update_name.0 == LEGACY_CLOSED_CHANNEL_UPDATE_ID;
+			if !is_legacy_update && next_update_id != Some(update_name.0) {
+				log_error!(
+					self.logger,
+					"Found a gap in the stored ChannelMonitorUpdates for monitor {}, archiving updates {} and later",
+					monitor_key,
+					update_name.as_str(),
+				);
+				self.archive_gapped_updates(monitor_key, &updates[idx..]).await;
+				break;
+			}
+			next_update_id = update_name.0.checked_add(1);
 			update_futures.push(ResultFuture::Pending(Box::pin(async move {
 				(update_name, self.read_monitor_update(monitor_key, update_name).await)
 			})));
@@ -1562,6 +1585,64 @@ impl<
 			})?;
 		}
 		Ok(Some((best_block, monitor)))
+	}
+
+	/// Moves gapped `ChannelMonitorUpdate`s to the archived monitor updates namespace.
+	///
+	/// The gapped updates can never be replayed, but are preserved for manual disaster recovery
+	/// rather than deleted. Archiving them also ensures they cannot be replayed by a later
+	/// restore once newly written updates fill the gap, which would leave the monitor ahead of
+	/// the `ChannelManager`.
+	async fn archive_gapped_updates(&self, monitor_key: &str, gapped_updates: &[UpdateName]) {
+		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
+		let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+		let archived_primary = ARCHIVED_CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
+		for update_name in
+			gapped_updates.iter().filter(|update| update.0 != LEGACY_CLOSED_CHANNEL_UPDATE_ID)
+		{
+			let update_bytes =
+				match self.kv_store.read(primary, monitor_key, update_name.as_str()).await {
+					Ok(update_bytes) => update_bytes,
+					Err(e) => {
+						log_error!(
+							self.logger,
+							"Failed to read gapped ChannelMonitorUpdate {}/{}/{}, reason: {}",
+							primary,
+							monitor_key,
+							update_name.as_str(),
+							e
+						);
+						continue;
+					},
+				};
+			if let Err(e) = self
+				.kv_store
+				.write(archived_primary, monitor_key, update_name.as_str(), update_bytes)
+				.await
+			{
+				log_error!(
+					self.logger,
+					"Failed to write gapped ChannelMonitorUpdate {}/{}/{}, reason: {}",
+					archived_primary,
+					monitor_key,
+					update_name.as_str(),
+					e
+				);
+				continue;
+			}
+			if let Err(e) =
+				self.kv_store.remove(primary, monitor_key, update_name.as_str(), true).await
+			{
+				log_error!(
+					self.logger,
+					"Failed to remove gapped ChannelMonitorUpdate {}/{}/{}, reason: {}",
+					primary,
+					monitor_key,
+					update_name.as_str(),
+					e
+				);
+			}
+		}
 	}
 
 	/// Read a channel monitor.
@@ -2945,6 +3026,98 @@ mod tests {
 		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
 		assert_eq!(persisted_chan_data.len(), 1);
 		assert_eq!(persisted_chan_data[0].1.get_latest_update_id(), u64::MAX);
+	}
+
+	// Confirm that updates stored after a gap in the update sequence are archived on restore and
+	// not applied out of order, per the `Persist` contract.
+	#[test]
+	fn archives_monitor_updates_after_gap_on_restore() {
+		let max_pending_updates = 7;
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			max_pending_updates,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+		send_payment(&nodes[1], &vec![&nodes[0]][..], 4_000_000);
+
+		// Two payments leave a full monitor snapshot consolidated at `max_pending_updates` and
+		// the updates since then stored standalone, which restore replays on top of the
+		// snapshot.
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_key = monitor.persistence_key().to_string();
+		assert_eq!(monitor.get_latest_update_id(), 2 * EXPECTED_UPDATES_PER_PAYMENT);
+		let mut update_list = KVStoreSync::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		update_list.sort_by_key(|name| name.parse::<u64>().unwrap());
+		let expected_updates: Vec<String> = (max_pending_updates + 1
+			..=2 * EXPECTED_UPDATES_PER_PAYMENT)
+			.map(|id| UpdateName::from(id).as_str().to_string())
+			.collect();
+		assert_eq!(update_list, expected_updates);
+
+		// Simulate a crash where an update was durably stored while the update preceding it was
+		// lost, leaving a gap in the stored updates.
+		KVStoreSync::remove(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+			UpdateName::from(max_pending_updates + 1).as_str(),
+			false,
+		)
+		.unwrap();
+
+		// Restoring the monitor must archive the updates after the gap, rather than applying
+		// them out of order or leaving them in place to be replayed once the gap is filled.
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		assert_eq!(persisted_chan_data[0].1.get_latest_update_id(), max_pending_updates);
+
+		let update_list = KVStoreSync::list(
+			&kv_store,
+			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		assert!(update_list.is_empty());
+		let mut archived_list = KVStoreSync::list(
+			&kv_store,
+			ARCHIVED_CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+		archived_list.sort_by_key(|name| name.parse::<u64>().unwrap());
+		let expected_archived: Vec<String> = (max_pending_updates + 2
+			..=2 * EXPECTED_UPDATES_PER_PAYMENT)
+			.map(|id| UpdateName::from(id).as_str().to_string())
+			.collect();
+		assert_eq!(archived_list, expected_archived);
 	}
 
 	fn persist_fn<P: Deref, ChannelSigner: EcdsaChannelSigner>(_persist: P) -> bool
