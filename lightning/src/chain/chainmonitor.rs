@@ -519,6 +519,9 @@ where
 			}
 		}
 
+		// Lock the pending queue before the final pass so a new monitor cannot move from the
+		// queue into the monitor map between processing the two sets.
+		let pending_ops = self.pending_ops.lock().unwrap();
 		// Do another pass to handle any monitors added in between iterations.
 		let monitor_states = self.monitors.write().unwrap();
 		for (channel_id, monitor_state) in monitor_states.iter() {
@@ -536,6 +539,14 @@ where
 					log_error!(self.logger, "{}", err_str);
 					panic!("{}", err_str);
 				}
+			}
+		}
+
+		for op in pending_ops.iter() {
+			if let PendingMonitorOp::NewMonitor { monitor, .. } = op {
+				// Keep pending monitors in sync without persisting them before flush.
+				let txn_outputs = process(monitor, txdata);
+				self.register_monitor_outputs(monitor, header.block_hash(), txn_outputs);
 			}
 		}
 
@@ -560,7 +571,7 @@ where
 		let monitor = &monitor_state.monitor;
 		let logger = WithChannelMonitor::from(&self.logger, &monitor, None);
 
-		let mut txn_outputs = process(monitor, txdata);
+		let txn_outputs = process(monitor, txdata);
 
 		let get_partition_key = |channel_id: &ChannelId| {
 			let channel_id_bytes = channel_id.0;
@@ -607,10 +618,18 @@ where
 			}
 		}
 
+		self.register_monitor_outputs(monitor, header.block_hash(), txn_outputs);
+		Ok(())
+	}
+
+	fn register_monitor_outputs(
+		&self, monitor: &ChannelMonitor<ChannelSigner>, block_hash: BlockHash,
+		mut txn_outputs: Vec<TransactionOutputs>,
+	) {
 		// Register any new outputs with the chain source for filtering, storing any dependent
 		// transactions from within the block that previously had not been included in txdata.
 		if let Some(ref chain_source) = self.chain_source {
-			let block_hash = header.block_hash();
+			let logger = WithChannelMonitor::from(&self.logger, monitor, None);
 			for (txid, mut outputs) in txn_outputs.drain(..) {
 				for (idx, output) in outputs.drain(..) {
 					// Register any new outputs with the chain source for filtering
@@ -628,7 +647,6 @@ where
 				}
 			}
 		}
-		Ok(())
 	}
 
 	/// Creates a new `ChainMonitor` used to watch on-chain activity pertaining to channels.
@@ -1500,6 +1518,7 @@ where
 	}
 
 	fn blocks_disconnected(&self, fork_point: BlockLocator) {
+		let pending_ops = self.pending_ops.lock().unwrap();
 		let monitor_states = self.monitors.read().unwrap();
 		log_debug!(
 			self.logger,
@@ -1507,13 +1526,25 @@ where
 			fork_point.height,
 			fork_point.block_hash,
 		);
-		for monitor_state in monitor_states.values() {
-			monitor_state.monitor.blocks_disconnected(
+		let disconnect_monitor = |monitor: &ChannelMonitor<ChannelSigner>| {
+			// A monitor created during a reorg may already be at or below the fork point.
+			if monitor.current_best_block().height <= fork_point.height {
+				return;
+			}
+			monitor.blocks_disconnected(
 				fork_point,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
 			);
+		};
+		for monitor_state in monitor_states.values() {
+			disconnect_monitor(&monitor_state.monitor);
+		}
+		for op in pending_ops.iter() {
+			if let PendingMonitorOp::NewMonitor { monitor, .. } = op {
+				disconnect_monitor(monitor);
+			}
 		}
 	}
 }
@@ -1554,14 +1585,23 @@ where
 
 	fn transaction_unconfirmed(&self, txid: &Txid) {
 		log_debug!(self.logger, "Transaction {} reorganized out of chain", txid);
+		let pending_ops = self.pending_ops.lock().unwrap();
 		let monitor_states = self.monitors.read().unwrap();
-		for monitor_state in monitor_states.values() {
-			monitor_state.monitor.transaction_unconfirmed(
+		let unconfirm_monitor = |monitor: &ChannelMonitor<ChannelSigner>| {
+			monitor.transaction_unconfirmed(
 				txid,
 				&self.broadcaster,
 				&self.fee_estimator,
 				&self.logger,
 			);
+		};
+		for monitor_state in monitor_states.values() {
+			unconfirm_monitor(&monitor_state.monitor);
+		}
+		for op in pending_ops.iter() {
+			if let PendingMonitorOp::NewMonitor { monitor, .. } = op {
+				unconfirm_monitor(monitor);
+			}
 		}
 	}
 
@@ -1597,9 +1637,15 @@ where
 
 	fn get_relevant_txids(&self) -> Vec<(Txid, u32, Option<BlockHash>)> {
 		let mut txids = Vec::new();
+		let pending_ops = self.pending_ops.lock().unwrap();
 		let monitor_states = self.monitors.read().unwrap();
 		for monitor_state in monitor_states.values() {
 			txids.append(&mut monitor_state.monitor.get_relevant_txids());
+		}
+		for op in pending_ops.iter() {
+			if let PendingMonitorOp::NewMonitor { monitor, .. } = op {
+				txids.append(&mut monitor.get_relevant_txids());
+			}
 		}
 
 		txids.sort_unstable_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
@@ -1831,7 +1877,7 @@ where
 mod tests {
 	use super::ChainMonitor;
 	use crate::chain::channelmonitor::{ChannelMonitorUpdate, ANTI_REORG_DELAY};
-	use crate::chain::{ChannelMonitorUpdateStatus, Watch};
+	use crate::chain::{BlockLocator, ChannelMonitorUpdateStatus, Confirm, Listen, Watch};
 	use crate::events::{ClosureReason, Event};
 	use crate::ln::functional_test_utils::*;
 	use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
@@ -1843,8 +1889,11 @@ mod tests {
 		TestBroadcaster, TestChainSource, TestFeeEstimator, TestKeysInterface, TestLogger,
 		TestPersister,
 	};
-	use crate::{expect_payment_claimed, expect_payment_path_successful, get_event_msg};
-	use bitcoin::Network;
+	use crate::{
+		expect_payment_claimed, expect_payment_path_successful, get_event_msg,
+		get_local_commitment_txn,
+	};
+	use bitcoin::{Block, Network};
 
 	const CHAINSYNC_MONITOR_PARTITION_FACTOR: u32 = 5;
 
@@ -2243,6 +2292,161 @@ mod tests {
 		let persist_count_before = persister.new_channel_persistences.lock().unwrap().len();
 		deferred.flush(0, &&logger);
 		assert_eq!(persister.new_channel_persistences.lock().unwrap().len(), persist_count_before);
+	}
+
+	#[test]
+	fn test_deferred_monitor_chain_sync() {
+		for (use_listen, flush_before_reorg) in
+			[(true, false), (true, true), (false, false), (false, true)]
+		{
+			let chanmon_cfgs = create_chanmon_cfgs(2);
+			let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+			let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+			let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+			let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+			let commitment_tx = get_local_commitment_txn!(nodes[1], channel_id).remove(0);
+			let monitor =
+				nodes[0].chain_monitor.chain_monitor.get_monitor(channel_id).unwrap().clone();
+			let fork_point = monitor.current_best_block();
+			let update_id = monitor.get_latest_update_id();
+			let broadcaster = TestBroadcaster::new(Network::Testnet);
+			let persister = TestPersister::new();
+			let chain_source = TestChainSource::new(Network::Testnet);
+			let deferred = create_deferred_chain_monitor(
+				&chain_source,
+				&broadcaster,
+				nodes[0].logger,
+				nodes[0].fee_estimator,
+				&persister,
+				nodes[0].keys_manager,
+			);
+			assert_eq!(
+				deferred.watch_channel(channel_id, monitor),
+				Ok(ChannelMonitorUpdateStatus::InProgress)
+			);
+			assert_eq!(
+				deferred.update_channel(channel_id, &dummy_update(update_id + 1, channel_id)),
+				ChannelMonitorUpdateStatus::InProgress
+			);
+			let connect_block = |block: &Block, height| {
+				if use_listen {
+					deferred.block_connected(block, height);
+				} else {
+					deferred.best_block_updated(&block.header, height);
+					if !block.txdata.is_empty() {
+						let txdata: Vec<_> = block.txdata.iter().enumerate().collect();
+						deferred.transactions_confirmed(&block.header, &txdata, height);
+					}
+				}
+			};
+			let commitment_txid = commitment_tx.compute_txid();
+			let block = create_dummy_block(fork_point.block_hash, 1, vec![commitment_tx.clone()]);
+			connect_block(&block, fork_point.height + 1);
+			assert!(deferred.get_relevant_txids().contains(&(
+				commitment_txid,
+				fork_point.height + 1,
+				Some(block.block_hash()),
+			)));
+			// Chain data must be applied before flush, without persisting the pending monitor.
+			assert!(chain_source
+				.watched_outputs
+				.lock()
+				.unwrap()
+				.iter()
+				.any(|(outpoint, _)| outpoint.txid == commitment_tx.compute_txid()));
+			assert!(persister.new_channel_persistences.lock().unwrap().is_empty());
+			assert!(persister.chain_sync_monitor_persistences.lock().unwrap().is_empty());
+			assert!(persister.offchain_monitor_updates.lock().unwrap().is_empty());
+
+			if flush_before_reorg {
+				deferred.flush(1, &nodes[0].logger);
+			}
+			if use_listen {
+				deferred.blocks_disconnected(fork_point);
+			} else {
+				deferred.transaction_unconfirmed(&commitment_txid);
+			}
+			assert!(!deferred
+				.get_relevant_txids()
+				.iter()
+				.any(|(txid, ..)| *txid == commitment_txid));
+			let replacement = create_dummy_block(fork_point.block_hash, 2, vec![commitment_tx]);
+			connect_block(&replacement, fork_point.height + 1);
+			assert!(deferred.get_relevant_txids().contains(&(
+				commitment_txid,
+				fork_point.height + 1,
+				Some(replacement.block_hash()),
+			)));
+			// An empty block advances the tip without another confirmation callback.
+			let tip = create_dummy_block(replacement.block_hash(), 3, Vec::new());
+			connect_block(&tip, fork_point.height + 2);
+			if !flush_before_reorg {
+				deferred.flush(1, &nodes[0].logger);
+			}
+			assert_eq!(deferred.pending_operation_count(), 1);
+			let monitor = deferred.get_monitor(channel_id).unwrap();
+			assert_eq!(monitor.current_best_block().block_hash, tip.block_hash());
+			assert_eq!(monitor.current_best_block().height, fork_point.height + 2);
+			// The off-chain update remains deferred even though the chain state is current.
+			assert_eq!(monitor.get_latest_update_id(), update_id);
+			drop(monitor);
+
+			if use_listen {
+				// A monitor created on the replacement fork can receive delayed disconnects
+				// above and at its height on the old fork, before or after being flushed.
+				let new_channel_id = ChannelId::from_bytes([2; 32]);
+				let new_monitor =
+					crate::chain::channelmonitor::dummy_monitor(new_channel_id, |keys| {
+						TestChannelSigner::new(DynSigner::new(keys))
+					});
+				let common_ancestor = BlockLocator::new(
+					nodes[0].get_block_header(fork_point.height - 1).block_hash(),
+					fork_point.height - 1,
+				);
+				let new_tip = create_dummy_block(common_ancestor.block_hash, 4, Vec::new());
+				new_monitor.best_block_updated(
+					&new_tip.header,
+					fork_point.height,
+					&broadcaster,
+					nodes[0].fee_estimator,
+					&nodes[0].logger,
+				);
+				let new_best_block = new_monitor.current_best_block();
+				assert_eq!(new_best_block.height, fork_point.height);
+				assert_ne!(new_best_block.block_hash, fork_point.block_hash);
+				assert_eq!(
+					deferred.watch_channel(new_channel_id, new_monitor),
+					Ok(ChannelMonitorUpdateStatus::InProgress)
+				);
+				if flush_before_reorg {
+					deferred.flush(2, &nodes[0].logger);
+				}
+				for fork_point in
+					[BlockLocator::new(replacement.block_hash(), fork_point.height + 1), fork_point]
+				{
+					deferred.blocks_disconnected(fork_point);
+					assert_eq!(
+						deferred.get_monitor(channel_id).unwrap().current_best_block(),
+						fork_point
+					);
+				}
+				if !flush_before_reorg {
+					assert_eq!(persister.new_channel_persistences.lock().unwrap().len(), 1);
+					deferred.flush(2, &nodes[0].logger);
+				}
+				assert_eq!(
+					deferred.get_monitor(new_channel_id).unwrap().current_best_block(),
+					new_best_block
+				);
+				deferred.blocks_disconnected(common_ancestor);
+				connect_block(&new_tip, fork_point.height);
+				for channel_id in [channel_id, new_channel_id] {
+					let best_block = deferred.get_monitor(channel_id).unwrap().current_best_block();
+					assert_eq!(best_block.height, fork_point.height);
+					assert_eq!(best_block.block_hash, new_tip.block_hash());
+				}
+			}
+		}
 	}
 
 	/// Tests that `ChainMonitor` in deferred mode properly defers `watch_channel` and
