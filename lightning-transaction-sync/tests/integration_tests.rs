@@ -355,7 +355,7 @@ fn test_electrum_syncs() {
 	test_syncing!(tx_sync, confirmable, bitcoind, electrsd);
 }
 
-#[cfg(feature = "_electrum")]
+#[cfg(feature = "electrum")]
 fn do_test_conflicting_output_watches(sync_between_registrations: bool, bogus_first: bool) {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	generate_blocks_and_wait(&bitcoind, &electrsd, 101);
@@ -364,25 +364,28 @@ fn do_test_conflicting_output_watches(sync_between_registrations: bool, bogus_fi
 		ElectrumSyncClient::new(format!("tcp://{}", electrsd.electrum_url), &logger).unwrap();
 	let confirmable = TestConfirmable::new();
 
-	let address = bitcoind.client.new_address().unwrap();
+	let address = bitcoind.client.get_new_address(None, None).unwrap().assume_checked();
 	let spend_txid = bitcoind
 		.client
-		.send_to_address(&address, Amount::from_sat(5000))
-		.unwrap()
-		.0
-		.parse()
+		.send_to_address(&address, Amount::from_sat(5000), None, None, None, None, None, None)
 		.unwrap();
-	let spend_tx = bitcoind.client.get_transaction(spend_txid).unwrap().into_model().unwrap().tx;
+	let spend_tx =
+		bitcoind.client.get_transaction(&spend_txid, None).unwrap().transaction().unwrap();
 	let prev_outpoint = spend_tx.input[0].previous_output;
 	let prev_tx =
-		bitcoind.client.get_transaction(prev_outpoint.txid).unwrap().into_model().unwrap().tx;
+		bitcoind.client.get_transaction(&prev_outpoint.txid, None).unwrap().transaction().unwrap();
 	let output = WatchedOutput {
 		block_hash: None,
 		outpoint: OutPoint { txid: prev_outpoint.txid, index: prev_outpoint.vout as u16 },
 		script_pubkey: prev_tx.output[prev_outpoint.vout as usize].script_pubkey.clone(),
 	};
 	let bogus_output = WatchedOutput {
-		script_pubkey: bitcoind.client.new_address().unwrap().script_pubkey(),
+		script_pubkey: bitcoind
+			.client
+			.get_new_address(None, None)
+			.unwrap()
+			.assume_checked()
+			.script_pubkey(),
 		..output.clone()
 	};
 	let outputs =
@@ -406,8 +409,8 @@ fn do_test_conflicting_output_watches(sync_between_registrations: bool, bogus_fi
 	);
 
 	// Retain the watch if a confirmed spend is reorganized out and later reconfirmed.
-	let block_hash = bitcoind.client.get_best_block_hash().unwrap().into_model().unwrap().0;
-	bitcoind.client.invalidate_block(block_hash).unwrap();
+	let block_hash = bitcoind.client.get_best_block_hash().unwrap();
+	bitcoind.client.invalidate_block(&block_hash).unwrap();
 	generate_blocks_and_wait(&bitcoind, &electrsd, 2);
 	tx_sync.sync(vec![&confirmable]).unwrap();
 	assert!(confirmable.confirmed_txs.lock().unwrap().contains_key(&spend_txid));
@@ -417,14 +420,14 @@ fn do_test_conflicting_output_watches(sync_between_registrations: bool, bogus_fi
 }
 
 #[test]
-#[cfg(feature = "_electrum")]
+#[cfg(feature = "electrum")]
 fn test_conflicting_output_watches_same_sync() {
 	do_test_conflicting_output_watches(false, false);
 	do_test_conflicting_output_watches(false, true);
 }
 
 #[test]
-#[cfg(feature = "_electrum")]
+#[cfg(feature = "electrum")]
 fn test_conflicting_output_watches_separate_syncs() {
 	do_test_conflicting_output_watches(true, false);
 	do_test_conflicting_output_watches(true, true);
