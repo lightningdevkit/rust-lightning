@@ -824,10 +824,7 @@ struct Peer {
 	stashed_read_data: Option<Vec<u8>>,
 	/// A gossip message which we declined to process because the routing message handler's
 	/// processing queue was high, to be handled once the queue has drained, stored as the
-	/// plaintext bytes of the message (without its 16-byte MAC). We cannot store the ciphertext
-	/// as the decryption key stream has already been rolled past it. Any bytes which followed it
-	/// on the wire are in `stashed_read_data`, and reads from the peer are paused until both
-	/// have been processed.
+	/// plaintext bytes of the message (without its 16-byte MAC).
 	stashed_gossip_msg: Option<Vec<u8>>,
 	stashed_read_processing: bool,
 
@@ -1135,13 +1132,8 @@ pub struct PeerManager<
 	gossip_processing_backlogged: AtomicBool,
 	gossip_processing_backlog_lifted: AtomicBool,
 	/// A FIFO queue of the descriptors of peers for which we have stashed a gossip message
-	/// because the routing message handler's processing queue was high. We process their stashed
-	/// messages in the order they became blocked so that one peer cannot starve others of gossip
-	/// processing.
-	///
-	/// Entries are added when a peer becomes gossip-blocked and removed when we process its
-	/// stashed messages, so there is at most one entry per peer. Note that the mutex here must
-	/// never be held while taking a lock on a `Peer`.
+	/// because the routing message handler's processing queue was high. Note that the mutex
+	/// here must never be held while taking a lock on a `Peer`.
 	gossip_blocked_peers: Mutex<VecDeque<Descriptor>>,
 
 	node_signer: NS,
@@ -1925,16 +1917,13 @@ impl<
 				let their_node_id = peer.their_node_id.map(|p| p.0);
 				let logger = WithContext::from(&self.logger, their_node_id, None, None);
 
-				// A gossip message which we declined to process when it was read, because the
-				// routing message handler's processing queue was high, is handled here, before
-				// any bytes which followed it on the wire. It was successfully decoded when it
-				// was read, so re-decoding its plaintext cannot fail.
 				if let Some(plaintext) = peer.stashed_gossip_msg.take() {
 					msg_to_handle = wire::read(
 						&mut &plaintext[..],
 						&self.message_handler.custom_message_handler,
 					)
 					.ok();
+					debug_assert!(msg_to_handle.is_some());
 					debug_assert!(peer.pending_read_is_header);
 					debug_assert_eq!(peer.pending_read_buffer_pos, 0);
 				} else {
@@ -2070,13 +2059,6 @@ impl<
 									&self.message_handler.custom_message_handler,
 								);
 
-								// If the message is a gossip message and the routing message
-								// handler's processing queue is high, we stash its plaintext to
-								// be handled once the queue has drained instead of handling it
-								// now. This strictly bounds the number of in-flight gossip
-								// validations, which read-pausing alone cannot do as it still
-								// leaves us processing up to a socket buffer worth of gossip
-								// messages per peer beyond the limit.
 								let stashed_gossip_msg = match &message_result {
 									Ok(message)
 										if is_gossip_msg(message.type_id())
@@ -3601,8 +3583,6 @@ impl<
 					}
 					if peer.total_outbound_buffered() < OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS
 						&& peer.stashed_read_data.is_some()
-						// Peers which are blocked on gossip processing are handled via the
-						// `gossip_blocked_peers` queue below, in the order they became blocked.
 						&& peer.stashed_gossip_msg.is_none()
 					{
 						stashed_reads.push((*descriptor).clone());
