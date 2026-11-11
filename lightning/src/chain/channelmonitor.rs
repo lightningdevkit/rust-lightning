@@ -3148,8 +3148,20 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			// Avoiding including a `Balance` if none of these are true allows us to prune monitors
 			// for chanels that were opened inbound to us but where the funding transaction never
 			// confirmed at all.
+			//
+			// For an inbound V1 channel whose funding transaction we never saw on-chain, the only
+			// balance we could have is the counterparty's `push_msat`, which only ever exists if
+			// they broadcast the funding transaction. We don't consider that a balance either, as
+			// doing so would let a peer leave us with an unbounded number of monitors by opening
+			// channels with a push and closing them without ever funding them.
+			let is_v1_channel =
+				ChannelId::v1_from_funding_outpoint(us.first_negotiated_funding_txo) == us.channel_id;
+			let is_unfunded_inbound_v1 = is_v1_channel
+				&& !us.funding.channel_parameters.is_outbound_from_holder
+				&& !us.funding_seen_onchain;
 			if !us.is_closed_without_updates()
-				|| balance_candidates.iter().any(|bal| bal.amount_satoshis != 0)
+				|| (!is_unfunded_inbound_v1
+					&& balance_candidates.iter().any(|bal| bal.amount_satoshis != 0))
 			{
 				res.push(Balance::ClaimableOnChannelClose {
 					balance_candidates,
