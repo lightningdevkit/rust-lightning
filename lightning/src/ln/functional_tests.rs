@@ -6841,6 +6841,57 @@ pub fn test_counterparty_raa_skip_no_crash() {
 }
 
 #[xtest(feature = "_externalize_tests")]
+pub fn test_counterparty_raa_before_commitment_signed_sent() {
+	// Test that we reject an RAA which arrives after we've built our counterparty's next
+	// commitment transaction but before we've actually sent them the `commitment_signed` for it
+	// (here because the `ChannelMonitorUpdate` for it is still in progress). Previously we only
+	// checked `AWAITING_REMOTE_REVOKE`, which is set when the commitment is built, so such an RAA
+	// was accepted. We'd then step the counterparty commitment number forward and, once the
+	// monitor update completed, sign a commitment transaction the `ChannelMonitor` had never been
+	// told about, leaving it unable to claim any HTLCs in it if it confirmed.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	let channel_id = create_announced_chan_between_nodes(&nodes, 0, 1).2;
+
+	// Node A sends an HTLC and a `commitment_signed`, which node B processes while its monitor
+	// persistence is still in progress, holding back its own RAA and `commitment_signed`.
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], 1_000_000);
+	let onion = RecipientOnionFields::secret_only(payment_secret, 1_000_000);
+	let id = PaymentId(payment_hash.0);
+	nodes[0].node.send_payment_with_route(route, payment_hash, onion, id).unwrap();
+	check_added_monitors(&nodes[0], 1);
+
+	let send_event =
+		SendEvent::from_event(nodes[0].node.get_and_clear_pending_msg_events().remove(0));
+	nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
+
+	chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, &send_event.commitment_msg);
+	check_added_monitors(&nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// Node A now revokes its current commitment as if it had received node B's
+	// `commitment_signed`, which node B has not yet sent.
+	let raa = forge_counterparty_raa(&nodes[0], &node_b_id, &channel_id);
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
+	assert_eq!(
+		check_closed_broadcast(&nodes[1], 1, true).pop().unwrap().data,
+		"Received an unexpected revoke_and_ack"
+	);
+	check_added_monitors(&nodes[1], 1);
+	let reason =
+		ClosureReason::ProcessingError { err: "Received an unexpected revoke_and_ack".to_string() };
+	check_closed_event(&nodes[1], 1, reason, &[node_a_id], 100000);
+}
+
+#[xtest(feature = "_externalize_tests")]
 pub fn test_bump_txn_sanitize_tracking_maps() {
 	// Sanitizing pending_claim_request and claimable_outpoints used to be buggy,
 	// verify we clean then right after expiration of ANTI_REORG_DELAY.
