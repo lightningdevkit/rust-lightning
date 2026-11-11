@@ -6911,8 +6911,10 @@ pub fn test_channel_conf_timeout() {
 
 	let node_a_id = nodes[0].node.get_our_node_id();
 
+	// Push an amount above our dust limit so that the initial commitment transaction has a
+	// non-dust output to us, which must not keep the monitor around once the channel is closed.
 	let funding_tx =
-		create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 100_000);
+		create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 1_000_000, 1_000_000);
 
 	// Inbound channels which haven't advanced state at all and never were funded will generate
 	// claimable `Balance`s until they're closed.
