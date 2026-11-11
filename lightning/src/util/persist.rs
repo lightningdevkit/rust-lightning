@@ -1321,19 +1321,30 @@ where
 		};
 		let primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		let _ = self.kv_store.remove(primary, secondary, &monitor_key, true).await;
+		// The removal of the live monitor is non-lazy so that it completes as part of the archive
+		// rather than being subject to a lazy deletion that may get lost on a crash. Otherwise,
+		// the update removals below could be durable while the monitor removal is lost, leaving a
+		// stale monitor behind that would be reloaded on the next startup.
+		if let Err(e) = self.kv_store.remove(primary, secondary, &monitor_key, false).await {
+			log_error!(
+				self.logger,
+				"Failed to remove live monitor for archived channel {}, reason: {}",
+				monitor_key,
+				e
+			);
+		}
 		// The archived monitor has all stored updates applied, so drop them too. The key of a v1
 		// channel is its funding outpoint, which the funder picks, so a new monitor may later be
 		// persisted under this key starting at `update_id` 0, and any updates we leave behind
-		// would be replayed onto it when it is read. The removal is non-lazy so that it completes
-		// as part of the archive rather than being subject to a lazy deletion that may get lost
-		// on a crash. A failure here is only logged, like for the other operations above, leaving
-		// the updates orphaned until `cleanup_archived_monitor_updates` removes them on the next
-		// startup. `ChainMonitor` will not persist a monitor under this key while it is being
-		// archived, so no lock is needed beyond that.
-		if let Err(e) =
-			self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, false).await
-		{
+		// would be replayed onto it when it is read. The removal here is lazy, as any updates
+		// left behind when it is lost are removed by `cleanup_archived_monitor_updates` on the
+		// next startup, which the non-lazy removal above keeps a stale live monitor from
+		// blocking. A failure here is only logged.
+		// `ChainMonitor` will not persist a monitor under this key while it is being archived, so
+		// no lock is needed beyond that.
+		let cleanup_res =
+			self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, true).await;
+		if let Err(e) = cleanup_res {
 			log_error!(
 				self.logger,
 				"Failed to remove stored updates for archived monitor {}, reason: {}",
