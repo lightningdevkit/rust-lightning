@@ -19,14 +19,16 @@ use crate::chain::channelmonitor::{
 };
 use crate::chain::transaction::OutPoint;
 use crate::chain::{ChannelMonitorUpdateStatus, Listen, Watch};
-use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, HTLCHandlingFailureReason, PaymentPurpose};
+use crate::events::{
+	ClosureReason, Event, HTLCHandlingFailureReason, HTLCHandlingFailureType, PaymentPurpose,
+};
 use crate::ln::channel::AnnouncementSigsState;
 use crate::ln::channelmanager::{PaymentId, RAACommitmentOrder, RecipientOnionFields, Retry};
-use crate::ln::{msgs, LocalHTLCFailureReason};
 use crate::ln::msgs::{
 	BaseMessageHandler, ChannelMessageHandler, MessageSendEvent, RoutingMessageHandler,
 };
 use crate::ln::types::ChannelId;
+use crate::ln::{msgs, LocalHTLCFailureReason};
 use crate::routing::router::{PaymentParameters, RouteParameters};
 use crate::sign::NodeSigner;
 use crate::types::string::UntrustedString;
@@ -5751,8 +5753,7 @@ fn test_mpp_claim_completion_with_pending_claim_reusing_payment_hash() {
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	// Force the first payment to be split across both paths.
-	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel =
-		10;
+	config.channel_handshake_config.max_inbound_htlc_value_in_flight_percent_of_channel = 10;
 	let configs: [Option<_>; 4] = core::array::from_fn(|_| Some(config.clone()));
 	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &configs);
 	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
