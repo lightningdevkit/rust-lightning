@@ -77,8 +77,8 @@ use crate::ln::msgs::{
 };
 use crate::ln::onion_payment::{
 	check_incoming_htlc_cltv, create_fwd_pending_htlc_info, create_recv_pending_htlc_info,
-	decode_incoming_update_add_htlc_onion, invalid_payment_err_data, HopConnector, InboundHTLCErr,
-	NextPacketDetails,
+	decode_incoming_update_add_htlc_onion, invalid_payment_err_data, update_add_failure_err_data,
+	HopConnector, InboundHTLCErr, NextPacketDetails,
 };
 use crate::ln::onion_utils::{self};
 use crate::ln::onion_utils::{
@@ -5617,23 +5617,7 @@ impl<
 		reason: LocalHTLCFailureReason, is_intro_node_blinded_forward: bool,
 		shared_secret: &[u8; 32]
 	) -> HTLCFailureMsg {
-		// at capacity, we write fields `htlc_msat` and `len`
-		let mut res = VecWriter(Vec::with_capacity(8 + 2));
-		if reason.is_temporary() {
-			if reason == LocalHTLCFailureReason::AmountBelowMinimum ||
-				reason == LocalHTLCFailureReason::FeeInsufficient {
-				msg.amount_msat.write(&mut res).expect("Writes cannot fail");
-			}
-			else if reason == LocalHTLCFailureReason::IncorrectCLTVExpiry {
-				msg.cltv_expiry.write(&mut res).expect("Writes cannot fail");
-			}
-			else if reason == LocalHTLCFailureReason::ChannelDisabled {
-				// TODO: underspecified, follow https://github.com/lightning/bolts/issues/791
-				0u16.write(&mut res).expect("Writes cannot fail");
-			}
-			// See https://github.com/lightning/bolts/blob/247e83d/04-onion-routing.md?plain=1#L1414-L1415
-			(0u16).write(&mut res).expect("Writes cannot fail");
-		}
+		let res = update_add_failure_err_data(msg, reason);
 
 		log_info!(
 			WithContext::from(&self.logger, Some(*counterparty_node_id), Some(msg.channel_id), Some(msg.payment_hash)),
@@ -5652,7 +5636,7 @@ impl<
 		let (reason, err_data) = if is_intro_node_blinded_forward {
 			(LocalHTLCFailureReason::InvalidOnionBlinding, &[0; 32][..])
 		} else {
-			(reason, &res.0[..])
+			(reason, &res[..])
 		};
 		let failure = HTLCFailReason::reason(reason, err_data.to_vec())
 		.get_encrypted_failure_packet(shared_secret, &None);
