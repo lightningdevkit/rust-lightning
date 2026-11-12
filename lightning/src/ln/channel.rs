@@ -2160,6 +2160,14 @@ where
 			},
 			ChannelPhase::Funded(chan) => {
 				if let Some(pending_splice) = chan.pending_splice.as_mut() {
+					// Candidates are identified by their txid, so each one must be distinct.
+					if pending_splice.negotiated_candidates.iter().any(|candidate| {
+						candidate.funding.get_funding_txid() == Some(funding_outpoint.txid)
+					}) {
+						return Err(AbortReason::RbfUnavailable(
+							"Negotiated transaction duplicates a prior candidate".to_owned(),
+						));
+					}
 					let funding_negotiation = pending_splice.funding_negotiation.take();
 					if let Some(FundingNegotiation::ConstructingTransaction {
 						mut funding,
