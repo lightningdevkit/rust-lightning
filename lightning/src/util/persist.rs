@@ -682,10 +682,9 @@ where
 			if live_monitor_keys.contains(&monitor_key) {
 				continue;
 			}
-			let updates = self.kv_store.list(
-				CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-				&monitor_key,
-			);
+			let updates = self
+				.kv_store
+				.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, &monitor_key);
 			if let Ok(updates) = updates {
 				for update in updates {
 					if let Ok(update_name) = UpdateName::new(update) {
@@ -907,10 +906,9 @@ where
 		// the updates orphaned until `cleanup_archived_monitor_updates` removes them on the next
 		// startup. `ChainMonitor` will not persist a monitor under this key while it is being
 		// archived, so no lock is needed beyond that.
-		let updates = self.kv_store.list(
-			CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
-			monitor_name.as_str(),
-		);
+		let updates = self
+			.kv_store
+			.list(CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE, monitor_name.as_str());
 		if let Ok(updates) = updates {
 			for update in updates {
 				if let Ok(update_name) = UpdateName::new(update) {
@@ -1575,7 +1573,10 @@ mod tests {
 		.unwrap();
 		assert!(!update_list.is_empty());
 
-		Persist::<TestChannelSigner>::archive_persisted_channel(&persister, monitor.get_funding_txo().0);
+		Persist::<TestChannelSigner>::archive_persisted_channel(
+			&persister,
+			monitor.get_funding_txo().0,
+		);
 
 		assert!(KVStore::read(
 			&kv_store,

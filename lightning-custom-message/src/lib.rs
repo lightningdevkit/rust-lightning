@@ -424,9 +424,7 @@ mod tests {
 	}
 	impl CustomMessageReader for CountingHandler {
 		type CustomMessage = Foo;
-		fn read<R: Read>(
-			&self, _t: u16, _b: &mut R,
-		) -> Result<Option<Foo>, DecodeError> {
+		fn read<R: Read>(&self, _t: u16, _b: &mut R) -> Result<Option<Foo>, DecodeError> {
 			Ok(None)
 		}
 	}
@@ -468,9 +466,7 @@ mod tests {
 	pub struct ErroringHandler;
 	impl CustomMessageReader for ErroringHandler {
 		type CustomMessage = Bar;
-		fn read<R: Read>(
-			&self, _t: u16, _b: &mut R,
-		) -> Result<Option<Bar>, DecodeError> {
+		fn read<R: Read>(&self, _t: u16, _b: &mut R) -> Result<Option<Bar>, DecodeError> {
 			Ok(None)
 		}
 	}
@@ -510,9 +506,7 @@ mod tests {
 	struct ReservedBlockHandler;
 	impl CustomMessageReader for ReservedBlockHandler {
 		type CustomMessage = Foo;
-		fn read<R: Read>(
-			&self, message_type: u16, _b: &mut R,
-		) -> Result<Option<Foo>, DecodeError> {
+		fn read<R: Read>(&self, message_type: u16, _b: &mut R) -> Result<Option<Foo>, DecodeError> {
 			// This build defines only the message at 32768; the rest of the block its
 			// protocol reserved (32768..=32777) is for types future versions may add.
 			// A not-yet-defined type is unknown to this build, so per the

@@ -521,12 +521,8 @@ mod test {
 		let (msg, context) =
 			payer.resolver.resolve_name(payment_id, name.clone(), &*payer_keys).unwrap();
 		let query_context = MessageContext::DNSResolver(context);
-		let reply_path = BlindedMessagePath::one_hop(
-			payer_id,
-			query_context,
-			&*payer_keys,
-			&secp_ctx,
-		).unwrap();
+		let reply_path =
+			BlindedMessagePath::one_hop(payer_id, query_context, &*payer_keys, &secp_ctx).unwrap();
 		payer.pending_messages.lock().unwrap().push((
 			DNSResolverMessage::DNSSECQuery(msg),
 			MessageSendInstructions::WithSpecifiedReplyPath {

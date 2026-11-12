@@ -2101,7 +2101,10 @@ mod test {
 			signature: Bolt11InvoiceSignature(bad_sig),
 		};
 		assert!(bad_signed_raw.recover_payee_pub_key().is_err());
-		assert_eq!(Bolt11Invoice::from_signed(bad_signed_raw), Err(Bolt11SemanticError::InvalidSignature));
+		assert_eq!(
+			Bolt11Invoice::from_signed(bad_signed_raw),
+			Err(Bolt11SemanticError::InvalidSignature)
+		);
 	}
 
 	#[test]
@@ -2250,8 +2253,8 @@ mod test {
 	fn test_amount_without_si_prefix() {
 		use crate::TaggedField::*;
 		use crate::{
-			Bolt11Invoice, Bolt11ParseError, Bolt11SemanticError, Currency,
-			PositiveTimestamp, RawBolt11Invoice, RawDataPart, RawHrp, Sha256,
+			Bolt11Invoice, Bolt11ParseError, Bolt11SemanticError, Currency, PositiveTimestamp,
+			RawBolt11Invoice, RawDataPart, RawHrp, Sha256,
 		};
 		use bitcoin::secp256k1::{Secp256k1, SecretKey};
 		use lightning_types::features::Bolt11InvoiceFeatures;
@@ -2263,33 +2266,33 @@ mod test {
 		// An amount without an SI prefix that overflows pico BTC cannot be reported in
 		// millisatoshis either, so `from_signed` needs to reject it even though invoices built
 		// this way bypass the overflow check in `RawHrp::from_str`.
-		let invoice =
-			RawBolt11Invoice {
-				hrp: RawHrp {
-					currency: Currency::Bitcoin,
-					raw_amount: Some(184_467_441),
-					si_prefix: None,
-				},
-				data: RawDataPart {
-					timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
-					tagged_fields: vec![
-						crate::TaggedField::PaymentHash(Sha256(
-								sha256::Hash::from_str(
-									"0001020304050607080900010203040506070809000102030405060708090102",
-								)
-								.unwrap(),
-							),
+		let invoice = RawBolt11Invoice {
+			hrp: RawHrp {
+				currency: Currency::Bitcoin,
+				raw_amount: Some(184_467_441),
+				si_prefix: None,
+			},
+			data: RawDataPart {
+				timestamp: PositiveTimestamp::from_unix_timestamp(1496314658).unwrap(),
+				tagged_fields: vec![
+					crate::TaggedField::PaymentHash(Sha256(
+						sha256::Hash::from_str(
+							"0001020304050607080900010203040506070809000102030405060708090102",
 						)
-						.into(),
-						Description(crate::Description::new("Test".to_owned()).unwrap()).into(),
-						crate::TaggedField::PaymentSecret(lightning_types::payment::PaymentSecret([21; 32]))
-							.into(),
-						crate::TaggedField::Features(payment_secret_features).into(),
-					],
-				},
-			}
-			.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
-			.unwrap();
+						.unwrap(),
+					))
+					.into(),
+					Description(crate::Description::new("Test".to_owned()).unwrap()).into(),
+					crate::TaggedField::PaymentSecret(lightning_types::payment::PaymentSecret(
+						[21; 32],
+					))
+					.into(),
+					crate::TaggedField::Features(payment_secret_features).into(),
+				],
+			},
+		}
+		.sign::<_, ()>(|hash| Ok(Secp256k1::new().sign_ecdsa_recoverable(hash, &private_key)))
+		.unwrap();
 		assert_eq!(Bolt11Invoice::from_signed(invoice), Err(Bolt11SemanticError::ImpreciseAmount));
 
 		// Amounts without an SI prefix are denominated in BTC and converted to pico BTC just like

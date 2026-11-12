@@ -62,11 +62,10 @@ fn closing_signed_same_fee_alternate_output_set() {
 		let mut peer_state_lock;
 		let phase = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan_id);
 		let chan = if let ChannelPhase::Funded(chan) = phase { chan } else { panic!() };
-		chan.get_signer().as_ecdsa().unwrap()
-			.sign_closing_transaction(
-				&alternate_output_set_tx,
-				&Secp256k1::new(),
-			)
+		chan.get_signer()
+			.as_ecdsa()
+			.unwrap()
+			.sign_closing_transaction(&alternate_output_set_tx, &Secp256k1::new())
 			.unwrap()
 	};
 	closing_signed.fee_range = None;
