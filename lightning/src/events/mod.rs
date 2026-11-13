@@ -2980,8 +2980,6 @@ impl MaybeReadable for Event {
 						(1, network_update, upgradable_option),
 						(2, payment_failed_permanently, required),
 						(4, blinded_tail, option),
-						// Added as a part of LDK 0.0.101 and always filled in since.
-						// Defaults to an empty Vec, though likely should have been `Option`al.
 						(5, path, optional_vec),
 						(7, short_channel_id, option),
 						(11, payment_id, option),
@@ -2996,7 +2994,8 @@ impl MaybeReadable for Event {
 						payment_hash,
 						payment_failed_permanently,
 						failure,
-						path: Path { hops: path.unwrap(), blinded_tail },
+						path: Path::new(path.unwrap(), blinded_tail)
+							.map_err(|()| msgs::DecodeError::InvalidValue)?,
 						short_channel_id,
 						#[cfg(any(test, feature = "_test_utils"))]
 						error_code,
@@ -3184,7 +3183,8 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::PaymentPathSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash,
-						path: Path { hops: path, blinded_tail },
+						path: Path::new(path, blinded_tail)
+							.map_err(|()| msgs::DecodeError::InvalidValue)?,
 						hold_times,
 					}))
 				};
@@ -3267,7 +3267,8 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeSuccessful {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, blinded_tail },
+						path: Path::new(path, blinded_tail)
+							.map_err(|()| msgs::DecodeError::InvalidValue)?,
 					}))
 				};
 				f()
@@ -3284,7 +3285,8 @@ impl MaybeReadable for Event {
 					Ok(Some(Event::ProbeFailed {
 						payment_id: payment_id.0.unwrap(),
 						payment_hash: payment_hash.0.unwrap(),
-						path: Path { hops: path, blinded_tail },
+						path: Path::new(path, blinded_tail)
+							.map_err(|()| msgs::DecodeError::InvalidValue)?,
 						short_channel_id,
 					}))
 				};

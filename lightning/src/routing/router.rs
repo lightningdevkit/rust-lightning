@@ -835,10 +835,20 @@ impl Path {
 	}
 }
 
-impl_ser_tlv_based!(Path,{
-	(1, hops, required_vec),
-	(3, blinded_tail, option),
+impl_writeable_tlv_based!(Path, self, {
+	(1, self.hops, required_vec),
+	(3, self.blinded_tail, option),
 });
+
+impl Readable for Path {
+	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
+		_init_and_read_len_prefixed_tlv_fields!(reader, {
+			(1, hops, required_vec),
+			(3, blinded_tail, option),
+		});
+		Self::new(hops, blinded_tail).map_err(|()| DecodeError::InvalidValue)
+	}
+}
 
 /// A route directs a payment from the sender (us) to the recipient. If the recipient supports MPP,
 /// it can take multiple paths. Each path is composed of one or more hops through the network.
