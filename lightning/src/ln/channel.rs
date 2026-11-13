@@ -4051,14 +4051,20 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
 		let channel_monitor = ChannelMonitor::new(
-			context.secp_ctx.clone(), monitor_signer, shutdown_script,
-			funding.get_holder_selected_contest_delay(), &context.destination_script,
-			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
-			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
-			context.is_manual_broadcast,
-		);
-		channel_monitor.provide_initial_counterparty_commitment_tx(
+			context.secp_ctx.clone(),
+			monitor_signer,
+			shutdown_script,
+			funding.get_holder_selected_contest_delay(),
+			&context.destination_script,
+			&funding.channel_transaction_parameters,
+			funding.is_outbound(),
+			obscure_factor,
+			holder_commitment_tx,
 			counterparty_initial_commitment_tx.clone(),
+			best_block,
+			context.counterparty_node_id,
+			context.channel_id(),
+			context.is_manual_broadcast,
 		);
 
 		self.context_mut().counterparty_next_commitment_transaction_number -= 1;
