@@ -1992,7 +1992,8 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 		on_counterparty_tx_csv: u16, destination_script: &Script,
 		channel_parameters: &ChannelTransactionParameters, holder_pays_commitment_tx_fee: bool,
 		commitment_transaction_number_obscure_factor: u64,
-		initial_holder_commitment_tx: HolderCommitmentTransaction, best_block: BlockLocator,
+		initial_holder_commitment_tx: HolderCommitmentTransaction,
+		initial_counterparty_commitment_tx: CommitmentTransaction, best_block: BlockLocator,
 		counterparty_node_id: PublicKey, channel_id: ChannelId,
 		is_manual_broadcast: bool,
 	) -> ChannelMonitor<Signer> {
@@ -2029,7 +2030,7 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			funding_outpoint.txid, vec![(funding_outpoint.index as u32, funding_script.clone())],
 		);
 
-		Self::from_impl(ChannelMonitorImpl {
+		let mut monitor = ChannelMonitorImpl {
 			funding: FundingScope {
 				channel_parameters: channel_parameters.clone(),
 
@@ -2110,7 +2111,9 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 			alternative_funding_confirmed: None,
 
 			written_by_0_1_or_later: true,
-		})
+		};
+		monitor.provide_initial_counterparty_commitment_tx(initial_counterparty_commitment_tx);
+		Self::from_impl(monitor)
 	}
 
 	/// Returns a unique id for persisting the [`ChannelMonitor`], which is used as a key in a
@@ -2136,20 +2139,6 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitor<Signer> {
 	#[cfg(test)]
 	fn provide_secret(&self, idx: u64, secret: [u8; 32]) -> Result<(), &'static str> {
 		self.inner.lock().unwrap().provide_secret(idx, secret)
-	}
-
-	/// A variant of `Self::provide_latest_counterparty_commitment_tx` used to provide
-	/// the counterparty commitment transaction to the monitor so that the transaction
-	/// can be retrieved during the initial persistence of the monitor (mainly for use in
-	/// third-party watchtowers).
-	///
-	/// This is used to provide the counterparty commitment transaction directly to the monitor
-	/// before the initial persistence of a new channel.
-	pub(crate) fn provide_initial_counterparty_commitment_tx(
-		&self, commitment_tx: CommitmentTransaction,
-	) {
-		let mut inner = self.inner.lock().unwrap();
-		inner.provide_initial_counterparty_commitment_tx(commitment_tx);
 	}
 
 	/// Informs this monitor of the latest counterparty (ie non-broadcastable) commitment transaction.
@@ -7518,6 +7507,16 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 		channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
 		channel_value_satoshis: 0,
 	};
+	let counterparty_commitment_tx = CommitmentTransaction::new(
+		INITIAL_COMMITMENT_NUMBER,
+		&dummy_key,
+		0,
+		0,
+		0,
+		Vec::new(),
+		&channel_parameters.as_counterparty_broadcastable(),
+		&secp_ctx,
+	);
 	let shutdown_script = crate::ln::script::ShutdownScript::new_p2wpkh_from_pubkey(dummy_key);
 	let best_block = BlockLocator::from_network(Network::Testnet);
 	let signer = wrap_signer(keys);
@@ -7531,6 +7530,7 @@ pub(super) fn dummy_monitor<S: EcdsaChannelSigner + 'static>(
 		true,
 		0,
 		HolderCommitmentTransaction::dummy(0, funding_outpoint, Vec::new()),
+		counterparty_commitment_tx,
 		best_block,
 		dummy_key,
 		channel_id,

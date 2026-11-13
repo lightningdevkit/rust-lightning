@@ -15192,6 +15192,8 @@ fn do_test_zero_conf_splice_stays_locked_when_unconfirmed(reorg_via_block_discon
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let mut config = test_default_channel_config();
 	config.channel_handshake_limits.trust_own_funding_0conf = true;
+	config.channel_config.inbound_splice_min_depth = 0;
+	config.channel_config.outbound_splice_min_depth = 0;
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 

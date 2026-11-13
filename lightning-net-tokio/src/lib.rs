@@ -1051,12 +1051,12 @@ mod tests {
 		tokio::time::timeout(Duration::from_secs(10), a_connected.recv()).await.unwrap();
 		tokio::time::timeout(Duration::from_secs(1), b_connected.recv()).await.unwrap();
 
+		assert!(!a_handler.disconnected_flag.load(Ordering::SeqCst));
+		assert!(!b_handler.disconnected_flag.load(Ordering::SeqCst));
 		a_handler.msg_events.lock().unwrap().push(MessageSendEvent::HandleError {
 			node_id: b_pub,
 			action: ErrorAction::DisconnectPeer { msg: None },
 		});
-		assert!(!a_handler.disconnected_flag.load(Ordering::SeqCst));
-		assert!(!b_handler.disconnected_flag.load(Ordering::SeqCst));
 
 		a_manager.process_events();
 		tokio::time::timeout(Duration::from_secs(10), a_disconnected.recv()).await.unwrap();

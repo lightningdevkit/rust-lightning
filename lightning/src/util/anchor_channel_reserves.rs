@@ -566,12 +566,13 @@ mod test {
 
 	#[test]
 	fn test_can_support_additional_anchor_channel_counts_reused_closed_channel_id() {
-		let chanmon_cfgs = create_chanmon_cfgs(2);
-		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let chanmon_cfgs = create_chanmon_cfgs(3);
+		let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+		let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 		let node_a_id = nodes[0].node.get_our_node_id();
 		let node_b_id = nodes[1].node.get_our_node_id();
+		let node_c_id = nodes[2].node.get_our_node_id();
 
 		let (_, _, _, channel_id, _) = create_chan_between_nodes(&nodes[0], &nodes[1]);
 		nodes[0]
@@ -583,12 +584,12 @@ mod test {
 		check_added_monitors(&nodes[0], 1);
 		assert_eq!(nodes[0].node.list_channels().len(), 0);
 
-		// The peer opens a new channel reusing the closing channel's ID as its temporary ID.
-		nodes[1].node.create_channel(node_a_id, 100_000, 0, 43, None, None).unwrap();
-		let mut open = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, node_a_id);
+		// Another peer opens a new channel reusing the closing channel's ID as its temporary ID.
+		nodes[2].node.create_channel(node_a_id, 100_000, 0, 43, None, None).unwrap();
+		let mut open = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, node_a_id);
 		open.common_fields.temporary_channel_id = channel_id;
-		handle_and_accept_open_channel(&nodes[0], node_b_id, &open);
-		get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_b_id);
+		handle_and_accept_open_channel(&nodes[0], node_c_id, &open);
+		get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, node_c_id);
 		assert_eq!(nodes[0].node.list_channels().len(), 1);
 
 		let context = AnchorChannelReserveContext::default();
