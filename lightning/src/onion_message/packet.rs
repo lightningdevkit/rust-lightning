@@ -295,13 +295,20 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 		let read_adapter_args =
 			(rho, receive_tlvs_key.0, expanded_key.phantom_node_blinded_path_key);
 		let mut message_type: Option<u64> = None;
+		let mut has_unknown_control_tlv = false;
 		let mut message = None;
 
 		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
 			(2, reply_path, option),
 			(4, read_adapter, (option: LengthReadableArgs, read_adapter_args)),
 		}, |msg_type, msg_reader| {
-			if msg_type < 64 { return Ok(false) }
+			if msg_type < 64 {
+				// Whether unknown fields are allowed depends on whether the layer is final,
+				// which is only known once the control TLVs are decrypted, so record it here
+				// and let the non-final branches reject.
+				has_unknown_control_tlv = true;
+				return Ok(false)
+			}
 			// Don't allow reading more than one data TLV from an onion message.
 			if message_type.is_some() { return Err(DecodeError::InvalidValue) }
 
@@ -336,13 +343,17 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 		match read_adapter {
 			None => return Err(DecodeError::InvalidValue),
 			Some(ChaChaTriPolyReadAdapter { readable: ControlTlvs::Forward(tlvs), used_aad }) => {
-				if used_aad != TriPolyAADUsed::None || message_type.is_some() {
+				if used_aad != TriPolyAADUsed::None
+					|| message_type.is_some()
+					|| reply_path.is_some()
+					|| has_unknown_control_tlv
+				{
 					return Err(DecodeError::InvalidValue);
 				}
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaTriPolyReadAdapter { readable: ControlTlvs::Dummy, used_aad }) => {
-				if message_type.is_some() {
+				if message_type.is_some() || has_unknown_control_tlv {
 					return Err(DecodeError::InvalidValue);
 				}
 				Ok(Payload::Dummy { control_tlvs_authenticated: used_aad != TriPolyAADUsed::None })
