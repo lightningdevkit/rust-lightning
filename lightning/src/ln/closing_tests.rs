@@ -62,7 +62,9 @@ fn closing_signed_same_fee_alternate_output_set() {
 		let chan = get_channel_ref!(nodes[1], nodes[0], per_peer_lock, peer_state_lock, chan_id)
 			.as_funded()
 			.unwrap();
-		chan.get_signer().as_ecdsa().unwrap()
+		chan.get_signer()
+			.as_ecdsa()
+			.unwrap()
 			.sign_closing_transaction(
 				&chan.funding.channel_transaction_parameters,
 				&alternate_output_set_tx,

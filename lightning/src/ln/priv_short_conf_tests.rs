@@ -12,9 +12,7 @@
 //! LSP).
 
 use crate::chain::ChannelMonitorUpdateStatus;
-use crate::events::{
-	ClosureReason, Event, HTLCHandlingFailureType, PathFailure,
-};
+use crate::events::{ClosureReason, Event, HTLCHandlingFailureType, PathFailure};
 use crate::ln::channelmanager::{PaymentId, RecipientOnionFields, MIN_CLTV_EXPIRY_DELTA};
 use crate::ln::msgs;
 use crate::ln::msgs::{

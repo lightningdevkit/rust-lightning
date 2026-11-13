@@ -1152,7 +1152,8 @@ where
 	async fn cleanup_archived_monitor_updates(&self) -> Result<(), io::Error> {
 		let archived_primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let archived_secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
-		let archived_monitor_keys = self.kv_store.list(archived_primary, archived_secondary).await?;
+		let archived_monitor_keys =
+			self.kv_store.list(archived_primary, archived_secondary).await?;
 		let monitor_primary = CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let monitor_secondary = CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
 		let live_monitor_keys = self.kv_store.list(monitor_primary, monitor_secondary).await?;
@@ -1330,7 +1331,9 @@ where
 		// the updates orphaned until `cleanup_archived_monitor_updates` removes them on the next
 		// startup. `ChainMonitor` will not persist a monitor under this key while it is being
 		// archived, so no lock is needed beyond that.
-		if let Err(e) = self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, false).await {
+		if let Err(e) =
+			self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, false).await
+		{
 			log_error!(
 				self.logger,
 				"Failed to remove stored updates for archived monitor {}, reason: {}",

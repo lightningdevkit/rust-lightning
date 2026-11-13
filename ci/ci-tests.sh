@@ -72,13 +72,6 @@ PIN_RELEASE_DEPS # pin the release dependencies in our main workspace
 # inventory 0.3.22 requires rustc 1.68.0
 [ "$RUSTC_MINOR_VERSION" -lt 68 ] && cargo update -p inventory --precise "0.3.21" --verbose
 
-# Starting with version 0.4.0, the `getrandom` crate has an MSRV of rustc 1.85
-GETRANDOM_VERSION="$(cargo tree 2>&1 | grep -o 'getrandom v0.4.*' | tr -d ' `' | tr 'v' '@' || echo -n)"
-[ "$RUSTC_MINOR_VERSION" -lt 85 ] && cargo update -p "$GETRANDOM_VERSION" --precise 0.3.4 --verbose
-
-# rustix 1.1.5 requires rustc 1.65.0
-[ "$RUSTC_MINOR_VERSION" -lt 65 ] && cargo update -p rustix --precise "1.1.4" --verbose
-
 export RUST_BACKTRACE=1
 
 echo -e "\n\nChecking the workspace, except lightning-transaction-sync."

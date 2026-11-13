@@ -4465,13 +4465,10 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 			// unrevoked ones.
 			debug_assert!(!holder_commitment_htlcs!(self, CURRENT_WITH_SOURCES)
 				.any(|(_, s)| s == Some(source)));
-			let duplicate_event =
-				self.pending_monitor_events.iter().any(
-					|event| match event {
-						MonitorEvent::HTLCEvent(upd) => upd.source == *source,
-						_ => false,
-					},
-				);
+			let duplicate_event = self.pending_monitor_events.iter().any(|event| match event {
+				MonitorEvent::HTLCEvent(upd) => upd.source == *source,
+				_ => false,
+			});
 			if duplicate_event {
 				continue;
 			}

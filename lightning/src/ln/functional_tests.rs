@@ -592,7 +592,14 @@ fn test_preimage_claim_reconfirmed_before_event_handled() {
 	// A sees B's commitment transaction confirm.
 	mine_transaction(&nodes[0], &node_1_txn[0]);
 	check_closed_broadcast(&nodes[0], 1, true);
-	check_closed_event(&nodes[0], 1, ClosureReason::CommitmentTxConfirmed, false, &[node_b_id], 100_000);
+	check_closed_event(
+		&nodes[0],
+		1,
+		ClosureReason::CommitmentTxConfirmed,
+		false,
+		&[node_b_id],
+		100_000,
+	);
 	check_added_monitors(&nodes[0], 1);
 
 	// A sees the HTLC-Success confirm, which queues a claim event for the `ChannelManager`. Before
