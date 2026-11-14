@@ -5340,127 +5340,318 @@ fn fail_queued_splice_during_counterparty_splice_on_channel_close() {
 	check_added_monitors(acceptor, 1);
 }
 
+/// Drives a counterparty-initiated RBF round that carries our earlier contribution while a fee
+/// bump of ours stays queued behind it, up to and including `tx_ack_rbf`.
+///
+/// Node 1 splices in and the splice remains pending. Node 1 then queues a fee bump of its
+/// contribution adding a splice-out output, and node 0 contributes a splice-in of its own at a lower
+/// feerate. Node 0 wins the quiescence tie-break and initiates the RBF; node 1's queued bump cannot
+/// be adjusted down to node 0's feerate, so it stays queued and node 1's earlier contribution is
+/// carried into node 0's round instead.
+///
+#[cfg(test)]
+struct CarriedContributionRbf {
+	/// Node 0's contribution to the RBF round it initiated.
+	contribution_0: FundingContribution,
+	/// Node 1's contribution to the pending splice, carried into node 0's round.
+	carried_contribution: FundingContribution,
+	/// Node 1's fee bump, left queued behind node 0's round.
+	queued_bump: FundingContribution,
+	/// The pending splice transaction node 0's round replaces.
+	splice_tx: Transaction,
+	/// The funding script of the pending splice, reused by node 0's round.
+	new_funding_script: ScriptBuf,
+	/// Node 1's acknowledgement of node 0's RBF.
+	tx_ack_rbf: msgs::TxAckRbf,
+}
+
+#[cfg(test)]
+fn carry_contribution_into_counterparty_rbf_with_queued_bump<'a, 'b, 'c>(
+	nodes: &[Node<'a, 'b, 'c>], channel_id: ChannelId,
+) -> CarriedContributionRbf {
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let added_value = Amount::from_sat(50_000);
+	provide_utxo_reserves(nodes, 2, added_value * 2);
+
+	let contribution_1 = do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
+	let (splice_tx, new_funding_script) =
+		splice_channel(&nodes[1], &nodes[0], channel_id, contribution_1.clone());
+
+	// The bump amends the earlier contribution with a splice-out to a script no splice attempt pays
+	// to, so that it reserves exactly that output for itself and inherits the rest.
+	let bump_output = TxOut {
+		value: Amount::from_sat(1_000),
+		script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(&[42; 32])),
+	};
+	let bump_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let min_rbf_feerate = bump_template.min_rbf_feerate().unwrap();
+	let bump_feerate = FeeRate::from_sat_per_kwu(min_rbf_feerate.to_sat_per_kwu() + 25);
+	let queued_bump = bump_template
+		.with_prior_contribution(bump_feerate, FeeRate::MAX)
+		.add_outputs(vec![bump_output.clone()])
+		.build()
+		.unwrap();
+	assert_eq!(queued_bump.reserved_inputs().count(), 0);
+	assert_eq!(queued_bump.reserved_outputs().collect::<Vec<_>>(), vec![&bump_output]);
+	nodes[1].node.funding_contributed(&channel_id, &node_id_0, queued_bump.clone(), None).unwrap();
+
+	let wallet_0 = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution_0 = nodes[0]
+		.node
+		.splice_channel(&channel_id, &node_id_1)
+		.unwrap()
+		.splice_in_sync(added_value, min_rbf_feerate, FeeRate::MAX, &wallet_0)
+		.unwrap();
+	nodes[0]
+		.node
+		.funding_contributed(&channel_id, &node_id_1, contribution_0.clone(), None)
+		.unwrap();
+
+	let tx_ack_rbf = complete_rbf_handshake(&nodes[0], &nodes[1]);
+	assert!(
+		tx_ack_rbf.funding_output_contribution.is_some_and(|value| value != 0),
+		"the earlier contribution should be carried into the counterparty's round: {tx_ack_rbf:?}",
+	);
+
+	// The carried contribution is in node 0's round, and the bump remains queued behind it.
+	let candidates = splice_candidates(&nodes[1], &channel_id);
+	assert_eq!(candidates.len(), 3, "{candidates:?}");
+	assert!(matches!(candidates[0].status, SpliceCandidateStatus::Negotiated { .. }));
+	assert!(matches!(
+		candidates[1].status,
+		SpliceCandidateStatus::ConstructingTransaction { is_initiator: false, .. }
+	));
+	assert_eq!(
+		candidates[1].contribution.as_ref().unwrap().contributed_inputs().collect::<Vec<_>>(),
+		contribution_1.contributed_inputs().collect::<Vec<_>>()
+	);
+	assert_eq!(candidates[2].status, SpliceCandidateStatus::WaitingOnQuiescence);
+	assert_eq!(candidates[2].contribution, Some(queued_bump.clone()));
+
+	CarriedContributionRbf {
+		contribution_0,
+		carried_contribution: contribution_1,
+		queued_bump,
+		splice_tx,
+		new_funding_script,
+		tx_ack_rbf,
+	}
+}
+
 #[test]
-fn fail_folded_and_queued_splice_contributions_on_channel_close() {
+fn fail_carried_and_queued_splice_contributions_on_channel_close() {
+	// A counterparty-initiated RBF round can carry our earlier contribution while a fee bump of
+	// ours stays queued behind it. Force-closing fails both, releasing only what the bump added.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
-	let initiator = &nodes[0];
-	let acceptor = &nodes[1];
+	let node_id_0 = nodes[0].node.get_our_node_id();
 
-	let node_id_initiator = initiator.node.get_our_node_id();
-	let node_id_acceptor = acceptor.node.get_our_node_id();
-
-	let initial_channel_capacity = 100_000;
 	let (_, _, channel_id, _) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_capacity, 0);
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
 
-	provide_utxo_reserves(&nodes, 2, Amount::ONE_BTC);
-
-	// Give the acceptor channel balance so it can afford a splice-out contribution later.
+	// Give node 1 channel balance so that its commitment transaction has an anchor output for it to
+	// fee bump when force closing.
 	send_payment(&nodes[0], &[&nodes[1]], 10_000_000);
 
-	// Both nodes commit contributions. The quiescence tie-break makes the funder the splice
-	// initiator, so the acceptor's contribution is folded into the counterparty-initiated round.
-	let _initiator_contribution =
-		initiate_splice_in(initiator, acceptor, channel_id, Amount::from_sat(50_000));
-	let acceptor_contribution =
-		initiate_splice_in(acceptor, initiator, channel_id, Amount::from_sat(25_000));
+	let CarriedContributionRbf { carried_contribution, queued_bump, .. } =
+		carry_contribution_into_counterparty_rbf_with_queued_bump(&nodes, channel_id);
+	// Node 0 starts constructing the transaction; that message is never delivered.
+	nodes[0].node.get_and_clear_pending_msg_events();
 
-	let stfu_initiator = get_event_msg!(initiator, MessageSendEvent::SendStfu, node_id_acceptor);
-	let stfu_acceptor = get_event_msg!(acceptor, MessageSendEvent::SendStfu, node_id_initiator);
-	acceptor.node.handle_stfu(node_id_initiator, &stfu_initiator);
-	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
-	initiator.node.handle_stfu(node_id_acceptor, &stfu_acceptor);
-
-	let splice_init = get_event_msg!(initiator, MessageSendEvent::SendSpliceInit, node_id_acceptor);
-	acceptor.node.handle_splice_init(node_id_initiator, &splice_init);
-	let splice_ack = get_event_msg!(acceptor, MessageSendEvent::SendSpliceAck, node_id_initiator);
-	assert_ne!(splice_ack.funding_contribution_satoshis, 0);
-
-	// Queue a second contribution behind the active round. Use a splice-out to a distinct
-	// script so it does not overlap with the folded-in contribution's change output.
-	let funding_template = acceptor.node.splice_channel(&channel_id, &node_id_initiator).unwrap();
-	let feerate = funding_template.min_rbf_feerate().unwrap();
-	let script_pubkey = ScriptBuf::new_p2wsh(&WScriptHash::hash(&[42; 32]));
-	let outputs = vec![TxOut { value: Amount::from_sat(1_000), script_pubkey }];
-	let queued_contribution = funding_template.splice_out(outputs, feerate, FeeRate::MAX).unwrap();
-	acceptor
+	// Force-close while the carried contribution is part of the active negotiation and the bump is
+	// queued. Both must be reported as failed.
+	nodes[1]
 		.node
-		.funding_contributed(&channel_id, &node_id_initiator, queued_contribution.clone(), None)
+		.force_close_broadcasting_latest_txn(&channel_id, &node_id_0, "test".to_owned())
 		.unwrap();
-	assert!(acceptor.node.get_and_clear_pending_msg_events().is_empty());
+	handle_bump_events(&nodes[1], true, 0);
 
-	// Force-close while the folded-in contribution is part of the active negotiation and the
-	// splice-out contribution is queued. Both must be released via failure events.
-	acceptor
-		.node
-		.force_close_broadcasting_latest_txn(&channel_id, &node_id_initiator, "test".to_owned())
-		.unwrap();
-	handle_bump_events(acceptor, true, 0);
-
-	let events = acceptor.node.get_and_clear_pending_events();
-	assert_eq!(events.len(), 5, "{events:?}");
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 4, "{events:?}");
 	assert!(matches!(events[0], Event::ChannelClosed { channel_id: cid, .. } if cid == channel_id));
 
-	// The active round's contribution was feerate-adjusted when folded in, so compare its
-	// inputs and output scripts, which the adjustment leaves untouched.
-	let (folded_inputs, folded_outputs) =
-		acceptor_contribution.into_contributed_inputs_and_outputs();
+	// The carried contribution only reuses what the pending splice committed to, so nothing of it
+	// is discarded. It was feerate-adjusted when carried, so compare its inputs, which the
+	// adjustment leaves untouched.
+	match &events[1] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+			let contribution = contribution.as_ref().unwrap();
+			assert!(contribution.contributed_inputs().is_empty());
+			assert_eq!(
+				contribution.contribution().contributed_inputs().collect::<Vec<_>>(),
+				carried_contribution.contributed_inputs().collect::<Vec<_>>()
+			);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+
+	// The queued bump releases only what it reserved for itself: the output it added, and nothing
+	// it inherited from the pending splice.
+	let bump_inputs =
+		queued_bump.reserved_inputs().map(|input| input.outpoint()).collect::<Vec<_>>();
+	assert!(bump_inputs.is_empty());
+	let bump_outputs = queued_bump
+		.reserved_outputs()
+		.map(|output| output.script_pubkey.clone())
+		.collect::<Vec<_>>();
+	assert_eq!(bump_outputs.len(), 1);
+	match &events[2] {
+		Event::DiscardFunding {
+			channel_id: cid,
+			funding_info: FundingInfo::Contribution { inputs, outputs },
+		} => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*inputs, bump_inputs);
+			assert_eq!(*outputs, bump_outputs);
+		},
+		other => panic!("Expected DiscardFunding, got {other:?}"),
+	}
+	match &events[3] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
+			assert_eq!(contribution.as_ref().unwrap().contribution(), &queued_bump);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+}
+
+#[test]
+fn cancel_funding_contributed_aborts_carried_contribution_and_queued_bump() {
+	// A counterparty-initiated RBF round can carry our earlier contribution while a fee bump of
+	// ours stays queued behind it. Cancelling once the round is ready for signing aborts the round
+	// and drops the queued bump, failing both, so that nothing of ours is left pending.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_id_0 = nodes[0].node.get_our_node_id();
+	let node_id_1 = nodes[1].node.get_our_node_id();
+
+	let (_, _, channel_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 100_000, 0);
+
+	let CarriedContributionRbf {
+		contribution_0,
+		carried_contribution,
+		queued_bump,
+		splice_tx,
+		new_funding_script,
+		tx_ack_rbf,
+	} = carry_contribution_into_counterparty_rbf_with_queued_bump(&nodes, channel_id);
+
+	complete_interactive_funding_negotiation_for_both(
+		&nodes[0],
+		&nodes[1],
+		channel_id,
+		contribution_0.clone(),
+		Some(carried_contribution.clone()),
+		tx_ack_rbf.funding_output_contribution.unwrap(),
+		new_funding_script,
+	);
+
+	// Node 0 signs. Node 1 is asked to sign once it has node 0's commitment signature.
+	let event = get_event!(nodes[0], Event::FundingTransactionReadyForSigning);
+	if let Event::FundingTransactionReadyForSigning {
+		channel_id,
+		counterparty_node_id,
+		unsigned_transaction,
+		..
+	} = event
+	{
+		let partially_signed_tx = nodes[0].wallet_source.sign_tx(unsigned_transaction).unwrap();
+		nodes[0]
+			.node
+			.funding_transaction_signed(&channel_id, &counterparty_node_id, partially_signed_tx)
+			.unwrap();
+	} else {
+		unreachable!();
+	}
+	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+	let commitment_signed = if let MessageSendEvent::UpdateHTLCs { updates, .. } = &msg_events[0] {
+		updates.commitment_signed[0].clone()
+	} else {
+		panic!("Unexpected event {:?}", msg_events[0]);
+	};
+	nodes[1].node.handle_commitment_signed(node_id_0, &commitment_signed);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+	let _ = get_event!(nodes[1], Event::FundingTransactionReadyForSigning);
+
+	// Cancelling fails the carried contribution and the queued bump. The carried contribution
+	// reuses only what the pending splice committed to, so nothing of it is discarded; the bump
+	// releases the output it added.
+	nodes[1].node.cancel_funding_contributed(&channel_id, &node_id_0).unwrap();
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 3, "{events:?}");
+	match &events[0] {
+		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
+			assert_eq!(*cid, channel_id);
+			assert_eq!(*reason, NegotiationFailureReason::LocallyCanceled);
+			let contribution = contribution.as_ref().unwrap();
+			assert!(contribution.contributed_inputs().is_empty());
+			assert_eq!(
+				contribution.contribution().contributed_inputs().collect::<Vec<_>>(),
+				carried_contribution.contributed_inputs().collect::<Vec<_>>()
+			);
+		},
+		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
+	}
+	let bump_outputs = queued_bump
+		.reserved_outputs()
+		.map(|output| output.script_pubkey.clone())
+		.collect::<Vec<_>>();
+	assert_eq!(bump_outputs.len(), 1);
 	match &events[1] {
 		Event::DiscardFunding {
 			channel_id: cid,
 			funding_info: FundingInfo::Contribution { inputs, outputs },
 		} => {
 			assert_eq!(*cid, channel_id);
-			assert_eq!(*inputs, folded_inputs);
-			assert_eq!(*outputs, folded_outputs);
+			assert!(inputs.is_empty());
+			assert_eq!(*outputs, bump_outputs);
 		},
 		other => panic!("Expected DiscardFunding, got {other:?}"),
 	}
 	match &events[2] {
 		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
 			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
-			let released_inputs = contribution
-				.as_ref()
-				.unwrap()
-				.contribution()
-				.reserved_inputs()
-				.map(|input| input.outpoint())
-				.collect::<Vec<_>>();
-			assert_eq!(released_inputs, folded_inputs);
+			assert_eq!(*reason, NegotiationFailureReason::LocallyCanceled);
+			assert_eq!(contribution.as_ref().unwrap().contribution(), &queued_bump);
 		},
 		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
 	}
 
-	let (queued_inputs, queued_outputs) =
-		queued_contribution.clone().into_contributed_inputs_and_outputs();
-	assert!(queued_inputs.is_empty());
-	match &events[3] {
-		Event::DiscardFunding {
-			channel_id: cid,
-			funding_info: FundingInfo::Contribution { inputs, outputs },
-		} => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*inputs, queued_inputs);
-			assert_eq!(*outputs, queued_outputs);
-		},
-		other => panic!("Expected DiscardFunding, got {other:?}"),
-	}
-	match &events[4] {
-		Event::SpliceNegotiationFailed { channel_id: cid, reason, contribution, .. } => {
-			assert_eq!(*cid, channel_id);
-			assert_eq!(*reason, NegotiationFailureReason::ChannelClosing);
-			assert_eq!(contribution.as_ref().unwrap().contribution(), &queued_contribution);
-		},
-		other => panic!("Expected SpliceNegotiationFailed, got {other:?}"),
-	}
+	// Only the pending splice remains on node 1, which may contribute again.
+	assert_no_queued_splice(&nodes[1], &channel_id);
+	let candidates = splice_candidates(&nodes[1], &channel_id);
+	assert_eq!(candidates.len(), 1, "{candidates:?}");
+	assert_eq!(candidate_txid(&candidates[0]), splice_tx.compute_txid());
+	assert!(nodes[1].node.splice_channel(&channel_id, &node_id_0).is_ok());
 
-	check_closed_broadcast(acceptor, 1, true);
-	check_added_monitors(acceptor, 1);
+	// Node 0's round is aborted as well.
+	let tx_abort = get_event_msg!(nodes[1], MessageSendEvent::SendTxAbort, node_id_0);
+	nodes[0].node.handle_tx_abort(node_id_1, &tx_abort);
+	let reason = NegotiationFailureReason::CounterpartyAborted {
+		msg: UntrustedString("Manually aborted funding negotiation".into()),
+	};
+	expect_splice_failed_events(&nodes[0], &channel_id, contribution_0, reason);
+	let tx_abort = get_event_msg!(nodes[0], MessageSendEvent::SendTxAbort, node_id_1);
+	nodes[1].node.handle_tx_abort(node_id_0, &tx_abort);
+	let candidates = splice_candidates(&nodes[0], &channel_id);
+	assert_eq!(candidates.len(), 1, "{candidates:?}");
+	assert_eq!(candidate_txid(&candidates[0]), splice_tx.compute_txid());
 }
 
 #[test]
@@ -7613,11 +7804,10 @@ enum PendingSpliceRelease {
 fn do_test_funding_contributed_after_release_reports_reselected_inputs(
 	release: PendingSpliceRelease,
 ) {
-	// A template taken while a splice attempt is pending may not be used until after that attempt
-	// has been released, at which point the wallet may legitimately hand out the attempt's inputs
-	// again. If the channel is gone by the time such a contribution is submitted, its rejection
-	// must report those inputs as discarded: the contribution reserved them itself, and nothing
-	// else will release them.
+	// A template taken before a splice attempt is released may not be used until after the release,
+	// at which point the wallet may legitimately hand out the attempt's inputs again. If the channel
+	// is gone by the time such a contribution is submitted, its rejection must report those inputs
+	// as discarded: the contribution reserved them itself, and nothing else will release them.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -7636,10 +7826,13 @@ fn do_test_funding_contributed_after_release_reports_reselected_inputs(
 	// Node 1 contributes to a splice attempt that remains pending. For a round aborted before
 	// signing, both nodes initiate a splice-in and node 0 wins the tie-break, leaving node 1's
 	// contribution in the round node 0 initiated.
-	let (node_0_contribution, splice, pending_contribution) = match release {
+	let (node_0_contribution, splice, pending_contribution, funding_template) = match release {
 		PendingSpliceRelease::ForceClose | PendingSpliceRelease::Disconnect => {
 			let node_0_contribution =
 				do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
+			// No template can be obtained once node 1's contribution is pending, as it is queued
+			// and then included in node 0's round, so take one beforehand.
+			let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
 			let pending_contribution =
 				do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
 
@@ -7654,14 +7847,16 @@ fn do_test_funding_contributed_after_release_reports_reselected_inputs(
 			let splice_ack = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceAck, node_id_0);
 			assert_ne!(splice_ack.funding_contribution_satoshis, 0);
 
-			(Some(node_0_contribution), None, pending_contribution)
+			(Some(node_0_contribution), None, pending_contribution, funding_template)
 		},
 		PendingSpliceRelease::CommitmentConfirmation => {
 			let pending_contribution =
 				do_initiate_splice_in(&nodes[1], &nodes[0], channel_id, added_value);
 			let splice =
 				splice_channel(&nodes[1], &nodes[0], channel_id, pending_contribution.clone());
-			(None, Some(splice), pending_contribution)
+			// Take a template while the negotiated candidate is pending.
+			let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+			(None, Some(splice), pending_contribution, funding_template)
 		},
 	};
 	let pending_inputs = pending_contribution.contributed_inputs().collect::<Vec<_>>();
@@ -7670,8 +7865,6 @@ fn do_test_funding_contributed_after_release_reports_reselected_inputs(
 	let pending_funding_info =
 		FundingInfo::Contribution { inputs: pending_inputs.clone(), outputs: pending_outputs };
 
-	// Take a template while the attempt is pending.
-	let funding_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
 	let floor_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64);
 	let feerate = funding_template.min_rbf_feerate().unwrap_or(floor_feerate);
 
@@ -7774,7 +7967,7 @@ fn do_test_funding_contributed_after_release_reports_reselected_inputs(
 		},
 	}
 
-	// Build from the stale template. A new wallet instance has no record of the released attempt's
+	// Build from the template. A new wallet instance has no record of the released attempt's
 	// selection, so coin selection hands out its inputs again, as would a wallet that unlocked them
 	// upon the discard.
 	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
@@ -7788,8 +7981,8 @@ fn do_test_funding_contributed_after_release_reports_reselected_inputs(
 		.unwrap();
 	assert_eq!(fresh_contribution.contributed_inputs().collect::<Vec<_>>(), pending_inputs);
 
-	// A fee bump adding more value than the prior contribution's inputs can cover also falls back
-	// to coin selection, which again hands out the released inputs.
+	// A contribution adding more value than the template's prior contribution, if any, can cover
+	// with its inputs also falls back to coin selection, which again hands out the released inputs.
 	let rbf_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 + 25);
 	let wallet = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
 	let bumped_contribution = funding_template
@@ -15813,9 +16006,22 @@ fn test_channel_details_received_splice_locked_diverges_from_confirmed() {
 
 #[test]
 fn test_acceptor_contribution_rejects_queued_rbf() {
+	do_test_acceptor_contribution_refused_during_merged_round(true);
+}
+
+#[test]
+fn test_acceptor_contribution_rejects_queued_splice_out() {
+	do_test_acceptor_contribution_refused_during_merged_round(false);
+}
+
+#[cfg(test)]
+fn do_test_acceptor_contribution_refused_during_merged_round(overlapping: bool) {
 	// An acceptor's contribution can merge into the counterparty's round via the quiescence
-	// tie-break. Once that happens, a further contribution cannot be queued behind the in-flight
-	// round because it may overlap with the contribution already being negotiated.
+	// tie-break. Once that happens, a further contribution is refused as pending while the round
+	// is in flight, whether it overlaps with the merged contribution (a bump reusing its inputs)
+	// or not (a splice-out to an address no splice attempt pays to). Otherwise it would be queued
+	// behind a round that already includes a contribution of ours, which cancelling could not
+	// tell apart from the round itself.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -15824,9 +16030,15 @@ fn test_acceptor_contribution_rejects_queued_rbf() {
 	let node_id_0 = nodes[0].node.get_our_node_id();
 	let node_id_1 = nodes[1].node.get_our_node_id();
 
+	// Node 1 is given a balance to splice out of.
 	let initial_channel_value_sat = 100_000;
-	let (_, _, channel_id, _) =
-		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, initial_channel_value_sat, 0);
+	let (_, _, channel_id, _) = create_announced_chan_between_nodes_with_value(
+		&nodes,
+		0,
+		1,
+		initial_channel_value_sat,
+		50_000_000,
+	);
 
 	let added_value = Amount::from_sat(50_000);
 	provide_utxo_reserves(&nodes, 2, Amount::from_sat(100_000));
@@ -15843,13 +16055,12 @@ fn test_acceptor_contribution_rejects_queued_rbf() {
 		.unwrap();
 	nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution_0, None).unwrap();
 
+	// Node 1 keeps the template it builds its contribution from, as no new one can be obtained
+	// while its contribution is pending.
 	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
-	let contribution_1 = nodes[1]
-		.node
-		.splice_channel(&channel_id, &node_id_0)
-		.unwrap()
-		.splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_1)
-		.unwrap();
+	let template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let contribution_1 =
+		template.clone().splice_in_sync(added_value, feerate, FeeRate::MAX, &wallet_1).unwrap();
 	nodes[1]
 		.node
 		.funding_contributed(&channel_id, &node_id_0, contribution_1.clone(), None)
@@ -15868,30 +16079,48 @@ fn test_acceptor_contribution_rejects_queued_rbf() {
 		"the acceptor should contribute to the counterparty's round",
 	);
 
-	// Node 1 attempts a further contribution while node 0's round is still in flight. Coin
-	// selection replaces the inherited inputs, so the contribution inherits nothing and its
-	// failure discards everything it holds, including the change output that node 1's
-	// contribution to the in-flight round also pays to.
-	let rbf_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
-	let rbf_feerate = rbf_template.min_rbf_feerate().unwrap();
-	let contribution = rbf_template
-		.splice_in_sync(Amount::from_sat(25_000), rbf_feerate, FeeRate::MAX, &wallet_1)
-		.unwrap();
+	// While node 0's round is in flight with node 1's contribution, node 1 can neither obtain a
+	// template nor contribute again.
+	assert!(matches!(
+		nodes[1].node.splice_channel(&channel_id, &node_id_0),
+		Err(APIError::APIMisuseError { .. })
+	));
+	let contribution = if overlapping {
+		// Coin selection avoids the inputs of node 1's contribution to the in-flight round, but the
+		// change output is the one that contribution also pays to.
+		template.splice_in_sync(Amount::from_sat(25_000), feerate, FeeRate::MAX, &wallet_1).unwrap()
+	} else {
+		// A splice-out to an address no splice attempt pays to shares nothing with the in-flight
+		// round.
+		let output = TxOut {
+			value: Amount::from_sat(10_000),
+			script_pubkey: ScriptBuf::new_p2wsh(&WScriptHash::hash(&[42; 32])),
+		};
+		template
+			.without_prior_contribution(feerate, FeeRate::MAX)
+			.add_outputs(vec![output])
+			.build()
+			.unwrap()
+	};
+	// The refusal discards everything the contribution holds, as it inherits nothing from a
+	// pending splice.
 	assert_eq!(
-		nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution.clone(), None,),
-		Err(SpliceContributionError::NegotiationFailed {
-			reason: NegotiationFailureReason::CannotInitiateRbf,
-		})
+		nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution.clone(), None),
+		Err(SpliceContributionError::ContributionPending),
 	);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	let (inputs, outputs) = expect_rejected_rbf_event(&nodes[1], &channel_id);
 	assert_eq!(inputs, contribution.contributed_inputs().collect::<Vec<_>>());
-	assert!(!inputs.is_empty());
+	assert_eq!(inputs.is_empty(), !overlapping);
 	assert_eq!(
 		outputs,
 		contribution.contributed_outputs().map(|script| script.to_owned()).collect::<Vec<_>>()
 	);
-	assert!(outputs.contains(&contribution_1.change_output().unwrap().script_pubkey));
+	assert!(!outputs.is_empty());
+	assert_eq!(
+		outputs.contains(&contribution_1.change_output().unwrap().script_pubkey),
+		overlapping
+	);
 	assert_no_queued_splice(&nodes[1], &channel_id);
 
 	// Node 1's view only contains its contribution to node 0's in-flight round.
@@ -16100,10 +16329,10 @@ fn test_channel_details_acceptor_contribution_reaches_signing() {
 }
 
 #[test]
-fn test_splice_rbf_does_not_queue_prior_contribution_during_negotiation() {
-	// A contribution cannot immediately RBF a round that is currently being negotiated. If a prior
-	// round already contains one of our contributions, fail the new contribution rather than queue
-	// it, discarding what the new contribution reserved for itself.
+fn test_contribution_refused_during_counterparty_rbf_carrying_prior_contribution() {
+	// A counterparty-initiated RBF of a splice we contributed to carries our contribution into its
+	// round. While that round is being negotiated, a contribution built beforehand is refused as
+	// pending rather than queued, discarding what it reserved for itself.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -16123,10 +16352,30 @@ fn test_splice_rbf_does_not_queue_prior_contribution_during_negotiation() {
 	let prior_contribution = do_initiate_splice_in(&nodes[0], &nodes[1], channel_id, added_value);
 	let (splice_tx, _) =
 		splice_channel(&nodes[0], &nodes[1], channel_id, prior_contribution.clone());
+	provide_utxo_reserves(&nodes, 1, added_value * 2);
+
+	// Node 0 builds a contribution amending its prior contribution with an additional splice-in and
+	// a unique splice-out, but does not submit it yet. The amendment cannot be covered by the prior
+	// inputs, so coin selection replaces them, handing out the prior splice's UTXO again. Only
+	// explicit outputs carried over from the prior contribution are inherited, and it has none, so
+	// a failure discards everything: the reselected UTXO and change output along with the newly
+	// selected input and the new output.
+	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
+	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
+	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
+	let feerate = funding_template.min_rbf_feerate().unwrap();
+	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
+	let contribution = funding_template
+		.with_prior_contribution(feerate, FeeRate::MAX)
+		.with_coin_selection_source_sync(&wallet)
+		.add_value(added_value)
+		.unwrap()
+		.add_outputs(vec![output])
+		.build()
+		.unwrap();
 
 	// The counterparty (node 1) initiates an RBF at a much higher feerate; we drive it in flight on
 	// node 0 (node 1 wins quiescence, as node 0 has nothing of its own queued yet).
-	provide_utxo_reserves(&nodes, 1, added_value * 2);
 	let high_feerate = FeeRate::from_sat_per_kwu(FEERATE_FLOOR_SATS_PER_KW as u64 * 4);
 	// Node 1 did not contribute to the original splice, so it RBFs with a first contribution.
 	let wallet_1 = WalletSync::new(Arc::clone(&nodes[1].wallet_source), nodes[1].logger);
@@ -16149,30 +16398,15 @@ fn test_splice_rbf_does_not_queue_prior_contribution_during_negotiation() {
 	nodes[0].node.handle_tx_init_rbf(node_id_1, &tx_init_rbf);
 	let _tx_ack_rbf = get_event_msg!(nodes[0], MessageSendEvent::SendTxAckRbf, node_id_1);
 
-	// Node 0 amends its prior contribution with an additional splice-in and a unique splice-out
-	// while the counterparty's RBF is in flight. The amendment cannot be covered by the prior
-	// inputs, so coin selection replaces them, handing out the prior splice's UTXO again. Only
-	// explicit outputs carried over from the prior contribution are inherited, and it has none, so
-	// the failure discards everything: the reselected UTXO and change output along with the newly
-	// selected input and the new output.
-	let script_pubkey = nodes[1].wallet_source.get_change_script().unwrap();
-	let output = TxOut { value: Amount::from_sat(1_000), script_pubkey: script_pubkey.clone() };
-	let funding_template = nodes[0].node.splice_channel(&channel_id, &node_id_1).unwrap();
-	let feerate = funding_template.min_rbf_feerate().unwrap();
-	let wallet = WalletSync::new(Arc::clone(&nodes[0].wallet_source), nodes[0].logger);
-	let contribution = funding_template
-		.with_prior_contribution(feerate, FeeRate::MAX)
-		.with_coin_selection_source_sync(&wallet)
-		.add_value(added_value)
-		.unwrap()
-		.add_outputs(vec![output])
-		.build()
-		.unwrap();
+	// Node 0 submits the contribution while the counterparty's RBF is in flight with its prior
+	// contribution. Node 0 can obtain no new template either.
+	assert!(matches!(
+		nodes[0].node.splice_channel(&channel_id, &node_id_1),
+		Err(APIError::APIMisuseError { .. })
+	));
 	assert_eq!(
-		nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None,),
-		Err(SpliceContributionError::NegotiationFailed {
-			reason: NegotiationFailureReason::CannotInitiateRbf,
-		})
+		nodes[0].node.funding_contributed(&channel_id, &node_id_1, contribution.clone(), None),
+		Err(SpliceContributionError::ContributionPending)
 	);
 	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(contribution
@@ -16606,24 +16840,12 @@ fn do_test_contribution_from_promoted_candidate_template(amend_prior: bool) {
 }
 
 #[test]
-fn test_amended_stale_template_rejected_after_acceptor_rbf_aborted() {
-	do_test_contribution_from_aborted_acceptor_rbf_template(true);
-}
-
-#[test]
-fn test_fresh_contribution_replacing_aborted_acceptor_rbf_template() {
-	do_test_contribution_from_aborted_acceptor_rbf_template(false);
-}
-
-#[cfg(test)]
-fn do_test_contribution_from_aborted_acceptor_rbf_template(amend_prior: bool) {
+fn test_fresh_contribution_after_acceptor_rbf_aborted() {
 	// An RBF contribution queued behind quiescence may merge into a counterparty-initiated RBF
-	// round via the tie-break. A template taken while that round is under negotiation starts from
-	// the merged contribution and is tied to it. If the counterparty then aborts the round, a
-	// contribution amending that contribution is rejected as stale even if it dropped every
-	// inherited part in favor of a fresh input and so uses nothing any splice attempt still holds;
-	// the refusal releases the fresh input, and the caller restarts from a fresh template. The same
-	// parts built without the prior contribution are accepted right away as a new RBF attempt.
+	// round via the tie-break. While that round is under negotiation, no template can be obtained,
+	// as the round includes a contribution of ours. If the counterparty then aborts the round, the
+	// merged contribution is released, and a contribution built from a fresh template that spends
+	// an input no splice attempt has used is accepted right away as a new RBF attempt.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -16675,14 +16897,12 @@ fn do_test_contribution_from_aborted_acceptor_rbf_template(amend_prior: bool) {
 	// Node 0 starts constructing the transaction; that message is never delivered.
 	nodes[0].node.get_and_clear_pending_msg_events();
 
-	// While node 0's round is under negotiation, node 1 takes a template. It starts from the
-	// contribution merged into that round.
-	let template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
-	let template_feerate = template.min_rbf_feerate().unwrap();
-	assert_eq!(
-		template.prior_contribution().unwrap().contributed_inputs().collect::<Vec<_>>(),
-		vec![queued_outpoint]
-	);
+	// While node 0's round is under negotiation, node 1 cannot obtain a template, as the round
+	// includes its contribution.
+	assert!(matches!(
+		nodes[1].node.splice_channel(&channel_id, &node_id_0),
+		Err(APIError::APIMisuseError { .. })
+	));
 
 	// Node 0 aborts the round. Node 1's merged contribution is released...
 	let tx_abort = msgs::TxAbort { channel_id, data: Vec::new() };
@@ -16722,65 +16942,22 @@ fn do_test_contribution_from_aborted_acceptor_rbf_template(amend_prior: bool) {
 		assert!(matches!(candidates[0].status, SpliceCandidateStatus::Negotiated { .. }));
 	}
 
-	// Node 1 builds a contribution from the template, dropping the released input for a fresh one
-	// that no splice attempt has ever used.
+	// Node 1 builds a contribution from a fresh template, spending a fresh input that no splice
+	// attempt has ever used. Nothing it spends is committed to any splice attempt, so it is
+	// accepted and starts a new RBF attempt.
 	let fresh_reserves = provide_utxo_reserves(&nodes, 1, input_value);
 	let fresh_input = ConfirmedUtxo::new_p2wpkh(fresh_reserves, 1).unwrap();
 	let fresh_outpoint = fresh_input.outpoint();
 	assert_ne!(fresh_outpoint, queued_outpoint);
-	let builder = if amend_prior {
-		template
-			.with_prior_contribution(template_feerate, FeeRate::MAX)
-			.remove_input(&queued_outpoint)
-			.unwrap()
-	} else {
-		template.without_prior_contribution(template_feerate, FeeRate::MAX)
-	};
-	let contribution = builder.add_input(fresh_input.clone()).unwrap().build().unwrap();
+	let fresh_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
+	let fresh_feerate = fresh_template.min_rbf_feerate().unwrap();
+	let contribution = fresh_template
+		.without_prior_contribution(fresh_feerate, FeeRate::MAX)
+		.add_input(fresh_input)
+		.unwrap()
+		.build()
+		.unwrap();
 	assert_eq!(contribution.contributed_inputs().collect::<Vec<_>>(), vec![fresh_outpoint]);
-	assert!(contribution.outputs().is_empty());
-	assert!(contribution.change_output().is_none());
-
-	let contribution = if amend_prior {
-		// The round the template's contribution was merged into has failed, so the contribution
-		// is rejected as stale although it spends nothing any splice attempt holds. Only its fresh
-		// input is released.
-		assert_eq!(
-			nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution, None),
-			Err(SpliceContributionError::NegotiationFailed {
-				reason: NegotiationFailureReason::ContributionInvalid,
-			}),
-		);
-		let events = nodes[1].node.get_and_clear_pending_events();
-		assert_eq!(events.len(), 1, "{events:?}");
-		match &events[0] {
-			Event::DiscardFunding {
-				channel_id: event_channel_id,
-				funding_info: FundingInfo::Contribution { inputs, outputs },
-			} => {
-				assert_eq!(*event_channel_id, channel_id);
-				assert_eq!(*inputs, vec![fresh_outpoint]);
-				assert!(outputs.is_empty(), "{outputs:?}");
-			},
-			other => panic!("Expected DiscardFunding, got {other:?}"),
-		}
-		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
-
-		// Restarting from a fresh template, the released input is accepted.
-		let fresh_template = nodes[1].node.splice_channel(&channel_id, &node_id_0).unwrap();
-		let fresh_feerate = fresh_template.min_rbf_feerate().unwrap();
-		fresh_template
-			.without_prior_contribution(fresh_feerate, FeeRate::MAX)
-			.add_input(fresh_input)
-			.unwrap()
-			.build()
-			.unwrap()
-	} else {
-		contribution
-	};
-
-	// Nothing the contribution spends is committed to any splice attempt, so it is accepted and
-	// starts a new RBF attempt.
 	nodes[1].node.funding_contributed(&channel_id, &node_id_0, contribution, None).unwrap();
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 	let _stfu = get_event_msg!(nodes[1], MessageSendEvent::SendStfu, node_id_0);
