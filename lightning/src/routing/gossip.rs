@@ -2277,6 +2277,12 @@ impl<L: Logger> NetworkGraph<L> {
 		#[cfg(any(not(feature = "std"), fuzzing))]
 		let current_time_unix = None;
 
+		self.node_failed_permanent_with_time(node_id, current_time_unix);
+	}
+
+	/// Marks a node in the graph as permanently failed, effectively removing it and its channels
+	/// from local storage.
+	fn node_failed_permanent_with_time(&self, node_id: &PublicKey, current_time_unix: Option<u64>) {
 		let node_id = NodeId::from_pubkey(node_id);
 		let mut channels = self.channels.write().unwrap();
 		let mut nodes = self.nodes.write().unwrap();
@@ -3080,7 +3086,9 @@ pub(crate) mod tests {
 				.as_secs();
 			// Mark a node as permanently failed so it's tracked as removed.
 			let node_1_pubkey = PublicKey::from_secret_key(&secp_ctx, node_1_privkey);
-			gossip_sync.network_graph().node_failed_permanent(&node_1_pubkey);
+			gossip_sync
+				.network_graph()
+				.node_failed_permanent_with_time(&node_1_pubkey, Some(tracking_time));
 
 			// Return error and ignore valid channel announcement if one of the nodes has been tracked as removed.
 			let valid_announcement = get_signed_channel_announcement(
