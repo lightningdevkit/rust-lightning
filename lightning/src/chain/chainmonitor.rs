@@ -1802,8 +1802,19 @@ where
 	where
 		H::Target: EventHandler,
 	{
-		for monitor_state in self.monitors.read().unwrap().values() {
-			match monitor_state.monitor.process_pending_events(&handler, &self.logger) {
+		// Sadly we can't hold the monitors read lock through the event handler calls, as the
+		// handler is allowed to call back into us, and may thus require the monitors write
+		// lock (e.g. via `flush`, which inserts queued new monitors). Thus we have to do a
+		// crazy dance to process a monitor's events then only remove them once we've done so.
+		let mons_to_process = self.monitors.read().unwrap().keys().cloned().collect::<Vec<_>>();
+		for channel_id in mons_to_process {
+			let mut ev;
+			match super::channelmonitor::process_events_body!(
+				self.monitors.read().unwrap().get(&channel_id).map(|m| &m.monitor),
+				self.logger,
+				ev,
+				handler.handle_event(ev)
+			) {
 				Ok(()) => {},
 				Err(ReplayEvent()) => {
 					self.event_notifier.notify();
@@ -2292,6 +2303,78 @@ mod tests {
 		let persist_count_before = persister.new_channel_persistences.lock().unwrap().len();
 		deferred.flush(0, &&logger);
 		assert_eq!(persister.new_channel_persistences.lock().unwrap().len(), persist_count_before);
+	}
+
+	/// Tests that a synchronous event handler may call back into the `ChainMonitor` without
+	/// deadlocking, by flushing a queued monitor registration from the handler while event
+	/// processing is in progress.
+	#[test]
+	fn test_sync_event_handler_can_flush_new_monitor() {
+		use crate::events::EventsProvider;
+		use crate::sign::SpendableOutputDescriptor;
+		use bitcoin::hashes::Hash;
+		use bitcoin::{Amount, ScriptBuf, TxOut, Txid};
+
+		let broadcaster = TestBroadcaster::new(Network::Testnet);
+		let fee_est = TestFeeEstimator::new(253);
+		let logger = TestLogger::new();
+		let persister = TestPersister::new();
+		let chain_source = TestChainSource::new(Network::Testnet);
+		let keys = TestKeysInterface::new(&[0; 32], Network::Testnet);
+		let deferred = create_deferred_chain_monitor(
+			&chain_source,
+			&broadcaster,
+			&logger,
+			&fee_est,
+			&persister,
+			&keys,
+		);
+
+		let channel_id = ChannelId::from_bytes([31; 32]);
+		let monitor = crate::chain::channelmonitor::dummy_monitor(channel_id, |keys| {
+			TestChannelSigner::new(DynSigner::new(keys))
+		});
+		let counterparty_node_id = monitor.get_counterparty_node_id();
+		// Model the event queued when a counterparty's on-chain close matures.
+		monitor.inner.lock().unwrap().pending_events.push(Event::SpendableOutputs {
+			outputs: vec![SpendableOutputDescriptor::StaticOutput {
+				outpoint: crate::chain::transaction::OutPoint {
+					txid: Txid::from_byte_array([32; 32]),
+					index: 0,
+				},
+				output: TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() },
+				channel_keys_id: None,
+			}],
+			channel_id: Some(channel_id),
+			counterparty_node_id: Some(counterparty_node_id),
+		});
+		assert_eq!(
+			Watch::watch_channel(&deferred, channel_id, monitor),
+			Ok(ChannelMonitorUpdateStatus::InProgress)
+		);
+		deferred.flush(1, &&logger);
+
+		// A separate channel's registration is still queued, awaiting the application's next
+		// checkpoint. Flushing it from an event handler is a permitted re-entry.
+		let new_channel_id = ChannelId::from_bytes([33; 32]);
+		let new_monitor = crate::chain::channelmonitor::dummy_monitor(new_channel_id, |keys| {
+			TestChannelSigner::new(DynSigner::new(keys))
+		});
+		assert_eq!(
+			Watch::watch_channel(&deferred, new_channel_id, new_monitor),
+			Ok(ChannelMonitorUpdateStatus::InProgress)
+		);
+
+		let handled = core::cell::Cell::new(0);
+		let handler = |_: Event| {
+			deferred.flush(1, &&logger);
+			handled.set(handled.get() + 1);
+			Ok(())
+		};
+		deferred.process_pending_events(&handler);
+		assert_eq!(handled.get(), 1);
+		assert_eq!(deferred.pending_operation_count(), 0);
+		assert!(deferred.get_monitor(new_channel_id).is_ok());
 	}
 
 	#[test]
