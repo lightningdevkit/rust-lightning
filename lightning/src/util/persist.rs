@@ -1666,7 +1666,9 @@ impl<
 		// the updates orphaned until `cleanup_archived_monitor_updates` removes them on the next
 		// startup. `ChainMonitor` will not persist a monitor under this key while it is being
 		// archived, so no lock is needed beyond that.
-		if let Err(e) = self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, false).await {
+		if let Err(e) =
+			self.cleanup_stale_updates_for_monitor_to(&monitor_key, u64::MAX, false).await
+		{
 			log_error!(
 				self.logger,
 				"Failed to remove stored updates for archived monitor {}, reason: {}",
