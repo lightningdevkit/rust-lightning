@@ -6064,7 +6064,7 @@ impl<
 	///
 	/// [timer tick]: Self::timer_tick_occurred
 	#[deprecated(
-		since = "0.4.0",
+		since = "0.3.0",
 		note = "Use ChannelManager::pay_for_bolt12_invoice instead, providing a fresh payment_id \
 		        and verifying the invoice yourself."
 	)]
