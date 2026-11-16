@@ -2315,10 +2315,23 @@ impl<
 
 			let our_features = self.init_features(their_node_id);
 			if msg.features.requires_unknown_bits_from(&our_features) {
+				// The peer controls how many bits it sets (up to the message size limit), so
+				// only scan for and log the first few to avoid letting it bloat our work and
+				// logs.
+				const MAX_LOGGED_UNKNOWN_REQ_BITS: usize = 16;
+				// Take one extra bit so that we know whether to append "..." to the log line.
+				let unknown_bits: Vec<_> = msg
+					.features
+					.required_unknown_bits_from_iter(&our_features)
+					.take(MAX_LOGGED_UNKNOWN_REQ_BITS + 1)
+					.collect();
+				let logged_bits =
+					&unknown_bits[..cmp::min(unknown_bits.len(), MAX_LOGGED_UNKNOWN_REQ_BITS)];
 				log_debug!(
 					logger,
-					"Peer requires features unknown to us: {:?}",
-					msg.features.required_unknown_bits_from(&our_features)
+					"Peer requires features unknown to us: {:?}{}",
+					logged_bits,
+					if unknown_bits.len() > MAX_LOGGED_UNKNOWN_REQ_BITS { "..." } else { "" }
 				);
 				return Err(PeerHandleError {}.into());
 			}
