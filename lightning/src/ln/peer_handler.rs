@@ -1293,10 +1293,24 @@ fn filter_addresses(ip_address: Option<SocketAddress>) -> Option<SocketAddress> 
 		Some(SocketAddress::TcpIpV4 { addr: [169, 254, _, _], port: _ }) => None,
 		// For IPv4 range 172.16.0.0 - 172.31.255.255 (172.16/12)
 		Some(SocketAddress::TcpIpV4 { addr: [172, 16..=31, _, _], port: _ }) => None,
+		// For IPv4 range 192.0.0.0 - 192.0.0.255 (192.0.0/24)
+		Some(SocketAddress::TcpIpV4 { addr: [192, 0, 0, _], port: _ }) => None,
+		// For IPv4 range 192.0.2.0 - 192.0.2.255 (192.0.2/24)
+		Some(SocketAddress::TcpIpV4 { addr: [192, 0, 2, _], port: _ }) => None,
 		// For IPv4 range 192.168.0.0 - 192.168.255.255 (192.168/16)
 		Some(SocketAddress::TcpIpV4 { addr: [192, 168, _, _], port: _ }) => None,
 		// For IPv4 range 192.88.99.0 - 192.88.99.255  (192.88.99/24)
 		Some(SocketAddress::TcpIpV4 { addr: [192, 88, 99, _], port: _ }) => None,
+		// For IPv4 range 198.18.0.0 - 198.19.255.255 (198.18/15)
+		Some(SocketAddress::TcpIpV4 { addr: [198, 18..=19, _, _], port: _ }) => None,
+		// For IPv4 range 198.51.100.0 - 198.51.100.255 (198.51.100/24)
+		Some(SocketAddress::TcpIpV4 { addr: [198, 51, 100, _], port: _ }) => None,
+		// For IPv4 range 203.0.113.0 - 203.0.113.255 (203.0.113/24)
+		Some(SocketAddress::TcpIpV4 { addr: [203, 0, 113, _], port: _ }) => None,
+		// For IPv4 range 224.0.0.0 - 239.255.255.255 (224/4)
+		Some(SocketAddress::TcpIpV4 { addr: [224..=239, _, _, _], port: _ }) => None,
+		// For IPv4 range 240.0.0.0 - 255.255.255.255 (240/4)
+		Some(SocketAddress::TcpIpV4 { addr: [240..=255, _, _, _], port: _ }) => None,
 		// For IPv6 range 2000:0000:0000:0000:0000:0000:0000:0000 - 3fff:ffff:ffff:ffff:ffff:ffff:ffff:ffff (2000::/3)
 		Some(SocketAddress::TcpIpV6 {
 			addr: [0x20..=0x3F, _, _, _, _, _, _, _, _, _, _, _, _, _, _, _],
@@ -5478,7 +5492,69 @@ mod tests {
 		let ip_address = SocketAddress::TcpIpV4 { addr: [192, 88, 99, 255], port: 1000 };
 		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
 
+		// For (192.0.0/24)
+		let ip_address = SocketAddress::TcpIpV4 { addr: [192, 0, 0, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [192, 0, 0, 87], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [192, 0, 0, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+
+		// For (192.0.2/24)
+		let ip_address = SocketAddress::TcpIpV4 { addr: [192, 0, 2, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [192, 0, 2, 134], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [192, 0, 2, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+
+		// For (198.18/15)
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 18, 0, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 19, 77, 24], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 19, 255, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+
+		// For (198.51.100/24)
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 51, 100, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 51, 100, 212], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 51, 100, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+
+		// For (203.0.113/24)
+		let ip_address = SocketAddress::TcpIpV4 { addr: [203, 0, 113, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [203, 0, 113, 59], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [203, 0, 113, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+
+		// For (224/4)
+		let ip_address = SocketAddress::TcpIpV4 { addr: [224, 0, 0, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [231, 190, 4, 111], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [239, 255, 255, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+
+		// For (240/4)
+		let ip_address = SocketAddress::TcpIpV4 { addr: [240, 0, 0, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [253, 12, 200, 90], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+		let ip_address = SocketAddress::TcpIpV4 { addr: [255, 255, 255, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), None);
+
 		// For other IPv4 addresses
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 17, 255, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
+		let ip_address = SocketAddress::TcpIpV4 { addr: [198, 20, 0, 0], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
+		let ip_address = SocketAddress::TcpIpV4 { addr: [223, 255, 255, 255], port: 1000 };
+		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
 		let ip_address = SocketAddress::TcpIpV4 { addr: [188, 255, 99, 0], port: 1000 };
 		assert_eq!(filter_addresses(Some(ip_address.clone())), Some(ip_address.clone()));
 		let ip_address = SocketAddress::TcpIpV4 { addr: [123, 8, 129, 14], port: 1000 };
