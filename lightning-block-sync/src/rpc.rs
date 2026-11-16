@@ -28,7 +28,7 @@ pub struct RpcError {
 
 impl fmt::Display for RpcError {
 	fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-		write!(f, "RPC error {}: {}", self.code, self.message)
+		write!(f, "RPC error {}: {}", self.code, self.message.escape_debug())
 	}
 }
 
@@ -60,7 +60,7 @@ impl fmt::Display for RpcClientError {
 		match self {
 			RpcClientError::Http(e) => write!(f, "HTTP error: {}", e),
 			RpcClientError::Rpc(e) => write!(f, "{}", e),
-			RpcClientError::InvalidData(msg) => write!(f, "invalid data: {}", msg),
+			RpcClientError::InvalidData(msg) => write!(f, "invalid data: {}", msg.escape_debug()),
 		}
 	}
 }
