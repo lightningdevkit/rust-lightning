@@ -50,6 +50,7 @@ use lightning::ln::msgs::OnionMessageHandler;
 use lightning::ln::peer_handler::APeerManager;
 use lightning::onion_message::messenger::AOnionMessenger;
 use lightning::routing::gossip::{NetworkGraph, P2PGossipSync};
+use lightning::routing::router::Path;
 use lightning::routing::scoring::{ScoreUpdate, WriteableScore};
 use lightning::routing::utxo::UtxoLookup;
 #[cfg(not(c_bindings))]
@@ -333,31 +334,76 @@ fn handle_network_graph_update<L: Logger>(network_graph: &NetworkGraph<L>, event
 	}
 }
 
-/// Updates scorer based on event and returns whether an update occurred so we can decide whether
-/// to persist.
-fn update_scorer<'a, S: Deref<Target = SC>, SC: 'a + WriteableScore<'a>>(
-	scorer: &'a S, event: &Event, duration_since_epoch: Duration,
-) -> bool {
+/// The subset of an [`Event`] that is relevant for scoring, extracted from the event prior to
+/// moving it into the user's event handler, such that the event does not need to be cloned.
+enum ScorerUpdate {
+	PaymentPathFailed {
+		path: Path,
+		short_channel_id: Option<u64>,
+		payment_failed_permanently: bool,
+	},
+	PaymentPathSuccessful {
+		path: Path,
+	},
+	ProbeSuccessful {
+		path: Path,
+	},
+	ProbeFailed {
+		path: Path,
+		short_channel_id: Option<u64>,
+	},
+}
+
+/// Extracts the scoring-relevant portion of an event, prior to the event itself being moved into
+/// the event handler.
+fn extract_scorer_update(event: &Event) -> Option<ScorerUpdate> {
 	match event {
-		Event::PaymentPathFailed { ref path, short_channel_id: Some(scid), .. } => {
+		Event::PaymentPathFailed { path, short_channel_id, payment_failed_permanently, .. } => {
+			Some(ScorerUpdate::PaymentPathFailed {
+				path: path.clone(),
+				short_channel_id: *short_channel_id,
+				payment_failed_permanently: *payment_failed_permanently,
+			})
+		},
+		Event::PaymentPathSuccessful { path, .. } => {
+			Some(ScorerUpdate::PaymentPathSuccessful { path: path.clone() })
+		},
+		Event::ProbeSuccessful { path, .. } => {
+			Some(ScorerUpdate::ProbeSuccessful { path: path.clone() })
+		},
+		Event::ProbeFailed { path, short_channel_id, .. } => Some(ScorerUpdate::ProbeFailed {
+			path: path.clone(),
+			short_channel_id: *short_channel_id,
+		}),
+		_ => None,
+	}
+}
+
+/// Updates scorer based on an extracted [`ScorerUpdate`] and returns whether an update occurred so
+/// we can decide whether to persist.
+fn update_scorer<'a, S: Deref<Target = SC>, SC: 'a + WriteableScore<'a>>(
+	scorer: &'a S, update: &ScorerUpdate, duration_since_epoch: Duration,
+) -> bool {
+	match update {
+		ScorerUpdate::PaymentPathFailed { path, short_channel_id: Some(scid), .. } => {
 			let mut score = scorer.write_lock();
 			score.payment_path_failed(path, *scid, duration_since_epoch);
 		},
-		Event::PaymentPathFailed { ref path, payment_failed_permanently: true, .. } => {
+		ScorerUpdate::PaymentPathFailed { path, payment_failed_permanently: true, .. } => {
 			// Reached if the destination explicitly failed it back. We treat this as a successful probe
 			// because the payment made it all the way to the destination with sufficient liquidity.
 			let mut score = scorer.write_lock();
 			score.probe_successful(path, duration_since_epoch);
 		},
-		Event::PaymentPathSuccessful { path, .. } => {
+		ScorerUpdate::PaymentPathSuccessful { path } => {
 			let mut score = scorer.write_lock();
 			score.payment_path_successful(path, duration_since_epoch);
 		},
-		Event::ProbeSuccessful { path, .. } => {
+		ScorerUpdate::ProbeSuccessful { path } => {
 			let mut score = scorer.write_lock();
 			score.probe_successful(path, duration_since_epoch);
 		},
-		Event::ProbeFailed { path, short_channel_id: Some(scid), .. } => {
+		ScorerUpdate::ProbeFailed { path, short_channel_id: Some(scid), .. } => {
 			let mut score = scorer.write_lock();
 			score.probe_failed(path, *scid, duration_since_epoch);
 		},
@@ -1006,29 +1052,33 @@ where
 			if let Some(network_graph) = network_graph {
 				handle_network_graph_update(network_graph, &event)
 			}
+			let scorer_update = extract_scorer_update(&event);
+			event_handler(event).await?;
 			if let Some(ref scorer) = scorer {
 				if let Some(duration_since_epoch) = fetch_time() {
-					if update_scorer(scorer, &event, duration_since_epoch) {
-						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = kv_store
-							.write(
-								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-								SCORER_PERSISTENCE_KEY,
-								scorer.encode(),
-							)
-							.await
-						{
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
-							// We opt not to abort early on persistence failure here as persisting
-							// the scorer is non-critical and we still hope that it will have
-							// resolved itself when it is potentially critical in event handling
-							// below.
+					if let Some(ref update) = scorer_update {
+						if update_scorer(scorer, update, duration_since_epoch) {
+							log_trace!(logger, "Persisting scorer after update");
+							if let Err(e) = kv_store
+								.write(
+									SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+									SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+									SCORER_PERSISTENCE_KEY,
+									scorer.encode(),
+								)
+								.await
+							{
+								log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
+								// We opt not to abort early on persistence failure here as persisting
+								// the scorer is non-critical and we still hope that it will have
+								// resolved itself when it is potentially critical in event handling
+								// below.
+							}
 						}
 					}
 				}
 			}
-			event_handler(event).await
+			Ok(())
 		})
 	};
 	let mut batch_delay = BatchDelay::new();
@@ -1644,24 +1694,28 @@ impl BackgroundProcessor {
 				if let Some(network_graph) = network_graph {
 					handle_network_graph_update(network_graph, &event)
 				}
+				let scorer_update = extract_scorer_update(&event);
+				event_handler.handle_event(event)?;
 				if let Some(ref scorer) = scorer {
 					use std::time::SystemTime;
 					let duration_since_epoch = SystemTime::now()
 						.duration_since(SystemTime::UNIX_EPOCH)
 						.expect("Time should be sometime after 1970");
-					if update_scorer(scorer, &event, duration_since_epoch) {
-						log_trace!(logger, "Persisting scorer after update");
-						if let Err(e) = kv_store.write(
-							SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
-							SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
-							SCORER_PERSISTENCE_KEY,
-							scorer.encode(),
-						) {
-							log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
+					if let Some(ref update) = scorer_update {
+						if update_scorer(scorer, update, duration_since_epoch) {
+							log_trace!(logger, "Persisting scorer after update");
+							if let Err(e) = kv_store.write(
+								SCORER_PERSISTENCE_PRIMARY_NAMESPACE,
+								SCORER_PERSISTENCE_SECONDARY_NAMESPACE,
+								SCORER_PERSISTENCE_KEY,
+								scorer.encode(),
+							) {
+								log_error!(logger, "Error: Failed to persist scorer, check your disk and permissions {}", e);
+							}
 						}
 					}
 				}
-				event_handler.handle_event(event)
+				Ok(())
 			};
 			let mut batch_delay = BatchDelay::new();
 
@@ -3423,6 +3477,186 @@ mod tests {
 		if !std::thread::panicking() {
 			bg_processor.stop().unwrap();
 		}
+	}
+
+	#[test]
+	fn test_replayed_payment_failure_only_updates_scorer_once() {
+		let (_, nodes) = create_nodes(1, "test_replayed_payment_failure_only_updates_scorer_once");
+		let data_dir = nodes[0].kv_store.get_data_dir();
+		let persister = Arc::new(Persister::new(data_dir));
+
+		let (event_send, event_recv) = std::sync::mpsc::sync_channel(2);
+		let should_replay = Arc::new(AtomicBool::new(true));
+		let should_replay_clone = Arc::clone(&should_replay);
+		let event_handler = move |event: Event| {
+			event_send.send(event).unwrap();
+			if should_replay_clone.swap(false, Ordering::AcqRel) {
+				Err(ReplayEvent())
+			} else {
+				Ok(())
+			}
+		};
+
+		let bg_processor = BackgroundProcessor::start(
+			persister,
+			event_handler,
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
+			nodes[0].no_gossip_sync(),
+			Arc::clone(&nodes[0].peer_manager),
+			Some(Arc::clone(&nodes[0].liquidity_manager)),
+			Some(Arc::clone(&nodes[0].sweeper)),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
+		);
+
+		let scored_scid = 4242;
+		let secp_ctx = Secp256k1::new();
+		let node_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, &node_privkey);
+		let path = Path {
+			hops: vec![RouteHop {
+				pubkey: node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: scored_scid,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
+				maybe_announced_channel: true,
+			}],
+			blinded_tail: None,
+		};
+
+		// The scorer should only see a single failure, even though the event is handed to
+		// the (failing) event handler twice.
+		nodes[0].scorer.write_lock().expect(TestResult::PaymentFailure {
+			path: path.clone(),
+			short_channel_id: scored_scid,
+		});
+		nodes[0].node.push_pending_event(Event::PaymentPathFailed {
+			payment_id: None,
+			payment_hash: PaymentHash([42; 32]),
+			payment_failed_permanently: false,
+			failure: PathFailure::OnPath { network_update: None },
+			path,
+			short_channel_id: Some(scored_scid),
+			error_code: None,
+			error_data: None,
+			hold_times: Vec::new(),
+		});
+
+		event_recv.recv_timeout(EVENT_DEADLINE).unwrap();
+		event_recv.recv_timeout(EVENT_DEADLINE).unwrap();
+
+		if !std::thread::panicking() {
+			bg_processor.stop().unwrap();
+		}
+	}
+
+	#[tokio::test]
+	async fn test_replayed_payment_failure_only_updates_scorer_once_async() {
+		let (event_send, mut event_recv) = tokio::sync::mpsc::channel(2);
+		let should_replay = Arc::new(AtomicBool::new(true));
+		let should_replay_clone = Arc::clone(&should_replay);
+		let event_handler = move |event: Event| {
+			let event_send = event_send.clone();
+			let should_replay = Arc::clone(&should_replay_clone);
+			async move {
+				event_send.send(event).await.unwrap();
+				if should_replay.swap(false, Ordering::AcqRel) {
+					Err(ReplayEvent())
+				} else {
+					Ok(())
+				}
+			}
+		};
+
+		let (_, nodes) =
+			create_nodes(1, "test_replayed_payment_failure_only_updates_scorer_once_async");
+		let data_dir = nodes[0].kv_store.get_data_dir();
+		let kv_store_sync = Arc::new(Persister::new(data_dir));
+		let kv_store = KVStoreSyncWrapper(kv_store_sync);
+
+		let (exit_sender, exit_receiver) = tokio::sync::watch::channel(());
+
+		// Yes, you can unsafe { turn off the borrow checker }
+		let lm_async: &'static LiquidityManager<_, _, _, _, _, _> = unsafe {
+			&*(nodes[0].liquidity_manager.get_lm_async()
+				as *const LiquidityManager<_, _, _, _, _, _>)
+				as &'static LiquidityManager<_, _, _, _, _, _>
+		};
+		let sweeper_async: &'static OutputSweeper<_, _, _, _, _, _, _> = unsafe {
+			&*(nodes[0].sweeper.sweeper_async() as *const OutputSweeper<_, _, _, _, _, _, _>)
+				as &'static OutputSweeper<_, _, _, _, _, _, _>
+		};
+
+		let bp_future = super::process_events_async(
+			kv_store,
+			event_handler,
+			Arc::clone(&nodes[0].chain_monitor),
+			Arc::clone(&nodes[0].node),
+			Some(Arc::clone(&nodes[0].messenger)),
+			nodes[0].no_gossip_sync(),
+			Arc::clone(&nodes[0].peer_manager),
+			Some(lm_async),
+			Some(sweeper_async),
+			Arc::clone(&nodes[0].logger),
+			Some(Arc::clone(&nodes[0].scorer)),
+			move |dur: Duration| {
+				let mut exit_receiver = exit_receiver.clone();
+				Box::pin(async move {
+					tokio::select! {
+						_ = tokio::time::sleep(dur) => false,
+						_ = exit_receiver.changed() => true,
+					}
+				})
+			},
+			false,
+			|| Some(Duration::ZERO),
+		);
+		let handle = tokio::spawn(bp_future);
+
+		let scored_scid = 4242;
+		let secp_ctx = Secp256k1::new();
+		let node_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_id = PublicKey::from_secret_key(&secp_ctx, &node_privkey);
+		let path = Path {
+			hops: vec![RouteHop {
+				pubkey: node_id,
+				node_features: NodeFeatures::empty(),
+				short_channel_id: scored_scid,
+				channel_features: ChannelFeatures::empty(),
+				fee_msat: 0,
+				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
+				maybe_announced_channel: true,
+			}],
+			blinded_tail: None,
+		};
+
+		// The scorer should only see a single failure, even though the event is handed to
+		// the (failing) event handler twice.
+		nodes[0].scorer.write_lock().expect(TestResult::PaymentFailure {
+			path: path.clone(),
+			short_channel_id: scored_scid,
+		});
+		nodes[0].node.push_pending_event(Event::PaymentPathFailed {
+			payment_id: None,
+			payment_hash: PaymentHash([42; 32]),
+			payment_failed_permanently: false,
+			failure: PathFailure::OnPath { network_update: None },
+			path,
+			short_channel_id: Some(scored_scid),
+			error_code: None,
+			error_data: None,
+			hold_times: Vec::new(),
+		});
+
+		event_recv.recv().await.unwrap();
+		event_recv.recv().await.unwrap();
+
+		exit_sender.send(()).unwrap();
+		handle.await.unwrap().unwrap();
 	}
 
 	#[test]
