@@ -11435,8 +11435,9 @@ where
 			// feerate-calculated fee, but allow the max to be overridden if we're using a
 			// target feerate-calculated fee.
 			cmp::max(
-				normal_feerate as u64 * tx_weight / 1000
-					+ self.context.config.options.force_close_avoidance_max_fee_satoshis,
+				(normal_feerate as u64 * tx_weight / 1000).saturating_add(
+					self.context.config.options.force_close_avoidance_max_fee_satoshis,
+				),
 				proposed_max_feerate as u64 * tx_weight / 1000,
 			)
 		} else {
