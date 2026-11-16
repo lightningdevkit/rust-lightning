@@ -27,8 +27,8 @@ use crate::util::wakers::Notifier;
 
 use crate::prelude::*;
 
-use crate::sync::{LockTestExt, Mutex};
-use alloc::sync::{Arc, Weak};
+use crate::sync::Mutex;
+use alloc::sync::Arc;
 use core::ops::Deref;
 
 /// An error when accessing the chain via [`UtxoLookup`].
@@ -89,14 +89,25 @@ enum ChannelAnnouncement {
 	Unsigned(msgs::UnsignedChannelAnnouncement),
 }
 impl ChannelAnnouncement {
-	fn node_id_1(&self) -> &NodeId {
+	fn contents(&self) -> &msgs::UnsignedChannelAnnouncement {
 		match self {
-			ChannelAnnouncement::Full(msg) => &msg.contents.node_id_1,
-			ChannelAnnouncement::Unsigned(msg) => &msg.node_id_1,
+			ChannelAnnouncement::Full(msg) => &msg.contents,
+			ChannelAnnouncement::Unsigned(msg) => msg,
 		}
+	}
+
+	/// Returns true if the announcement is for a channel with the same node and bitcoin keys as
+	/// `other`, i.e. both were produced by the same channel owners.
+	fn same_keys(&self, other: &msgs::UnsignedChannelAnnouncement) -> bool {
+		let contents = self.contents();
+		contents.node_id_1 == other.node_id_1
+			&& contents.node_id_2 == other.node_id_2
+			&& contents.bitcoin_key_1 == other.bitcoin_key_1
+			&& contents.bitcoin_key_2 == other.bitcoin_key_2
 	}
 }
 
+#[derive(Clone)]
 enum NodeAnnouncement {
 	Full(msgs::NodeAnnouncement),
 	Unsigned(msgs::UnsignedNodeAnnouncement),
@@ -110,6 +121,7 @@ impl NodeAnnouncement {
 	}
 }
 
+#[derive(PartialEq)]
 enum ChannelUpdate {
 	Full(msgs::ChannelUpdate),
 	Unsigned(msgs::UnsignedChannelUpdate),
@@ -123,14 +135,9 @@ impl ChannelUpdate {
 	}
 }
 
-struct UtxoMessages {
+struct UtxoFutureState {
 	notifier: Arc<Notifier>,
 	complete: Option<Result<TxOut, UtxoLookupError>>,
-	channel_announce: Option<ChannelAnnouncement>,
-	latest_node_announce_a: Option<NodeAnnouncement>,
-	latest_node_announce_b: Option<NodeAnnouncement>,
-	latest_channel_update_a: Option<ChannelUpdate>,
-	latest_channel_update_b: Option<ChannelUpdate>,
 }
 
 /// Represents a future resolution of a [`UtxoLookup::get_utxo`] query resolving async.
@@ -138,7 +145,7 @@ struct UtxoMessages {
 /// See [`UtxoResult::Async`] and [`UtxoFuture::resolve`] for more info.
 #[derive(Clone)]
 pub struct UtxoFuture {
-	state: Arc<Mutex<UtxoMessages>>,
+	state: Arc<Mutex<UtxoFutureState>>,
 }
 
 /// A trivial implementation of [`UtxoLookup`] which is used to call back into the network graph
@@ -153,17 +160,7 @@ impl UtxoLookup for UtxoResolver {
 impl UtxoFuture {
 	/// Builds a new future for later resolution.
 	pub fn new(notifier: Arc<Notifier>) -> Self {
-		Self {
-			state: Arc::new(Mutex::new(UtxoMessages {
-				notifier,
-				complete: None,
-				channel_announce: None,
-				latest_node_announce_a: None,
-				latest_node_announce_b: None,
-				latest_channel_update_a: None,
-				latest_channel_update_b: None,
-			})),
-		}
+		Self { state: Arc::new(Mutex::new(UtxoFutureState { notifier, complete: None })) }
 	}
 
 	/// Resolves this future with the given result.
@@ -174,13 +171,50 @@ impl UtxoFuture {
 	}
 }
 
-struct PendingChecksContext {
-	pending_states: Vec<Arc<Mutex<UtxoMessages>>>,
-	channels: HashMap<u64, Weak<Mutex<UtxoMessages>>>,
-	nodes: HashMap<NodeId, Vec<Weak<Mutex<UtxoMessages>>>>,
+enum LookupState {
+	Pending(UtxoFuture),
+	/// The lookup has completed and the channel announcements are being added to the graph.
+	/// Channel updates and node announcements in [`PendingLookup::updates`] and
+	/// [`PendingChecksContext::nodes`] will be added once announcement processing completes.
+	Resolved(Result<TxOut, UtxoLookupError>),
 }
 
-/// A set of messages which are pending UTXO lookups for processing.
+/// The messages queued behind the single UTXO lookup for one SCID.
+struct PendingLookup {
+	state: LookupState,
+	/// The set of differently-keyed announcements, only one of which will be valid.
+	announcements: Vec<ChannelAnnouncement>,
+	/// The distinct `channel_update`s received for the SCID before its announcements were added to
+	/// the graph. Their signatures are only checked once we know the single valid announcement.
+	updates: Vec<ChannelUpdate>,
+}
+
+struct CompletedLookup {
+	scid: u64,
+	result: Result<TxOut, UtxoLookupError>,
+	announcements: Vec<ChannelAnnouncement>,
+}
+
+struct PendingNode {
+	/// The number of queued `channel_announcement`s which list this node.
+	announcement_refs: usize,
+	announcement: Option<NodeAnnouncement>,
+}
+
+struct PendingChecksContext {
+	channels: HashMap<u64, PendingLookup>,
+	nodes: HashMap<NodeId, PendingNode>,
+}
+impl PendingChecksContext {
+	/// Returns the total number of gossip messages queued behind in-flight lookups.
+	fn queued_messages(&self) -> usize {
+		let channel_msgs: usize =
+			self.channels.values().map(|l| l.announcements.len() + l.updates.len()).sum();
+		let node_msgs = self.nodes.values().filter(|n| n.announcement.is_some()).count();
+		channel_msgs + node_msgs
+	}
+}
+
 pub(super) struct PendingChecks {
 	internal: Mutex<PendingChecksContext>,
 	pub(super) completion_notifier: Arc<Notifier>,
@@ -190,7 +224,6 @@ impl PendingChecks {
 	pub(super) fn new() -> Self {
 		PendingChecks {
 			internal: Mutex::new(PendingChecksContext {
-				pending_states: Vec::new(),
 				channels: new_hash_map(),
 				nodes: new_hash_map(),
 			}),
@@ -198,200 +231,94 @@ impl PendingChecks {
 		}
 	}
 
-	/// Checks if there is a pending `channel_update` UTXO validation for the given channel,
+	/// Checks if there is a pending `channel_announcement` UTXO validation for the given channel,
 	/// and, if so, stores the channel message for handling later and returns an `Err`.
+	///
+	/// Does NOT require that the `channel_update` be validated against the announcing node.
 	pub(super) fn check_hold_pending_channel_update(
 		&self, msg: &msgs::UnsignedChannelUpdate, full_msg: Option<&msgs::ChannelUpdate>,
 	) -> Result<(), LightningError> {
 		let mut pending_checks = self.internal.lock().unwrap();
-		if let hash_map::Entry::Occupied(e) = pending_checks.channels.entry(msg.short_channel_id) {
-			let is_from_a = (msg.channel_flags & 1) == 1;
-			match Weak::upgrade(e.get()) {
-				Some(msgs_ref) => {
-					let mut messages = msgs_ref.lock().unwrap();
-					let latest_update = if is_from_a {
-						&mut messages.latest_channel_update_a
-					} else {
-						&mut messages.latest_channel_update_b
-					};
-					if latest_update.is_none()
-						|| latest_update.as_ref().unwrap().timestamp() < msg.timestamp
-					{
-						// If the messages we got has a higher timestamp, just blindly assume the
-						// signatures on the new message are correct and drop the old message. This
-						// may cause us to end up dropping valid `channel_update`s if a peer is
-						// malicious, but we should get the correct ones when the node updates them.
-						*latest_update = Some(if let Some(msg) = full_msg {
-							ChannelUpdate::Full(msg.clone())
-						} else {
-							ChannelUpdate::Unsigned(msg.clone())
-						});
-					}
-					return Err(LightningError {
-						err: "Awaiting channel_announcement validation to accept channel_update"
-							.to_owned(),
-						action: ErrorAction::IgnoreAndLog(Level::Gossip),
-					});
-				},
-				None => {
-					e.remove();
-				},
+		if let Some(lookup) = pending_checks.channels.get_mut(&msg.short_channel_id) {
+			let update = if let Some(msg) = full_msg {
+				ChannelUpdate::Full(msg.clone())
+			} else {
+				ChannelUpdate::Unsigned(msg.clone())
+			};
+			// We don't check sigs until we know which announcement to accept.
+			if !lookup.updates.contains(&update) {
+				lookup.updates.push(update);
 			}
+			return Err(LightningError {
+				err: "Awaiting channel_announcement validation to accept channel_update".to_owned(),
+				action: ErrorAction::IgnoreAndLog(Level::Gossip),
+			});
 		}
 		Ok(())
 	}
 
-	/// Checks if there is a pending `node_announcement` UTXO validation for a channel with the
-	/// given node and, if so, stores the channel message for handling later and returns an `Err`.
+	/// Checks if there is a pending `channel_announcement` UTXO validation for a channel with the
+	/// given node and, if so, stores the node message for handling later and returns an `Err`.
+	///
+	/// Requires that the provided announcement be authentically from the announcing node
+	/// (either its signature has been validated or it comes from a trusted source).
 	pub(super) fn check_hold_pending_node_announcement(
 		&self, msg: &msgs::UnsignedNodeAnnouncement, full_msg: Option<&msgs::NodeAnnouncement>,
 	) -> Result<(), LightningError> {
 		let mut pending_checks = self.internal.lock().unwrap();
-		if let hash_map::Entry::Occupied(mut e) = pending_checks.nodes.entry(msg.node_id) {
-			let mut found_at_least_one_chan = false;
-			e.get_mut().retain(|node_msgs| match Weak::upgrade(&node_msgs) {
-				Some(chan_mtx) => {
-					let mut chan_msgs = chan_mtx.lock().unwrap();
-					if let Some(chan_announce) = &chan_msgs.channel_announce {
-						let latest_announce = if *chan_announce.node_id_1() == msg.node_id {
-							&mut chan_msgs.latest_node_announce_a
-						} else {
-							&mut chan_msgs.latest_node_announce_b
-						};
-						if latest_announce.is_none()
-							|| latest_announce.as_ref().unwrap().timestamp() < msg.timestamp
-						{
-							*latest_announce = Some(if let Some(msg) = full_msg {
-								NodeAnnouncement::Full(msg.clone())
-							} else {
-								NodeAnnouncement::Unsigned(msg.clone())
-							});
-						}
-						found_at_least_one_chan = true;
-						true
-					} else {
-						debug_assert!(
-							false,
-							"channel_announce is set before struct is added to node map"
-						);
-						false
-					}
-				},
-				None => false,
-			});
-			if e.get().is_empty() {
-				e.remove();
-			}
-			if found_at_least_one_chan {
-				return Err(LightningError {
-					err: "Awaiting channel_announcement validation to accept node_announcement"
-						.to_owned(),
-					action: ErrorAction::IgnoreAndLog(Level::Gossip),
+		if let Some(node) = pending_checks.nodes.get_mut(&msg.node_id) {
+			let is_newer = node
+				.announcement
+				.as_ref()
+				.map_or(true, |existing| existing.timestamp() < msg.timestamp);
+			if is_newer {
+				node.announcement = Some(if let Some(msg) = full_msg {
+					NodeAnnouncement::Full(msg.clone())
+				} else {
+					NodeAnnouncement::Unsigned(msg.clone())
 				});
 			}
+			return Err(LightningError {
+				err: "Awaiting channel_announcement validation to accept node_announcement"
+					.to_owned(),
+				action: ErrorAction::IgnoreAndLog(Level::Gossip),
+			});
 		}
 		Ok(())
 	}
 
-	fn pending_channel_announcement_matches(
+	fn queue_announcement(
+		&self, lookup: &mut PendingLookup, nodes: &mut HashMap<NodeId, PendingNode>,
 		msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>,
-		pending_state: &UtxoMessages,
-	) -> bool {
-		match &pending_state.channel_announce {
-			Some(ChannelAnnouncement::Full(pending_msg)) => Some(pending_msg) == full_msg,
-			Some(ChannelAnnouncement::Unsigned(pending_msg)) => pending_msg == msg,
-			None => {
-				// This can be reached if `resolve_single_future` has already consumed
-				// `channel_announce` via `.take()` while the `Arc<Mutex<UtxoMessages>>` is still
-				// alive (e.g. held on the stack of `check_resolved_futures`). In that case,
-				// `complete` should also have been taken. Treat it as non-matching and let the
-				// new request fly.
-				debug_assert!(
-					pending_state.complete.is_none(),
-					"channel_announce is None but complete is still pending"
-				);
-				false
-			},
+	) -> LightningError {
+		if lookup.announcements.iter().any(|a| a.same_keys(msg)) {
+			return LightningError {
+				err: "Channel announcement is already being checked".to_owned(),
+				action: ErrorAction::IgnoreDuplicateGossip,
+			};
+		}
+		for node_id in [msg.node_id_1, msg.node_id_2] {
+			nodes
+				.entry(node_id)
+				.or_insert(PendingNode { announcement_refs: 0, announcement: None })
+				.announcement_refs += 1;
+		}
+		lookup.announcements.push(if let Some(msg) = full_msg {
+			ChannelAnnouncement::Full(msg.clone())
+		} else {
+			ChannelAnnouncement::Unsigned(msg.clone())
+		});
+		LightningError {
+			err: "Channel being checked async".to_owned(),
+			action: ErrorAction::IgnoreAndLog(Level::Gossip),
 		}
 	}
 
-	fn check_replace_previous_entry(
-		msg: &msgs::UnsignedChannelAnnouncement, full_msg: Option<&msgs::ChannelAnnouncement>,
-		replacement: Option<(&Arc<Mutex<UtxoMessages>>, &UtxoMessages)>,
-		pending_channels: &mut HashMap<u64, Weak<Mutex<UtxoMessages>>>,
-	) -> Result<(), msgs::LightningError> {
-		let replacement_state = replacement.map(|(state, _)| state);
-		match pending_channels.entry(msg.short_channel_id) {
-			hash_map::Entry::Occupied(mut e) => {
-				// There's already a pending lookup for the given SCID. Check if the messages
-				// are the same and, if so, return immediately (don't bother spawning another
-				// lookup if we haven't gotten that far yet).
-				match Weak::upgrade(&e.get()) {
-					Some(pending_msgs) => {
-						let pending_matches = match replacement {
-							Some((replacement, replacement_messages))
-								if Arc::ptr_eq(&pending_msgs, replacement) =>
-							{
-								// The pending entry points to the state whose mutex the caller
-								// already holds. Compare through the held guard instead of locking
-								// it again.
-								Self::pending_channel_announcement_matches(
-									msg,
-									full_msg,
-									replacement_messages,
-								)
-							},
-							_ => {
-								// This may be called with the mutex held on a different
-								// UtxoMessages struct, however in that case we have a global
-								// lockorder of new messages -> old messages, which makes this safe.
-								let pending_state =
-									pending_msgs.unsafe_well_ordered_double_lock_self();
-								let matches = Self::pending_channel_announcement_matches(
-									msg,
-									full_msg,
-									&pending_state,
-								);
-								drop(pending_state);
-								matches
-							},
-						};
-						if pending_matches {
-							return Err(LightningError {
-								err: "Channel announcement is already being checked".to_owned(),
-								action: ErrorAction::IgnoreDuplicateGossip,
-							});
-						} else {
-							// The earlier lookup is a different message. If we have another
-							// request in-flight now replace the original.
-							// Note that in the replace case whether to replace is somewhat
-							// arbitrary - both results will be handled, we're just updating the
-							// value that will be compared to future lookups with the same SCID.
-							if let Some(item) = replacement_state {
-								*e.get_mut() = Arc::downgrade(item);
-							}
-						}
-					},
-					None => {
-						// The earlier lookup already resolved. We can't be sure its the same
-						// so just remove/replace it and move on.
-						if let Some(item) = replacement_state {
-							*e.get_mut() = Arc::downgrade(item);
-						} else {
-							e.remove();
-						}
-					},
-				}
-			},
-			hash_map::Entry::Vacant(v) => {
-				if let Some(item) = replacement_state {
-					v.insert(Arc::downgrade(item));
-				}
-			},
-		}
-		Ok(())
-	}
-
+	/// Validates or queues validation of a new `channel_announcement`.
+	///
+	/// Requires that the provided announcement be authentically from the public keys specified
+	/// in the announcement (either the signatures have been validated or it comes from a
+	/// trusted source).
 	pub(super) fn check_channel_announcement<U: UtxoLookup>(
 		&self, utxo_lookup: &Option<U>, msg: &msgs::UnsignedChannelAnnouncement,
 		full_msg: Option<&msgs::ChannelAnnouncement>,
@@ -428,182 +355,217 @@ impl PendingChecks {
 			}),
 		};
 
-		Self::check_replace_previous_entry(
-			msg,
-			full_msg,
-			None,
-			&mut self.internal.lock().unwrap().channels,
-		)?;
-
-		match utxo_lookup {
+		let utxo_lookup = match utxo_lookup {
 			&None => {
 				// Tentatively accept, potentially exposing us to DoS attacks
-				Ok(None)
+				return Ok(None);
 			},
-			&Some(ref utxo_lookup) => {
-				let notifier = Arc::clone(&self.completion_notifier);
-				match utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id, notifier) {
-					UtxoResult::Sync(res) => handle_result(res),
-					UtxoResult::Async(future) => {
-						let mut pending_checks = self.internal.lock().unwrap();
-						let mut async_messages = future.state.lock().unwrap();
-						if let Some(res) = async_messages.complete.take() {
-							// In the unlikely event the future resolved before we managed to get it,
-							// handle the result in-line.
-							handle_result(res)
-						} else {
-							// To avoid cases where we drop the resolved data before it can be
-							// collected by `check_resolved_futures`, we here track all pending
-							// states at least until the next call of `check_resolved_futures`.
-							let pending_states = &mut pending_checks.pending_states;
-							if pending_states
-								.iter()
-								.find(|s| Arc::ptr_eq(s, &future.state))
-								.is_none()
-							{
-								// We're not already tracking the future state, keep the `Arc`
-								// around.
-								pending_states.push(Arc::clone(&future.state));
-							}
+			&Some(ref utxo_lookup) => utxo_lookup,
+		};
 
-							Self::check_replace_previous_entry(
-								msg,
-								full_msg,
-								Some((&future.state, &async_messages)),
-								&mut pending_checks.channels,
-							)?;
-							async_messages.channel_announce = Some(if let Some(msg) = full_msg {
-								ChannelAnnouncement::Full(msg.clone())
-							} else {
-								ChannelAnnouncement::Unsigned(msg.clone())
-							});
-							pending_checks
-								.nodes
-								.entry(msg.node_id_1)
-								.or_default()
-								.push(Arc::downgrade(&future.state));
-							pending_checks
-								.nodes
-								.entry(msg.node_id_2)
-								.or_default()
-								.push(Arc::downgrade(&future.state));
-							Err(LightningError {
-								err: "Channel being checked async".to_owned(),
-								action: ErrorAction::IgnoreAndLog(Level::Gossip),
-							})
-						}
-					},
-				}
-			},
+		let mut pending_checks = self.internal.lock().unwrap();
+		if !pending_checks.channels.contains_key(&msg.short_channel_id) {
+			drop(pending_checks);
+			let notifier = Arc::clone(&self.completion_notifier);
+			let lookup_res = utxo_lookup.get_utxo(&msg.chain_hash, msg.short_channel_id, notifier);
+			let future = match lookup_res {
+				UtxoResult::Sync(res) => return handle_result(res),
+				UtxoResult::Async(future) => future,
+			};
+			pending_checks = self.internal.lock().unwrap();
+			let mut future_state = future.state.lock().unwrap();
+			if let Some(res) = future_state.complete.take() {
+				// In the unlikely event the future resolved before we managed to get it, handle
+				// the result in-line.
+				drop(future_state);
+				drop(pending_checks);
+				return handle_result(res);
+			}
+			drop(future_state);
+			// If another thread started a lookup for the same SCID while ours was being created,
+			// we use that one and drop our future.
+			pending_checks.channels.entry(msg.short_channel_id).or_insert(PendingLookup {
+				state: LookupState::Pending(future),
+				announcements: Vec::new(),
+				updates: Vec::new(),
+			});
+		}
+
+		let PendingChecksContext { channels, nodes } = &mut *pending_checks;
+		let lookup = channels.get_mut(&msg.short_channel_id).expect("Lookup was inserted above");
+		match &lookup.state {
+			LookupState::Pending(_) => Err(self.queue_announcement(lookup, nodes, msg, full_msg)),
+			LookupState::Resolved(res) => handle_result(res.clone()),
 		}
 	}
 
-	/// The maximum number of pending gossip checks before [`Self::too_many_checks_pending`]
-	/// returns `true`. Note that this isn't a strict upper-bound on the number of checks pending -
-	/// each peer may, at a minimum, read one more socket buffer worth of `channel_announcement`s
-	/// which we'll have to process. With a socket buffer of 4KB and a minimum
-	/// `channel_announcement` size of, roughly, 429 bytes, this may leave us with `10*our peer
-	/// count` messages to process beyond this limit. Because we'll probably have a few peers,
-	/// there's no reason for this constant to be materially less than 30 or so, and 32 in-flight
-	/// checks should be more than enough for decent parallelism.
+	/// The maximum number of lookups in flight before [`Self::too_many_checks_pending`] returns
+	/// `true`. Note that this isn't a strict upper-bound on the number of lookups pending - each
+	/// peer may, at a minimum, read one more socket buffer worth of `channel_announcement`s which
+	/// we'll have to process. With a socket buffer of 4KB and a minimum `channel_announcement`
+	/// size of, roughly, 429 bytes, this may leave us with `10*our peer count` messages to process
+	/// beyond this limit. Because we'll probably have a few peers, there's no reason for this
+	/// constant to be materially less than 30 or so, and 32 in-flight checks should be more than
+	/// enough for decent parallelism.
 	const MAX_PENDING_LOOKUPS: usize = 32;
 
-	/// Returns true if there are a large number of async checks pending and future
-	/// `channel_announcement` messages should be delayed. Note that this is only a hint and
+	/// The maximum number of gossip messages queued behind in-flight lookups before
+	/// [`Self::too_many_checks_pending`] returns `true`. As with [`Self::MAX_PENDING_LOOKUPS`]
+	/// this is not a strict bound but only impacts queued messages rather than lookups.
+	const MAX_PENDING_MESSAGES: usize = 128;
+
+	/// Returns true if there are a large number of async checks pending, or messages queued behind
+	/// them, and future gossip messages should be delayed. Note that this is only a hint and
 	/// messages already in-flight may still have to be handled for various reasons.
 	pub(super) fn too_many_checks_pending(&self) -> bool {
-		let mut pending_checks = self.internal.lock().unwrap();
-		if pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS
-			|| pending_checks.pending_states.len() > Self::MAX_PENDING_LOOKUPS
-		{
-			// If we have many channel checks pending, ensure we don't have any dangling checks
-			// (i.e. checks where the user told us they'd call back but drop'd the `UtxoFuture`
-			// instead) before we commit to applying backpressure.
-			pending_checks.channels.retain(|_, chan| Weak::upgrade(&chan).is_some());
-			pending_checks.nodes.retain(|_, channels| {
-				channels.retain(|chan| Weak::upgrade(&chan).is_some());
-				!channels.is_empty()
-			});
-			pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS
-				|| pending_checks.pending_states.len() > Self::MAX_PENDING_LOOKUPS
-		} else {
-			false
-		}
+		let pending_checks = self.internal.lock().unwrap();
+		pending_checks.channels.len() > Self::MAX_PENDING_LOOKUPS
+			|| pending_checks.queued_messages() > Self::MAX_PENDING_MESSAGES
 	}
 
-	fn resolve_single_future<L: Logger>(
-		&self, graph: &NetworkGraph<L>, entry: Arc<Mutex<UtxoMessages>>,
-		new_messages: &mut Vec<MessageSendEvent>,
-	) {
-		let (announcement, result, announce_a, announce_b, update_a, update_b);
-		{
-			let mut state = entry.lock().unwrap();
-			announcement = if let Some(announcement) = state.channel_announce.take() {
-				announcement
-			} else {
-				// We raced returning to `check_channel_announcement` which hasn't updated
-				// `channel_announce` yet. That's okay, we can set the `complete` field which it will
-				// check once it gets control again.
-				return;
-			};
-
-			result = if let Some(result) = state.complete.take() {
-				result
-			} else {
-				debug_assert!(false, "Future should have been resolved");
-				return;
-			};
-
-			announce_a = state.latest_node_announce_a.take();
-			announce_b = state.latest_node_announce_b.take();
-			update_a = state.latest_channel_update_a.take();
-			update_b = state.latest_channel_update_b.take();
+	/// Releases the references the given queued announcements hold on their nodes, returning a copy
+	/// of any `node_announcement` held for those nodes so that it can be applied if a channel for
+	/// the node is accepted.
+	fn release_node_refs(
+		nodes: &mut HashMap<NodeId, PendingNode>, announcements: &[ChannelAnnouncement],
+	) -> Vec<NodeAnnouncement> {
+		let mut node_announcements = Vec::new();
+		for chan_announcement in announcements.iter() {
+			let contents = chan_announcement.contents();
+			for node_id in [contents.node_id_1, contents.node_id_2] {
+				let mut entry = match nodes.entry(node_id) {
+					hash_map::Entry::Occupied(entry) => entry,
+					hash_map::Entry::Vacant(_) => {
+						debug_assert!(false, "Queued announcements reference their nodes");
+						continue;
+					},
+				};
+				entry.get_mut().announcement_refs -= 1;
+				let node_announcement = if entry.get().announcement_refs == 0 {
+					entry.remove().announcement
+				} else {
+					entry.get().announcement.clone()
+				};
+				if let Some(announcement) = node_announcement {
+					node_announcements.push(announcement);
+				}
+			}
 		}
+		node_announcements
+	}
 
-		// Now that we've updated our internal state, pass the pending messages back through the
-		// network graph with a different `UtxoLookup` which will resolve immediately.
+	/// Moves lookups whose futures have completed to [`LookupState::Resolved`], returning their
+	/// results and queued announcements. Lookups whose futures were dropped are removed along with
+	/// any messages queued behind them.
+	fn take_completed_lookups(&self) -> Vec<CompletedLookup> {
+		let mut completed_lookups = Vec::new();
+		let mut pending_checks = self.internal.lock().unwrap();
+		let PendingChecksContext { channels, nodes } = &mut *pending_checks;
+		channels.retain(|scid, lookup| {
+			let future = match &lookup.state {
+				LookupState::Pending(future) => future,
+				LookupState::Resolved(_) => return true,
+			};
+			let mut state_lock = future.state.lock().unwrap();
+			if let Some(result) = state_lock.complete.take() {
+				drop(state_lock);
+				completed_lookups.push(CompletedLookup {
+					scid: *scid,
+					result: result.clone(),
+					announcements: core::mem::take(&mut lookup.announcements),
+				});
+				lookup.state = LookupState::Resolved(result);
+				true
+			} else if Arc::strong_count(&future.state) == 1 {
+				// If the downstream code has dropped the future, whatever the current result is
+				// isn't going to change.
+				drop(state_lock);
+				Self::release_node_refs(nodes, &lookup.announcements);
+				false
+			} else {
+				true
+			}
+		});
+		completed_lookups
+	}
+
+	/// Adds the announcements of the given completed lookups to the graph, then removes the lookups
+	/// and applies the other messages queued behind them.
+	fn apply_completed_lookups<L: Logger>(
+		&self, graph: &NetworkGraph<L>, completed_lookups: Vec<CompletedLookup>,
+	) -> Vec<MessageSendEvent> {
+		let mut new_messages = Vec::with_capacity(completed_lookups.len() * 5);
+
+		// Pass the pending messages back through the network graph with a different `UtxoLookup`
+		// which will resolve immediately.
 		// Note that we ignore errors as we don't disconnect peers anyway, so there's nothing to do
 		// with them.
-		let resolver = UtxoResolver(result);
-		let (node_id_1, node_id_2) = match &announcement {
-			ChannelAnnouncement::Full(signed_msg) => {
-				(signed_msg.contents.node_id_1, signed_msg.contents.node_id_2)
-			},
-			ChannelAnnouncement::Unsigned(msg) => (msg.node_id_1, msg.node_id_2),
-		};
-		match announcement {
-			ChannelAnnouncement::Full(signed_msg) => {
-				if graph.update_channel_from_announcement(&signed_msg, &Some(&resolver)).is_ok() {
-					new_messages.push(MessageSendEvent::BroadcastChannelAnnouncement {
-						msg: signed_msg,
-						update_msg: None,
-					});
+		for lookup in completed_lookups.iter() {
+			let resolver = UtxoResolver(lookup.result.clone());
+			for announcement in lookup.announcements.iter() {
+				match announcement {
+					ChannelAnnouncement::Full(signed_msg) => {
+						if graph
+							.update_channel_from_announcement(signed_msg, &Some(&resolver))
+							.is_ok()
+						{
+							new_messages.push(MessageSendEvent::BroadcastChannelAnnouncement {
+								msg: signed_msg.clone(),
+								update_msg: None,
+							});
+						}
+					},
+					ChannelAnnouncement::Unsigned(msg) => {
+						let _ =
+							graph.update_channel_from_unsigned_announcement(msg, &Some(&resolver));
+					},
 				}
-			},
-			ChannelAnnouncement::Unsigned(msg) => {
-				let _ = graph.update_channel_from_unsigned_announcement(&msg, &Some(&resolver));
-			},
+			}
 		}
 
-		for announce in [announce_a, announce_b] {
+		// Only once the announcements have been added to the graph can we remove the lookups, as
+		// until then messages for their channels and nodes must continue to be queued.
+		let mut node_announcements = Vec::new();
+		let mut updates = Vec::new();
+		{
+			let mut pending_checks = self.internal.lock().unwrap();
+			let PendingChecksContext { channels, nodes } = &mut *pending_checks;
+			for completed in completed_lookups {
+				let lookup = match channels.remove(&completed.scid) {
+					Some(lookup) => lookup,
+					None => {
+						debug_assert!(false, "Resolved lookups are only removed here");
+						continue;
+					},
+				};
+				debug_assert!(matches!(lookup.state, LookupState::Resolved(_)));
+				debug_assert!(lookup.announcements.is_empty());
+				let released = Self::release_node_refs(nodes, &completed.announcements);
+				node_announcements.extend(released);
+				updates.extend(lookup.updates);
+			}
+		}
+
+		for announce in node_announcements {
 			match announce {
-				Some(NodeAnnouncement::Full(signed_msg)) => {
+				NodeAnnouncement::Full(signed_msg) => {
 					if graph.update_node_from_announcement(&signed_msg).is_ok() {
 						new_messages
 							.push(MessageSendEvent::BroadcastNodeAnnouncement { msg: signed_msg });
 					}
 				},
-				Some(NodeAnnouncement::Unsigned(msg)) => {
+				NodeAnnouncement::Unsigned(msg) => {
 					let _ = graph.update_node_from_unsigned_announcement(&msg);
 				},
-				None => {},
 			}
 		}
 
-		for update in [update_a, update_b] {
+		// Apply the newest update first so that older ones are trivially rejected.
+		updates.sort_by(|a, b| b.timestamp().cmp(&a.timestamp()));
+		for update in updates {
 			match update {
-				Some(ChannelUpdate::Full(signed_msg)) => {
-					if graph.update_channel(&signed_msg).is_ok() {
+				ChannelUpdate::Full(signed_msg) => {
+					if let Ok(Some((node_id_1, node_id_2))) = graph.update_channel(&signed_msg) {
 						new_messages.push(MessageSendEvent::BroadcastChannelUpdate {
 							msg: signed_msg,
 							node_id_1,
@@ -611,70 +573,19 @@ impl PendingChecks {
 						});
 					}
 				},
-				Some(ChannelUpdate::Unsigned(msg)) => {
+				ChannelUpdate::Unsigned(msg) => {
 					let _ = graph.update_channel_unsigned(&msg);
 				},
-				None => {},
 			}
 		}
+		new_messages
 	}
 
 	pub(super) fn check_resolved_futures<L: Logger>(
 		&self, graph: &NetworkGraph<L>,
 	) -> Vec<MessageSendEvent> {
-		let mut completed_states = Vec::new();
-		{
-			let mut lck = self.internal.lock().unwrap();
-			lck.pending_states.retain(|state| {
-				if state.lock().unwrap().complete.is_some() {
-					// We're done, collect the result and clean up.
-					completed_states.push(Arc::clone(&state));
-					false
-				} else {
-					if Arc::strong_count(state) == 1 {
-						// The future has been dropped.
-						false
-					} else {
-						// It's still inflight.
-						true
-					}
-				}
-			});
-			lck.channels.retain(|_, state| {
-				if let Some(state) = state.upgrade() {
-					if state.lock().unwrap().complete.is_some() {
-						completed_states.push(state);
-						false
-					} else {
-						true
-					}
-				} else {
-					// The UtxoFuture has been dropped, drop the pending-lookup state.
-					false
-				}
-			});
-			lck.nodes.retain(|_, lookups| {
-				lookups.retain(|state| {
-					if let Some(state) = state.upgrade() {
-						if state.lock().unwrap().complete.is_some() {
-							completed_states.push(state);
-							false
-						} else {
-							true
-						}
-					} else {
-						// The UtxoFuture has been dropped, drop the pending-lookup state.
-						false
-					}
-				});
-				!lookups.is_empty()
-			});
-		}
-		let mut res = Vec::with_capacity(completed_states.len() * 5);
-		for state in completed_states {
-			self.resolve_single_future(graph, state, &mut res);
-		}
-		res
+		let completed_lookups = self.take_completed_lookups();
+		self.apply_completed_lookups(graph, completed_lookups)
 	}
 }
 
@@ -682,6 +593,8 @@ impl PendingChecks {
 mod tests {
 	use super::*;
 	use crate::routing::gossip::tests::*;
+	use crate::routing::test_utils::channel_announcement;
+	use crate::types::features::ChannelFeatures;
 	use crate::util::test_utils::{TestChainSource, TestLogger};
 
 	use bitcoin::amount::Amount;
@@ -742,6 +655,27 @@ mod tests {
 		)
 	}
 
+	/// Builds a correctly-signed announcement for the given SCID whose bitcoin keys will not match
+	/// the output returned for `get_test_objects`' announcement.
+	fn get_mismatched_announcement(scid: u64) -> msgs::ChannelAnnouncement {
+		let secp_ctx = Secp256k1::new();
+		channel_announcement(
+			&SecretKey::from_slice(&[99; 32]).unwrap(),
+			&SecretKey::from_slice(&[98; 32]).unwrap(),
+			ChannelFeatures::empty(),
+			scid,
+			&secp_ctx,
+		)
+	}
+
+	fn pending_message_count(network_graph: &NetworkGraph<Box<TestLogger>>) -> usize {
+		network_graph.pending_checks.internal.lock().unwrap().queued_messages()
+	}
+
+	fn pending_lookup_count(network_graph: &NetworkGraph<Box<TestLogger>>) -> usize {
+		network_graph.pending_checks.internal.lock().unwrap().channels.len()
+	}
+
 	#[test]
 	fn test_fast_async_lookup() {
 		// Check that async lookups which resolve quicker than the future is returned to the
@@ -761,6 +695,7 @@ mod tests {
 			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
 			.unwrap();
 		assert!(network_graph.read_only().channels().get(&scid).is_some());
+		assert_eq!(pending_message_count(&network_graph), 0);
 	}
 
 	#[test]
@@ -790,12 +725,14 @@ mod tests {
 			"Channel being checked async"
 		);
 		assert!(network_graph.read_only().channels().get(&scid).is_none());
+		assert_eq!(pending_message_count(&network_graph), 1);
 
 		future.resolve(Ok(TxOut { value: Amount::ZERO, script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		network_graph.read_only().channels().get(&scid).unwrap();
 		network_graph.read_only().channels().get(&scid).unwrap();
+		assert_eq!(pending_message_count(&network_graph), 0);
 
 		#[rustfmt::skip]
 		let is_node_a_announced = network_graph.read_only().nodes().get(&node_id_1).unwrap()
@@ -835,6 +772,7 @@ mod tests {
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(network_graph.read_only().channels().get(&scid).is_none());
+		assert_eq!(pending_message_count(&network_graph), 0);
 	}
 
 	#[test]
@@ -860,6 +798,7 @@ mod tests {
 		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(network_graph.read_only().channels().get(&scid).is_none());
+		assert_eq!(pending_message_count(&network_graph), 0);
 	}
 
 	#[test]
@@ -909,12 +848,15 @@ mod tests {
 			network_graph.update_channel(&chan_update_b).unwrap_err().err,
 			"Awaiting channel_announcement validation to accept channel_update"
 		);
+		assert_eq!(pending_message_count(&network_graph), 5);
 
 		assert!(!notifier.notify_pending());
 		future
 			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
-		network_graph.pending_checks.check_resolved_futures(&network_graph);
+		let msgs = network_graph.pending_checks.check_resolved_futures(&network_graph);
+		assert_eq!(msgs.len(), 5);
+		assert_eq!(pending_message_count(&network_graph), 0);
 
 		assert!(network_graph.read_only().channels().get(&scid).unwrap().one_to_two.is_some());
 		assert!(network_graph.read_only().channels().get(&scid).unwrap().two_to_one.is_some());
@@ -983,7 +925,13 @@ mod tests {
 		future
 			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(notifier.notify_pending());
-		network_graph.pending_checks.check_resolved_futures(&network_graph);
+		let msgs = network_graph.pending_checks.check_resolved_futures(&network_graph);
+		// Only the newest update in each direction is applied and broadcast.
+		let update_broadcasts = msgs
+			.iter()
+			.filter(|msg| matches!(msg, MessageSendEvent::BroadcastChannelUpdate { .. }))
+			.count();
+		assert_eq!(update_broadcasts, 2);
 
 		assert_eq!(chan_update_a.contents.timestamp, chan_update_b.contents.timestamp);
 		let graph_lock = network_graph.read_only();
@@ -993,13 +941,63 @@ mod tests {
 		#[rustfmt::skip]
 		let two_to_one_update =
 			graph_lock.channels().get(&scid).as_ref().unwrap().two_to_one.as_ref().unwrap().last_update;
-		assert!(one_to_two_update != two_to_one_update);
+		assert_eq!(one_to_two_update, chan_update_a.contents.timestamp);
+		assert_eq!(two_to_one_update, chan_update_c.contents.timestamp);
+	}
+
+	#[test]
+	fn test_bogus_update_does_not_displace_valid_update() {
+		// While a channel is pending validation we cannot check update signatures, so an update
+		// with a higher timestamp must not cause a valid one to be dropped.
+		let (valid_announcement, chain_source, network_graph, good_script, _, _, chan_update_a, ..) =
+			get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
+
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
+
+		let secp_ctx = Secp256k1::new();
+		let bogus_key = &SecretKey::from_slice(&[99; 32]).unwrap();
+		let bogus_update = get_signed_channel_update(
+			|msg| {
+				msg.channel_flags = 0;
+				msg.timestamp = chan_update_a.contents.timestamp + 1;
+			},
+			bogus_key,
+			&secp_ctx,
+		);
+		network_graph.update_channel(&bogus_update).unwrap_err();
+		network_graph.update_channel(&chan_update_a).unwrap_err();
+		// Resending an update does not queue it again.
+		network_graph.update_channel(&chan_update_a).unwrap_err();
+		assert_eq!(pending_message_count(&network_graph), 3);
+
+		future
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		let msgs = network_graph.pending_checks.check_resolved_futures(&network_graph);
+		let update_broadcasts = msgs
+			.iter()
+			.filter(|msg| matches!(msg, MessageSendEvent::BroadcastChannelUpdate { .. }))
+			.count();
+		assert_eq!(update_broadcasts, 1);
+		assert_eq!(pending_message_count(&network_graph), 0);
+
+		let graph_lock = network_graph.read_only();
+		let channel = graph_lock.channels().get(&scid).unwrap();
+		assert_eq!(
+			channel.one_to_two.as_ref().unwrap().last_update,
+			chan_update_a.contents.timestamp
+		);
 	}
 
 	#[test]
 	fn test_no_double_lookups() {
-		// Test that a pending async lookup will prevent a second async lookup from flying, but
-		// only if the channel_announcement message is identical.
+		// Test that a pending async lookup will prevent a second lookup for the same SCID, with
+		// identical announcements ignored and differing ones queued on the existing lookup.
 		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
 		let scid = valid_announcement.contents.short_channel_id;
 
@@ -1029,47 +1027,63 @@ mod tests {
 		);
 		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
 
-		// But if we make a third request with a tweaked message, we should get a second call
-		// against our new future...
-		let secp_ctx = Secp256k1::new();
-		let replacement_pk_1 = &SecretKey::from_slice(&[99; 32]).unwrap();
-		let replacement_pk_2 = &SecretKey::from_slice(&[98; 32]).unwrap();
-		let invalid_announcement =
-			get_signed_channel_announcement(|_| {}, replacement_pk_1, replacement_pk_2, &secp_ctx);
+		// ...nor does it if we make a third request with a different message, which is instead
+		// queued on the existing lookup.
+		let mismatched_announcement = get_mismatched_announcement(scid);
 		assert_eq!(
 			network_graph
-				.update_channel_from_announcement(&invalid_announcement, &Some(&chain_source))
+				.update_channel_from_announcement(&mismatched_announcement, &Some(&chain_source))
 				.unwrap_err()
 				.err,
 			"Channel being checked async"
 		);
-		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 2);
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
+		assert_eq!(pending_message_count(&network_graph), 2);
 
-		// Still, if we resolve the original future, the original channel will be accepted.
+		// Once we resolve the original future, the original channel will be accepted.
 		future
 			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
 		assert!(notifier_a.notify_pending());
 		assert!(!notifier_b.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
-		#[rustfmt::skip]
-		let is_test_feature_set =
-			network_graph.read_only().channels().get(&scid).unwrap().announcement_message
-			.as_ref().unwrap().contents.features.supports_unknown_test_feature();
-		assert!(!is_test_feature_set);
+		let graph_lock = network_graph.read_only();
+		let channel = graph_lock.channels().get(&scid).unwrap();
+		assert_eq!(channel.node_one, valid_announcement.contents.node_id_1);
+		assert_eq!(channel.node_two, valid_announcement.contents.node_id_2);
+		assert!(graph_lock.nodes().get(&mismatched_announcement.contents.node_id_1).is_none());
+		assert_eq!(pending_message_count(&network_graph), 0);
 	}
 
 	#[test]
-	fn test_no_deadlock_same_future_different_announcement() {
-		// A user's UtxoLookup may return the same UtxoFuture for repeated lookups for a
-		// given SCID. A different channel_announcement with that SCID should replace the
-		// pending message without re-locking the already-held future state.
-		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
+	fn test_mismatched_announcement_first() {
+		// A correctly-signed announcement for the same SCID whose keys don't match the on-chain
+		// output must not prevent a later valid announcement, or the messages queued behind it,
+		// from being accepted.
+		let (
+			valid_announcement,
+			chain_source,
+			network_graph,
+			good_script,
+			node_a_announce,
+			node_b_announce,
+			chan_update_a,
+			chan_update_b,
+			..,
+		) = get_test_objects();
 		let scid = valid_announcement.contents.short_channel_id;
+		let mismatched_announcement = get_mismatched_announcement(scid);
 
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
+		assert_eq!(
+			network_graph
+				.update_channel_from_announcement(&mismatched_announcement, &Some(&chain_source))
+				.unwrap_err()
+				.err,
+			"Channel being checked async"
+		);
 		assert_eq!(
 			network_graph
 				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
@@ -1079,33 +1093,240 @@ mod tests {
 		);
 		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
 
+		network_graph.update_node_from_announcement(&node_a_announce).unwrap_err();
+		network_graph.update_node_from_announcement(&node_b_announce).unwrap_err();
+		network_graph.update_channel(&chan_update_a).unwrap_err();
+		network_graph.update_channel(&chan_update_b).unwrap_err();
+		assert_eq!(pending_message_count(&network_graph), 6);
+
+		future
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		let msgs = network_graph.pending_checks.check_resolved_futures(&network_graph);
+		assert_eq!(msgs.len(), 5);
+		assert_eq!(pending_message_count(&network_graph), 0);
+		assert!(network_graph.pending_checks.internal.lock().unwrap().nodes.is_empty());
+
+		let graph_lock = network_graph.read_only();
+		let channel = graph_lock.channels().get(&scid).unwrap();
+		assert_eq!(channel.node_one, valid_announcement.contents.node_id_1);
+		assert_eq!(channel.node_two, valid_announcement.contents.node_id_2);
+		assert!(channel.one_to_two.is_some());
+		assert!(channel.two_to_one.is_some());
+		for node_id in
+			[valid_announcement.contents.node_id_1, valid_announcement.contents.node_id_2]
+		{
+			assert!(graph_lock.nodes().get(&node_id).unwrap().announcement_info.is_some());
+		}
+		assert!(graph_lock.nodes().get(&mismatched_announcement.contents.node_id_1).is_none());
+		assert!(graph_lock.nodes().get(&mismatched_announcement.contents.node_id_2).is_none());
+	}
+
+	#[test]
+	fn test_same_keys_announcement_ignored() {
+		// A differing announcement signed by the same keys as a pending one is treated as a
+		// duplicate rather than being queued alongside it.
+		let (valid_announcement, chain_source, network_graph, good_script, ..) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
+
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
+
 		let secp_ctx = Secp256k1::new();
-		let replacement_pk_1 = &SecretKey::from_slice(&[99; 32]).unwrap();
-		let replacement_pk_2 = &SecretKey::from_slice(&[98; 32]).unwrap();
-		let replacement_announcement = get_signed_channel_announcement(
-			|msg| msg.features.set_unknown_feature_optional(),
-			replacement_pk_1,
-			replacement_pk_2,
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+		let differing_announcement = get_signed_channel_announcement(
+			|msg| msg.excess_data.push(42),
+			node_1_privkey,
+			node_2_privkey,
 			&secp_ctx,
 		);
 		assert_eq!(
 			network_graph
-				.update_channel_from_announcement(&replacement_announcement, &Some(&chain_source))
+				.update_channel_from_announcement(&differing_announcement, &Some(&chain_source))
 				.unwrap_err()
 				.err,
-			"Channel being checked async"
+			"Channel announcement is already being checked"
 		);
-		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 2);
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
+		assert_eq!(pending_message_count(&network_graph), 1);
 
 		future
 			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
-		assert!(notifier.notify_pending());
-		network_graph.pending_checks.check_resolved_futures(&network_graph);
-		#[rustfmt::skip]
-		let is_replacement_feature_set =
-			network_graph.read_only().channels().get(&scid).unwrap().announcement_message
-			.as_ref().unwrap().contents.features.supports_unknown_test_feature();
-		assert!(is_replacement_feature_set);
+		let msgs = network_graph.pending_checks.check_resolved_futures(&network_graph);
+		assert_eq!(msgs.len(), 1);
+		let graph_lock = network_graph.read_only();
+		let channel = graph_lock.channels().get(&scid).unwrap();
+		let announcement = channel.announcement_message.as_ref().unwrap();
+		assert!(announcement.contents.excess_data.is_empty());
+	}
+
+	#[test]
+	fn test_node_announcement_held_across_lookups() {
+		// A node_announcement for a node with several pending channels must be applied once any
+		// of them is accepted, even if another of them fails first.
+		let (valid_announcement, chain_source, network_graph, good_script, node_a_announce, ..) =
+			get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
+		let node_a_id = node_a_announce.contents.node_id;
+
+		let secp_ctx = Secp256k1::new();
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_3_privkey = &SecretKey::from_slice(&[43; 32]).unwrap();
+		let second_announcement = get_signed_channel_announcement(
+			|msg| msg.short_channel_id = scid + 1,
+			node_1_privkey,
+			node_3_privkey,
+			&secp_ctx,
+		);
+
+		let notifier = Arc::new(Notifier::new());
+		let future_1 = UtxoFuture::new(Arc::clone(&notifier));
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future_1.clone());
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
+		let future_2 = UtxoFuture::new(Arc::clone(&notifier));
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future_2.clone());
+		network_graph
+			.update_channel_from_announcement(&second_announcement, &Some(&chain_source))
+			.unwrap_err();
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 2);
+
+		assert_eq!(
+			network_graph.update_node_from_announcement(&node_a_announce).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept node_announcement"
+		);
+		assert_eq!(pending_message_count(&network_graph), 3);
+
+		// The second channel failing validation releases its node references but keeps the
+		// node_announcement around for the first.
+		future_2.resolve(Err(UtxoLookupError::UnknownTx));
+		assert!(network_graph.pending_checks.check_resolved_futures(&network_graph).is_empty());
+		assert!(network_graph.read_only().channels().get(&(scid + 1)).is_none());
+		assert_eq!(pending_message_count(&network_graph), 2);
+		{
+			let pending_checks = network_graph.pending_checks.internal.lock().unwrap();
+			assert_eq!(pending_checks.nodes.len(), 2);
+			assert!(pending_checks.nodes.get(&node_a_id).unwrap().announcement.is_some());
+		}
+
+		future_1
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		let msgs = network_graph.pending_checks.check_resolved_futures(&network_graph);
+		assert_eq!(msgs.len(), 2);
+		assert!(msgs
+			.iter()
+			.any(|msg| matches!(msg, MessageSendEvent::BroadcastNodeAnnouncement { .. })));
+		assert!(network_graph
+			.read_only()
+			.nodes()
+			.get(&node_a_id)
+			.unwrap()
+			.announcement_info
+			.is_some());
+		assert_eq!(pending_message_count(&network_graph), 0);
+		assert!(network_graph.pending_checks.internal.lock().unwrap().nodes.is_empty());
+	}
+
+	#[test]
+	fn test_messages_queued_while_applying_completed_lookup() {
+		// Messages which arrive after a lookup completes but before its announcement has been
+		// added to the graph must still be queued and applied rather than rejected.
+		let (
+			valid_announcement,
+			chain_source,
+			network_graph,
+			good_script,
+			node_a_announce,
+			_,
+			chan_update_a,
+			..,
+		) = get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
+		let node_a_id = node_a_announce.contents.node_id;
+
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
+
+		future
+			.resolve(Ok(TxOut { value: Amount::from_sat(1_000_000), script_pubkey: good_script }));
+		let completed_lookups = network_graph.pending_checks.take_completed_lookups();
+		assert_eq!(completed_lookups.len(), 1);
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
+
+		assert_eq!(
+			network_graph.update_channel(&chan_update_a).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept channel_update"
+		);
+		assert_eq!(
+			network_graph.update_node_from_announcement(&node_a_announce).unwrap_err().err,
+			"Awaiting channel_announcement validation to accept node_announcement"
+		);
+
+		// Further announcements for the SCID are checked against the completed lookup's result
+		// rather than starting a new lookup.
+		let mismatched_announcement = get_mismatched_announcement(scid);
+		let err = network_graph
+			.update_channel_from_announcement(&mismatched_announcement, &Some(&chain_source))
+			.unwrap_err();
+		assert!(err.err.contains("didn't match on-chain script"));
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
+
+		let msgs =
+			network_graph.pending_checks.apply_completed_lookups(&network_graph, completed_lookups);
+		assert_eq!(msgs.len(), 3);
+		assert_eq!(pending_lookup_count(&network_graph), 0);
+		assert_eq!(pending_message_count(&network_graph), 0);
+		assert!(network_graph.pending_checks.internal.lock().unwrap().nodes.is_empty());
+
+		let graph_lock = network_graph.read_only();
+		let channel = graph_lock.channels().get(&scid).unwrap();
+		assert_eq!(channel.node_one, valid_announcement.contents.node_id_1);
+		assert!(channel.one_to_two.is_some());
+		assert!(graph_lock.nodes().get(&node_a_id).unwrap().announcement_info.is_some());
+	}
+
+	#[test]
+	fn test_dropped_future_discards_queued_messages() {
+		// If the user drops a future without resolving it, everything queued behind it is dropped
+		// and a later announcement starts a fresh lookup.
+		let (valid_announcement, chain_source, network_graph, good_script, _, _, chan_update_a, ..) =
+			get_test_objects();
+		let scid = valid_announcement.contents.short_channel_id;
+
+		let notifier = Arc::new(Notifier::new());
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(UtxoFuture::new(notifier));
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
+		network_graph.update_channel(&chan_update_a).unwrap_err();
+		assert_eq!(pending_message_count(&network_graph), 2);
+
+		// Replacing the value the chain source hands out drops the only remaining reference to
+		// the future outside of the pending lookup.
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Sync(Ok(TxOut {
+			value: Amount::from_sat(1_000_000),
+			script_pubkey: good_script,
+		}));
+		assert!(network_graph.pending_checks.check_resolved_futures(&network_graph).is_empty());
+		assert_eq!(pending_message_count(&network_graph), 0);
+		assert!(network_graph.pending_checks.internal.lock().unwrap().nodes.is_empty());
+		assert!(network_graph.read_only().channels().get(&scid).is_none());
+
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap();
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 2);
+		let graph_lock = network_graph.read_only();
+		assert!(graph_lock.channels().get(&scid).unwrap().one_to_two.is_none());
 	}
 
 	#[test]
@@ -1115,72 +1336,109 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (chain_source, network_graph) = get_network();
 
-		// We cheat and use a single future for all the lookups to complete them all at once.
+		let notifier = Arc::new(Notifier::new());
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+
+		let mut futures = Vec::new();
+		for i in 0..=PendingChecks::MAX_PENDING_LOOKUPS {
+			let future = UtxoFuture::new(Arc::clone(&notifier));
+			*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
+			futures.push(future);
+			let valid_announcement = get_signed_channel_announcement(
+				|msg| msg.short_channel_id += i as u64,
+				node_1_privkey,
+				node_2_privkey,
+				&secp_ctx,
+			);
+			assert!(!network_graph.pending_checks.too_many_checks_pending());
+			network_graph
+				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+				.unwrap_err();
+		}
+		assert!(network_graph.pending_checks.too_many_checks_pending());
+		assert_eq!(pending_lookup_count(&network_graph), PendingChecks::MAX_PENDING_LOOKUPS + 1);
+		assert_eq!(pending_message_count(&network_graph), PendingChecks::MAX_PENDING_LOOKUPS + 1);
+
+		// Once the futures complete the "too many checks" flag should reset.
+		for future in futures {
+			future.resolve(Err(UtxoLookupError::UnknownTx));
+		}
+		assert!(notifier.notify_pending());
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
+		assert!(!network_graph.pending_checks.too_many_checks_pending());
+		assert_eq!(pending_lookup_count(&network_graph), 0);
+		assert_eq!(pending_message_count(&network_graph), 0);
+	}
+
+	#[test]
+	fn test_checks_backpressure_same_scid() {
+		// Distinct announcements for a single SCID share one lookup but are each queued, so they
+		// must count towards backpressure.
+		let secp_ctx = Secp256k1::new();
+		let (chain_source, network_graph) = get_network();
+
 		let notifier = Arc::new(Notifier::new());
 		let future = UtxoFuture::new(Arc::clone(&notifier));
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
 
-		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-
-		for i in 0..PendingChecks::MAX_PENDING_LOOKUPS {
-			let valid_announcement = get_signed_channel_announcement(
-				|msg| msg.short_channel_id += 1 + i as u64,
-				node_1_privkey,
-				node_2_privkey,
-				&secp_ctx,
+		for i in 0..=PendingChecks::MAX_PENDING_MESSAGES {
+			let node_1_privkey = &SecretKey::from_slice(&[100 + i as u8; 32]).unwrap();
+			let announcement =
+				get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+			assert_eq!(
+				network_graph
+					.update_channel_from_announcement(&announcement, &Some(&chain_source))
+					.unwrap_err()
+					.err,
+				"Channel being checked async"
 			);
-			network_graph
-				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
-				.unwrap_err();
-			assert!(!network_graph.pending_checks.too_many_checks_pending());
 		}
-
-		let valid_announcement =
-			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		network_graph
-			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
-			.unwrap_err();
+		assert_eq!(chain_source.get_utxo_call_count.load(Ordering::Relaxed), 1);
+		assert_eq!(pending_lookup_count(&network_graph), 1);
 		assert!(network_graph.pending_checks.too_many_checks_pending());
 
-		// Once the future completes the "too many checks" flag should reset.
 		future.resolve(Err(UtxoLookupError::UnknownTx));
-		assert!(notifier.notify_pending());
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(!network_graph.pending_checks.too_many_checks_pending());
+		assert_eq!(pending_lookup_count(&network_graph), 0);
+		assert_eq!(pending_message_count(&network_graph), 0);
+		assert!(network_graph.pending_checks.internal.lock().unwrap().nodes.is_empty());
 	}
 
 	#[test]
-	fn test_checks_backpressure_same_scid_replacements() {
-		// Distinct announcements for the same SCID should not be able to bypass async lookup
-		// backpressure by replacing the single entry in the `channels` map.
+	fn test_checks_backpressure_updates() {
+		// channel_updates queued behind a pending lookup count towards backpressure.
+		let (valid_announcement, chain_source, network_graph, ..) = get_test_objects();
+
+		let notifier = Arc::new(Notifier::new());
+		let future = UtxoFuture::new(Arc::clone(&notifier));
+		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
+		network_graph
+			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
+			.unwrap_err();
+
 		let secp_ctx = Secp256k1::new();
-		let (chain_source, network_graph) = get_network();
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
-		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
-		let mut futures = Vec::new();
-
-		for i in 0..=PendingChecks::MAX_PENDING_LOOKUPS {
-			let future = UtxoFuture::new(Arc::new(Notifier::new()));
-			futures.push(future.clone());
-			*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future);
-
-			let announcement = get_signed_channel_announcement(
-				|msg| msg.excess_data.push(i as u8),
+		for i in 0..PendingChecks::MAX_PENDING_MESSAGES {
+			assert!(!network_graph.pending_checks.too_many_checks_pending());
+			let update = get_signed_channel_update(
+				|msg| {
+					msg.channel_flags = 0;
+					msg.timestamp += i as u32;
+				},
 				node_1_privkey,
-				node_2_privkey,
 				&secp_ctx,
 			);
-			network_graph
-				.update_channel_from_announcement(&announcement, &Some(&chain_source))
-				.unwrap_err();
+			network_graph.update_channel(&update).unwrap_err();
 		}
-
-		assert_eq!(
-			chain_source.get_utxo_call_count.load(Ordering::Relaxed),
-			1 + PendingChecks::MAX_PENDING_LOOKUPS
-		);
 		assert!(network_graph.pending_checks.too_many_checks_pending());
+
+		future.resolve(Err(UtxoLookupError::UnknownTx));
+		network_graph.pending_checks.check_resolved_futures(&network_graph);
+		assert!(!network_graph.pending_checks.too_many_checks_pending());
+		assert_eq!(pending_message_count(&network_graph), 0);
 	}
 
 	#[test]
@@ -1190,40 +1448,38 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let (chain_source, network_graph) = get_network();
 
-		// We cheat and use a single future for all the lookups to complete them all at once.
 		let notifier = Arc::new(Notifier::new());
-		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(UtxoFuture::new(notifier));
-
 		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
 
-		for i in 0..PendingChecks::MAX_PENDING_LOOKUPS {
+		let mut futures = Vec::new();
+		for i in 0..=PendingChecks::MAX_PENDING_LOOKUPS {
+			let future = UtxoFuture::new(Arc::clone(&notifier));
+			*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Async(future.clone());
+			futures.push(future);
 			let valid_announcement = get_signed_channel_announcement(
-				|msg| msg.short_channel_id += 1 + i as u64,
+				|msg| msg.short_channel_id += i as u64,
 				node_1_privkey,
 				node_2_privkey,
 				&secp_ctx,
 			);
+			assert!(!network_graph.pending_checks.too_many_checks_pending());
 			network_graph
 				.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
 				.unwrap_err();
-			assert!(!network_graph.pending_checks.too_many_checks_pending());
 		}
-
-		let valid_announcement =
-			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
-		network_graph
-			.update_channel_from_announcement(&valid_announcement, &Some(&chain_source))
-			.unwrap_err();
 		assert!(network_graph.pending_checks.too_many_checks_pending());
 
-		// Once the future is drop'd (by resetting the `utxo_ret` value) the "too many checks" flag
-		// should not yet reset to false.
+		// Once the futures are drop'd the "too many checks" flag should not yet reset to false.
 		*chain_source.utxo_ret.lock().unwrap() = UtxoResult::Sync(Err(UtxoLookupError::UnknownTx));
+		drop(futures);
 		assert!(network_graph.pending_checks.too_many_checks_pending());
 
-		// .. but it should once we called check_resolved_futures clearing the `pending_states`.
+		// .. but it should once we called check_resolved_futures clearing the pending lookups.
 		network_graph.pending_checks.check_resolved_futures(&network_graph);
 		assert!(!network_graph.pending_checks.too_many_checks_pending());
+		assert_eq!(pending_lookup_count(&network_graph), 0);
+		assert_eq!(pending_message_count(&network_graph), 0);
+		assert!(network_graph.pending_checks.internal.lock().unwrap().channels.is_empty());
 	}
 }

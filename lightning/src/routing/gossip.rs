@@ -1913,7 +1913,6 @@ impl<L: Logger> NetworkGraph<L> {
 		let mut nodes = self.nodes.write().unwrap();
 		match nodes.get_mut(&msg.node_id) {
 			None => {
-				core::mem::drop(nodes);
 				self.pending_checks.check_hold_pending_node_announcement(msg, full_msg)?;
 				Err(LightningError {
 					err: "No existing channels for node_announcement".to_owned(),
@@ -2577,7 +2576,6 @@ impl<L: Logger> NetworkGraph<L> {
 			let channels = self.channels.read().unwrap();
 			match channels.get(&msg.short_channel_id) {
 				None => {
-					core::mem::drop(channels);
 					self.pending_checks.check_hold_pending_channel_update(msg, full_msg)?;
 					return Err(LightningError {
 						err: "Couldn't find channel for update".to_owned(),
