@@ -920,7 +920,8 @@ pub struct ChannelUpdateInfo {
 	/// Most recent update for the channel received from the network
 	/// Mostly redundant with the data we store in fields explicitly.
 	/// Everything else is useful only for sending out for initial routing sync.
-	/// Not stored if contains excess data to prevent DoS.
+	/// Not stored if contains excess data to prevent DoS, or if the `dont_forward` bit is set, as
+	/// such updates must not be relayed.
 	pub last_update_message: Option<ChannelUpdate>,
 }
 
@@ -2625,7 +2626,9 @@ impl<L: Logger> NetworkGraph<L> {
 		if let Some(channel) = channels.get_mut(&msg.short_channel_id) {
 			check_msg_sanity(channel)?;
 
-			let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY {
+			let last_update_message = if msg.excess_data.len() <= MAX_EXCESS_BYTES_FOR_RELAY
+				&& msg.message_flags & (1 << 1) == 0
+			{
 				full_msg.cloned()
 			} else {
 				None
@@ -3380,6 +3383,45 @@ pub(crate) mod tests {
 			channel.one_to_two.is_none(),
 			"Channel update with dont_forward should not be stored in network graph"
 		);
+	}
+
+	#[test]
+	fn direct_channel_update_does_not_relay_dont_forward_messages() {
+		let network_graph = create_network_graph();
+		let (secp_ctx, gossip_sync) = create_gossip_sync(&network_graph);
+
+		let node_1_privkey = &SecretKey::from_slice(&[42; 32]).unwrap();
+		let node_2_privkey = &SecretKey::from_slice(&[41; 32]).unwrap();
+
+		let valid_channel_announcement =
+			get_signed_channel_announcement(|_| {}, node_1_privkey, node_2_privkey, &secp_ctx);
+		network_graph
+			.update_channel_from_announcement_no_lookup(&valid_channel_announcement)
+			.unwrap();
+
+		let valid_channel_update = get_signed_channel_update(|_| {}, node_1_privkey, &secp_ctx);
+		network_graph.update_channel(&valid_channel_update).unwrap();
+		let (_, one_to_two, _) = gossip_sync.get_next_channel_announcement(0).unwrap();
+		assert_eq!(one_to_two, Some(valid_channel_update));
+
+		let dont_forward_update = get_signed_channel_update(
+			|unsigned_channel_update| {
+				unsigned_channel_update.timestamp = 101;
+				unsigned_channel_update.message_flags = 1 | (1 << 1);
+				unsigned_channel_update.fee_base_msat = 42;
+			},
+			node_1_privkey,
+			&secp_ctx,
+		);
+		network_graph.update_channel(&dont_forward_update).unwrap();
+
+		let channels = network_graph.read_only();
+		let channel =
+			channels.channels().get(&valid_channel_announcement.contents.short_channel_id).unwrap();
+		assert_eq!(channel.one_to_two.as_ref().unwrap().fees.base_msat, 42);
+		core::mem::drop(channels);
+		let (_, one_to_two, _) = gossip_sync.get_next_channel_announcement(0).unwrap();
+		assert!(one_to_two.is_none());
 	}
 
 	#[test]
