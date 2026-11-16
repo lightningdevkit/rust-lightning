@@ -108,10 +108,11 @@ CLIPPY() {
 		-A clippy::useless_conversion \
 		-A clippy::manual_repeat_n `# to be removed once we hit MSRV 1.86` \
 		-A clippy::manual_is_multiple_of `# to be removed once we hit MSRV 1.87` \
+		-A clippy::format_collect `# not present in all clippy versions we build with` \
 		-A clippy::uninlined-format-args \
 		-A clippy::manual-async-fn # Not really sure why this is even a warning when there's a Send bound
 }
 
-CLIPPY
+CLIPPY "" "$EXTRA_CLIPPY_ARGS"
 # We allow some additional warnings in tests which we should fix, but which aren't currently a priority
-CLIPPY --tests "-A clippy::bool_assert_comparison -A clippy::assertions_on_constants -A clippy::needless-late-init -A clippy::field_reassign_with_default -A clippy::unnecessary_literal_unwrap"
+CLIPPY --tests "$EXTRA_CLIPPY_ARGS -A clippy::bool_assert_comparison -A clippy::assertions_on_constants -A clippy::needless-late-init -A clippy::field_reassign_with_default -A clippy::unnecessary_literal_unwrap"

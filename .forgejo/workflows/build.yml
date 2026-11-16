@@ -379,7 +379,7 @@ jobs:
   rustfmt:
     runs-on: debian-trixie
     env:
-      TOOLCHAIN: 1.75.0
+      TOOLCHAIN: 1.85.0
     steps:
       - name: Checkout source code
         uses: https://data.forgejo.org/actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
