@@ -3074,7 +3074,7 @@ impl MaybeReadable for Event {
 					let mut total_fee_earned_msat = None;
 					let mut skimmed_fee_msat = None;
 					let mut claim_from_onchain_tx = false;
-					let mut outbound_amount_forwarded_msat = 0;
+					let mut outbound_amount_forwarded_msat: u64 = 0;
 					let mut prev_htlcs = vec![];
 					let mut next_htlcs = vec![];
 					read_tlv_fields!(reader, {
@@ -3095,7 +3095,9 @@ impl MaybeReadable for Event {
 							channel_id: prev_channel_id_legacy.ok_or(DecodeError::InvalidValue)?,
 							htlc_id: None,
 							amount_msat: total_fee_earned_msat
-								.map(|fee| outbound_amount_forwarded_msat + fee),
+								.map(|fee| outbound_amount_forwarded_msat.checked_add(fee)
+									.ok_or(DecodeError::InvalidValue))
+								.transpose()?,
 							user_channel_id: prev_user_channel_id_legacy,
 							node_id: prev_node_id_legacy,
 						}])),
