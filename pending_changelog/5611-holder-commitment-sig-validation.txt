@@ -1,0 +1,8 @@
+# API Updates
+ * The new `HolderCommitmentTransaction::verify_counterparty_sigs` allows implementers of
+   `ChannelSigner` to verify the counterparty's signatures on a holder commitment transaction
+   rather than duplicating the checks `InMemorySigner` performs.
+ * The `ChannelSigner::validate_holder_commitment` documentation now requires implementations to
+   verify the counterparty's signatures before returning `Ok(())`, as LDK acts on `Ok(())`
+   immediately and may broadcast the funding transaction or replace the commitment transaction it
+   would broadcast on force-close.

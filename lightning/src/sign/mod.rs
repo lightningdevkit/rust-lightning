@@ -799,9 +799,16 @@ pub trait ChannelSigner {
 	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
 	///
+	/// LDK does not verify the counterparty's signatures anywhere else. Implementations must
+	/// verify `holder_tx.counterparty_sig` and `holder_tx.counterparty_htlc_sigs` before
+	/// returning `Ok(())`, as [`InMemorySigner`] does. ECDSA implementations can use
+	/// [`HolderCommitmentTransaction::verify_counterparty_sigs`] for this. `Ok(())` is final:
+	/// LDK may broadcast the funding transaction right after it, and `holder_tx` replaces the
+	/// commitment transaction that is broadcast on force-close.
+	///
 	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
-	/// closed. If you wish to make this operation asynchronous, you should instead return `Ok(())`
-	/// and pause future signing operations until this validation completes.
+	/// closed. Only policy checks that remain once the signatures are verified may be completed
+	/// later, by returning `Ok(())` and pausing future signing operations until they are done.
 	fn validate_holder_commitment(
 		&self, channel_parameters: &ChannelTransactionParameters,
 		holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>,
