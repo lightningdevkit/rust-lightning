@@ -12294,16 +12294,14 @@ where
 
 		// Note that we don't include ChannelState::WaitingForBatch as we don't want to send
 		// channel_ready until the entire batch is ready.
-		let need_commitment_update = if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
+		if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()).is_empty()) {
 			self.context.channel_state.set_our_channel_ready();
-			true
 		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::THEIR_CHANNEL_READY) {
 			self.context.channel_state = ChannelState::ChannelReady(self.context.channel_state.with_funded_state_flags_mask().into());
 			self.context.update_time_counter += 1;
-			true
 		} else if matches!(self.context.channel_state, ChannelState::AwaitingChannelReady(f) if f.clone().clear(FundedStateFlags::ALL.into()) == AwaitingChannelReadyFlags::OUR_CHANNEL_READY) {
-			// We got a reorg but not enough to trigger a force close, just ignore.
-			false
+			// We already sent channel_ready and are waiting on the counterparty's.
+			return None;
 		} else {
 			if self.funding.funding_tx_confirmation_height != 0 &&
 				self.context.channel_state < ChannelState::ChannelReady(ChannelReadyFlags::new())
@@ -12317,12 +12315,8 @@ where
 					Do NOT broadcast a funding transaction manually - let LDK do it for you!",
 					self.context.channel_state.to_u32());
 			}
-			// We got a reorg but not enough to trigger a force close, just ignore.
-			false
-		};
-
-		if !need_commitment_update {
-			log_debug!(logger, "Not producing channel_ready: we do not need a commitment update");
+			// Either channel_ready was already exchanged or we're waiting on the rest of the
+			// funding batch.
 			return None;
 		}
 
