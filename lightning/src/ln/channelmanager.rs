@@ -1425,7 +1425,7 @@ fn check_mpp_timeout<'a>(
 	let mut timed_out = false;
 	for htlc in htlcs {
 		total_intended_recvd_value += htlc.sender_intended_value;
-		htlc.timer_ticks += 1;
+		htlc.timer_ticks = htlc.timer_ticks.saturating_add(1);
 		if htlc.timer_ticks >= MPP_TIMEOUT_TICKS {
 			timed_out = true;
 		}
