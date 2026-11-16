@@ -3466,8 +3466,14 @@ fn test_event_replay_causing_monitor_replay() {
 	let serialized_monitor = get_monitor!(nodes[0], chan.2).encode();
 	reload_node!(nodes[0], &serialized_channel_manager, &[&serialized_monitor], persister, new_chain_monitor, node_deserialized);
 
-	// Expect the `PaymentSent` to get replayed, this time without the duplicate monitor update
-	expect_payment_sent(&nodes[0], payment_preimage, None, false, false /* expected post-event monitor update*/);
+	// Expect the `PaymentSent` to get replayed, this time without the duplicate monitor update.
+	// As the RAA `ChannelMonitorUpdate` already completed, the channel is resumed on startup,
+	// finalizing the claim.
+	expect_payment_sent(&nodes[0], payment_preimage, None, true, false /* expected post-event monitor update*/);
+
+	nodes[1].node.peer_disconnected(nodes[0].node.get_our_node_id());
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+	send_payment(&nodes[0], &[&nodes[1]], 100_000);
 }
 
 #[test]

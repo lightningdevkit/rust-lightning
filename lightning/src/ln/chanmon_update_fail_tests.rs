@@ -3298,6 +3298,136 @@ fn test_outbound_reload_without_init_mon() {
 	do_test_outbound_reload_without_init_mon(false);
 }
 
+fn do_test_outbound_reload_with_completed_init_mon(use_0conf: bool) {
+	// Test that if the monitor update generated in funding_signed is stored async and we restart
+	// with a ChannelManager serialized while it was pending, but the ChannelMonitor persistence
+	// did complete before the restart, we resume the channel and broadcast the funding
+	// transaction.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+
+	let persister;
+	let new_chain_monitor;
+
+	let mut chan_config = test_default_channel_config();
+	chan_config.channel_handshake_limits.trust_own_funding_0conf = true;
+
+	let node_chanmgrs =
+		create_node_chanmgrs(2, &node_cfgs, &[Some(chan_config.clone()), Some(chan_config)]);
+	let node_a_reload;
+
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 43, None, None).unwrap();
+	nodes[1].node.handle_open_channel(
+		node_a_id,
+		&get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id),
+	);
+
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	match events[0] {
+		Event::OpenChannelRequest { temporary_channel_id: chan_id, .. } => {
+			if use_0conf {
+				nodes[1]
+					.node
+					.accept_inbound_channel_from_trusted_peer(
+						&chan_id,
+						&node_a_id,
+						0,
+						TrustedChannelFeatures::ZeroConf,
+						None,
+					)
+					.unwrap();
+			} else {
+				nodes[1].node.accept_inbound_channel(&chan_id, &node_a_id, 0, None).unwrap();
+			}
+		},
+		_ => panic!("Unexpected event"),
+	};
+
+	nodes[0].node.handle_accept_channel(
+		node_b_id,
+		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
+	);
+
+	let (temporary_channel_id, funding_tx, ..) =
+		create_funding_transaction(&nodes[0], &node_b_id, 100000, 43);
+
+	nodes[0]
+		.node
+		.funding_transaction_generated(temporary_channel_id, node_b_id, funding_tx.clone())
+		.unwrap();
+	check_added_monitors(&nodes[0], 0);
+
+	let funding_created_msg =
+		get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
+	nodes[1].node.handle_funding_created(node_a_id, &funding_created_msg);
+	check_added_monitors(&nodes[1], 1);
+	expect_channel_pending_event(&nodes[1], &node_a_id);
+
+	let bs_signed_locked = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(bs_signed_locked.len(), if use_0conf { 2 } else { 1 });
+	let chan_id = match &bs_signed_locked[0] {
+		MessageSendEvent::SendFundingSigned { msg, .. } => {
+			chanmon_cfgs[0].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
+
+			nodes[0].node.handle_funding_signed(node_b_id, &msg);
+			check_added_monitors(&nodes[0], 1);
+			msg.channel_id
+		},
+		_ => panic!("Unexpected event"),
+	};
+	if use_0conf {
+		match &bs_signed_locked[1] {
+			MessageSendEvent::SendChannelReady { msg, .. } => {
+				nodes[0].node.handle_channel_ready(node_b_id, &msg);
+			},
+			_ => panic!("Unexpected event"),
+		}
+	}
+
+	assert!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+	assert!(nodes[0].node.get_and_clear_pending_events().is_empty());
+
+	// nodes[0] is now waiting on the first ChannelMonitor persistence to complete in order to
+	// broadcast the funding transaction. If nodes[0] restarts at this point with the
+	// ChannelMonitor persisted, it should resume the channel.
+	let node_a_ser = nodes[0].node.encode();
+	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], &node_a_ser, &[&mon_ser], persister, new_chain_monitor, node_a_reload);
+
+	nodes[0].node.test_process_background_events();
+	assert_eq!(nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0), [funding_tx]);
+	let events = nodes[0].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), if use_0conf { 2 } else { 1 });
+	assert!(matches!(events[0], Event::ChannelPending { .. }));
+	if use_0conf {
+		// We already have the peer's channel_ready, so the channel is ready immediately.
+		assert!(matches!(events[1], Event::ChannelReady { .. }));
+	}
+
+	nodes[1].node.peer_disconnected(node_a_id);
+	let mut reconnect_args = ReconnectArgs::new(&nodes[0], &nodes[1]);
+	reconnect_args.send_channel_ready = (use_0conf, use_0conf);
+	reconnect_nodes(reconnect_args);
+	if use_0conf {
+		expect_channel_ready_event(&nodes[1], &node_a_id);
+		assert_eq!(nodes[0].node.list_usable_channels().len(), 1);
+		assert_eq!(nodes[1].node.list_usable_channels().len(), 1);
+	}
+}
+
+#[test]
+fn test_outbound_reload_with_completed_init_mon() {
+	do_test_outbound_reload_with_completed_init_mon(true);
+	do_test_outbound_reload_with_completed_init_mon(false);
+}
+
 fn do_test_inbound_reload_without_init_mon(use_0conf: bool, lock_commitment: bool) {
 	// Test that if the monitor update generated by funding_transaction_generated is stored async
 	// and we restart with the latest ChannelManager but the ChannelMonitor persistence never
