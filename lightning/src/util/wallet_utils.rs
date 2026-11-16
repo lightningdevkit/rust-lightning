@@ -399,8 +399,14 @@ pub trait CoinSelectionSource {
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
 	///
-	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
-	/// unsigned transaction and then sign it with your wallet.
+	/// If your wallet does not support signing PSBTs you can call
+	/// `psbt.extract_tx_unchecked_fee_rate()` to get the unsigned transaction and then sign it
+	/// with your wallet.
+	///
+	/// Do not use `psbt.extract_tx()`, which rejects transactions paying more than 25,000 sat/vB:
+	/// the transaction may be the child of a package whose fee also pays for the parent
+	/// transaction (e.g., when bumping a commitment transaction's feerate), such that its own
+	/// feerate can exceed that limit.
 	fn sign_psbt<'a>(
 		&'a self, psbt: Psbt,
 	) -> impl Future<Output = Result<Transaction, ()>> + MaybeSend + 'a;
@@ -457,8 +463,14 @@ pub trait WalletSource {
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
 	///
-	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
-	/// unsigned transaction and then sign it with your wallet.
+	/// If your wallet does not support signing PSBTs you can call
+	/// `psbt.extract_tx_unchecked_fee_rate()` to get the unsigned transaction and then sign it
+	/// with your wallet.
+	///
+	/// Do not use `psbt.extract_tx()`, which rejects transactions paying more than 25,000 sat/vB:
+	/// the transaction may be the child of a package whose fee also pays for the parent
+	/// transaction (e.g., when bumping a commitment transaction's feerate), such that its own
+	/// feerate can exceed that limit.
 	///
 	/// [`TxIn::script_sig`]: bitcoin::TxIn::script_sig
 	/// [`TxIn::witness`]: bitcoin::TxIn::witness
@@ -800,8 +812,14 @@ pub trait WalletSourceSync {
 	/// the transaction known to the wallet (i.e., any provided via
 	/// [`WalletSource::list_confirmed_utxos`]).
 	///
-	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
-	/// unsigned transaction and then sign it with your wallet.
+	/// If your wallet does not support signing PSBTs you can call
+	/// `psbt.extract_tx_unchecked_fee_rate()` to get the unsigned transaction and then sign it
+	/// with your wallet.
+	///
+	/// Do not use `psbt.extract_tx()`, which rejects transactions paying more than 25,000 sat/vB:
+	/// the transaction may be the child of a package whose fee also pays for the parent
+	/// transaction (e.g., when bumping a commitment transaction's feerate), such that its own
+	/// feerate can exceed that limit.
 	///
 	/// [`TxIn::script_sig`]: bitcoin::TxIn::script_sig
 	/// [`TxIn::witness`]: bitcoin::TxIn::witness
@@ -992,8 +1010,14 @@ pub trait CoinSelectionSourceSync {
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSourceSync::select_confirmed_utxos`]).
 	///
-	/// If your wallet does not support signing PSBTs you can call `psbt.extract_tx()` to get the
-	/// unsigned transaction and then sign it with your wallet.
+	/// If your wallet does not support signing PSBTs you can call
+	/// `psbt.extract_tx_unchecked_fee_rate()` to get the unsigned transaction and then sign it
+	/// with your wallet.
+	///
+	/// Do not use `psbt.extract_tx()`, which rejects transactions paying more than 25,000 sat/vB:
+	/// the transaction may be the child of a package whose fee also pays for the parent
+	/// transaction (e.g., when bumping a commitment transaction's feerate), such that its own
+	/// feerate can exceed that limit.
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()>;
 }
 
