@@ -1804,6 +1804,32 @@ impl BaseMessageHandler for TestRoutingMessageHandler {
 	}
 }
 
+/// Rebuilds the channel parameters as the counterparty of `params` would see them, i.e. with
+/// the holder and counterparty roles swapped.
+#[cfg(test)]
+pub(crate) fn counterparty_channel_parameters(
+	params: &crate::ln::chan_utils::ChannelTransactionParameters,
+) -> crate::ln::chan_utils::ChannelTransactionParameters {
+	use crate::ln::chan_utils::{
+		ChannelTransactionParameters, CounterpartyChannelTransactionParameters,
+	};
+
+	let counterparty = params.counterparty_parameters.as_ref().unwrap();
+	ChannelTransactionParameters {
+		holder_pubkeys: counterparty.pubkeys.clone(),
+		holder_selected_contest_delay: counterparty.selected_contest_delay,
+		is_outbound_from_holder: !params.is_outbound_from_holder,
+		counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+			pubkeys: params.holder_pubkeys.clone(),
+			selected_contest_delay: params.holder_selected_contest_delay,
+		}),
+		funding_outpoint: params.funding_outpoint,
+		splice_parent_funding_txid: params.splice_parent_funding_txid,
+		channel_type_features: params.channel_type_features.clone(),
+		channel_value_satoshis: params.channel_value_satoshis,
+	}
+}
+
 pub struct TestLogger {
 	pub(crate) id: String,
 	pub lines: Mutex<HashMap<(&'static str, String), usize>>,
