@@ -68,4 +68,5 @@ check-cfg = [
     "cfg(simple_close)",
     "cfg(peer_storage)",
     "cfg(tor)",
+    "cfg(dual_funding)",
 ]

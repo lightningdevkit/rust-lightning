@@ -8,3 +8,5 @@ echo -e "\n\nTest cfg-flag builds"
 RUSTFLAGS="--cfg=simple_close" cargo test --quiet --color always -p lightning
 [ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
 RUSTFLAGS="--cfg=peer_storage" cargo test --quiet --color always -p lightning
+[ "$CI_MINIMIZE_DISK_USAGE" != "" ] && cargo clean
+RUSTFLAGS="--cfg=dual_funding" cargo test --quiet --color always -p lightning
