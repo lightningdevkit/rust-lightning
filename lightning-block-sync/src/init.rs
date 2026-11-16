@@ -39,6 +39,13 @@ where
 /// Thus, in case of errors you likely need to reload each object via deserialization or check its
 /// current tip directly via accessors on the object before trying again.
 ///
+/// If `block_source`'s best chain tip is behind a listener's saved tip, e.g., because the source is
+/// still syncing or was restored from a backup, a transient error is returned rather than
+/// disconnecting the listener back to the source's tip. This is detected while the source's tip
+/// still resolves within the listener's saved tip's block locator; if the source is further behind,
+/// resolving the saved tip fails with a persistent error instead. Listeners are processed
+/// sequentially, so an error may occur after earlier listeners have already been synchronized.
+///
 /// Useful during startup to bring the [`ChannelManager`] and each [`ChannelMonitor`] in sync before
 /// switching to [`SpvClient`]. For example:
 ///
@@ -251,6 +258,135 @@ impl<'a, L: chain::Listen + ?Sized> chain::Listen for DynamicChainListener<'a, L
 mod tests {
 	use super::*;
 	use crate::test_utils::{Blockchain, MockChainListener};
+	use crate::{BlockHeaderData, BlockSourceError, BlockSourceErrorKind};
+
+	use bitcoin::hash_types::BlockHash;
+
+	use std::future::Future;
+
+	/// Serves headers and blocks from `chain` but advertises the block at `best_height` as its best
+	/// block.
+	struct StaleBestBlockSource {
+		chain: Blockchain,
+		best_height: usize,
+	}
+
+	impl BlockSource for StaleBestBlockSource {
+		fn get_header<'a>(
+			&'a self, header_hash: &'a BlockHash, height_hint: Option<u32>,
+		) -> impl Future<Output = BlockSourceResult<BlockHeaderData>> + Send + 'a {
+			self.chain.get_header(header_hash, height_hint)
+		}
+
+		fn get_block<'a>(
+			&'a self, header_hash: &'a BlockHash,
+		) -> impl Future<Output = BlockSourceResult<BlockData>> + Send + 'a {
+			self.chain.get_block(header_hash)
+		}
+
+		fn get_best_block<'a>(
+			&'a self,
+		) -> impl Future<Output = BlockSourceResult<(BlockHash, Option<u32>)>> + Send + 'a {
+			async move {
+				let height = self.best_height as u32;
+				Ok((self.chain.blocks[self.best_height].block_hash(), Some(height)))
+			}
+		}
+	}
+
+	/// Serves only the blocks up to `best_height` from `chain` and advertises the block at that
+	/// height as its best block, as a source that is still syncing or was restored from a backup
+	/// would.
+	struct BehindChainSource {
+		chain: Blockchain,
+		best_height: usize,
+	}
+
+	impl BlockSource for BehindChainSource {
+		fn get_header<'a>(
+			&'a self, header_hash: &'a BlockHash, height_hint: Option<u32>,
+		) -> impl Future<Output = BlockSourceResult<BlockHeaderData>> + Send + 'a {
+			async move {
+				match self
+					.chain
+					.blocks
+					.iter()
+					.enumerate()
+					.find(|(_, block)| block.header.block_hash() == *header_hash)
+				{
+					Some((height, _)) if height <= self.best_height => {
+						self.chain.get_header(header_hash, height_hint).await
+					},
+					_ => Err(BlockSourceError::transient("header not found")),
+				}
+			}
+		}
+
+		fn get_block<'a>(
+			&'a self, header_hash: &'a BlockHash,
+		) -> impl Future<Output = BlockSourceResult<BlockData>> + Send + 'a {
+			async move {
+				match self
+					.chain
+					.blocks
+					.iter()
+					.enumerate()
+					.find(|(_, block)| block.header.block_hash() == *header_hash)
+				{
+					Some((height, _)) if height <= self.best_height => {
+						self.chain.get_block(header_hash).await
+					},
+					_ => Err(BlockSourceError::transient("block not found")),
+				}
+			}
+		}
+
+		fn get_best_block<'a>(
+			&'a self,
+		) -> impl Future<Output = BlockSourceResult<(BlockHash, Option<u32>)>> + Send + 'a {
+			async move {
+				let height = self.best_height as u32;
+				Ok((self.chain.blocks[self.best_height].block_hash(), Some(height)))
+			}
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_source_behind_saved_tip() {
+		let chain = Blockchain::default().with_height(4);
+
+		// The listener is saved at the chain's tip, while the source only knows the chain up to an
+		// older ancestor, which is one of the saved tip's `previous_blocks`. The source must not
+		// cause the listener to be disconnected back to it.
+		let source = BehindChainSource { chain, best_height: 2 };
+		let saved_tip = source.chain.best_block();
+		assert_eq!(saved_tip.previous_blocks[1].unwrap(), source.chain.blocks[2].block_hash());
+		let listener = MockChainListener::new();
+		let listeners = vec![(saved_tip, &listener as &dyn chain::Listen)];
+
+		match synchronize_listeners(&source, Network::Bitcoin, listeners).await {
+			Ok(_) => panic!("Expected error when the source is behind the saved tip"),
+			Err(e) => assert_eq!(e.kind(), BlockSourceErrorKind::Transient),
+		}
+	}
+
+	#[tokio::test]
+	async fn sync_from_lower_work_tip() {
+		let chain = Blockchain::default().with_height(4);
+		assert!(chain.at_height(2).chainwork < chain.tip().chainwork);
+
+		// The listener is saved at the chain's actual tip, while the source advertises an older
+		// ancestor as its best block.
+		let source = StaleBestBlockSource { chain, best_height: 2 };
+		let saved_tip = source.chain.best_block();
+		let listener = MockChainListener::new();
+		let listeners = vec![(saved_tip, &listener as &dyn chain::Listen)];
+
+		match synchronize_listeners(&source, Network::Bitcoin, listeners).await {
+			Ok(_) => panic!("Expected error when synchronizing from a lower-work tip"),
+			Err(e) => assert_eq!(e.kind(), BlockSourceErrorKind::Transient),
+		}
+	}
 
 	#[tokio::test]
 	async fn sync_from_same_chain() {
