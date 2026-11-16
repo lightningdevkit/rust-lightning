@@ -5098,13 +5098,13 @@ impl<
 			let logger = WithChannelContext::from(&self.logger, &chan.context, None);
 
 			let mut shutdown_res = if let Some(res) = coop_close_shutdown_res {
+				log_info!(logger, "Closed channel cooperatively");
 				res
 			} else {
+				log_error!(logger, "Closed channel due to close-required error: {}", msg);
 				chan.force_shutdown(reason, &logger)
 			};
 			let chan_update = self.get_channel_update_for_broadcast(chan).ok();
-
-			log_error!(logger, "Closed channel due to close-required error: {}", msg);
 
 			if let Some((_, funding_txo, _, update)) = shutdown_res.monitor_update.take() {
 				self.handle_new_monitor_update_locked_actions_handled_by_caller(
