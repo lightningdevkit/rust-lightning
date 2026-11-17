@@ -1136,7 +1136,7 @@ pub struct UserConfig {
 	/// [`ChannelManager::send_payment_for_bolt12_invoice`]: crate::ln::channelmanager::ChannelManager::send_payment_for_bolt12_invoice
 	/// [`ChannelManager::abandon_payment`]: crate::ln::channelmanager::ChannelManager::abandon_payment
 	#[deprecated(
-		since = "0.4.0",
+		since = "0.3.0",
 		note = "Instead, manually handle invoice messages at the OffersMessageHandler layer, \
 		        delegating validation to an OffersMessageFlow where relevant, then pay using \
 		        ChannelManager::pay_for_bolt12_invoice (being careful to avoid duplicative payments)."
