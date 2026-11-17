@@ -24,7 +24,7 @@ _externalize_tests = ["inventory", "_test_utils"]
 # This is unsafe to use in production because it may result in the counterparty publishing taking our funds.
 unsafe_revoked_tx_signing = []
 
-std = ["lightning-invoice/std"]
+std = ["lightning-invoice/std", "chacha20-poly1305/std"]
 
 dnssec = ["dnssec-prover/validation"]
 
@@ -40,7 +40,7 @@ lightning-macros = { version = "0.2", path = "../lightning-macros" }
 
 bech32 = { version = "0.11.0", default-features = false }
 bitcoin = { version = "0.32.4", default-features = false, features = ["secp-recovery"] }
-chacha20-poly1305 = { version = "0.2.0", default-features = false }
+chacha20-poly1305 = { version = "0.3.0", default-features = false }
 
 dnssec-prover = { version = "0.6", default-features = false }
 hashbrown = { version = "0.16", default-features = false }
