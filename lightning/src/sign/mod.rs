@@ -151,9 +151,13 @@ pub(crate) const P2TR_KEY_PATH_WITNESS_WEIGHT: u64 = (1 /* witness items */
 	+ bitcoin::secp256k1::constants::SCHNORR_SIGNATURE_SIZE)
 	as u64;
 
-/// If a [`KeysManager`] is built with [`KeysManager::new`] with `v2_remote_key_derivation` set
-/// (and for all channels after they've been spliced), the script which we receive funds to on-chain
-/// when our counterparty force-closes a channel is one of this many possible derivation paths.
+/// If a [`KeysManager`] is built with [`KeysManager::new`] with `v2_remote_key_derivation` set,
+/// the script which we receive funds to on-chain when our counterparty force-closes a channel
+/// opened with it is one of this many possible derivation paths.
+///
+/// Note that this only applies to channels which were opened with `v2_remote_key_derivation` set.
+/// The key is fixed when a channel is opened and cannot be changed by a splice, so channels opened
+/// with the old derivation keep their randomly-derived key even after they've been spliced.
 ///
 /// Keeping this limited allows for scanning the chain to find lost funds if our state is destroyed,
 /// while this being more than a handful provides some privacy by not constantly reusing the same
@@ -1598,8 +1602,9 @@ impl<L: Logger> ChannelSigner for InMemorySigner<L> {
 	}
 
 	fn pubkeys(&self, secp_ctx: &Secp256k1<secp256k1::All>) -> ChannelPublicKeys {
-		// Because splices always break downgrades, we go ahead and always use the new derivation
-		// here as its just much better.
+		// This is only called once when a channel is opened. The splicing handshake has no way to
+		// communicate a new `payment_point` to our counterparty, so the key we pick here (and
+		// thus the script our balance closes to) is fixed for the lifetime of the channel.
 		let payment_key =
 			if self.v2_remote_key_derivation { &self.payment_key_v2 } else { &self.payment_key_v1 };
 		let from_secret = |s: &SecretKey| PublicKey::from_secret_key(secp_ctx, s);
@@ -2050,8 +2055,10 @@ impl<L: Logger> KeysManager<L> {
 	///
 	/// If `v2_remote_key_derivation` is set, the `script_pubkey`s which receive funds on-chain when
 	/// our counterparty force-closes will be one of a static set of [`STATIC_PAYMENT_KEY_COUNT`]*2
-	/// possible `script_pubkey`s. This only applies to new or spliced channels, however if this is
-	/// set you *MUST NOT* downgrade to a version of LDK prior to 0.2.
+	/// possible `script_pubkey`s. This only applies to channels opened while it is set: existing
+	/// channels keep the `script_pubkey` they were opened with, even after being spliced, and must
+	/// be closed and re-opened to move to the static set. If this is set you *MUST NOT* downgrade
+	/// to a version of LDK prior to 0.2.
 	///
 	/// [`ChannelMonitor`]: crate::chain::channelmonitor::ChannelMonitor
 	pub fn new(
@@ -2173,8 +2180,9 @@ impl<L: Logger> KeysManager<L> {
 	/// allow you to recover (some of) your funds.
 	///
 	/// Only channels opened when using a [`KeysManager`] with the `v2_remote_key_derivation`
-	/// argument to [`KeysManager::new`] set, or any spliced channels will close to such scripts,
-	/// other channels will close to a randomly-generated `script_pubkey`.
+	/// argument to [`KeysManager::new`] set will close to such scripts. Other channels will close
+	/// to a randomly-generated `script_pubkey` which cannot be recovered from the seed alone, and
+	/// splicing such a channel does not change that.
 	pub fn possible_v2_counterparty_closed_balance_spks<C: Signing>(
 		&self, secp_ctx: &Secp256k1<C>,
 	) -> Vec<ScriptBuf> {
