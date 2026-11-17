@@ -1,0 +1,7 @@
+# API Updates
+
+ * `CoinSelectionSource::select_confirmed_utxos` and
+   `CoinSelectionSourceSync::select_confirmed_utxos` take a new `max_input_prevtx_serialized_len`
+   parameter bounding the serialized length of the previous transaction of each selected input,
+   e.g., for inputs that need to fit in a lightning peer message. `Wallet` and `WalletSync` exclude
+   UTXOs exceeding it from coin selection.

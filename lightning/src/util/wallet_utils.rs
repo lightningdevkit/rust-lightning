@@ -374,6 +374,10 @@ pub trait CoinSelectionSource {
 	///    anchor transactions, we will try your coin selection again with the same input-output
 	///    set when you call [`ChannelMonitor::rebroadcast_pending_claims`], as anchor transactions
 	///    cannot be downsized.
+	/// 5. Each selected input's previous transaction must serialize to at most
+	///    `max_input_prevtx_serialized_len` bytes, e.g., because the input needs to fit in a
+	///    lightning peer message. If this constraint can't be met, return an `Err`. `u64::MAX`
+	///    indicates that no constraint applies.
 	///
 	/// Implementations must take note that [`Input::satisfaction_weight`] only tracks the weight of
 	/// the input's `script_sig` and `witness`. Some wallets, like Bitcoin Core's, may require
@@ -395,6 +399,7 @@ pub trait CoinSelectionSource {
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+		max_input_prevtx_serialized_len: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a;
 	/// Signs and provides the full witness for all inputs within the transaction known to the
 	/// trait (i.e., any provided via [`CoinSelectionSource::select_confirmed_utxos`]).
@@ -419,6 +424,7 @@ where
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+		max_input_prevtx_serialized_len: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
 		self.deref().select_confirmed_utxos(
 			claim_id,
@@ -426,6 +432,7 @@ where
 			must_pay_to,
 			target_feerate_sat_per_1000_weight,
 			max_tx_weight,
+			max_input_prevtx_serialized_len,
 		)
 	}
 	fn sign_psbt<'a>(
@@ -731,9 +738,43 @@ where
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+		max_input_prevtx_serialized_len: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
 		async move {
 			let utxos = self.source.list_confirmed_utxos().await?;
+			let utxos = if max_input_prevtx_serialized_len != u64::MAX {
+				use crate::util::ser::Writeable;
+				let mut candidate_utxos = Vec::with_capacity(utxos.len());
+				for utxo in &utxos {
+					match self.source.get_prevtx(utxo.outpoint).await {
+						Ok(prevtx)
+							if prevtx.serialized_length() as u64
+								<= max_input_prevtx_serialized_len =>
+						{
+							candidate_utxos.push(utxo.clone());
+						},
+						Ok(prevtx) => {
+							log_debug!(
+								self.logger,
+								"Skipping UTXO {}: prevtx serializes to {} bytes, exceeding the maximum of {} bytes",
+								utxo.outpoint,
+								prevtx.serialized_length(),
+								max_input_prevtx_serialized_len,
+							);
+						},
+						Err(()) => {
+							log_error!(
+								self.logger,
+								"Skipping UTXO {}: failed to fetch prevtx while enforcing the prevtx length constraint",
+								utxo.outpoint,
+							);
+						},
+					}
+				}
+				candidate_utxos
+			} else {
+				utxos
+			};
 			// TODO: Use fee estimation utils when we upgrade to bitcoin v0.30.0.
 			let total_output_size: u64 = must_pay_to
 				.iter()
@@ -926,6 +967,7 @@ where
 	fn select_confirmed_utxos(
 		&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+		max_input_prevtx_serialized_len: u64,
 	) -> Result<CoinSelection, ()> {
 		let fut = self.wallet.select_confirmed_utxos(
 			claim_id,
@@ -933,6 +975,7 @@ where
 			must_pay_to,
 			target_feerate_sat_per_1000_weight,
 			max_tx_weight,
+			max_input_prevtx_serialized_len,
 		);
 		let mut waker = dummy_waker();
 		let mut ctx = task::Context::from_waker(&mut waker);
@@ -987,6 +1030,10 @@ pub trait CoinSelectionSourceSync {
 	///    anchor transactions, we will try your coin selection again with the same input-output
 	///    set when you call [`ChannelMonitor::rebroadcast_pending_claims`], as anchor transactions
 	///    cannot be downsized.
+	/// 5. Each selected input's previous transaction must serialize to at most
+	///    `max_input_prevtx_serialized_len` bytes, e.g., because the input needs to fit in a
+	///    lightning peer message. If this constraint can't be met, return an `Err`. `u64::MAX`
+	///    indicates that no constraint applies.
 	///
 	/// Implementations must take note that [`Input::satisfaction_weight`] only tracks the weight of
 	/// the input's `script_sig` and `witness`. Some wallets, like Bitcoin Core's, may require
@@ -1005,6 +1052,7 @@ pub trait CoinSelectionSourceSync {
 	fn select_confirmed_utxos(
 		&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+		max_input_prevtx_serialized_len: u64,
 	) -> Result<CoinSelection, ()>;
 
 	/// Signs and provides the full witness for all inputs within the transaction known to the
@@ -1028,6 +1076,7 @@ where
 	fn select_confirmed_utxos(
 		&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &[TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+		max_input_prevtx_serialized_len: u64,
 	) -> Result<CoinSelection, ()> {
 		self.deref().select_confirmed_utxos(
 			claim_id,
@@ -1035,6 +1084,7 @@ where
 			must_pay_to,
 			target_feerate_sat_per_1000_weight,
 			max_tx_weight,
+			max_input_prevtx_serialized_len,
 		)
 	}
 	fn sign_psbt(&self, psbt: Psbt) -> Result<Transaction, ()> {
@@ -1048,6 +1098,7 @@ impl<T: CoinSelectionSourceSync> CoinSelectionSource for CoinSelectionSourceSync
 	fn select_confirmed_utxos<'a>(
 		&'a self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, must_pay_to: &'a [TxOut],
 		target_feerate_sat_per_1000_weight: u32, max_tx_weight: u64,
+		max_input_prevtx_serialized_len: u64,
 	) -> impl Future<Output = Result<CoinSelection, ()>> + MaybeSend + 'a {
 		let coins = self.0.select_confirmed_utxos(
 			claim_id,
@@ -1055,6 +1106,7 @@ impl<T: CoinSelectionSourceSync> CoinSelectionSource for CoinSelectionSourceSync
 			must_pay_to,
 			target_feerate_sat_per_1000_weight,
 			max_tx_weight,
+			max_input_prevtx_serialized_len,
 		);
 		async move { coins }
 	}
@@ -1126,7 +1178,7 @@ mod tests {
 			value: Amount::from_sat(50_000),
 			script_pubkey: wallet.wallet.source.0.get_change_script().unwrap(),
 		}];
-		wallet.select_confirmed_utxos(claim_id, Vec::new(), &must_pay_to, 253, u64::MAX)
+		wallet.select_confirmed_utxos(claim_id, Vec::new(), &must_pay_to, 253, u64::MAX, u64::MAX)
 	}
 
 	#[test]

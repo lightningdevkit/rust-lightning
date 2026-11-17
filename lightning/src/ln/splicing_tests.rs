@@ -145,6 +145,7 @@ impl CoinSelectionSourceSync for TightBudgetWallet {
 	fn select_confirmed_utxos(
 		&self, _claim_id: Option<crate::chain::ClaimId>, _must_spend: Vec<Input>,
 		_must_pay_to: &[TxOut], _target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+		_max_input_prevtx_serialized_len: u64,
 	) -> Result<CoinSelection, ()> {
 		let prevout = TxOut {
 			value: self.utxo_value,
@@ -17341,6 +17342,7 @@ fn splice_abort_releases_wallet_utxos() {
 			Vec::new(),
 			&[claim_output],
 			FEERATE_FLOOR_SATS_PER_KW,
+			u64::MAX,
 			u64::MAX,
 		)
 		.unwrap();

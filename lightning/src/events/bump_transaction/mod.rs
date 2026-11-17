@@ -423,6 +423,7 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 					// We added the commitment tx weight to the input satisfaction weight above, so
 					// increase the max_tx_weight by the same delta here.
 					+ commitment_tx_weight,
+					u64::MAX,
 				)
 				.await
 				.map_err(|()| {
@@ -708,6 +709,7 @@ impl<B: BroadcasterInterface, C: CoinSelectionSource, SP: SignerProvider, L: Log
 					&htlc_tx.output,
 					target_feerate_sat_per_1000_weight,
 					max_tx_weight,
+					u64::MAX,
 				)
 				.await
 			{
@@ -928,6 +930,7 @@ mod tests {
 		fn select_confirmed_utxos(
 			&self, _claim_id: Option<ClaimId>, must_spend: Vec<Input>, _must_pay_to: &[TxOut],
 			target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+			_max_input_prevtx_serialized_len: u64,
 		) -> Result<CoinSelection, ()> {
 			let mut expected_selects = self.expected_selects.lock().unwrap();
 			let (weight, value, feerate, res) = expected_selects.remove(0);
