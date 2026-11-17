@@ -380,8 +380,9 @@ fn rotate_through_iterators<T, I: Iterator<Item = T>>(mut vecs: Vec<I>) -> impl 
 ///   announcement has had a chance to propagate), no [`RouteHint`]s will be returned, as the
 ///   sender is expected to find the path by looking at the public channels instead.
 /// * Limited to a total of 3 channels.
-/// * Sorted by lowest inbound capacity if an online channel with the minimum amount requested exists,
-///   otherwise sort by highest inbound capacity to give the payment the best chance of succeeding.
+/// * Sorted by lowest inbound capacity if a minimum amount is requested and an online channel with
+///   that amount exists, otherwise sort by highest inbound capacity to give the payment the best
+///   chance of succeeding.
 pub(super) fn sort_and_filter_channels<L: Logger>(
 	channels: Vec<ChannelDetails>, min_inbound_capacity_msat: Option<u64>, logger: &L,
 ) -> impl ExactSizeIterator<Item = RouteHint> {
@@ -543,8 +544,13 @@ pub(super) fn sort_and_filter_channels<L: Logger>(
 		})
 		.collect::<Vec<ChannelDetails>>();
 
+	// Only prefer the lowest inbound capacity if we know the payment fits. Without a minimum amount
+	// every channel trivially has enough capacity, so prefer the highest inbound capacity, as
+	// `prefer_current_channel` does per counterparty.
+	let sort_by_lowest_capacity =
+		min_inbound_capacity_msat.is_some() && online_min_capacity_channel_exists;
 	eligible_channels.sort_unstable_by(|a, b| {
-		if online_min_capacity_channel_exists {
+		if sort_by_lowest_capacity {
 			a.inbound_capacity_msat.cmp(&b.inbound_capacity_msat)
 		} else {
 			b.inbound_capacity_msat.cmp(&a.inbound_capacity_msat)
@@ -1041,6 +1047,27 @@ mod test {
 		scid_aliases.insert(chan_4_0.0.short_channel_id_alias.unwrap());
 
 		match_invoice_routes(Some(1_000_000_000), &nodes[0], scid_aliases.clone());
+	}
+
+	#[test]
+	fn test_no_amount_sort_by_highest_capacity() {
+		let chanmon_cfgs = create_chanmon_cfgs(5);
+		let node_cfgs = create_node_cfgs(5, &chanmon_cfgs);
+		let node_chanmgrs = create_node_chanmgrs(5, &node_cfgs, &[None, None, None, None, None]);
+		let nodes = create_network(5, &node_cfgs, &node_chanmgrs);
+		let _chan_1_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 1, 0, 100_000, 0);
+		let chan_2_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 2, 0, 200_000, 0);
+		let chan_3_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 3, 0, 300_000, 0);
+		let chan_4_0 = create_unannounced_chan_between_nodes_with_value(&nodes, 4, 0, 400_000, 0);
+
+		// When no amount is given, every channel trivially has enough inbound capacity, so we
+		// expect the three highest inbound channels to be chosen.
+		let mut scid_aliases = HashSet::new();
+		scid_aliases.insert(chan_2_0.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_3_0.0.short_channel_id_alias.unwrap());
+		scid_aliases.insert(chan_4_0.0.short_channel_id_alias.unwrap());
+
+		match_invoice_routes(None, &nodes[0], scid_aliases.clone());
 	}
 
 	#[test]
