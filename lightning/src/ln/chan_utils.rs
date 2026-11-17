@@ -33,6 +33,7 @@ use crate::chain::package::WEIGHT_REVOKED_OUTPUT;
 use crate::ln::msgs::DecodeError;
 use crate::sign::EntropySource;
 use crate::types::payment::{PaymentHash, PaymentPreimage};
+use crate::util::logger::Logger;
 use crate::util::ser::{Readable, ReadableArgs, RequiredWrapper, Writeable, Writer};
 use crate::util::transaction_utils;
 
@@ -1435,6 +1436,111 @@ impl HolderCommitmentTransaction {
 		tx.input[0].witness.push(funding_redeemscript.as_bytes().to_vec());
 		tx
 	}
+
+	/// Verifies the counterparty's signature on this commitment transaction and their signatures
+	/// on each of its non-dust HTLC transactions, against the keys in `channel_parameters`.
+	///
+	/// `channel_parameters` must be populated, see [`ChannelTransactionParameters::is_populated`].
+	pub fn verify_counterparty_sigs<L: Logger>(
+		&self, channel_parameters: &ChannelTransactionParameters,
+		secp_ctx: &Secp256k1<secp256k1::All>, logger: &L,
+	) -> Result<(), ()> {
+		assert!(channel_parameters.is_populated(), "channel_parameters must be populated");
+		let funding_script = channel_parameters.make_funding_redeemscript();
+		let channel_value_satoshis = channel_parameters.channel_value_satoshis;
+		let counterparty_funding_pubkey =
+			channel_parameters.counterparty_pubkeys().unwrap().funding_pubkey;
+		let counterparty_selected_delay =
+			channel_parameters.counterparty_parameters.as_ref().unwrap().selected_contest_delay;
+		let channel_type = &channel_parameters.channel_type_features;
+		let commitment_txid = {
+			let trusted_tx = self.trust();
+			let bitcoin_tx = trusted_tx.built_transaction();
+			if bitcoin_tx.transaction.output.is_empty() {
+				log_error!(logger, "Commitment tx from peer has 0 outputs");
+				return Err(());
+			}
+
+			let sighash = bitcoin_tx.get_sighash_all(&funding_script, channel_value_satoshis);
+
+			log_trace!(logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
+				log_bytes!(self.counterparty_sig.serialize_compact()[..]),
+				log_bytes!(counterparty_funding_pubkey.serialize()),
+				bitcoin::consensus::encode::serialize_hex(&bitcoin_tx.transaction),
+				log_bytes!(sighash[..]), bitcoin::consensus::encode::serialize_hex(&funding_script),
+			);
+			if let Err(_) = secp_ctx.verify_ecdsa(
+				&sighash,
+				&self.counterparty_sig,
+				&counterparty_funding_pubkey,
+			) {
+				log_error!(logger, "Invalid commitment tx signature from peer");
+				return Err(());
+			}
+			bitcoin_tx.txid
+		};
+
+		if self.counterparty_htlc_sigs.len() != self.nondust_htlcs().len() {
+			log_error!(
+				logger,
+				"Got wrong number of HTLC signatures ({}) from peer. It must be {}",
+				self.counterparty_htlc_sigs.len(),
+				self.nondust_htlcs().len()
+			);
+			return Err(());
+		}
+
+		let holder_keys = self.trust().keys();
+		for (htlc, counterparty_sig) in
+			self.nondust_htlcs().iter().zip(self.counterparty_htlc_sigs.iter())
+		{
+			assert!(htlc.transaction_output_index.is_some());
+			let htlc_tx = build_htlc_transaction(
+				&commitment_txid,
+				self.negotiated_feerate_per_kw(),
+				counterparty_selected_delay,
+				&htlc,
+				channel_type,
+				&holder_keys.broadcaster_delayed_payment_key,
+				&holder_keys.revocation_key,
+			);
+
+			let htlc_redeemscript = get_htlc_redeemscript(&htlc, channel_type, &holder_keys);
+			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
+				|| channel_type.supports_anchor_zero_fee_commitments()
+			{
+				EcdsaSighashType::SinglePlusAnyoneCanPay
+			} else {
+				EcdsaSighashType::All
+			};
+			let htlc_sighash = hash_to_message!(
+				&sighash::SighashCache::new(&htlc_tx)
+					.p2wsh_signature_hash(
+						0,
+						&htlc_redeemscript,
+						htlc.to_bitcoin_amount(),
+						htlc_sighashtype
+					)
+					.unwrap()[..]
+			);
+			log_trace!(logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
+				log_bytes!(counterparty_sig.serialize_compact()[..]),
+				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
+				bitcoin::consensus::encode::serialize_hex(&htlc_tx),
+				log_bytes!(htlc_sighash[..]),
+				bitcoin::consensus::encode::serialize_hex(&htlc_redeemscript),
+			);
+			if let Err(_) = secp_ctx.verify_ecdsa(
+				&htlc_sighash,
+				&counterparty_sig,
+				&holder_keys.countersignatory_htlc_key.to_public_key(),
+			) {
+				log_error!(logger, "Invalid HTLC tx signature from peer");
+				return Err(());
+			}
+		}
+		Ok(())
+	}
 }
 
 /// A pre-built Bitcoin commitment transaction and its txid.
@@ -2285,15 +2391,17 @@ mod tests {
 		get_to_countersigner_keyed_anchor_redeemscript, shared_anchor_script_pubkey,
 		BuiltCommitmentTransaction, ChannelTransactionParameters, CommitmentTransaction,
 		CounterpartyChannelTransactionParameters, HTLCClaim, HTLCOutputInCommitment,
-		TrustedCommitmentTransaction,
+		HolderCommitmentTransaction, TrustedCommitmentTransaction,
 	};
+	use crate::sign::ecdsa::EcdsaChannelSigner;
 	use crate::sign::{ChannelSigner, SignerProvider};
 	use crate::types::features::ChannelTypeFeatures;
 	use crate::types::payment::PaymentHash;
+	use crate::util::test_channel_signer::TestChannelSigner;
 	use crate::util::test_utils;
 	use bitcoin::hashes::Hash;
 	use bitcoin::hex::FromHex;
-	use bitcoin::secp256k1::{self, PublicKey, Secp256k1, SecretKey};
+	use bitcoin::secp256k1::{self, ecdsa::Signature, PublicKey, Secp256k1, SecretKey};
 	use bitcoin::PublicKey as BitcoinPublicKey;
 	use bitcoin::{CompressedPublicKey, Network, ScriptBuf, Txid, Witness};
 
@@ -2306,6 +2414,7 @@ mod tests {
 		feerate_per_kw: u32,
 		channel_parameters: ChannelTransactionParameters,
 		counterparty_pubkeys: ChannelPublicKeys,
+		counterparty_signer: TestChannelSigner,
 		secp_ctx: Secp256k1<secp256k1::All>,
 	}
 
@@ -2339,6 +2448,7 @@ mod tests {
 				feerate_per_kw: 1,
 				channel_parameters,
 				counterparty_pubkeys,
+				counterparty_signer,
 				secp_ctx,
 			}
 		}
@@ -2356,6 +2466,64 @@ mod tests {
 		) -> Result<TrustedCommitmentTransaction<'a>, ()> {
 			tx.verify(&self.channel_parameters.as_holder_broadcastable(), &self.secp_ctx)
 		}
+	}
+
+	fn corrupt_signature(sig: &Signature) -> Signature {
+		let mut bytes = sig.serialize_compact();
+		bytes[0] ^= 0xff;
+		Signature::from_compact(&bytes).unwrap()
+	}
+
+	#[test]
+	#[rustfmt::skip]
+	fn test_verify_counterparty_sigs() {
+		let mut builder = TestCommitmentTxBuilder::new();
+		let logger = test_utils::TestLogger::new();
+		// The test signer tracks commitment numbers across calls, which this test doesn't care
+		// about, and commitment number 0 isn't a valid successor of its initial state.
+		builder.counterparty_signer.disable_all_state_policy_checks = true;
+
+		let offered_htlc = HTLCOutputInCommitment {
+			offered: true,
+			amount_msat: 600_000,
+			cltv_expiry: 100,
+			payment_hash: PaymentHash([42; 32]),
+			transaction_output_index: None,
+		};
+		let commitment_tx = builder.build(1000, 2000, vec![offered_htlc]);
+		let counterparty_params =
+			test_utils::counterparty_channel_parameters(&builder.channel_parameters);
+		let (counterparty_sig, counterparty_htlc_sigs) = builder.counterparty_signer
+			.sign_counterparty_commitment(
+				&counterparty_params, &commitment_tx, Vec::new(), Vec::new(), &builder.secp_ctx,
+			)
+			.unwrap();
+		let holder_commitment = HolderCommitmentTransaction::new(
+			commitment_tx, counterparty_sig, counterparty_htlc_sigs,
+			&builder.channel_parameters.holder_pubkeys.funding_pubkey,
+			&builder.counterparty_pubkeys.funding_pubkey,
+		);
+		holder_commitment
+			.verify_counterparty_sigs(&builder.channel_parameters, &builder.secp_ctx, &logger)
+			.unwrap();
+
+		let mut corrupted = holder_commitment.clone();
+		corrupted.counterparty_sig = corrupt_signature(&corrupted.counterparty_sig);
+		assert!(corrupted
+			.verify_counterparty_sigs(&builder.channel_parameters, &builder.secp_ctx, &logger)
+			.is_err());
+
+		let mut corrupted = holder_commitment.clone();
+		corrupted.counterparty_htlc_sigs[0] = corrupt_signature(&corrupted.counterparty_htlc_sigs[0]);
+		assert!(corrupted
+			.verify_counterparty_sigs(&builder.channel_parameters, &builder.secp_ctx, &logger)
+			.is_err());
+
+		let mut truncated = holder_commitment.clone();
+		truncated.counterparty_htlc_sigs.pop();
+		assert!(truncated
+			.verify_counterparty_sigs(&builder.channel_parameters, &builder.secp_ctx, &logger)
+			.is_err());
 	}
 
 	#[test]

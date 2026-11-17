@@ -799,9 +799,16 @@ pub trait ChannelSigner {
 	/// Note that all the relevant preimages will be provided, but there may also be additional
 	/// irrelevant or duplicate preimages.
 	///
+	/// LDK does not verify the counterparty's signatures anywhere else. Implementations must
+	/// verify `holder_tx.counterparty_sig` and `holder_tx.counterparty_htlc_sigs` before
+	/// returning `Ok(())`, as [`InMemorySigner`] does. ECDSA implementations can use
+	/// [`HolderCommitmentTransaction::verify_counterparty_sigs`] for this. `Ok(())` is final:
+	/// LDK may broadcast the funding transaction right after it, and `holder_tx` replaces the
+	/// commitment transaction that is broadcast on force-close.
+	///
 	/// This method is *not* asynchronous. If an `Err` is returned, the channel will be immediately
-	/// closed. If you wish to make this operation asynchronous, you should instead return `Ok(())`
-	/// and pause future signing operations until this validation completes.
+	/// closed. Only policy checks that remain once the signatures are verified may be completed
+	/// later, by returning `Ok(())` and pausing future signing operations until they are done.
 	fn validate_holder_commitment(
 		&self, channel_parameters: &ChannelTransactionParameters,
 		holder_tx: &HolderCommitmentTransaction, outbound_htlc_preimages: Vec<PaymentPreimage>,
@@ -1577,99 +1584,13 @@ impl<L: Logger> ChannelSigner for InMemorySigner<L> {
 		holder_commitment_tx: &HolderCommitmentTransaction,
 		_outbound_htlc_preimages: Vec<PaymentPreimage>, secp_ctx: &Secp256k1<secp256k1::All>,
 	) -> Result<(), ()> {
+		// Only trust the holder funding key in `channel_parameters` once we know it is ours.
 		let funding_key = self.funding_key(channel_parameters.splice_parent_funding_txid);
-		let funding_pubkey = funding_key.public_key(secp_ctx);
-		let counterparty_funding_pubkey =
-			channel_parameters.counterparty_pubkeys().expect(MISSING_PARAMS_ERR).funding_pubkey;
-		let funding_script =
-			make_funding_redeemscript(&funding_pubkey, &counterparty_funding_pubkey);
-		let channel_value_satoshis = channel_parameters.channel_value_satoshis;
-		let counterparty_selected_delay = channel_parameters
-			.counterparty_parameters
-			.as_ref()
-			.expect(MISSING_PARAMS_ERR)
-			.selected_contest_delay;
-		let channel_type = &channel_parameters.channel_type_features;
-		let commitment_txid = {
-			let trusted_tx = holder_commitment_tx.trust();
-			let bitcoin_tx = trusted_tx.built_transaction();
-			if bitcoin_tx.transaction.output.is_empty() {
-				log_error!(self.logger, "Commitment tx from peer has 0 outputs");
-				return Err(());
-			}
-
-			let sighash = bitcoin_tx.get_sighash_all(&funding_script, channel_value_satoshis);
-
-			log_trace!(self.logger, "Checking commitment tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
-				log_bytes!(holder_commitment_tx.counterparty_sig.serialize_compact()[..]),
-				log_bytes!(counterparty_funding_pubkey.serialize()),
-				bitcoin::consensus::encode::serialize_hex(&bitcoin_tx.transaction),
-				log_bytes!(sighash[..]), bitcoin::consensus::encode::serialize_hex(&funding_script),
-			);
-			if let Err(_) = secp_ctx.verify_ecdsa(
-				&sighash,
-				&holder_commitment_tx.counterparty_sig,
-				&counterparty_funding_pubkey,
-			) {
-				log_error!(self.logger, "Invalid commitment tx signature from peer");
-				return Err(());
-			}
-			bitcoin_tx.txid
-		};
-
-		let holder_keys = holder_commitment_tx.trust().keys();
-		for (htlc, counterparty_sig) in holder_commitment_tx
-			.nondust_htlcs()
-			.iter()
-			.zip(holder_commitment_tx.counterparty_htlc_sigs.iter())
-		{
-			assert!(htlc.transaction_output_index.is_some());
-			let htlc_tx = chan_utils::build_htlc_transaction(
-				&commitment_txid,
-				holder_commitment_tx.negotiated_feerate_per_kw(),
-				counterparty_selected_delay,
-				&htlc,
-				channel_type,
-				&holder_keys.broadcaster_delayed_payment_key,
-				&holder_keys.revocation_key,
-			);
-
-			let htlc_redeemscript =
-				chan_utils::get_htlc_redeemscript(&htlc, channel_type, &holder_keys);
-			let htlc_sighashtype = if channel_type.supports_anchors_zero_fee_htlc_tx()
-				|| channel_type.supports_anchor_zero_fee_commitments()
-			{
-				EcdsaSighashType::SinglePlusAnyoneCanPay
-			} else {
-				EcdsaSighashType::All
-			};
-			let htlc_sighash = hash_to_message!(
-				&sighash::SighashCache::new(&htlc_tx)
-					.p2wsh_signature_hash(
-						0,
-						&htlc_redeemscript,
-						htlc.to_bitcoin_amount(),
-						htlc_sighashtype
-					)
-					.unwrap()[..]
-			);
-			log_trace!(self.logger, "Checking HTLC tx signature {} by key {} against tx {} (sighash {}) with redeemscript {}.",
-				log_bytes!(counterparty_sig.serialize_compact()[..]),
-				log_bytes!(holder_keys.countersignatory_htlc_key.to_public_key().serialize()),
-				bitcoin::consensus::encode::serialize_hex(&htlc_tx),
-				log_bytes!(htlc_sighash[..]),
-				bitcoin::consensus::encode::serialize_hex(&htlc_redeemscript),
-			);
-			if let Err(_) = secp_ctx.verify_ecdsa(
-				&htlc_sighash,
-				&counterparty_sig,
-				&holder_keys.countersignatory_htlc_key.to_public_key(),
-			) {
-				log_error!(self.logger, "Invalid HTLC tx signature from peer");
-				return Err(());
-			}
+		if channel_parameters.holder_pubkeys.funding_pubkey != funding_key.public_key(secp_ctx) {
+			log_error!(self.logger, "Holder funding key in channel parameters is not ours");
+			return Err(());
 		}
-		Ok(())
+		holder_commitment_tx.verify_counterparty_sigs(channel_parameters, secp_ctx, &self.logger)
 	}
 
 	fn validate_counterparty_revocation(&self, _idx: u64, _secret: &SecretKey) -> Result<(), ()> {
@@ -2899,6 +2820,112 @@ fn sweep_weight_estimate_accounts_for_to_self_delay() {
 			max_estimate - (4 - push_len),
 			"wrong sweep-weight estimate for to_self_delay={to_self_delay}",
 		);
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::{ChannelTransactionParameters, InMemorySigner, KeysManager};
+	use crate::chain;
+	use crate::ln::chan_utils::{
+		CommitmentTransaction, CounterpartyChannelTransactionParameters,
+		HolderCommitmentTransaction,
+	};
+	use crate::sign::ecdsa::EcdsaChannelSigner;
+	use crate::sign::{ChannelSigner, SignerProvider};
+	use crate::sync::Arc;
+	use crate::types::features::ChannelTypeFeatures;
+	use crate::util::test_utils::{self, TestLogger};
+	use bitcoin::hashes::Hash;
+	use bitcoin::secp256k1::{PublicKey, Secp256k1, SecretKey};
+	use bitcoin::{secp256k1, Txid};
+
+	#[allow(unused_imports)]
+	use crate::prelude::*;
+
+	fn derive_signer(seed: [u8; 32], channel_keys_id: [u8; 32]) -> InMemorySigner<Arc<TestLogger>> {
+		let keys_manager = KeysManager::new(&seed, 0, 0, false, Arc::new(TestLogger::new()));
+		keys_manager.derive_channel_signer(channel_keys_id)
+	}
+
+	fn channel_parameters(
+		holder: &InMemorySigner<Arc<TestLogger>>, counterparty: &InMemorySigner<Arc<TestLogger>>,
+		secp_ctx: &Secp256k1<secp256k1::All>,
+	) -> ChannelTransactionParameters {
+		ChannelTransactionParameters {
+			holder_pubkeys: holder.pubkeys(secp_ctx),
+			holder_selected_contest_delay: 0,
+			is_outbound_from_holder: false,
+			counterparty_parameters: Some(CounterpartyChannelTransactionParameters {
+				pubkeys: counterparty.pubkeys(secp_ctx),
+				selected_contest_delay: 0,
+			}),
+			funding_outpoint: Some(chain::transaction::OutPoint {
+				txid: Txid::all_zeros(),
+				index: 0,
+			}),
+			splice_parent_funding_txid: None,
+			channel_type_features: ChannelTypeFeatures::only_static_remote_key(),
+			channel_value_satoshis: 4000,
+		}
+	}
+
+	#[test]
+	fn test_validate_holder_commitment_rejects_foreign_parameters() {
+		let secp_ctx = Secp256k1::new();
+		let signer = derive_signer([42; 32], [0; 32]);
+
+		// The dummy parameters' holder funding key doesn't belong to the signer, so validation
+		// must fail before any signature checks happen.
+		let parameters = ChannelTransactionParameters::test_dummy(4000);
+		let holder_commitment = HolderCommitmentTransaction::dummy(
+			4000,
+			chain::transaction::OutPoint { txid: Txid::all_zeros(), index: 0 },
+			Vec::new(),
+		);
+		assert!(signer
+			.validate_holder_commitment(&parameters, &holder_commitment, Vec::new(), &secp_ctx)
+			.is_err());
+	}
+
+	#[test]
+	fn test_validate_holder_commitment_accepts_own_parameters() {
+		let secp_ctx = Secp256k1::new();
+		let holder = derive_signer([42; 32], [0; 32]);
+		let counterparty = derive_signer([43; 32], [1; 32]);
+		let parameters = channel_parameters(&holder, &counterparty, &secp_ctx);
+
+		let per_commitment_point =
+			PublicKey::from_secret_key(&secp_ctx, &SecretKey::from_slice(&[5; 32]).unwrap());
+		let commitment_tx = CommitmentTransaction::new(
+			0,
+			&per_commitment_point,
+			1000,
+			2000,
+			1,
+			Vec::new(),
+			&parameters.as_holder_broadcastable(),
+			&secp_ctx,
+		);
+		let (counterparty_sig, counterparty_htlc_sigs) = counterparty
+			.sign_counterparty_commitment(
+				&test_utils::counterparty_channel_parameters(&parameters),
+				&commitment_tx,
+				Vec::new(),
+				Vec::new(),
+				&secp_ctx,
+			)
+			.unwrap();
+		let holder_commitment = HolderCommitmentTransaction::new(
+			commitment_tx,
+			counterparty_sig,
+			counterparty_htlc_sigs,
+			&parameters.holder_pubkeys.funding_pubkey,
+			&parameters.counterparty_parameters.as_ref().unwrap().pubkeys.funding_pubkey,
+		);
+		holder
+			.validate_holder_commitment(&parameters, &holder_commitment, Vec::new(), &secp_ctx)
+			.unwrap();
 	}
 }
 
