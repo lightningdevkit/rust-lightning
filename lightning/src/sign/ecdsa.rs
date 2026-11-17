@@ -105,11 +105,25 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// not allow the spending of any funds by itself (you need our holder `revocation_secret` to do
 	/// so).
 	///
+	/// The witness script committed to in the signature is the one returned by
+	/// [`get_revokeable_redeemscript`] for `channel_parameters.holder_selected_contest_delay` and
+	/// the `revocation_key` and `broadcaster_delayed_payment_key` of the [`TxCreationKeys`] built
+	/// by [`TxCreationKeys::from_channel_static_keys`] on
+	/// [`channel_parameters.as_counterparty_broadcastable()`] with the per-commitment point
+	/// corresponding to `per_commitment_key`. Note that the delayed payment key is derived from the
+	/// *counterparty's* [`DelayedPaymentBasepoint`], as they are the broadcaster of the revoked
+	/// state.
+	///
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
 	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
+	/// [`get_revokeable_redeemscript`]: crate::ln::chan_utils::get_revokeable_redeemscript
+	/// [`TxCreationKeys`]: crate::ln::chan_utils::TxCreationKeys
+	/// [`TxCreationKeys::from_channel_static_keys`]: crate::ln::chan_utils::TxCreationKeys::from_channel_static_keys
+	/// [`channel_parameters.as_counterparty_broadcastable()`]: ChannelTransactionParameters::as_counterparty_broadcastable
+	/// [`DelayedPaymentBasepoint`]: crate::ln::channel_keys::DelayedPaymentBasepoint
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_justice_revoked_output(
@@ -136,11 +150,21 @@ pub trait EcdsaChannelSigner: ChannelSigner {
 	/// `htlc` holds HTLC elements (hash, timelock), thus changing the format of the witness script
 	/// (which is committed to in the BIP 143 signatures).
 	///
+	/// The witness script committed to in the signature is the one returned by
+	/// [`get_htlc_redeemscript`] for `htlc`, `channel_parameters.channel_type_features` and the
+	/// [`TxCreationKeys`] built by [`TxCreationKeys::from_channel_static_keys`] on
+	/// [`channel_parameters.as_counterparty_broadcastable()`] with the per-commitment point
+	/// corresponding to `per_commitment_key`.
+	///
 	/// An `Err` can be returned to signal that the signer is unavailable/cannot produce a valid
 	/// signature and should be retried later. Once the signer is ready to provide a signature after
 	/// previously returning an `Err`, [`ChannelMonitor::signer_unblocked`] must be called on its
 	/// monitor or [`ChainMonitor::signer_unblocked`] called to attempt unblocking all monitors.
 	///
+	/// [`get_htlc_redeemscript`]: crate::ln::chan_utils::get_htlc_redeemscript
+	/// [`TxCreationKeys`]: crate::ln::chan_utils::TxCreationKeys
+	/// [`TxCreationKeys::from_channel_static_keys`]: crate::ln::chan_utils::TxCreationKeys::from_channel_static_keys
+	/// [`channel_parameters.as_counterparty_broadcastable()`]: ChannelTransactionParameters::as_counterparty_broadcastable
 	/// [`ChannelMonitor::signer_unblocked`]: crate::chain::channelmonitor::ChannelMonitor::signer_unblocked
 	/// [`ChainMonitor::signer_unblocked`]: crate::chain::chainmonitor::ChainMonitor::signer_unblocked
 	fn sign_justice_revoked_htlc(
