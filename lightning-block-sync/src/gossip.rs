@@ -44,6 +44,17 @@ pub trait UtxoSource: BlockSource + 'static {
 
 #[cfg(feature = "tokio")]
 /// A trivial [`FutureSpawner`] which delegates to `tokio::spawn`.
+///
+/// `tokio::spawn` panics when called from a thread which is not in the context of a `tokio`
+/// runtime, and LDK may call [`FutureSpawner::spawn`] on any thread which calls into LDK,
+/// including the plain `std::thread` run by `BackgroundProcessor::start`, which handles peer
+/// messages (and thus any UTXO lookups a [`GossipVerifier`] performs for them) in
+/// `PeerManager::process_events`.
+///
+/// Thus, users of this spawner must either ensure that *all* parts of LDK run inside the
+/// context of a `tokio` runtime (e.g. by polling `process_events_async` on the runtime rather
+/// than using `BackgroundProcessor::start`), or use a [`FutureSpawner`] implementation which
+/// stores a `tokio::runtime::Handle` and spawns on it instead.
 pub struct TokioSpawner;
 #[cfg(feature = "tokio")]
 impl FutureSpawner for TokioSpawner {
