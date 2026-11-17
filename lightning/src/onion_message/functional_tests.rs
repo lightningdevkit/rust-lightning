@@ -1164,6 +1164,71 @@ fn drops_buffered_messages_waiting_for_peer_connection() {
 }
 
 #[test]
+fn limits_replies_waiting_for_peer_connection() {
+	// The first hop of a reply is chosen by the sender of the message being replied to, so
+	// without a limit on how much we buffer for peers we aren't connected to, a requester could
+	// have us buffer replies for any number of made-up nodes by naming each in a reply path.
+	let nodes = create_nodes(3);
+	let secp_ctx = Secp256k1::new();
+	add_channel_to_graph(&nodes[0], &nodes[1], &secp_ctx, 42);
+	disconnect_peers(&nodes[0], &nodes[1]);
+
+	let respond_to = |node: &MessengerNode| {
+		let context = MessageContext::Custom(Vec::new());
+		let entropy = &*node.entropy_source;
+		let receive_key = node.messenger.node_signer.get_receive_auth_key();
+		let node_id = node.node_id;
+		let reply_path =
+			BlindedMessagePath::new(&[], node_id, receive_key, context, false, entropy, &secp_ctx);
+		let instructions = Responder::new(reply_path).respond();
+		nodes[0].messenger.handle_onion_message_response(TestCustomMessage::Pong, instructions)
+	};
+
+	// Replies to disconnected nodes wait for a connection, whether or not they're in the graph
+	let node_id = nodes[1].node_id;
+	assert_eq!(respond_to(&nodes[1]), Ok(SendSuccess::BufferedAwaitingConnection(node_id)));
+	let node_id = nodes[2].node_id;
+	assert_eq!(respond_to(&nodes[2]), Ok(SendSuccess::BufferedAwaitingConnection(node_id)));
+
+	// Fill up the buffer for peers we aren't connected to with messages of our own, each to a
+	// different made-up node id which would require a new connection
+	use dnssec_prover::rr::Name;
+	let message = DNSResolverMessage::DNSSECProof(DNSSECProof {
+		name: Name::try_from("example.com.".to_string()).unwrap(),
+		proof: vec![0; 2000],
+	});
+	let mut num_buffered = 0;
+	loop {
+		let mut secret = [42; 32];
+		secret[0] = num_buffered as u8;
+		secret[1] = (num_buffered >> 8) as u8;
+		let secret_key = SecretKey::from_slice(&secret).unwrap();
+		let destination = Destination::Node(PublicKey::from_secret_key(&secp_ctx, &secret_key));
+		let instructions = MessageSendInstructions::WithoutReplyPath { destination };
+		match nodes[0].messenger.send_onion_message(message.clone(), instructions) {
+			Ok(SendSuccess::BufferedAwaitingConnection(_)) => num_buffered += 1,
+			Err(SendError::BufferFull) => break,
+			res => panic!("Unexpected result filling the pending connection buffer: {:?}", res),
+		}
+	}
+	assert!(num_buffered > 0);
+
+	// Further replies to disconnected nodes are now refused, whether they're announced
+	// (nodes[1]) or unannounced (nodes[2]); replies to connected peers are still buffered,
+	// as checked once nodes[2] is connected below
+	assert_eq!(respond_to(&nodes[1]), Err(SendError::BufferFull));
+	assert_eq!(respond_to(&nodes[2]), Err(SendError::BufferFull));
+
+	// Only the messages waiting for a connection generated ConnectionNeeded events
+	assert_eq!(release_events(&nodes[0]).len(), 2 + num_buffered);
+
+	// Once connected, replies to the peer are buffered as usual
+	connect_peers(&nodes[0], &nodes[2]);
+	assert_eq!(respond_to(&nodes[2]), Ok(SendSuccess::Buffered));
+	assert!(release_events(&nodes[0]).is_empty());
+}
+
+#[test]
 fn intercept_offline_peer_oms() {
 	// Ensure that if OnionMessenger is initialized with
 	// new_with_offline_peer_interception, we will intercept OMs for offline
