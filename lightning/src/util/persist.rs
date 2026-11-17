@@ -1180,6 +1180,10 @@ where
 	///
 	/// Loading a large number of monitors will be faster if done in parallel. You can use this
 	/// function to accomplish this. Take care to limit the number of parallel readers.
+	///
+	/// Note that this is not sufficient to use on startup: stale updates stored for keys whose
+	/// monitor has been archived are only removed by
+	/// [`MonitorUpdatingPersister::read_all_channel_monitors_with_updates`].
 	pub fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
 	) -> Result<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
@@ -1360,8 +1364,7 @@ impl<
 		let monitor_list = self.0.kv_store.list(primary, secondary).await?;
 		let mut futures = Vec::with_capacity(monitor_list.len());
 		// The cleanup only touches keys which have no live monitor under them, so it cannot
-		// interfere with the reads below and is polled alongside them. Its result is mapped to
-		// look like a read which found no monitor, which the result handling below ignores.
+		// interfere with the reads below and is polled alongside them.
 		let cleanup = Arc::clone(&self.0);
 		futures.push(ResultFuture::Pending(self.0.future_spawner.spawn(async move {
 			cleanup.cleanup_archived_monitor_updates().await.map(|()| None)
@@ -1398,8 +1401,11 @@ impl<
 	///
 	/// For v2 channels, the hex-encoded [`ChannelId`] is used directly for `monitor_key` instead.
 	///
-	/// Loading a large number of monitors will be faster if done in parallel. You can use this
-	/// function to accomplish this. Take care to limit the number of parallel readers.
+	/// Note that this is not sufficient to use on startup: stale updates stored for keys whose
+	/// monitor has been archived are only removed by
+	/// [`Self::read_all_channel_monitors_with_updates`], which also parallelizes reads across
+	/// monitors, making it the preferred way to load a large number of monitors. This method is
+	/// mostly useful as a utility for reading a single monitor.
 	pub async fn read_channel_monitor_with_updates(
 		&self, monitor_key: &str,
 	) -> Result<(BlockLocator, ChannelMonitor<SP::EcdsaSigner>), io::Error> {
@@ -1715,8 +1721,7 @@ impl<
 	// Archiving removes a monitor's updates as well, but stores written by prior versions may
 	// still hold updates for keys whose monitor was archived. If a new monitor is later persisted
 	// under such a key, reading it would apply the archived channel's updates onto it, so they
-	// are removed before any monitor is read. Keys which also have a live monitor are skipped, as
-	// the live monitor's stored updates may still be needed by it.
+	// are removed before any monitor is read.
 	async fn cleanup_archived_monitor_updates(&self) -> Result<(), io::Error> {
 		let archived_primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
 		let archived_secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
