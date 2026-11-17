@@ -1649,7 +1649,7 @@ impl<
 		&self, onion_message: OnionMessage, first_node_id: PublicKey, addresses: Vec<SocketAddress>,
 	) -> Result<SendSuccess, SendError> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
-		if outbound_buffer_full(&first_node_id, &message_recipients) {
+		if outbound_buffer_full(&first_node_id, true, &message_recipients) {
 			return Err(SendError::BufferFull);
 		}
 
@@ -1701,7 +1701,7 @@ impl<
 		};
 
 		let mut message_recipients = self.message_recipients.lock().unwrap();
-		if outbound_buffer_full(&next_node_id, &message_recipients) {
+		if outbound_buffer_full(&next_node_id, false, &message_recipients) {
 			log_trace!(
 				self.logger,
 				"Dropping forwarded onion message to peer {}: outbound buffer full {}",
@@ -1766,7 +1766,7 @@ impl<
 		&self, message: OnionMessage, peer_node_id: &PublicKey,
 	) -> Result<(), SendError> {
 		let mut message_recipients = self.message_recipients.lock().unwrap();
-		if outbound_buffer_full(&peer_node_id, &message_recipients) {
+		if outbound_buffer_full(&peer_node_id, false, &message_recipients) {
 			return Err(SendError::BufferFull);
 		}
 
@@ -2006,15 +2006,35 @@ impl<
 
 const MAX_TOTAL_BUFFER_SIZE: usize = (1 << 20) * 128;
 pub(super) const MAX_PER_PEER_BUFFER_SIZE: usize = (1 << 10) * 256;
+/// Peers we aren't connected to may only consume this many buffered bytes. The first hop of a
+/// reply is chosen by the sender of the message being replied to, so without this limit a
+/// requester could have us buffer messages for any number of nodes we aren't connected to, up to
+/// [`MAX_TOTAL_BUFFER_SIZE`], by naming a new node id in every reply path.
+pub(super) const MAX_PENDING_CONNECTION_BUFFER_SIZE: usize = MAX_TOTAL_BUFFER_SIZE / 2;
 
+/// Returns true if buffering another onion message for `peer_node_id` would exceed one of the
+/// outbound buffer limits. `may_buffer_for_unconnected_peer` should only be true if the caller
+/// would buffer the message for `peer_node_id` even if we aren't connected to it; only such
+/// messages are also limited by [`MAX_PENDING_CONNECTION_BUFFER_SIZE`], which caps how much we
+/// buffer for peers we aren't connected to overall.
 fn outbound_buffer_full(
-	peer_node_id: &PublicKey, buffer: &HashMap<PublicKey, OnionMessageRecipient>,
+	peer_node_id: &PublicKey, may_buffer_for_unconnected_peer: bool,
+	buffer: &HashMap<PublicKey, OnionMessageRecipient>,
 ) -> bool {
 	let mut total_buffered_bytes = 0;
 	let mut peer_buffered_bytes = 0;
+	let mut unconnected_buffered_bytes = 0;
+	let mut peer_is_connected = false;
 	for (pk, peer_buf) in buffer {
+		let is_connected = peer_buf.is_connected();
+		if pk == peer_node_id {
+			peer_is_connected = is_connected;
+		}
 		for om in peer_buf.pending_messages() {
 			let om_len = om.serialized_length();
+			if !is_connected {
+				unconnected_buffered_bytes += om_len;
+			}
 			if pk == peer_node_id {
 				peer_buffered_bytes += om_len;
 			}
@@ -2027,7 +2047,11 @@ fn outbound_buffer_full(
 			}
 		}
 	}
-	false
+	// The unconnected-peer budget must not block messages for peers we are connected to, so it
+	// only applies once the walk has established whether `peer_node_id` is connected.
+	may_buffer_for_unconnected_peer
+		&& !peer_is_connected
+		&& unconnected_buffered_bytes >= MAX_PENDING_CONNECTION_BUFFER_SIZE
 }
 
 impl<
