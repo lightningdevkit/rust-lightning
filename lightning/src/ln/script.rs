@@ -183,13 +183,15 @@ impl TryFrom<ScriptBuf> for ShutdownScript {
 	}
 }
 
-// Note that this is only for our own shutdown scripts. Counterparties are still allowed to send us
-// non-witness shutdown scripts which this rejects.
+// Note that this is only for our own shutdown scripts. While `is_bolt2_compliant` accepts legacy
+// P2PKH/P2SH scripts from counterparties, we only ever use witness programs (or `OP_RETURN` for
+// `option_simple_close`) ourselves, as our closing transaction dust limit assumes segwit outputs.
 impl TryFrom<(ScriptBuf, &InitFeatures)> for ShutdownScript {
 	type Error = InvalidShutdownScript;
 
 	fn try_from((script, features): (ScriptBuf, &InitFeatures)) -> Result<Self, Self::Error> {
-		if is_bolt2_compliant(&script, features) {
+		let is_witness_or_op_return = script.is_witness_program() || script.is_op_return();
+		if is_bolt2_compliant(&script, features) && is_witness_or_op_return {
 			Ok(Self(ShutdownScriptImpl::Bolt2(script)))
 		} else {
 			Err(InvalidShutdownScript { script })
@@ -342,6 +344,15 @@ mod shutdown_script_tests {
 
 	#[test]
 	fn fails_from_unsupported_script() {
+		// Non-witness P2PKH and P2SH scripts are only accepted from counterparties, never used as
+		// our own shutdown script.
+		let p2pkh_script = ScriptBuf::new_p2pkh(&pubkey().pubkey_hash());
+		assert!(ShutdownScript::try_from(p2pkh_script.clone()).is_err());
+		assert!(ShutdownScript::try_from((p2pkh_script, &any_segwit_features())).is_err());
+		let p2sh_script = ScriptBuf::new_p2sh(&redeem_script().script_hash());
+		assert!(ShutdownScript::try_from(p2sh_script.clone()).is_err());
+		assert!(ShutdownScript::try_from((p2sh_script, &any_segwit_features())).is_err());
+
 		// For `option_simple_close` we assert we fail when:
 		//
 		// - The first byte of the OP_RETURN data (interpreted as u8 int) is not equal to the

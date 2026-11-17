@@ -1,0 +1,6 @@
+# API Updates
+ * `ShutdownScript::try_from` (and the `TryFrom<ScriptBuf>` conversion it delegates to) now rejects
+   legacy P2PKH and P2SH scripts again, as it did prior to 0.2. Such scripts were accidentally
+   re-admitted when `OP_RETURN` support was added, and could cause a cooperative close to fall back
+   to a force-close when used as the node's own closing script with a local balance of 355 to 545
+   satoshis (#5608).
