@@ -8428,6 +8428,14 @@ where
 			return Ok(None);
 		}
 
+		// While our signature for their initial commitment is pending, `signer_maybe_unblocked`
+		// rebuilds that commitment from `counterparty_next_commitment_point`, so the point must
+		// not advance underneath it. Our peer cannot have broadcast the funding transaction
+		// without that signature, so it has no reason to send channel_ready yet.
+		if self.context.signer_pending_funding {
+			return Err(ChannelError::close("Peer sent a channel_ready before we sent our initial commitment signature".to_owned()));
+		}
+
 		self.context.counterparty_current_commitment_point = self.context.counterparty_next_commitment_point;
 		self.context.counterparty_next_commitment_point = Some(msg.next_per_commitment_point);
 		self.context.interactive_tx_signing_session = None;

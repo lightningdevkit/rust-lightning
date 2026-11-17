@@ -27,7 +27,7 @@ use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, ErrorAction, Me
 use crate::ln::outbound_payment::RecipientOnionFields;
 use crate::ln::{functional_test_utils::*, msgs};
 use crate::sign::ecdsa::EcdsaChannelSigner;
-use crate::sign::SignerProvider;
+use crate::sign::{ChannelSigner, SignerProvider};
 use crate::util::logger::Logger;
 use crate::util::test_channel_signer::SignerOp;
 use crate::util::wallet_utils::WalletSourceSync;
@@ -260,6 +260,98 @@ fn do_test_funding_signed(signer_ops: Vec<SignerOp>) {
 		} else {
 			assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 		}
+	}
+}
+
+#[test]
+fn test_channel_ready_before_async_funding_signed() {
+	// A `channel_ready` received while our `funding_signed` is waiting on the signer would advance
+	// the counterparty's commitment point underneath the initial commitment we have yet to sign,
+	// so we must close the channel instead.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	const INITIAL_COMMITMENT_NUMBER: u64 = (1 << 48) - 1;
+
+	nodes[0].node.create_channel(node_b_id, 100000, 10001, 42, None, None).unwrap();
+
+	// nodes[0] --- open_channel --> nodes[1]
+	let open_chan_msg = get_event_msg!(nodes[0], MessageSendEvent::SendOpenChannel, node_b_id);
+	handle_and_accept_open_channel(&nodes[1], node_a_id, &open_chan_msg);
+
+	// nodes[0] <-- accept_channel --- nodes[1]
+	nodes[0].node.handle_accept_channel(
+		node_b_id,
+		&get_event_msg!(nodes[1], MessageSendEvent::SendAcceptChannel, node_a_id),
+	);
+
+	// nodes[0] --- funding_created --> nodes[1]
+	let (temporary_channel_id, tx, _) =
+		create_funding_transaction(&nodes[0], &node_b_id, 100000, 42);
+	nodes[0].node.funding_transaction_generated(temporary_channel_id, node_b_id, tx).unwrap();
+	let funding_created_msg =
+		get_event_msg!(nodes[0], MessageSendEvent::SendFundingCreated, node_b_id);
+
+	// nodes[1]'s signer is unavailable while handling the `funding_created`, so no
+	// `funding_signed` goes out.
+	nodes[1].disable_channel_signer_op(
+		&node_a_id,
+		&temporary_channel_id,
+		SignerOp::SignCounterpartyCommitment,
+	);
+	nodes[1].node.handle_funding_created(node_a_id, &funding_created_msg);
+	check_added_monitors(&nodes[1], 1);
+	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
+
+	// nodes[0] --- channel_ready --> nodes[1], before nodes[1] ever sent `funding_signed`.
+	// Send the funder's second per-commitment point, i.e. the point handling the message would
+	// advance `counterparty_next_commitment_point` to, rather than the first one we already hold.
+	let chan_id = nodes[1].node.list_channels()[0].channel_id;
+	let next_per_commitment_point = {
+		let per_peer_state = nodes[0].node.per_peer_state.read().unwrap();
+		let mut chan_lock = per_peer_state.get(&node_b_id).unwrap().lock().unwrap();
+		let channel = chan_lock.channel_by_id.get_mut(&chan_id).unwrap();
+		let chan = channel.as_unfunded_outbound_v1_mut().unwrap();
+		chan.context
+			.get_mut_signer()
+			.get_per_commitment_point(INITIAL_COMMITMENT_NUMBER - 1, &Secp256k1::new())
+			.unwrap()
+	};
+	let channel_ready = msgs::ChannelReady {
+		channel_id: chan_id,
+		next_per_commitment_point,
+		short_channel_id_alias: None,
+	};
+	nodes[1].node.handle_channel_ready(node_a_id, &channel_ready);
+
+	let err = "Peer sent a channel_ready before we sent our initial commitment signature";
+	check_added_monitors(&nodes[1], 1);
+	let msg_events = nodes[1].node.get_and_clear_pending_msg_events();
+	assert_eq!(msg_events.len(), 1);
+	match &msg_events[0] {
+		MessageSendEvent::HandleError {
+			action: ErrorAction::SendErrorMessage { msg },
+			node_id,
+		} => {
+			assert_eq!(*node_id, node_a_id);
+			assert_eq!(msg.channel_id, chan_id);
+			assert_eq!(msg.data, err);
+		},
+		_ => panic!("Unexpected event"),
+	}
+	let events = nodes[1].node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 2);
+	assert!(matches!(events[0], Event::ChannelPending { .. }));
+	match &events[1] {
+		Event::ChannelClosed { channel_id, reason, .. } => {
+			assert_eq!(*channel_id, chan_id);
+			assert_eq!(*reason, ClosureReason::ProcessingError { err: err.to_owned() });
+		},
+		_ => panic!("Unexpected event"),
 	}
 }
 
