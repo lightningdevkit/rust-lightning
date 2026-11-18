@@ -10379,13 +10379,15 @@ where
 
 		// We will never broadcast the funding transaction when we're in MonitorUpdateInProgress
 		// (and we assume the user never directly broadcasts the funding transaction and waits for
-		// us to do it). Thus, we can only ever hit monitor_pending_channel_ready when we're
+		// us to do it). Thus, we can hit monitor_pending_channel_ready when we're
 		// * an inbound channel that failed to persist the monitor on funding_created and we got
-		//   the funding transaction confirmed before the monitor was persisted, or
-		// * a 0-conf channel and intended to send the channel_ready before any broadcast at all.
+		//   the funding transaction confirmed before the monitor was persisted,
+		// * a 0-conf channel and intended to send the channel_ready before any broadcast at all, or
+		// * an outbound channel resumed from a `ChannelManager` that was serialized while the
+		//   initial `ChannelMonitor` persistence was pending - a prior process broadcast the
+		//   funding transaction after that serialization, and chain sync can have seen it confirm
+		//   before the pending completion is processed here.
 		let channel_ready = if self.context.monitor_pending_channel_ready {
-			assert!(!self.funding.is_outbound() || self.context.minimum_depth == Some(0),
-				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
 			let channel_ready = self.get_channel_ready(logger);
 			requires_channel_manager_persistence |= channel_ready.is_some();

@@ -20736,6 +20736,31 @@ impl<
 								""
 							),
 						);
+					} else if funded_chan.is_awaiting_monitor_update()
+						&& funded_chan.blocked_monitor_updates_pending() == 0
+						&& monitor.get_latest_update_id()
+							== funded_chan.get_latest_unblocked_monitor_update_id()
+					{
+						// Neither the initial `ChannelMonitor` persistence nor blocked updates
+						// (which we dropped above if the `ChannelMonitor` already applied them)
+						// are tracked as in-flight updates. If the channel is still awaiting a
+						// monitor update, but has none in-flight or blocked, the persistence it
+						// was waiting on (whose result we have a `ChannelMonitor` for) completed
+						// after we were last serialized. Resume the channel the same way we do
+						// when all of its in-flight updates completed, otherwise it would never
+						// make progress (e.g. an outbound channel would never broadcast its
+						// funding transaction).
+						//
+						// The update id equality above implies the `ChannelMonitor` has applied
+						// every update the channel generated: a channel lagging its
+						// `ChannelMonitor` was force-closed above, and one ahead of it is
+						// rejected by the stale-`ChannelManager` check below.
+						log_debug!(logger, "A ChannelMonitor persistence completed since the ChannelManager was last serialized");
+						pending_background_events.push(BackgroundEvent::MonitorUpdatesComplete {
+							counterparty_node_id: *counterparty_id,
+							channel_id: *chan_id,
+							highest_update_id_completed: monitor.get_latest_update_id(),
+						});
 					}
 					if funded_chan.get_latest_unblocked_monitor_update_id()
 						> max_in_flight_update_id
