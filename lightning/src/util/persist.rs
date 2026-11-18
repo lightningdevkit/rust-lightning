@@ -892,10 +892,25 @@ impl<ChannelSigner: EcdsaChannelSigner, K: KVStoreSync + ?Sized> Persist<Channel
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
+		// As in the `MonitorUpdatingPersister` implementations, a fresh monitor must not be
+		// written under a key which has an archived monitor: archiving the fresh monitor would
+		// overwrite the archived one.
+		let monitor_key = monitor_name.to_key();
+		match self.list(
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		) {
+			Ok(archived_keys) => {
+				if archived_keys.iter().any(|key| key == monitor_key.as_str()) {
+					return chain::ChannelMonitorUpdateStatus::InProgress;
+				}
+			},
+			Err(_) => return chain::ChannelMonitorUpdateStatus::UnrecoverableError,
+		}
 		match self.write(
 			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
 			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
-			monitor_name.to_key().as_str(),
+			monitor_key.as_str(),
 			monitor.encode(),
 		) {
 			Ok(()) => chain::ChannelMonitorUpdateStatus::Completed,
@@ -1218,6 +1233,30 @@ where
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
+		let monitor_key = monitor_name.to_key();
+		match poll_sync_future(self.0 .0.has_archived_monitor(monitor_key.as_str())) {
+			Ok(false) => {},
+			Ok(true) => {
+				log_error!(
+					self.0 .0.logger,
+					"Refusing to persist new ChannelMonitor {}: an archived ChannelMonitor is \
+					stored under the same key. Persistence will be left in progress forever and \
+					the channel will not be able to make progress.",
+					monitor_name
+				);
+				return chain::ChannelMonitorUpdateStatus::InProgress;
+			},
+			Err(e) => {
+				log_error!(
+					self.0 .0.logger,
+					"Failed to check for archived ChannelMonitors prior to persisting new \
+					ChannelMonitor {}, reason: {}",
+					monitor_name,
+					e
+				);
+				return chain::ChannelMonitorUpdateStatus::UnrecoverableError;
+			},
+		}
 		let monitor_bytes = serialize_full_monitor(monitor, self.0 .0.maximum_pending_updates);
 		let res = poll_sync_future(self.0 .0.write_new_monitor(monitor_name, monitor_bytes));
 		match res {
@@ -1441,14 +1480,39 @@ where
 		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
-		// Note that `write_new_monitor` is a sync method which calls all the way through to the
-		// sync KVStore::write method (which returns a future) to ensure writes are well-ordered.
-		let monitor_bytes = serialize_full_monitor(monitor, self.0.maximum_pending_updates);
-		let future = inner.write_new_monitor(monitor_name, monitor_bytes);
+		let monitor_key = monitor_name.to_key();
 		let channel_id = monitor.channel_id();
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
+		let monitor_bytes = serialize_full_monitor(monitor, self.0.maximum_pending_updates);
 		let _runs_free = self.0.future_spawner.spawn(async move {
-			match future.await {
+			// The write is only queued once the check for an archived monitor under the same key
+			// completes, as a fresh monitor must never be written over an archived one. Unlike
+			// `spawn_async_update_channel`, which queues its write on the calling thread to ensure
+			// writes are well-ordered, this write is queued from the spawned task, so a
+			// chain-sync full-monitor write for the same key (e.g. triggered by a block
+			// connection racing in the between-spawn-and-poll window) could theoretically be
+			// queued first, in which case the watch-time monitor serialized above would win on
+			// disk. The window is narrow and a regressed monitor is repaired by replaying blocks
+			// on restart; the `ChannelManager` will not queue monitor updates for the channel
+			// until this persistence completes.
+			match inner.has_archived_monitor(monitor_key.as_str()).await {
+				Ok(false) => {},
+				Ok(true) => {
+					log_error!(
+						inner.logger,
+						"Refusing to persist new ChannelMonitor {channel_id}: an archived ChannelMonitor is stored under the same key. Persistence will be left in progress forever and the channel will not be able to make progress."
+					);
+					return;
+				},
+				Err(e) => {
+					log_error!(
+						inner.logger,
+						"Failed to check for archived ChannelMonitors prior to persisting new ChannelMonitor {channel_id}, reason: {e}. The node will now likely stall as this channel will not be able to make progress. You should restart as soon as possible."
+					);
+					return;
+				},
+			}
+			match inner.write_new_monitor(monitor_name, monitor_bytes).await {
 				Ok(()) => {
 					inner.async_completed_updates.lock().unwrap().push(completion);
 					notifier.notify();
@@ -1813,6 +1877,18 @@ impl<
 		Ok(())
 	}
 
+	// Returns whether an archived `ChannelMonitor` is stored under the given key.
+	//
+	// A fresh monitor must never be persisted under a key which has an archived monitor: when
+	// the fresh monitor is ultimately archived, it would overwrite the archived monitor,
+	// defeating the purpose of archiving.
+	async fn has_archived_monitor(&self, monitor_key: &str) -> Result<bool, io::Error> {
+		let primary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE;
+		let secondary = ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE;
+		let archived_monitor_keys = self.kv_store.list(primary, secondary).await?;
+		Ok(archived_monitor_keys.iter().any(|key| key == monitor_key))
+	}
+
 	// Queues a write of the given serialized `ChannelMonitor` under the key for `monitor_name`,
 	// returning a future for the completion of the write.
 	fn write_new_monitor(
@@ -1942,15 +2018,14 @@ impl<
 				e
 			);
 		}
-		// The archived monitor has all stored updates applied, so drop them too. The key of a v1
-		// channel is its funding outpoint, which the funder picks, so a new monitor may later be
-		// persisted under this key starting at `update_id` 0, and any updates we leave behind
-		// would be replayed onto it when it is read. The removal here is lazy, as any updates
-		// left behind when it is lost are removed by `cleanup_archived_monitor_updates` on the
-		// next startup, which the non-lazy removal above keeps a stale live monitor from
-		// blocking. A failure here is only logged.
-		// `ChainMonitor` will not persist a monitor under this key while it is being archived, so
-		// no lock is needed beyond that.
+		// The archived monitor has all stored updates applied, so drop them too, rather than
+		// leaving them orphaned under the key. The removal here is lazy, as any updates left
+		// behind when it is lost are removed by `cleanup_archived_monitor_updates` on the next
+		// startup, which the non-lazy removal above keeps a stale live monitor from blocking. A
+		// failure here is only logged.
+		// Note that once the archived write above completes, `persist_new_channel` will refuse to
+		// persist a fresh monitor under this key, so the updates removed here cannot be replayed
+		// onto a fresh monitor.
 		if let Err(e) = self.cleanup_stale_updates_for_monitor_to(key, u64::MAX, true).await {
 			log_error!(
 				self.logger,
@@ -2827,6 +2902,139 @@ mod tests {
 		)
 		.unwrap();
 		assert!(update_list.is_empty());
+	}
+
+	// Confirm that persisting a new monitor under a key which has an archived monitor is refused,
+	// leaving the persistence in progress forever: the fresh monitor would alias the archived
+	// one, and archiving the fresh monitor later would overwrite the archived monitor.
+	#[test]
+	fn refuses_new_monitor_aliasing_archived_monitor() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			100,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = monitor.persistence_key();
+		let monitor_key = monitor_name.to_string();
+
+		Persist::<TestChannelSigner>::archive_persisted_channel(&persister, monitor_name);
+		let archived_monitor_bytes = KVStoreSync::read(
+			&kv_store,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+		)
+		.unwrap();
+
+		let status =
+			Persist::<TestChannelSigner>::persist_new_channel(&persister, monitor_name, monitor);
+		assert_eq!(status, ChannelMonitorUpdateStatus::InProgress);
+		assert!(KVStoreSync::read(
+			&kv_store,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+		)
+		.is_err());
+		assert_eq!(
+			KVStoreSync::read(
+				&kv_store,
+				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+				ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+				&monitor_key,
+			)
+			.unwrap(),
+			archived_monitor_bytes
+		);
+	}
+
+	// Confirm that the default `Persist` implementation over a `KVStoreSync` also refuses to
+	// persist a new monitor under a key which has an archived monitor.
+	#[test]
+	fn default_persister_refuses_new_monitor_aliasing_archived_monitor() {
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let kv_store = TestStore::new(false);
+		let persister = MonitorUpdatingPersister::new(
+			&kv_store,
+			&chanmon_cfgs[0].logger,
+			100,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].keys_manager,
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].fee_estimator,
+		);
+		let mut node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let chain_mon_0 = test_utils::TestChainMonitor::new(
+			Some(&chanmon_cfgs[0].chain_source),
+			&chanmon_cfgs[0].tx_broadcaster,
+			&chanmon_cfgs[0].logger,
+			&chanmon_cfgs[0].fee_estimator,
+			&persister,
+			&chanmon_cfgs[0].keys_manager,
+		);
+		node_cfgs[0].chain_monitor = chain_mon_0;
+		let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+		let _ = create_announced_chan_between_nodes(&nodes, 0, 1);
+		send_payment(&nodes[0], &vec![&nodes[1]][..], 8_000_000);
+
+		let persisted_chan_data = persister.read_all_channel_monitors_with_updates().unwrap();
+		assert_eq!(persisted_chan_data.len(), 1);
+		let (_, monitor) = &persisted_chan_data[0];
+		let monitor_name = monitor.persistence_key();
+		let monitor_key = monitor_name.to_string();
+
+		// The blanket `Persist` implementation is exercised on a separate store, as the monitor
+		// was persisted to `kv_store` above.
+		let blanket_impl_store = TestStore::new(false);
+		KVStoreSync::write(
+			&blanket_impl_store,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+			monitor.encode(),
+		)
+		.unwrap();
+
+		let status = Persist::<TestChannelSigner>::persist_new_channel(
+			&blanket_impl_store,
+			monitor_name,
+			monitor,
+		);
+		assert_eq!(status, ChannelMonitorUpdateStatus::InProgress);
+		assert!(KVStoreSync::read(
+			&blanket_impl_store,
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&monitor_key,
+		)
+		.is_err());
 	}
 
 	// Confirm that reading all monitors removes updates left behind for already-archived monitors

@@ -36,13 +36,16 @@ use crate::sign::NodeSigner;
 use crate::types::string::UntrustedString;
 use crate::util::native_async::FutureQueue;
 use crate::util::persist::{
-	MonitorName, MonitorUpdatingPersisterAsync, CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
-	CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+	KVStoreSync, MonitorName, MonitorUpdatingPersisterAsync,
+	ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+	ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+	CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE, CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
 	CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE,
 };
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
 use crate::util::test_utils::TestBroadcaster;
+use crate::util::wakers::Notifier;
 use bitcoin::constants::genesis_block;
 use bitcoin::hash_types::BlockHash;
 use bitcoin::network::Network;
@@ -5051,6 +5054,18 @@ fn native_async_persist() {
 		Arc::clone(&tx_broadcaster),
 		Arc::clone(&fee_estimator),
 	);
+	// A second persister over the same store, used below to spawn persistence operations directly
+	// once `native_async_persister` has been moved into the `ChainMonitor`.
+	let direct_persister = MonitorUpdatingPersisterAsync::new(
+		Arc::clone(&kv_store),
+		Arc::clone(&persist_futures),
+		Arc::clone(&logger),
+		42,
+		Arc::clone(&keys_manager),
+		Arc::clone(&keys_manager),
+		Arc::clone(&tx_broadcaster),
+		Arc::clone(&fee_estimator),
+	);
 	let chain_source = test_utils::TestChainSource::new(Network::Testnet);
 	let async_chain_monitor = ChainMonitor::new_async_beta(
 		Some(&chain_source),
@@ -5067,6 +5082,7 @@ fn native_async_persist() {
 	// isn't returned until the write is completed (via `complete_all_async_writes`) and the future
 	// is `poll`ed (which a background spawn should do automatically in production, but which is
 	// needed to get the future completion through to the `ChainMonitor`).
+	let monitor_alias = monitor.clone();
 	let write_status = async_chain_monitor.watch_channel(chan_id, monitor).unwrap();
 	assert_eq!(write_status, ChannelMonitorUpdateStatus::InProgress);
 
@@ -5198,6 +5214,35 @@ fn native_async_persist() {
 	} else {
 		panic!();
 	}
+
+	// Finally, confirm that a fresh monitor is refused from persisting under a key which has an
+	// archived monitor, leaving the persistence in progress forever rather than aliasing the
+	// archived monitor. `native_async_persister` was moved into the `ChainMonitor` above, so a
+	// second persister over the same store is used to spawn the persistence directly.
+	let monitor_name = MonitorName::V1Channel(funding_txo);
+	KVStoreSync::write(
+		&*kv_store,
+		ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+		ARCHIVED_CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+		&key,
+		monitor_alias.encode(),
+	)
+	.unwrap();
+
+	direct_persister.spawn_async_persist_new_channel(
+		monitor_name,
+		&monitor_alias,
+		Arc::new(Notifier::new()),
+	);
+	persist_futures.poll_futures();
+	assert_eq!(persist_futures.pending_futures(), 0);
+	assert!(kv_store
+		.list_pending_async_writes(
+			CHANNEL_MONITOR_PERSISTENCE_PRIMARY_NAMESPACE,
+			CHANNEL_MONITOR_PERSISTENCE_SECONDARY_NAMESPACE,
+			&key,
+		)
+		.is_empty());
 }
 
 #[test]
