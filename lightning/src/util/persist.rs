@@ -715,7 +715,8 @@ where
 	fn persist_new_channel(
 		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
 	) -> chain::ChannelMonitorUpdateStatus {
-		let res = poll_sync_future(self.0 .0.persist_new_channel(monitor_name, monitor));
+		let monitor_bytes = serialize_full_monitor(monitor, self.0 .0.maximum_pending_updates);
+		let res = poll_sync_future(self.0 .0.write_new_monitor(monitor_name, monitor_bytes));
 		match res {
 			Ok(_) => chain::ChannelMonitorUpdateStatus::Completed,
 			Err(e) => {
@@ -940,9 +941,10 @@ where
 		notifier: Arc<Notifier>,
 	) {
 		let inner = Arc::clone(&self.0);
-		// Note that `persist_new_channel` is a sync method which calls all the way through to the
+		// Note that `write_new_monitor` is a sync method which calls all the way through to the
 		// sync KVStore::write method (which returns a future) to ensure writes are well-ordered.
-		let future = inner.persist_new_channel(monitor_name, monitor);
+		let monitor_bytes = serialize_full_monitor(monitor, self.0.maximum_pending_updates);
+		let future = inner.write_new_monitor(monitor_name, monitor_bytes);
 		let channel_id = monitor.channel_id();
 		let completion = (monitor.channel_id(), monitor.get_latest_update_id());
 		self.0.future_spawner.spawn(async move {
@@ -1003,6 +1005,24 @@ where
 	pub(crate) fn get_and_clear_completed_updates(&self) -> Vec<(ChannelId, u64)> {
 		mem::take(&mut *self.0.async_completed_updates.lock().unwrap())
 	}
+}
+
+// Serializes a full `ChannelMonitor` snapshot for persistence, prepending the sentinel unless
+// monitor updates are disabled entirely.
+fn serialize_full_monitor<ChannelSigner: EcdsaChannelSigner>(
+	monitor: &ChannelMonitor<ChannelSigner>, maximum_pending_updates: u64,
+) -> Vec<u8> {
+	let mut monitor_bytes = Vec::with_capacity(
+		MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() + monitor.serialized_length(),
+	);
+	// If `maximum_pending_updates` is zero, we aren't actually writing monitor updates at all.
+	// Thus, there's no need to add the sentinel prefix as the monitor can be read directly from
+	// disk without issue.
+	if maximum_pending_updates != 0 {
+		monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
+	}
+	monitor.write(&mut monitor_bytes).unwrap();
+	monitor_bytes
 }
 
 impl<K: Deref, S: FutureSpawner, L: Deref, ES: Deref, SP: Deref, BI: Deref, FE: Deref>
@@ -1200,22 +1220,12 @@ where
 		Ok(())
 	}
 
-	fn persist_new_channel<ChannelSigner: EcdsaChannelSigner>(
-		&self, monitor_name: MonitorName, monitor: &ChannelMonitor<ChannelSigner>,
-	) -> impl Future<Output = Result<(), io::Error>> {
-		// Determine the proper key for this monitor
+	// Queues a write of the given serialized `ChannelMonitor` under the key for `monitor_name`,
+	// returning a future for the completion of the write.
+	fn write_new_monitor(
+		&self, monitor_name: MonitorName, monitor_bytes: Vec<u8>,
+	) -> AsyncResult<'static, (), io::Error> {
 		let monitor_key = monitor_name.to_string();
-		// Serialize and write the new monitor
-		let mut monitor_bytes = Vec::with_capacity(
-			MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL.len() + monitor.serialized_length(),
-		);
-		// If `maximum_pending_updates` is zero, we aren't actually writing monitor updates at all.
-		// Thus, there's no need to add the sentinel prefix as the monitor can be read directly
-		// from disk without issue.
-		if self.maximum_pending_updates != 0 {
-			monitor_bytes.extend_from_slice(MONITOR_UPDATING_PERSISTER_PREPEND_SENTINEL);
-		}
-		monitor.write(&mut monitor_bytes).unwrap();
 		// Note that this is NOT an async function, but rather calls the *sync* KVStore write
 		// method, allowing it to do its queueing immediately, and then return a future for the
 		// completion of the write. This ensures monitor persistence ordering is preserved.
@@ -1259,7 +1269,8 @@ where
 				// write method, allowing it to do its queueing immediately, and then return a
 				// future for the completion of the write. This ensures monitor persistence
 				// ordering is preserved. This, thus, must happen before any await we do below.
-				let write_fut = self.persist_new_channel(monitor_name, monitor);
+				let monitor_bytes = serialize_full_monitor(monitor, self.maximum_pending_updates);
+				let write_fut = self.write_new_monitor(monitor_name, monitor_bytes);
 				let latest_update_id = monitor.get_latest_update_id();
 
 				res_b = Some(async move {
@@ -1288,7 +1299,8 @@ where
 			// Note that this is NOT an async function, but rather calls the *sync* KVStore write
 			// method, allowing it to do its queueing immediately, and then return a future for the
 			// completion of the write. This ensures monitor persistence ordering is preserved.
-			res_c = Some(self.persist_new_channel(monitor_name, monitor));
+			let monitor_bytes = serialize_full_monitor(monitor, self.maximum_pending_updates);
+			res_c = Some(self.write_new_monitor(monitor_name, monitor_bytes));
 		}
 		async move {
 			// Complete any pending future(s). Note that to keep one return type we have to end
