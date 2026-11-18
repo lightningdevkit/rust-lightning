@@ -299,11 +299,6 @@ pub enum PendingHTLCRouting {
 		/// Preimage for this onion payment. This preimage is provided by the sender and will be
 		/// used to settle the spontaneous payment.
 		payment_preimage: PaymentPreimage,
-		/// Additional data which we (allegedly) instructed the sender to include in the onion.
-		///
-		/// For HTLCs received by LDK, this will ultimately bubble back up as
-		/// [`RecipientOnionFields::payment_metadata`].
-		payment_metadata: Option<Vec<u8>>,
 		/// CLTV expiry of the received HTLC.
 		///
 		/// Used to track when we should expire pending HTLCs that go unclaimed.
@@ -9225,7 +9220,6 @@ impl<
 						PendingHTLCRouting::ReceiveKeysend {
 							payment_data,
 							payment_preimage,
-							payment_metadata,
 							incoming_cltv_expiry,
 							custom_tlvs,
 							requires_blinded_error: _,
@@ -9241,7 +9235,7 @@ impl<
 									.as_ref()
 									.map(|data| data.total_msat)
 									.unwrap_or(outgoing_amt_msat),
-								payment_metadata,
+								payment_metadata: None,
 								custom_tlvs,
 							};
 							(
@@ -18956,7 +18950,7 @@ impl_ser_tlv_based_enum!(PendingHTLCRouting,
 		(0, payment_preimage, required),
 		(1, requires_blinded_error, (default_value, false)),
 		(2, incoming_cltv_expiry, required),
-		(3, payment_metadata, option),
+		(3, _payment_metadata, retired),
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
