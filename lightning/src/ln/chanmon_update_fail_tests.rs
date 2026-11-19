@@ -5901,10 +5901,9 @@ fn do_test_monitor_update_after_funding_spend(async_persist: bool) {
 	// (like PaymentClaimed) must still fire.
 	//
 	// With `async_persist`, the persister returns InProgress for every update and the test
-	// marks them complete via `channel_monitor_updated`, except for the full-monitor persist
-	// of the refused stale commitment update. Persists without a `ChannelMonitorUpdate` are
-	// never marked complete (see `Persist::update_persisted_channel`), so it must not hold up
-	// the completion of the updates that follow it.
+	// marks them complete via `channel_monitor_updated`, including the persist of the refused
+	// stale commitment update. As the refused update still changed the monitor's state, its
+	// persist must hold up the completion of the updates that follow it.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
 	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
@@ -5961,6 +5960,7 @@ fn do_test_monitor_update_after_funding_spend(async_persist: bool) {
 	}
 	nodes[1].node.handle_commitment_signed(node_a_id, &payment_event.commitment_msg[0]);
 	check_added_monitors(&nodes[1], 1);
+	let refused_update_id = get_monitor!(nodes[1], chan_id).get_latest_update_id();
 
 	// B claims payment 1. The preimage monitor update also returns InProgress (deferred),
 	// so no Completed-while-InProgress assertion fires.
@@ -5991,6 +5991,15 @@ fn do_test_monitor_update_after_funding_spend(async_persist: bool) {
 	if async_persist {
 		let update_id = get_monitor!(nodes[1], chan_id).get_latest_update_id();
 		nodes[1].chain_monitor.chain_monitor.channel_monitor_updated(chan_id, update_id).unwrap();
+		// The ChannelForceClosed update is now marked completed, but the refused update's
+		// persist is still in progress, so its completion action (PaymentClaimed) must not
+		// fire yet.
+		assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
+		nodes[1]
+			.chain_monitor
+			.chain_monitor
+			.channel_monitor_updated(chan_id, refused_update_id)
+			.unwrap();
 	}
 
 	// Second event cycle: the ChannelForceClosed completion resolves, unblocking the
