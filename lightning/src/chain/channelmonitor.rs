@@ -3641,6 +3641,15 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				return ConfirmationTarget::UrgentOnChainSweep;
 			}
 		}
+		// If a revoked counterparty commitment transaction is on chain, its outputs must be
+		// claimed before the counterparty can spend them once their CSV delay expires, whether or
+		// not any of the above commitments have HTLCs pending. This also covers a revocation
+		// secret which arrives after the commitment transaction confirmed, as
+		// `get_min_seen_secret` drops when the secret is provided.
+		let min_seen_secret = self.get_min_seen_secret();
+		if self.counterparty_commitment_txn_on_chain.values().any(|commitment_num| *commitment_num >= min_seen_secret) {
+			return ConfirmationTarget::UrgentOnChainSweep;
+		}
 		ConfirmationTarget::OutputSpendingFee
 	}
 
