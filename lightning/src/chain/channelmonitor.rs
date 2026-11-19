@@ -4558,7 +4558,12 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 				},
 				ChannelMonitorUpdateStep::RenegotiatedFundingLocked { funding_txid } => {
 					log_trace!(logger, "Updating ChannelMonitor with locked renegotiated funding txid {}", funding_txid);
-					if let Err(_) = self.promote_funding(*funding_txid) {
+					// Once the channel is closed we promote a confirmed alternative funding
+					// ourselves once it irrevocably confirms, so a promotion arriving late, after
+					// the funding was already seen spent on-chain, must not race with it.
+					if self.no_further_updates_allowed() {
+						log_debug!(logger, "Ignoring locked renegotiated funding txid {} as the channel was already closed", funding_txid);
+					} else if let Err(_) = self.promote_funding(*funding_txid) {
 						log_error!(logger, "Unknown funding with txid {} became locked", funding_txid);
 						ret = Err(());
 					}
@@ -6164,6 +6169,29 @@ impl<Signer: EcdsaChannelSigner> ChannelMonitorImpl<Signer> {
 					watch_outputs.append(&mut new_outputs);
 				} else {
 					log_info!(logger, "Not broadcasting holder commitment for manual-broadcast channel before funding appears on-chain");
+				}
+			}
+		}
+
+		// If an alternative funding transaction confirmed while we were still allowing monitor
+		// updates, we relied on a [`ChannelMonitorUpdateStep::RenegotiatedFundingLocked`] to
+		// promote its `FundingScope`. That can no longer happen once the channel is closed, so
+		// promote it ourselves once it's irrevocably confirmed, as we would have if the channel
+		// had already been closed when it confirmed.
+		if self.no_further_updates_allowed() {
+			if let Some((txid, height, block_hash)) = self.alternative_funding_confirmed {
+				let promotion_pending = self.onchain_events_awaiting_threshold_conf.iter()
+					.any(|e| matches!(e.event, OnchainEvent::AlternativeFundingConfirmation {}));
+				if !promotion_pending {
+					log_info!(logger, "Channel closed before alternative funding with txid {} was locked, \
+						promoting it once irrevocably confirmed", txid);
+					self.onchain_events_awaiting_threshold_conf.push(OnchainEventEntry {
+						txid,
+						transaction: None,
+						height,
+						block_hash,
+						event: OnchainEvent::AlternativeFundingConfirmation {},
+					});
 				}
 			}
 		}
