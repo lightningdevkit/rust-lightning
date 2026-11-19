@@ -349,6 +349,11 @@ pub struct ChannelDetails {
 	///
 	/// Note that this means this value is *not* persistent - it can change once during the
 	/// lifetime of the channel.
+	///
+	/// Note that for channels established via V1 channel establishment, prior to initial
+	/// channel setup this value is chosen by our counterparty for inbound channels, and is
+	/// thus only guaranteed to be unique among the channels we have with that counterparty
+	/// which are still open.
 	pub channel_id: ChannelId,
 	/// Parameters which apply to our counterparty. See individual fields for more information.
 	pub counterparty: ChannelCounterparty,
