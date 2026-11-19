@@ -989,6 +989,15 @@ impl Bolt12Invoice {
 		&self.bytes
 	}
 
+	/// Whether the invoice contains any TLV record with a type at or above the experimental
+	/// invoice range, i.e., a type of 4,000,000,000 or above.
+	///
+	/// Such records are valid per the spec, but unknown to this version of LDK, so invoices
+	/// containing them should generally not be paid.
+	pub fn has_records_above_experimental_range(&self) -> bool {
+		has_records_above_experimental_range(&self.bytes)
+	}
+
 	/// Hash that was used for signing the invoice.
 	pub fn signable_hash(&self) -> [u8; 32] {
 		self.tagged_hash.as_digest().as_ref().clone()
@@ -1586,9 +1595,19 @@ pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::RangeFrom<u64> = 3_000_0
 
 /// Exclusive upper bound of the experimental invoice TLV range that this version of LDK acts on.
 ///
-/// Records at or above this type are unknown to this version of LDK. The payer proof extension
-/// rejects omitted record markers in the range.
+/// Records at or above this type are unknown to this version of LDK: invoices containing them
+/// are refused for payment, and the payer proof extension rejects omitted record markers in the
+/// range.
 pub(super) const EXPERIMENTAL_INVOICE_TYPES_END: u64 = 4_000_000_000;
+
+/// Returns whether the serialized invoice contains any TLV record with a type at or above
+/// [`EXPERIMENTAL_INVOICE_TYPES_END`].
+///
+/// The stream must be well-formed, as always produced by a successfully parsed or builder-built
+/// invoice; malformed input panics.
+pub(super) fn has_records_above_experimental_range(bytes: &[u8]) -> bool {
+	TlvStream::new(bytes).any(|record| record.r#type >= EXPERIMENTAL_INVOICE_TYPES_END)
+}
 
 #[cfg(not(test))]
 tlv_stream!(
@@ -3604,7 +3623,7 @@ mod tests {
 	fn parses_invoice_with_tlv_records_above_experimental_range() {
 		// LDK 0.2 and earlier read the experimental invoice range as open-ended and may have
 		// persisted invoices containing such records, which must remain deserializable.
-		let invoice = invoice_with_record_above_experimental_range();
+		let invoice = invoice_with_record_above_experimental_range(Network::Bitcoin);
 
 		let mut encoded_invoice = Vec::new();
 		invoice.write(&mut encoded_invoice).unwrap();

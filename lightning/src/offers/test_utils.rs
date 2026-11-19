@@ -9,6 +9,7 @@
 
 //! Utilities for testing BOLT 12 Offers interfaces
 
+use bitcoin::network::Network;
 use bitcoin::secp256k1::schnorr::Signature;
 use bitcoin::secp256k1::{Keypair, PublicKey, Secp256k1, SecretKey};
 
@@ -17,7 +18,9 @@ use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::blinded_path::BlindedHop;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::ExpandedKey;
-use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice, EXPERIMENTAL_INVOICE_TYPES_END};
+use crate::offers::invoice::{
+	Bolt12Invoice, UnsignedBolt12Invoice, EXPERIMENTAL_INVOICE_TYPES_END,
+};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::TaggedHash;
 use crate::sign::EntropySource;
@@ -187,11 +190,27 @@ pub(crate) fn dummy_invoice_request() -> InvoiceRequest {
 		.unwrap()
 }
 
-/// A [`Bolt12Invoice`] containing an unknown odd TLV record with a type above the experimental
-/// invoice range. Such invoices are deserialized, but refused for payment.
-pub(crate) fn invoice_with_record_above_experimental_range() -> Bolt12Invoice {
+/// A [`Bolt12Invoice`] for the given chain containing an unknown odd TLV record with a type above
+/// the experimental invoice range. Such invoices are deserialized, but refused for payment.
+pub(crate) fn invoice_with_record_above_experimental_range(chain: Network) -> Bolt12Invoice {
+	let expanded_key = ExpandedKey::new([42; 32]);
+	let entropy = FixedEntropy {};
+	let nonce = Nonce::from_entropy_source(&entropy);
+	let secp_ctx = Secp256k1::new();
+	let payment_id = PaymentId([1; 32]);
+
 	let mut bytes = Vec::new();
-	dummy_invoice_request()
+	OfferBuilder::new(recipient_pubkey())
+		.chain(chain)
+		.amount_msats(1000)
+		.build()
+		.unwrap()
+		.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
+		.unwrap()
+		.chain(chain)
+		.unwrap()
+		.build_and_sign()
+		.unwrap()
 		.respond_with_no_std(payment_paths(), payment_hash(), now())
 		.unwrap()
 		.build()
@@ -207,8 +226,5 @@ pub(crate) fn invoice_with_record_above_experimental_range() -> Bolt12Invoice {
 	[42u8; 32].write(&mut bytes).unwrap();
 
 	// Re-parse the modified bytes so the invoice's tagged hash covers the appended record.
-	UnsignedBolt12Invoice::try_from(bytes)
-		.unwrap()
-		.sign(recipient_sign)
-		.unwrap()
+	UnsignedBolt12Invoice::try_from(bytes).unwrap().sign(recipient_sign).unwrap()
 }

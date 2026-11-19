@@ -16,8 +16,8 @@ use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
 	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks,
-	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, FallbackAddress,
-	InvoiceTlvStream, InvoiceTlvStreamRef,
+	has_records_above_experimental_range, ExperimentalInvoiceTlvStream,
+	ExperimentalInvoiceTlvStreamRef, FallbackAddress, InvoiceTlvStream, InvoiceTlvStreamRef,
 };
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
@@ -403,6 +403,15 @@ impl StaticInvoice {
 	/// Signature of the invoice verified using [`StaticInvoice::signing_pubkey`].
 	pub fn signature(&self) -> Signature {
 		self.signature
+	}
+
+	/// Whether the invoice contains any TLV record with a type at or above the experimental
+	/// invoice range, i.e., a type of 4,000,000,000 or above.
+	///
+	/// Such records are valid per the spec, but unknown to this version of LDK, so invoices
+	/// containing them should generally not be paid.
+	pub fn has_records_above_experimental_range(&self) -> bool {
+		has_records_above_experimental_range(&self.bytes)
 	}
 
 	/// Whether the [`Offer`] that this invoice is based on is expired.
@@ -1743,6 +1752,15 @@ mod tests {
 			Ok(invoice) => assert_eq!(invoice.bytes, encoded_invoice),
 			Err(e) => panic!("error reading invoice: {:?}", e),
 		}
+	}
+
+	#[test]
+	fn detects_tlv_records_above_experimental_range() {
+		let invoice = static_invoice_with_record_above_experimental_range();
+		assert!(invoice.has_records_above_experimental_range());
+
+		let invoice = dummy_static_invoice();
+		assert!(!invoice.has_records_above_experimental_range());
 	}
 
 	#[test]
