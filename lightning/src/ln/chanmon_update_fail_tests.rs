@@ -5954,8 +5954,8 @@ fn do_test_monitor_update_after_funding_spend(async_persist: bool) {
 	nodes[1].node.handle_update_add_htlc(node_a_id, &payment_event.msgs[0]);
 
 	// B processes commitment_signed. The monitor applies the update but returns Err
-	// because no_further_updates_allowed() is true, so the full monitor is persisted
-	// instead of the update. ChainMonitor returns InProgress, freezing the channel.
+	// because no_further_updates_allowed() is true. The update is persisted anyway, and
+	// ChainMonitor returns InProgress, freezing the channel.
 	if async_persist {
 		chanmon_cfgs[1].persister.set_update_ret(ChannelMonitorUpdateStatus::InProgress);
 	}

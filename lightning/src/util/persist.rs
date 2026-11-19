@@ -1673,9 +1673,21 @@ impl<
 		}
 		for (update_name, update_res) in MultiResultFuturePoller::new(update_futures).await {
 			let update = update_res?;
-			monitor
-				.update_monitor(&update, &self.broadcaster, &self.fee_estimator, &self.logger)
-				.map_err(|e| {
+			if let Err(e) = monitor.update_monitor(
+				&update,
+				&self.broadcaster,
+				&self.fee_estimator,
+				&self.logger,
+			) {
+				// Updates the monitor refused (e.g. because the funding output was already spent
+				// on-chain) are persisted anyway, so replaying them here may fail for the same
+				// reason the live monitor refused them -- or succeed, if the persisted base
+				// monitor predates the chain data that triggered the refusal, as chain-driven
+				// full monitor writes are throttled. Either way, the update's steps are applied
+				// to the replayed monitor just as they were to the live one, so continue with
+				// the remaining updates rather than refusing to restore the monitor. Note the
+				// replay only matches the live application modulo chain-data-gated side
+				// effects, such as failing back outbound HTLCs after a funding spend.
 				log_error!(
 					self.logger,
 					"Monitor update failed. monitor: {} update: {} reason: {:?}",
@@ -1683,8 +1695,7 @@ impl<
 					update_name.as_str(),
 					e
 				);
-				io::Error::new(io::ErrorKind::Other, "Monitor update failed")
-			})?;
+			}
 		}
 		Ok(Some((best_block, monitor)))
 	}

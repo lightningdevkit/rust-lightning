@@ -1,0 +1,11 @@
+## Bug Fixes
+ * When a `ChannelMonitor` refuses a `ChannelMonitorUpdate` because the funding
+   output was already spent on-chain, the update is now persisted like any
+   other update rather than only as part of a full monitor write. With
+   asynchronous persistence, the refused update was previously not tracked as
+   pending, so `MonitorEvent::Completed` for a later update could imply that
+   the refused update (which may carry a forwarded HTLC's preimage) was durable
+   before the write containing it landed (#5640). Restoring a monitor with the
+   built-in persisters previously failed entirely if replaying a stored update
+   was refused by the `ChannelMonitor`; the refusal is now logged and the
+   monitor is restored anyway.
