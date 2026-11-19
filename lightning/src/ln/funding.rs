@@ -529,7 +529,30 @@ fn estimate_transaction_fee(
 	Weight::from_wu(weight) * feerate
 }
 
+// Every lightning message is prefixed with a 2-byte message type.
+const MESSAGE_TYPE_PREFIX_LEN: usize = 2;
+
+// A `tx_add_input` message template with an omitted `prevtx`, used to calculate the per-message
+// overhead when determining whether an input's previous transaction fits in a message.
+const TX_ADD_INPUT_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
+	channel_id: ChannelId([0; 32]),
+	serial_id: 0,
+	prevtx: None,
+	prevtx_out: 0,
+	sequence: 0,
+	// Mutually exclusive with prevtx, which is accounted for separately.
+	shared_input_txid: None,
+};
+
+/// The maximum serialized length of an input's previous transaction for the input to still fit
+/// within a `tx_add_input` message.
+fn max_input_prevtx_serialized_len() -> u64 {
+	use crate::util::ser::Writeable;
+	(LN_MAX_MSG_LEN - MESSAGE_TYPE_PREFIX_LEN - TX_ADD_INPUT_TEMPLATE.serialized_length()) as u64
+}
+
 fn validate_inputs(inputs: &[ConfirmedUtxo]) -> Result<(), FundingContributionError> {
+	use crate::util::ser::Writeable;
 	let mut total_value = Amount::ZERO;
 	for (idx, input) in inputs.iter().enumerate() {
 		if inputs[..idx]
@@ -539,19 +562,8 @@ fn validate_inputs(inputs: &[ConfirmedUtxo]) -> Result<(), FundingContributionEr
 			return Err(FundingContributionError::InvalidSpliceValue);
 		}
 
-		use crate::util::ser::Writeable;
-		const MESSAGE_TYPE_PREFIX_LEN: usize = 2;
-		const MESSAGE_TEMPLATE: msgs::TxAddInput = msgs::TxAddInput {
-			channel_id: ChannelId([0; 32]),
-			serial_id: 0,
-			prevtx: None,
-			prevtx_out: 0,
-			sequence: 0,
-			// Mutually exclusive with prevtx, which is accounted for below.
-			shared_input_txid: None,
-		};
 		let message_len = MESSAGE_TYPE_PREFIX_LEN
-			+ MESSAGE_TEMPLATE.serialized_length()
+			+ TX_ADD_INPUT_TEMPLATE.serialized_length()
 			+ input.prevtx.serialized_length();
 		(message_len <= LN_MAX_MSG_LEN)
 			.then(|| ())
@@ -1991,6 +2003,7 @@ impl<W: CoinSelectionSource + MaybeSend> AsyncFundingBuilder<W> {
 				&must_pay_to,
 				inner.feerate.to_sat_per_kwu() as u32,
 				u64::MAX,
+				max_input_prevtx_serialized_len(),
 			)
 			.await
 			.map_err(|_| FundingContributionError::CoinSelectionFailed)?;
@@ -2104,6 +2117,7 @@ impl<W: CoinSelectionSourceSync> SyncFundingBuilder<W> {
 				&must_pay_to,
 				inner.feerate.to_sat_per_kwu() as u32,
 				u64::MAX,
+				max_input_prevtx_serialized_len(),
 			)
 			.map_err(|_| FundingContributionError::CoinSelectionFailed)?;
 
@@ -2255,6 +2269,7 @@ mod tests {
 		fn select_confirmed_utxos(
 			&self, _claim_id: Option<ClaimId>, _must_spend: Vec<Input>, _must_pay_to: &[TxOut],
 			_target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+			_max_input_prevtx_serialized_len: u64,
 		) -> Result<CoinSelection, ()> {
 			unreachable!("should not reach coin selection")
 		}
@@ -2273,6 +2288,7 @@ mod tests {
 		fn select_confirmed_utxos(
 			&self, _claim_id: Option<ClaimId>, _must_spend: Vec<Input>, must_pay_to: &[TxOut],
 			_target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+			_max_input_prevtx_serialized_len: u64,
 		) -> Result<CoinSelection, ()> {
 			assert_eq!(
 				must_pay_to.iter().map(|output| output.value).collect::<Vec<_>>(),
@@ -3095,18 +3111,70 @@ mod tests {
 		assert_eq!(msg.serialized_length() + 2, crate::ln::LN_MAX_MSG_LEN + 1);
 
 		let wallet = SingleUtxoWallet {
-			utxo: ConfirmedUtxo::new_p2wpkh(prevtx, 0).unwrap(),
+			utxo: ConfirmedUtxo::new_p2wpkh(prevtx.clone(), 0).unwrap(),
 			change_output: None,
 		};
 		assert!(matches!(
 			FundingTemplate::new(None, None, None, Amount::ZERO)
 				.with_prior_contribution(feerate, feerate)
-				.with_coin_selection_source_sync(wallet)
+				.with_coin_selection_source_sync(&wallet)
 				.add_value(Amount::from_sat(10_000))
 				.unwrap()
 				.build(),
 			Err(FundingContributionError::PrevTxTooLarge),
 		));
+	}
+
+	#[test]
+	fn test_build_funding_contribution_skips_oversized_prevtx_utxo() {
+		use crate::util::test_utils::{TestLogger, TestWalletSource};
+		use crate::util::wallet_utils::WalletSync;
+		use bitcoin::secp256k1::SecretKey;
+
+		// A wallet UTXO whose prevtx does not fit in a `tx_add_input` message.
+		let feerate = FeeRate::from_sat_per_kwu(2000);
+		let prevtx = Transaction {
+			input: vec![],
+			output: vec![
+				funding_output_sats(50_000),
+				TxOut {
+					value: Amount::ZERO,
+					script_pubkey: ScriptBuf::from_bytes(vec![0; 65_430]),
+				},
+			],
+			version: Version::TWO,
+			lock_time: bitcoin::absolute::LockTime::ZERO,
+		};
+		let wallet_source = TestWalletSource::new(SecretKey::from_slice(&[42; 32]).unwrap());
+		wallet_source.add_utxo(prevtx.clone(), 0);
+		let logger = TestLogger::new();
+		let wallet = WalletSync::new(&wallet_source, &logger);
+
+		// The wallet skips the UTXO up front, so coin selection fails instead of ever selecting
+		// an input that couldn't be sent in a `tx_add_input` message.
+		assert!(matches!(
+			FundingTemplate::new(None, None, None, Amount::ZERO)
+				.with_prior_contribution(feerate, feerate)
+				.with_coin_selection_source_sync(&wallet)
+				.add_value(Amount::from_sat(10_000))
+				.unwrap()
+				.build(),
+			Err(FundingContributionError::CoinSelectionFailed),
+		));
+
+		// The UTXO was never selected, so it remains available, e.g., to fund a claim.
+		let claim_selection = wallet
+			.select_confirmed_utxos(
+				Some(ClaimId([42; 32])),
+				Vec::new(),
+				&[funding_output_sats(10_000)],
+				feerate.to_sat_per_kwu() as u32,
+				u64::MAX,
+				u64::MAX,
+			)
+			.unwrap();
+		let utxo = ConfirmedUtxo::new_p2wpkh(prevtx, 0).unwrap();
+		assert_eq!(claim_selection.confirmed_utxos[0].outpoint(), utxo.outpoint());
 	}
 
 	#[test]
@@ -4038,6 +4106,7 @@ mod tests {
 		fn select_confirmed_utxos(
 			&self, _claim_id: Option<ClaimId>, _must_spend: Vec<Input>, _must_pay_to: &[TxOut],
 			_target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+			_max_input_prevtx_serialized_len: u64,
 		) -> Result<CoinSelection, ()> {
 			Ok(CoinSelection {
 				confirmed_utxos: vec![self.utxo.clone()],
