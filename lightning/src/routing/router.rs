@@ -2608,7 +2608,6 @@ impl<'a> PaymentPath<'a> {
 			let hop_max_final_value_contribution = (hop_max_msat as u128)
 				.checked_sub(next_hops_aggregated_base as u128)
 				.and_then(|f| f.checked_mul(1_000_000))
-				.and_then(|f| f.checked_add(next_hops_aggregated_prop as u128))
 				.map(|f| f / ((next_hops_aggregated_prop as u128).saturating_add(1_000_000)));
 
 			if let Some(hop_contribution) = hop_max_final_value_contribution {
@@ -3823,6 +3822,14 @@ pub(crate) fn get_route<L: Logger, S: ScoreLookUp>(
 							continue 'paths_collection;
 						}
 					};
+				if max_path_contribution_msat == 0 {
+					let candidate = &payment_path.hops[lowest_value_contrib_hop].0.candidate;
+					log_trace!(logger,
+						"Ignoring path because hop {} cannot contribute any value.",
+						LoggedCandidateHop(candidate));
+					mark_candidate_liquidity_exhausted(&mut used_liquidities, candidate);
+					continue 'paths_collection;
+				}
 				let desired_value_contribution = cmp::min(max_path_contribution_msat, final_value_msat);
 				value_contribution_msat = match payment_path.update_value_and_recompute_fees(desired_value_contribution) {
 					Some(contribution) => contribution,
@@ -8849,6 +8856,144 @@ mod tests {
 			&random_seed_bytes,
 		);
 		assert!(route.is_err());
+	}
+
+	#[test]
+	fn max_final_contribution_with_over_100_pct_fees() {
+		// The formula computing the maximum value a path can contribute to the final value
+		// received by the payee used to assume the aggregated proportional fee of the hops
+		// following a given hop was below 100%. Invoice hints (and blinded paths) may carry
+		// arbitrary fees, and with an aggregate proportional fee of 100% or more the computed
+		// maximum overshot the true one by 1 msat, building paths that exceed a hop's available
+		// liquidity (and panicking in debug builds). Test the boundary with a recipient-provided
+		// hint hop charging a 300% proportional fee.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ln_test_utils::TestScorer::new();
+		let random_seed_bytes = [42; 32];
+		let config = UserConfig::default();
+
+		let (_, our_node_id, _, nodes) = get_nodes(&secp_ctx);
+		let first_hops = [get_channel_details(
+			Some(1),
+			nodes[0],
+			channelmanager::provided_init_features(&config),
+			1_000_001,
+		)];
+		let route_hint = RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[0],
+			short_channel_id: 44,
+			fees: RoutingFees { base_msat: 0, proportional_millionths: 3_000_000 },
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]);
+		let payment_params = PaymentParameters::from_node_id(nodes[1], 42)
+			.with_route_hints(vec![route_hint])
+			.unwrap()
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
+
+		// Sending 250_000 msat plus the 750_000 msat fee on it fits in the first hop's available
+		// liquidity of 1_000_001 msat.
+		let route_params = RouteParameters {
+			payment_params: payment_params.clone(),
+			final_value_msat: 250_000,
+			max_total_routing_fee_msat: None,
+		};
+		let route = get_route(
+			&our_node_id,
+			&route_params,
+			&network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()),
+			Arc::clone(&logger),
+			&scorer,
+			&Default::default(),
+			&random_seed_bytes,
+		)
+		.unwrap();
+		assert_eq!(route.paths.len(), 1);
+		assert_eq!(route.get_total_amount(), 250_000);
+		assert_eq!(route.get_total_fees(), 750_000);
+
+		// Sending 250_001 msat would require 1_000_004 msat over the first hop, exceeding its
+		// available liquidity. The router used to compute 250_001 msat as the path's maximum
+		// contribution anyway, overshooting the first hop's liquidity by 3 msat.
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 250_001,
+			max_total_routing_fee_msat: None,
+		};
+		let route = get_route(
+			&our_node_id,
+			&route_params,
+			&network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()),
+			Arc::clone(&logger),
+			&scorer,
+			&Default::default(),
+			&random_seed_bytes,
+		);
+		assert!(route.is_err());
+	}
+
+	#[test]
+	fn discards_paths_with_zero_max_contribution() {
+		// Once the path's maximum contribution is computed exactly, it can be 0 even for a path
+		// whose hops were each admitted with positive contribution: the fees of the following
+		// hops may leave no room on a hop. Building such a path must be avoided, as a valueless
+		// path consumes no liquidity and would otherwise be rebuilt indefinitely, preventing
+		// get_route from terminating.
+		let secp_ctx = Secp256k1::new();
+		let logger = Arc::new(ln_test_utils::TestLogger::new());
+		let network_graph = Arc::new(NetworkGraph::new(Network::Testnet, Arc::clone(&logger)));
+		let scorer = ln_test_utils::TestScorer::new();
+		let random_seed_bytes = [42; 32];
+		let config = UserConfig::default();
+
+		let (_, our_node_id, _, nodes) = get_nodes(&secp_ctx);
+		let first_hops = [get_channel_details(
+			Some(1),
+			nodes[0],
+			channelmanager::provided_init_features(&config),
+			1,
+		)];
+		let route_hint = RouteHint(vec![RouteHintHop {
+			src_node_id: nodes[0],
+			short_channel_id: 44,
+			fees: RoutingFees { base_msat: 0, proportional_millionths: 1 },
+			cltv_expiry_delta: 10,
+			htlc_minimum_msat: None,
+			htlc_maximum_msat: None,
+		}]);
+		let payment_params = PaymentParameters::from_node_id(nodes[1], 42)
+			.with_route_hints(vec![route_hint])
+			.unwrap()
+			.with_bolt11_features(channelmanager::provided_bolt11_invoice_features(&config))
+			.unwrap();
+
+		// The hint's proportional fee is 0 for a 2 msat payment, so the walk admits the 1 msat
+		// first hop at a contribution of 1 msat. The first hop's maximum contribution to the
+		// final value is 0 once that fee is accounted for:
+		// ((1 - 0) * 1_000_000) / (1_000_000 + 1) = 0.
+		let route_params = RouteParameters {
+			payment_params,
+			final_value_msat: 2,
+			max_total_routing_fee_msat: None,
+		};
+		let route = get_route(
+			&our_node_id,
+			&route_params,
+			&network_graph.read_only(),
+			Some(&first_hops.iter().collect::<Vec<_>>()),
+			Arc::clone(&logger),
+			&scorer,
+			&Default::default(),
+			&random_seed_bytes,
+		);
+		assert!(route.is_err());
+		logger.assert_log_contains("lightning::routing::router", "cannot contribute any value", 1);
 	}
 
 	#[test]
