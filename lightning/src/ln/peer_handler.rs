@@ -3676,6 +3676,7 @@ impl<
 	}
 
 	fn do_disconnect(&self, mut descriptor: Descriptor, peer: &Peer, reason: &'static str) {
+		self.gossip_blocked_peers.lock().unwrap().retain(|queued| queued != &descriptor);
 		if !peer.handshake_complete() {
 			log_trace!(
 				self.logger,
@@ -3705,6 +3706,7 @@ impl<
 	fn disconnect_event_internal(&self, descriptor: &Descriptor, reason: &'static str) {
 		let mut peers = self.peers.write().unwrap();
 		let peer_option = peers.remove(descriptor);
+		self.gossip_blocked_peers.lock().unwrap().retain(|queued| queued != descriptor);
 		match peer_option {
 			None => {
 				// This is most likely a simple race condition where the user found that the socket
