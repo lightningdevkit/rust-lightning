@@ -1,0 +1,6 @@
+# API Updates
+
+ * `lightning::util::message_signing::sign` now returns a `Result`, and refuses to sign messages
+   which, once prefixed with "Lightning Signed Message:", serialize as a `node_announcement`. A
+   signature over such a message could otherwise be replayed as a (forged) `node_announcement`
+   signature (#386).

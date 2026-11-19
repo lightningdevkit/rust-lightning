@@ -835,7 +835,7 @@ impl NodeSigner for KeyProvider {
 	}
 
 	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
-		Ok(lightning::util::message_signing::sign(msg, &self.node_secret))
+		lightning::util::message_signing::sign(msg, &self.node_secret)
 	}
 }
 

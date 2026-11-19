@@ -2034,7 +2034,7 @@ fn route_blinding_spec_test_vector() {
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
 		fn sign_gossip_message(&self, _msg: UnsignedGossipMessage) -> Result<Signature, ()> { unreachable!() }
 
-		fn sign_message(&self, msg: &[u8]) -> Result<String, ()> { Ok(crate::util::message_signing::sign(msg, &self.node_secret)) }
+		fn sign_message(&self, msg: &[u8]) -> Result<String, ()> { crate::util::message_signing::sign(msg, &self.node_secret) }
 	}
 	let logger = test_utils::TestLogger::with_id("".to_owned());
 
@@ -2348,7 +2348,7 @@ fn test_trampoline_inbound_payment_decoding() {
 			&self, _invoice: &UnsignedBolt12Invoice,
 		) -> Result<schnorr::Signature, ()> { unreachable!() }
 		fn sign_gossip_message(&self, _msg: UnsignedGossipMessage) -> Result<Signature, ()> { unreachable!() }
-		fn sign_message(&self, msg: &[u8]) -> Result<String, ()> { Ok(crate::util::message_signing::sign(msg, &self.node_secret)) }
+		fn sign_message(&self, msg: &[u8]) -> Result<String, ()> { crate::util::message_signing::sign(msg, &self.node_secret) }
 	}
 	let logger = test_utils::TestLogger::with_id("".to_owned());
 

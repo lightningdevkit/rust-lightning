@@ -1982,7 +1982,7 @@ impl NodeSigner for TestNodeSigner {
 	}
 
 	fn sign_message(&self, msg: &[u8]) -> Result<String, ()> {
-		Ok(crate::util::message_signing::sign(msg, &self.node_secret))
+		crate::util::message_signing::sign(msg, &self.node_secret)
 	}
 }
 
