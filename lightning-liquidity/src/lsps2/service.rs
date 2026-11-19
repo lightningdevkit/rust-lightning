@@ -619,7 +619,8 @@ impl PeerState {
 		self.needs_persist |= true;
 	}
 
-	fn prune_pending_requests(&mut self) {
+	fn prune_pending_requests(&mut self) -> usize {
+		let num_requests_before_prune = self.pending_requests.len();
 		self.pending_requests.retain(|_, entry| {
 			match entry {
 				LSPS2Request::GetInfo(_) => false,
@@ -629,6 +630,7 @@ impl PeerState {
 				},
 			}
 		});
+		num_requests_before_prune - self.pending_requests.len()
 	}
 
 	fn prune_expired_request_state(&mut self) {
@@ -1994,7 +1996,18 @@ where
 			let mut peer_state_lock = inner_state_lock.lock().unwrap();
 			// We clean up the peer state, but leave removing the peer entry to the prune logic in
 			// `persist` which removes it from the store.
-			peer_state_lock.prune_pending_requests();
+			let num_pruned = peer_state_lock.prune_pending_requests();
+			// The pruned requests will never be answered, so we need to release their slots in
+			// the global counter, too.
+			let res = self.total_pending_requests.fetch_update(
+				Ordering::Relaxed,
+				Ordering::Relaxed,
+				|x| Some(x.saturating_sub(num_pruned)),
+			);
+			debug_assert!(
+				res.is_ok_and(|previous_value| previous_value >= num_pruned),
+				"total_pending_requests counter out-of-sync! This should never happen!"
+			);
 			peer_state_lock.prune_expired_request_state();
 		}
 	}
