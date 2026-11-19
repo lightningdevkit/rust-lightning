@@ -68,7 +68,9 @@ impl Writeable for InvoiceError {
 		let tlv_fieldnum = self.erroneous_field.as_ref().map(|f| f.tlv_fieldnum);
 		let suggested_value =
 			self.erroneous_field.as_ref().and_then(|f| f.suggested_value.as_ref());
-		write_tlv_fields!(writer, {
+		// The BOLT 12 `invoice_error` message is carried in an onion message TLV record, which
+		// already delimits the message, so the TLV stream itself is not length-prefixed.
+		encode_tlv_stream!(writer, {
 			(1, tlv_fieldnum, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(3, suggested_value, (option, encoding: (Vec<u8>, WithoutLength))),
 			(5, WithoutLength(&self.message), required),
@@ -79,7 +81,7 @@ impl Writeable for InvoiceError {
 
 impl Readable for InvoiceError {
 	fn read<R: io::Read>(reader: &mut R) -> Result<Self, DecodeError> {
-		_init_and_read_len_prefixed_tlv_fields!(reader, {
+		_init_and_read_tlv_stream!(reader, {
 			(1, erroneous_field, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 			(3, suggested_value, (option, encoding: (Vec<u8>, WithoutLength))),
 			(5, error, (option, encoding: (UntrustedString, WithoutLength))),
@@ -201,8 +203,8 @@ mod tests {
 		let error: Option<&String> = None;
 
 		let mut writer = VecWriter(Vec::new());
-		let mut write_tlv = || -> Result<(), DecodeError> {
-			write_tlv_fields!(&mut writer, {
+		let mut write_tlv = || -> Result<(), crate::io::Error> {
+			encode_tlv_stream!(&mut writer, {
 				(1, tlv_fieldnum, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 				(3, suggested_value, (option, encoding: (Vec<u8>, WithoutLength))),
 				(5, error, (option, encoding: (String, WithoutLength))),
@@ -227,8 +229,8 @@ mod tests {
 		let error = "Invalid value".to_string();
 
 		let mut writer = VecWriter(Vec::new());
-		let mut write_tlv = || -> Result<(), DecodeError> {
-			write_tlv_fields!(&mut writer, {
+		let mut write_tlv = || -> Result<(), crate::io::Error> {
+			encode_tlv_stream!(&mut writer, {
 				(1, tlv_fieldnum, (option, encoding: (u64, HighZeroBytesDroppedBigSize))),
 				(3, Some(&suggested_value), (option, encoding: (Vec<u8>, WithoutLength))),
 				(5, Some(&error), (option, encoding: (String, WithoutLength))),
@@ -244,5 +246,25 @@ mod tests {
 				assert_eq!(e, DecodeError::InvalidValue);
 			},
 		}
+	}
+
+	#[test]
+	fn parses_bolt12_invoice_error_bytes() {
+		// The BOLT 12 `invoice_error` message for the error text "out of stock": a bare TLV
+		// stream containing only the required type 5 `error` field.
+		let bytes = [
+			0x05, // type: error
+			0x0c, // length: 12
+			0x6f, 0x75, 0x74, 0x20, 0x6f, 0x66, 0x20, 0x73, 0x74, 0x6f, 0x63,
+			0x6b, // "out of stock"
+		];
+
+		let invoice_error = InvoiceError::read(&mut &bytes[..]).unwrap();
+		assert_eq!(invoice_error.message, UntrustedString("out of stock".to_string()));
+		assert_eq!(invoice_error.erroneous_field, None);
+
+		let mut writer = VecWriter(Vec::new());
+		InvoiceError::from_string("out of stock".to_string()).write(&mut writer).unwrap();
+		assert_eq!(writer.0, &bytes[..]);
 	}
 }
