@@ -17,11 +17,13 @@ use crate::blinded_path::payment::{BlindedPayInfo, BlindedPaymentPath};
 use crate::blinded_path::BlindedHop;
 use crate::ln::channelmanager::PaymentId;
 use crate::ln::inbound_payment::ExpandedKey;
+use crate::offers::invoice::{Bolt12Invoice, UnsignedBolt12Invoice, EXPERIMENTAL_INVOICE_TYPES_END};
 use crate::offers::invoice_request::InvoiceRequest;
 use crate::offers::merkle::TaggedHash;
 use crate::sign::EntropySource;
 use crate::types::features::BlindedHopFeatures;
 use crate::types::payment::PaymentHash;
+use crate::util::ser::{BigSize, Writeable};
 use core::time::Duration;
 
 #[allow(unused_imports)]
@@ -182,5 +184,31 @@ pub(crate) fn dummy_invoice_request() -> InvoiceRequest {
 		.request_invoice(&expanded_key, nonce, &secp_ctx, payment_id)
 		.unwrap()
 		.build_and_sign()
+		.unwrap()
+}
+
+/// A [`Bolt12Invoice`] containing an unknown odd TLV record with a type above the experimental
+/// invoice range. Such invoices are deserialized, but refused for payment.
+pub(crate) fn invoice_with_record_above_experimental_range() -> Bolt12Invoice {
+	let mut bytes = Vec::new();
+	dummy_invoice_request()
+		.respond_with_no_std(payment_paths(), payment_hash(), now())
+		.unwrap()
+		.build()
+		.unwrap()
+		.write(&mut bytes)
+		.unwrap();
+
+	// The record is odd so it is unknown to the parser rather than indicating a required feature.
+	const UNKNOWN_ODD_TYPE: u64 = EXPERIMENTAL_INVOICE_TYPES_END + 1;
+	assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+	BigSize(UNKNOWN_ODD_TYPE).write(&mut bytes).unwrap();
+	BigSize(32).write(&mut bytes).unwrap();
+	[42u8; 32].write(&mut bytes).unwrap();
+
+	// Re-parse the modified bytes so the invoice's tagged hash covers the appended record.
+	UnsignedBolt12Invoice::try_from(bytes)
+		.unwrap()
+		.sign(recipient_sign)
 		.unwrap()
 }

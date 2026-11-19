@@ -1577,8 +1577,18 @@ tlv_stream!(InvoiceTlvStream, InvoiceTlvStreamRef<'a>, INVOICE_TYPES, {
 	(236, held_htlc_available_paths: (Vec<BlindedMessagePath>, WithoutLength)),
 });
 
-/// Valid type range for experimental invoice TLV records.
-pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::Range<u64> = 3_000_000_000..4_000_000_000;
+/// Type range parsed as experimental invoice TLV records.
+///
+/// The spec does not bound TLV record types, so this is open-ended, as LDK 0.2 and earlier read
+/// it. In particular, invoices persisted by those versions may contain records at or above
+/// [`EXPERIMENTAL_INVOICE_TYPES_END`] and must remain deserializable.
+pub(super) const EXPERIMENTAL_INVOICE_TYPES: core::ops::RangeFrom<u64> = 3_000_000_000..;
+
+/// Exclusive upper bound of the experimental invoice TLV range that this version of LDK acts on.
+///
+/// Records at or above this type are unknown to this version of LDK. The payer proof extension
+/// rejects omitted record markers in the range.
+pub(super) const EXPERIMENTAL_INVOICE_TYPES_END: u64 = 4_000_000_000;
 
 #[cfg(not(test))]
 tlv_stream!(
@@ -1927,7 +1937,7 @@ mod tests {
 	use crate::prelude::*;
 	use crate::types::features::{Bolt12InvoiceFeatures, InvoiceRequestFeatures, OfferFeatures};
 	use crate::types::string::PrintableString;
-	use crate::util::ser::{BigSize, Iterable, Writeable};
+	use crate::util::ser::{BigSize, Iterable, LengthReadable, Writeable};
 	#[cfg(not(c_bindings))]
 	use {crate::offers::offer::OfferBuilder, crate::offers::refund::RefundBuilder};
 	#[cfg(c_bindings)]
@@ -3587,6 +3597,26 @@ mod tests {
 				e,
 				Bolt12ParseError::InvalidSignature(secp256k1::Error::IncorrectSignature)
 			),
+		}
+	}
+
+	#[test]
+	fn parses_invoice_with_tlv_records_above_experimental_range() {
+		// LDK 0.2 and earlier read the experimental invoice range as open-ended and may have
+		// persisted invoices containing such records, which must remain deserializable.
+		let invoice = invoice_with_record_above_experimental_range();
+
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		match Bolt12Invoice::try_from(encoded_invoice.clone()) {
+			Ok(invoice) => assert_eq!(invoice.bytes, encoded_invoice),
+			Err(e) => panic!("error parsing invoice: {:?}", e),
+		}
+
+		match Bolt12Invoice::read_from_fixed_length_buffer(&mut &encoded_invoice[..]) {
+			Ok(invoice) => assert_eq!(invoice.bytes, encoded_invoice),
+			Err(e) => panic!("error reading invoice: {:?}", e),
 		}
 	}
 
