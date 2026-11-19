@@ -6034,10 +6034,12 @@ impl<
 	/// # Avoiding Duplicate Payments
 	///
 	/// If a pending payment is currently in-flight with the same [`PaymentId`] provided, this
-	/// method will error with [`RetryableSendFailure::DuplicatePayment`]. Note, however, that once a
-	/// payment is no longer pending (either via [`ChannelManager::abandon_payment`], or handling of
-	/// an [`Event::PaymentSent`] or [`Event::PaymentFailed`]) LDK will not stop you from sending a
-	/// second payment with the same [`PaymentId`].
+	/// method will error with [`RetryableSendFailure::DuplicatePayment`]. Once a payment is no
+	/// longer pending (either via [`ChannelManager::abandon_payment`], or handling of an
+	/// [`Event::PaymentSent`] or [`Event::PaymentFailed`]), LDK will not stop you from sending a
+	/// second payment with the same [`PaymentId`]. However, a [`PaymentId`] must only be reused to
+	/// retry the same payment after an [`Event::PaymentFailed`], never for a different payment or
+	/// after an [`Event::PaymentSent`], as LDK may otherwise pay the wrong payment.
 	///
 	/// Thus, in order to ensure duplicate payments are not sent, you should implement your own
 	/// tracking of payments, including state to indicate once a payment has completed. Because you
@@ -6158,7 +6160,8 @@ impl<
 	/// Pays a [`Bolt11Invoice`] associated with the `payment_id`. See [`Self::send_payment`] for more info.
 	///
 	/// # Payment Id
-	/// The invoice's `payment_hash().0` serves as a reliable choice for the `payment_id`.
+	/// The invoice's `payment_hash().0` serves as a reliable choice for the `payment_id`. See
+	/// [Avoiding Duplicate Payments] for when a `payment_id` may be reused.
 	///
 	/// # Handling Invoice Amounts
 	/// Some invoices require a specific minimum amount (which can be fetched with
@@ -6189,6 +6192,8 @@ impl<
 	/// resolve payment instructions strings (e.g. from QR codes, link opens, pasted instructions,
 	/// or typed instructions) into payment instructions and use this when the instructions resolve
 	/// to a BOLT 11 invoice.
+	///
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn pay_for_bolt11_invoice(
 		&self, invoice: &Bolt11Invoice, payment_id: PaymentId, amount_msats: Option<u64>,
 		optional_params: OptionalBolt11PaymentParams,
@@ -6291,7 +6296,8 @@ impl<
 	/// the payment has been abandoned (e.g. after the retry limit is reached and an
 	/// [`Event::PaymentFailed`] is generated), it can be retried by calling this method again with a
 	/// fresh `payment_id`; reusing the same `payment_id` while the payment is still pending returns
-	/// [`Bolt12PaymentError::DuplicateInvoice`].
+	/// [`Bolt12PaymentError::DuplicateInvoice`]. See [Avoiding Duplicate Payments] for when a
+	/// `payment_id` may be reused.
 	///
 	/// Returns [`Bolt12PaymentError::DuplicateInvoice`] if a payment with the given `payment_id`
 	/// is already pending, [`Bolt12PaymentError::UnsupportedChain`] if the invoice is for a chain
@@ -6303,6 +6309,7 @@ impl<
 	/// payment completes.
 	///
 	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn pay_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
 		optional_params: OptionalBolt12PaymentParams,
@@ -6544,9 +6551,11 @@ impl<
 	///
 	/// # Requested Invoices
 	///
-	/// In the case of paying a [`Bolt12Invoice`] via [`ChannelManager::pay_for_offer`], abandoning
-	/// the payment prior to receiving the invoice will result in an [`Event::PaymentFailed`] and
-	/// prevent any attempts at paying it once received.
+	/// In the case of paying a [`Bolt12Invoice`] via [`ChannelManager::pay_for_offer`] or
+	/// [`ChannelManager::create_refund_builder`], abandoning the payment prior to receiving the
+	/// invoice will result in an [`Event::PaymentFailed`]. The invoice will not be paid once
+	/// received unless the [`PaymentId`] has since been reused; see [Avoiding Duplicate Payments]
+	/// for when that is allowed.
 	///
 	/// # Restart Behavior
 	///
@@ -6554,6 +6563,7 @@ impl<
 	/// [`ChannelManager`], another [`Event::PaymentFailed`] may be generated.
 	///
 	/// [`Bolt12Invoice`]: crate::offers::invoice::Bolt12Invoice
+	/// [Avoiding Duplicate Payments]: #avoiding-duplicate-payments
 	pub fn abandon_payment(&self, payment_id: PaymentId) {
 		self.abandon_payment_with_reason(payment_id, PaymentFailureReason::UserAbandoned)
 	}
@@ -15709,6 +15719,10 @@ macro_rules! create_refund_builder { ($self: ident, $builder: ty) => {
 	/// invoice. If abandoned, or an invoice isn't received before expiration, the payment will fail
 	/// with an [`Event::PaymentFailed`].
 	///
+	/// The `payment_id` may be reused only to retry the same refund, for the same amount and
+	/// intended for the same recipient, after an [`Event::PaymentFailed`]; otherwise the wrong
+	/// invoice may be paid.
+	///
 	/// If `max_total_routing_fee_msat` is not specified, The default from
 	/// [`RouteParameters::from_payment_params_and_value`] is applied.
 	///
@@ -15872,6 +15886,9 @@ impl<
 	/// To revoke the request, use [`ChannelManager::abandon_payment`] prior to receiving the
 	/// invoice. If abandoned, or an invoice isn't received in a reasonable amount of time, the
 	/// payment will fail with an [`Event::PaymentFailed`].
+	///
+	/// The `payment_id` may be reused only to retry the same offer for the same amount after an
+	/// [`Event::PaymentFailed`]; otherwise the wrong invoice may be paid.
 	///
 	/// # Privacy
 	///
