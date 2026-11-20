@@ -291,11 +291,6 @@ pub enum PendingHTLCRouting {
 		/// Preimage for this onion payment. This preimage is provided by the sender and will be
 		/// used to settle the spontaneous payment.
 		payment_preimage: PaymentPreimage,
-		/// Additional data which we (allegedly) instructed the sender to include in the onion.
-		///
-		/// For HTLCs received by LDK, this will ultimately bubble back up as
-		/// [`RecipientOnionFields::payment_metadata`].
-		payment_metadata: Option<Vec<u8>>,
 		/// CLTV expiry of the received HTLC.
 		///
 		/// Used to track when we should expire pending HTLCs that go unclaimed.
@@ -755,6 +750,49 @@ impl Default for OptionalBolt11PaymentParams {
 			#[cfg(not(feature = "std"))]
 			retry_strategy: Retry::Attempts(3),
 			declared_total_mpp_value_msat_override: None,
+		}
+	}
+}
+
+/// Optional arguments to [`ChannelManager::pay_for_bolt12_invoice`].
+///
+/// These fields will often not need to be set, and the provided [`Self::default`] can be used.
+pub struct OptionalBolt12PaymentParams {
+	/// If the payment being made from this node is part of a larger MPP payment from multiple
+	/// nodes (i.e. because a single payment is being made from multiple wallets), you can specify
+	/// the amount this node will contribute here.
+	///
+	/// If set, it must be non-zero and at most [`Bolt12Invoice::amount_msats`]. The onion
+	/// `total_msat` is always set to the full invoice amount so the recipient can validate the
+	/// MPP payment.
+	///
+	/// Defaults to the full [`Bolt12Invoice::amount_msats`].
+	///
+	/// Returns [`Bolt12PaymentError::InvalidAmount`] if set to zero, above the invoice amount, or
+	/// below the invoice amount when the invoice does not support MPP.
+	///
+	/// [`Bolt12Invoice::amount_msats`]: crate::offers::invoice::Bolt12Invoice::amount_msats
+	pub amount_msats: Option<u64>,
+	/// Pathfinding options which tweak how the path is constructed to the recipient.
+	pub route_params_config: RouteParametersConfig,
+	/// The number of tries or time during which we'll retry this payment if some paths to the
+	/// recipient fail.
+	///
+	/// Once the retry limit is reached, further path failures will not be retried and the payment
+	/// will ultimately fail once all pending paths have failed (generating an
+	/// [`Event::PaymentFailed`]).
+	pub retry_strategy: Retry,
+}
+
+impl Default for OptionalBolt12PaymentParams {
+	fn default() -> Self {
+		Self {
+			amount_msats: None,
+			route_params_config: Default::default(),
+			#[cfg(feature = "std")]
+			retry_strategy: Retry::Timeout(core::time::Duration::from_secs(2)),
+			#[cfg(not(feature = "std"))]
+			retry_strategy: Retry::Attempts(3),
 		}
 	}
 }
@@ -3771,9 +3809,10 @@ pub enum SpliceContributionError {
 	/// No funded channel with the given `channel_id` exists with the given `counterparty_node_id`:
 	/// the channel was closed or never funded, or the ids are wrong. Nothing remains to splice.
 	ChannelUnavailable,
-	/// A contribution of ours is already queued or under negotiation on the channel. Wait for that
-	/// attempt to resolve, or cancel it with [`ChannelManager::cancel_funding_contributed`], before
-	/// obtaining a fresh [`FundingTemplate`].
+	/// A contribution of ours is already queued or under negotiation on the channel, whether we or
+	/// the counterparty initiated the round negotiating it. Wait for that attempt to resolve, or
+	/// cancel it with [`ChannelManager::cancel_funding_contributed`], before obtaining a fresh
+	/// [`FundingTemplate`].
 	ContributionPending,
 	/// The channel refused the contribution, ending the splice attempt before negotiation began.
 	/// The reason takes the place of the [`Event::SpliceNegotiationFailed`] emitted for attempts
@@ -5134,7 +5173,7 @@ impl<
 		}
 	}
 
-	/// Cancels an in-flight [`FundingContribution`].
+	/// Cancels every pending [`FundingContribution`] of ours on the channel.
 	///
 	/// This is primarily useful after receiving an [`Event::FundingTransactionReadyForSigning`] for
 	/// a [`FundingContribution`] you no longer wish to proceed with. This may be called for any
@@ -5142,13 +5181,20 @@ impl<
 	/// [`ChannelManager::funding_contributed`] call up until
 	/// [`ChannelManager::funding_transaction_signed`].
 	///
+	/// Each canceled contribution is reported with an [`Event::SpliceNegotiationFailed`] carrying
+	/// [`NegotiationFailureReason::LocallyCanceled`]. A round whose signatures were already sent
+	/// through [`ChannelManager::funding_transaction_signed`] can no longer be aborted; only a
+	/// contribution queued behind it is canceled.
+	///
 	/// Returns [`ChannelUnavailable`] when a channel is not found or an incorrect
-	/// `counterparty_node_id` is provided, or [`APIMisuseError`] otherwise with the error details.
-	/// As with [`ChannelManager::funding_transaction_signed`], either error may be returned simply
+	/// `counterparty_node_id` is provided, or [`APIMisuseError`] when there is no contribution of
+	/// ours to cancel, with the error details. As with
+	/// [`ChannelManager::funding_transaction_signed`], either error may be returned simply
 	/// because the funding negotiation failed while its
 	/// [`Event::FundingTransactionReadyForSigning`] was being handled.
 	///
 	/// [`Event::FundingTransactionReadyForSigning`]: events::Event::FundingTransactionReadyForSigning
+	/// [`NegotiationFailureReason::LocallyCanceled`]: events::NegotiationFailureReason::LocallyCanceled
 	/// [`ChannelUnavailable`]: APIError::ChannelUnavailable
 	/// [`APIMisuseError`]: APIError::APIMisuseError
 	pub fn cancel_funding_contributed(
@@ -6012,6 +6058,11 @@ impl<
 	/// whether or not the payment was successful.
 	///
 	/// [timer tick]: Self::timer_tick_occurred
+	#[deprecated(
+		since = "0.3.0",
+		note = "Use ChannelManager::pay_for_bolt12_invoice instead, providing a fresh payment_id \
+		        and verifying the invoice yourself."
+	)]
 	pub fn send_payment_for_bolt12_invoice(
 		&self, invoice: &Bolt12Invoice, context: Option<&OffersContext>,
 	) -> Result<(), Bolt12PaymentError> {
@@ -6030,6 +6081,63 @@ impl<
 		self.pending_outbound_payments.send_payment_for_bolt12_invoice(
 			invoice,
 			payment_id,
+			&self.router,
+			self.list_usable_channels(),
+			features,
+			|| self.compute_inflight_htlcs(),
+			&self.entropy_source,
+			&self.node_signer,
+			&self,
+			&self.secp_ctx,
+			best_block_height,
+			&self.pending_events,
+			|args| self.send_payment_along_path(args),
+			&WithContext::for_payment(&self.logger, None, None, None, payment_id),
+		)
+	}
+
+	/// Pays a [`Bolt12Invoice`] without requiring it to have been requested through LDK.
+	///
+	/// Unlike [`ChannelManager::send_payment_for_bolt12_invoice`], this method does not verify
+	/// that the invoice was previously requested. The caller is responsible for invoice
+	/// verification and for providing a unique `payment_id`.
+	///
+	/// Because this method skips the internal request-tracking check, the caller must confirm the
+	/// invoice corresponds to one they requested before paying it, using
+	/// [`Bolt12Invoice::verify_using_metadata`] with the [`ExpandedKey`] used when requesting the
+	/// invoice (e.g., via [`ChannelManager::pay_for_offer`]). This method does not deduplicate by
+	/// invoice — calling it twice with different `payment_id`s for the same invoice sends two
+	/// separate payments. Callers are responsible for ensuring each invoice is paid at most once.
+	///
+	/// The amount this node contributes to the payment can be set via
+	/// [`OptionalBolt12PaymentParams::amount_msats`], which defaults to the full invoice amount.
+	///
+	/// Failed paths are retried according to [`OptionalBolt12PaymentParams::retry_strategy`]. Once
+	/// the payment has been abandoned (e.g. after the retry limit is reached and an
+	/// [`Event::PaymentFailed`] is generated), it can be retried by calling this method again with a
+	/// fresh `payment_id`; reusing the same `payment_id` while the payment is still pending returns
+	/// [`Bolt12PaymentError::DuplicateInvoice`].
+	///
+	/// Returns [`Bolt12PaymentError::DuplicateInvoice`] if a payment with the given `payment_id`
+	/// is already pending, or [`Bolt12PaymentError::InvalidAmount`] if the requested amount is
+	/// zero, exceeds the invoice amount, or is below the invoice amount on an invoice that does
+	/// not support basic MPP.
+	///
+	/// Either [`Event::PaymentSent`] or [`Event::PaymentFailed`] will be generated once the
+	/// payment completes.
+	///
+	/// [`ExpandedKey`]: crate::ln::inbound_payment::ExpandedKey
+	pub fn pay_for_bolt12_invoice(
+		&self, invoice: &Bolt12Invoice, payment_id: PaymentId,
+		optional_params: OptionalBolt12PaymentParams,
+	) -> Result<(), Bolt12PaymentError> {
+		let best_block_height = self.best_block.read().unwrap().height;
+		let _persistence_guard = PersistenceNotifierGuard::notify_on_drop(self);
+		let features = self.bolt12_invoice_features();
+		self.pending_outbound_payments.pay_for_bolt12_invoice(
+			invoice,
+			payment_id,
+			optional_params,
 			&self.router,
 			self.list_usable_channels(),
 			features,
@@ -8773,7 +8881,6 @@ impl<
 						PendingHTLCRouting::ReceiveKeysend {
 							payment_data,
 							payment_preimage,
-							payment_metadata,
 							incoming_cltv_expiry,
 							custom_tlvs,
 							requires_blinded_error: _,
@@ -8789,7 +8896,7 @@ impl<
 									.as_ref()
 									.map(|data| data.total_msat)
 									.unwrap_or(outgoing_amt_msat),
-								payment_metadata,
+								payment_metadata: None,
 								custom_tlvs,
 							};
 							(
@@ -12395,16 +12502,18 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 		let (err, splice_failure) = err.into_parts();
 		if let Some((splice_funding_failed, reason)) = splice_failure {
 			let pending_events = &mut self.pending_events.lock().unwrap();
-			pending_events.extend(
-				splice_negotiation_failed_events(
-					channel_id,
-					*counterparty_node_id,
-					user_channel_id,
-					splice_funding_failed,
-					reason,
-				)
-				.map(|event| (event, None)),
-			);
+			for splice_funding_failed in splice_funding_failed {
+				pending_events.extend(
+					splice_negotiation_failed_events(
+						channel_id,
+						*counterparty_node_id,
+						user_channel_id,
+						splice_funding_failed,
+						reason.clone(),
+					)
+					.map(|event| (event, None)),
+				);
+			}
 		}
 		MsgHandleErrInternal::from_chan_no_close(err, channel_id)
 	}
@@ -13839,7 +13948,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Ok(())
 						},
 						Err(err) => {
-							debug_assert!(err.splice_funding_failed.is_none());
+							debug_assert!(err.splice_funding_failed.is_empty());
 							Err(self.handle_interactive_tx_msg_err(
 								err,
 								msg.channel_id,
@@ -17724,6 +17833,11 @@ impl<
 						log_trace!($logger, "{}", err_msg);
 						InvoiceError::from_string(err_msg.to_string())
 					},
+					Err(Bolt12PaymentError::InvalidAmount) => {
+						debug_assert!(false, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
+						log_error!($logger, "Got InvalidAmount paying internally-sourced invoice; this shouldn't happen");
+						return None
+					},
 					Err(Bolt12PaymentError::UnexpectedInvoice)
 						| Err(Bolt12PaymentError::DuplicateInvoice)
 						| Ok(()) => return None,
@@ -17856,6 +17970,7 @@ impl<
 					&self.logger, None, None, Some(invoice.payment_hash()), payment_id,
 				);
 
+				#[allow(deprecated)]
 				if self.config.read().unwrap().manually_handle_bolt12_invoices {
 					// Update the corresponding entry in `PendingOutboundPayment` for this invoice.
 					// This ensures that event generation remains idempotent in case we receive
@@ -18062,9 +18177,22 @@ impl<
 				let mut htlc = {
 					let mut pending_intercept_htlcs =
 						self.pending_intercepted_htlcs.lock().unwrap();
-					match pending_intercept_htlcs.remove(&intercept_id) {
-						Some(htlc) => htlc,
-						None => {
+					// If the HTLC is tracked but is no longer held, an earlier release was already
+					// processed and the HTLC now awaits manual interception. Ignore the repeat
+					// release rather than surfacing a second `HTLCIntercepted` event for it.
+					match pending_intercept_htlcs.entry(intercept_id) {
+						hash_map::Entry::Occupied(entry) => {
+							if !entry.get().forward_info.routing.should_hold_htlc() {
+								log_trace!(
+									self.logger,
+									"Ignoring repeat release of HTLC with intercept_id {}",
+									intercept_id
+								);
+								return;
+							}
+							entry.remove()
+						},
+						hash_map::Entry::Vacant(_) => {
 							log_trace!(
 								self.logger,
 								"Failed to release HTLC with intercept_id {}: HTLC not found",
@@ -18312,7 +18440,7 @@ impl_writeable_tlv_based_enum!(PendingHTLCRouting,
 		(0, payment_preimage, required),
 		(1, requires_blinded_error, (default_value, false)),
 		(2, incoming_cltv_expiry, required),
-		(3, payment_metadata, option),
+		// 3 used to be payment_metadata
 		(4, payment_data, option), // Added in 0.0.116
 		(5, custom_tlvs, optional_vec),
 		(7, has_recipient_created_payment_secret, (default_value, false)),
@@ -20115,6 +20243,31 @@ impl<
 								""
 							),
 						);
+					} else if funded_chan.is_awaiting_monitor_update()
+						&& funded_chan.blocked_monitor_updates_pending() == 0
+						&& monitor.get_latest_update_id()
+							== funded_chan.get_latest_unblocked_monitor_update_id()
+					{
+						// Neither the initial `ChannelMonitor` persistence nor blocked updates
+						// (which we dropped above if the `ChannelMonitor` already applied them)
+						// are tracked as in-flight updates. If the channel is still awaiting a
+						// monitor update, but has none in-flight or blocked, the persistence it
+						// was waiting on (whose result we have a `ChannelMonitor` for) completed
+						// after we were last serialized. Resume the channel the same way we do
+						// when all of its in-flight updates completed, otherwise it would never
+						// make progress (e.g. an outbound channel would never broadcast its
+						// funding transaction).
+						//
+						// The update id equality above implies the `ChannelMonitor` has applied
+						// every update the channel generated: a channel lagging its
+						// `ChannelMonitor` was force-closed above, and one ahead of it is
+						// rejected by the stale-`ChannelManager` check below.
+						log_debug!(logger, "A ChannelMonitor persistence completed since the ChannelManager was last serialized");
+						pending_background_events.push(BackgroundEvent::MonitorUpdatesComplete {
+							counterparty_node_id: *counterparty_id,
+							channel_id: *chan_id,
+							highest_update_id_completed: monitor.get_latest_update_id(),
+						});
 					}
 					if funded_chan.get_latest_unblocked_monitor_update_id()
 						> max_in_flight_update_id
@@ -20851,6 +21004,11 @@ impl<
 		// If we have a pending intercept HTLC present but no corresponding event, add that now rather
 		// than relying on the user having persisted the event prior to shutdown.
 		for (id, fwd) in pending_intercepted_htlcs.iter() {
+			// Held HTLCs only surface in an `HTLCIntercepted` event once the recipient releases
+			// them, so leave them be rather than letting the application forward them early.
+			if fwd.forward_info.routing.should_hold_htlc() {
+				continue;
+			}
 			if !pending_events_read.iter().any(
 				|(ev, _)| matches!(ev, Event::HTLCIntercepted { intercept_id, .. } if intercept_id == id),
 			) {

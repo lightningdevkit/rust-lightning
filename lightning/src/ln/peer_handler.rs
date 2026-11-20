@@ -837,11 +837,11 @@ struct Peer {
 	received_message_since_timer_tick: bool,
 	sent_gossip_timestamp_filter: bool,
 
-	/// Indicates we've received a `channel_announcement` since the last time we had
-	/// [`PeerManager::gossip_processing_backlogged`] set (or, really, that we've received a
-	/// `channel_announcement` at all - we set this unconditionally but unset it every time we
-	/// check if we're gossip-processing-backlogged).
-	received_channel_announce_since_backlogged: bool,
+	/// Indicates we've received a `channel_announcement` or `channel_update` since the last time
+	/// we had [`PeerManager::gossip_processing_backlogged`] set (or, really, that we've received
+	/// one at all - we set this unconditionally but unset it every time we check if we're
+	/// gossip-processing-backlogged).
+	received_channel_gossip_since_backlogged: bool,
 
 	inbound_connection: bool,
 
@@ -901,12 +901,12 @@ impl Peer {
 	/// buffer still has space and we don't need to pause reads to get some writes out.
 	fn should_read(&mut self, gossip_processing_backlogged: bool) -> bool {
 		if !gossip_processing_backlogged {
-			self.received_channel_announce_since_backlogged = false;
+			self.received_channel_gossip_since_backlogged = false;
 		}
 		self.stashed_read_data.is_none()
 			&& !self.stashed_read_processing
 			&& self.pending_outbound_buffer.len() < OUTBOUND_BUFFER_LIMIT_READ_PAUSE
-			&& (!gossip_processing_backlogged || !self.received_channel_announce_since_backlogged)
+			&& (!gossip_processing_backlogged || !self.received_channel_gossip_since_backlogged)
 	}
 
 	/// Determines if we should push additional gossip background sync (aka "backfill") onto a peer's
@@ -1478,7 +1478,7 @@ impl<
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
-					received_channel_announce_since_backlogged: false,
+					received_channel_gossip_since_backlogged: false,
 					inbound_connection: false,
 
 					message_batch: None,
@@ -1542,7 +1542,7 @@ impl<
 					received_message_since_timer_tick: false,
 					sent_gossip_timestamp_filter: false,
 
-					received_channel_announce_since_backlogged: false,
+					received_channel_gossip_since_backlogged: false,
 					inbound_connection: true,
 
 					message_batch: None,
@@ -1781,6 +1781,10 @@ impl<
 			Ok(res) => Ok(res),
 			Err(e) => {
 				self.disconnect_event_internal(peer_descriptor, "of a protocol error");
+				// Unlike `read_event`, which returns the error to the socket driver to
+				// close the socket, we process the stashed bytes ourselves and thus have
+				// to disconnect the socket directly.
+				peer_descriptor.disconnect_socket();
 				Err(e)
 			},
 		};
@@ -2298,10 +2302,23 @@ impl<
 
 			let our_features = self.init_features(their_node_id);
 			if msg.features.requires_unknown_bits_from(&our_features) {
+				// The peer controls how many bits it sets (up to the message size limit), so
+				// only scan for and log the first few to avoid letting it bloat our work and
+				// logs.
+				const MAX_LOGGED_UNKNOWN_REQ_BITS: usize = 16;
+				// Take one extra bit so that we know whether to append "..." to the log line.
+				let unknown_bits: Vec<_> = msg
+					.features
+					.required_unknown_bits_from_iter(&our_features)
+					.take(MAX_LOGGED_UNKNOWN_REQ_BITS + 1)
+					.collect();
+				let logged_bits =
+					&unknown_bits[..cmp::min(unknown_bits.len(), MAX_LOGGED_UNKNOWN_REQ_BITS)];
 				log_debug!(
 					logger,
-					"Peer requires features unknown to us: {:?}",
-					msg.features.required_unknown_bits_from(&our_features)
+					"Peer requires features unknown to us: {:?}{}",
+					logged_bits,
+					if unknown_bits.len() > MAX_LOGGED_UNKNOWN_REQ_BITS { "..." } else { "" }
 				);
 				return Err(PeerHandleError {}.into());
 			}
@@ -2532,8 +2549,8 @@ impl<
 			return Ok(None);
 		}
 
-		if let Message::ChannelAnnouncement(ref _msg) = message {
-			peer_lock.received_channel_announce_since_backlogged = true;
+		if let Message::ChannelAnnouncement(_) | Message::ChannelUpdate(_) = message {
+			peer_lock.received_channel_gossip_since_backlogged = true;
 		}
 
 		Ok(Some(LogicalMessage::FromWire(message)))
@@ -3570,7 +3587,7 @@ impl<
 				for (descriptor, peer_mutex) in peers.iter() {
 					let mut peer = peer_mutex.lock().unwrap();
 					if flush_read_disabled {
-						peer.received_channel_announce_since_backlogged = false;
+						peer.received_channel_gossip_since_backlogged = false;
 					}
 					self.do_attempt_write_data(
 						&mut (*descriptor).clone(),
@@ -3772,7 +3789,7 @@ impl<
 			for (descriptor, peer_mutex) in peers_lock.iter() {
 				let mut peer = peer_mutex.lock().unwrap();
 				if flush_read_disabled {
-					peer.received_channel_announce_since_backlogged = false;
+					peer.received_channel_gossip_since_backlogged = false;
 				}
 
 				if !peer.handshake_complete() {
@@ -5166,6 +5183,83 @@ mod tests {
 			assert!(!peer.sent_pause_read);
 		}
 		drain_queues!();
+	}
+
+	#[test]
+	fn test_stashed_read_protocol_error_disconnects_socket() {
+		use crate::routing::test_utils::channel_announcement;
+		use lightning_types::features::ChannelFeatures;
+
+		// Simple test which checks that if processing a peer's stashed read bytes fails with
+		// a protocol error, we disconnect the socket. We cannot return the error to the
+		// socket driver as we process the stashed bytes ourselves, so if we didn't close the
+		// socket here the peer would stay connected with reads paused, allowing a malicious
+		// peer to repeat the failure indefinitely.
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+		let (mut fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
+
+		macro_rules! drain_queues {
+			() => {
+				loop {
+					peers[0].process_events();
+					peers[1].process_events();
+
+					let msg = fd_a.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[1].read_event(&mut fd_b, &msg).unwrap();
+						continue;
+					}
+					let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[0].read_event(&mut fd_a, &msg).unwrap();
+						continue;
+					}
+					break;
+				}
+			};
+		}
+		drain_queues!();
+
+		let secp_ctx = Secp256k1::new();
+		let key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let msg = channel_announcement(&key, &key, ChannelFeatures::empty(), 42, &secp_ctx);
+		let msg_ev = MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg: None };
+
+		// Hang A's writes and queue enough messages for A that its outbound buffer for B
+		// exceeds the stash-reads limit, then deliver a gossip broadcast from B to A which
+		// A will stash rather than process.
+		fd_a.hang_writes.store(true, Ordering::Relaxed);
+		loop {
+			cfgs[0].chan_handler.pending_events.lock().unwrap().push(msg_ev.clone());
+			peers[0].process_events();
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			let buf_len = peer_a_lock.get(&fd_a).unwrap().lock().unwrap().total_outbound_buffered();
+			if buf_len > OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS {
+				break;
+			}
+		}
+		cfgs[1].chan_handler.pending_events.lock().unwrap().push(msg_ev);
+		peers[1].process_events();
+		let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
+		peers[0].read_event(&mut fd_a, &msg).unwrap();
+		{
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			let peer = peer_a_lock.get(&fd_a).unwrap().lock().unwrap();
+			assert!(peer.stashed_read_data.is_some());
+		}
+
+		// While reads are stashed, any bytes B delivers are appended to the stash without
+		// being parsed. Deliver garbage which cannot decrypt as a message-length header, so
+		// that processing the stash fails with a protocol error.
+		peers[0].read_event(&mut fd_a, &[42u8; 18]).unwrap();
+
+		// Once A's writes are un-hung, `process_events` processes the stashed bytes, which
+		// should fail and disconnect the socket.
+		fd_a.hang_writes.store(false, Ordering::Relaxed);
+		peers[0].process_events();
+		assert!(fd_a.disconnect.load(Ordering::Acquire));
+		assert!(peers[0].peers.read().unwrap().get(&fd_a).is_none());
 	}
 
 	#[test]

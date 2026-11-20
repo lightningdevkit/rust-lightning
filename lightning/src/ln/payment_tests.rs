@@ -524,6 +524,48 @@ fn do_test_keysend_payments(public_node: bool) {
 }
 
 #[test]
+fn test_reject_keysend_with_payment_metadata() {
+	// `payment_metadata` is only authenticated by the payment secret of an invoice we created, so
+	// a keysend carrying metadata must be failed back rather than surfacing sender-chosen bytes
+	// as if they were ours.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	create_announced_chan_between_nodes(&nodes, 0, 1);
+	let route_params = RouteParameters::from_payment_params_and_value(
+		PaymentParameters::for_keysend(node_b_id, 40, false),
+		10000,
+	);
+
+	let preimage = PaymentPreimage([42; 32]);
+	let payment_hash = PaymentHash(Sha256::hash(&preimage.0).to_byte_array());
+	let mut onion = RecipientOnionFields::spontaneous_empty(10000);
+	onion.payment_metadata = Some(vec![42; 8]);
+	let retry = Retry::Attempts(0);
+	let id = PaymentId([42; 32]);
+	nodes[0].node.send_spontaneous_payment(Some(preimage), onion, id, route_params, retry).unwrap();
+
+	check_added_monitors(&nodes[0], 1);
+	let send_event = SendEvent::from_node(&nodes[0]);
+	nodes[1].node.handle_update_add_htlc(node_a_id, &send_event.msgs[0]);
+	do_commitment_signed_dance(&nodes[1], &nodes[0], &send_event.commitment_msg, false, false);
+	expect_and_process_pending_htlcs(&nodes[1], false);
+	let fail_type = HTLCHandlingFailureType::Receive { payment_hash };
+	expect_htlc_failure_conditions(nodes[1].node.get_and_clear_pending_events(), &[fail_type]);
+	check_added_monitors(&nodes[1], 1);
+
+	let update_fail = get_htlc_update_msgs(&nodes[1], &node_a_id);
+	nodes[0].node.handle_update_fail_htlc(node_b_id, &update_fail.update_fail_htlcs[0]);
+	do_commitment_signed_dance(&nodes[0], &nodes[1], &update_fail.commitment_signed, false, false);
+	expect_payment_failed_conditions(&nodes[0], payment_hash, true, PaymentFailedConditions::new());
+}
+
+#[test]
 fn test_mpp_keysend() {
 	let chanmon_cfgs = create_chanmon_cfgs(4);
 	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
@@ -5437,14 +5479,11 @@ fn peel_payment_onion_custom_tlvs() {
 	.unwrap();
 	assert_eq!(peeled_onion.incoming_amt_msat, Some(amt_msat));
 	match peeled_onion.routing {
-		PendingHTLCRouting::ReceiveKeysend {
-			payment_data, payment_metadata, custom_tlvs, ..
-		} => {
+		PendingHTLCRouting::ReceiveKeysend { payment_data, custom_tlvs, .. } => {
 			#[cfg(not(c_bindings))]
 			assert_eq!(&custom_tlvs, recipient_onion.custom_tlvs());
 			#[cfg(c_bindings)]
 			assert_eq!(custom_tlvs, recipient_onion.custom_tlvs());
-			assert!(payment_metadata.is_none());
 			assert!(payment_data.is_none());
 		},
 		_ => panic!(),

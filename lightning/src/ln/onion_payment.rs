@@ -434,10 +434,19 @@ pub(super) fn create_recv_pending_htlc_info(
 				msg: "Payment preimage didn't match payment hash",
 			});
 		}
+		// `payment_metadata` is only authenticated against a payment secret we created, which
+		// spontaneous payments don't have, so we cannot pass sender-chosen metadata off as ours.
+		// Fail such HTLCs the same way we fail blinded spontaneous payments carrying metadata.
+		if payment_metadata.is_some() {
+			return Err(InboundHTLCErr {
+				reason: LocalHTLCFailureReason::IncorrectPaymentDetails,
+				err_data: invalid_payment_err_data(amt_msat, current_height),
+				msg: "Shouldn't have a payment_metadata for a spontaneous payment",
+			});
+		}
 		PendingHTLCRouting::ReceiveKeysend {
 			payment_data,
 			payment_preimage,
-			payment_metadata,
 			incoming_cltv_expiry: cltv_expiry,
 			custom_tlvs,
 			requires_blinded_error,

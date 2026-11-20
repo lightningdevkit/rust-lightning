@@ -1194,20 +1194,28 @@ pub enum UpdateFulfillCommitFetch {
 	DuplicateClaim {},
 }
 
-/// Error returned when processing an invalid interactive-tx message from our counterparty.
+/// Error returned when processing an invalid interactive-tx message from our counterparty, or
+/// when canceling our own splice contributions.
 pub(super) struct InteractiveTxMsgError {
 	/// The underlying error.
 	pub(super) err: ChannelError,
-	/// If a splice was in progress when processing the message, this contains the splice funding
-	/// information for emitting a `SpliceNegotiationFailed` event.
-	pub(super) splice_funding_failed: Option<SpliceFundingFailed>,
-	/// The event reason to use if this error causes a `SpliceNegotiationFailed` event.
+	/// The splice contributions of ours that failed as a result: the one in the round under
+	/// negotiation, if a splice was in progress, and any queued behind that round. Each is used
+	/// to emit a `SpliceNegotiationFailed` event.
+	pub(super) splice_funding_failed: Vec<SpliceFundingFailed>,
+	/// The event reason to use if this error causes `SpliceNegotiationFailed` events.
 	pub(super) negotiation_failure_reason: Option<NegotiationFailureReason>,
 }
 
 impl InteractiveTxMsgError {
-	fn new(err: ChannelError, splice_funding_failed: Option<SpliceFundingFailed>) -> Self {
-		Self { err, splice_funding_failed, negotiation_failure_reason: None }
+	fn new(
+		err: ChannelError, splice_funding_failed: impl IntoIterator<Item = SpliceFundingFailed>,
+	) -> Self {
+		Self {
+			err,
+			splice_funding_failed: splice_funding_failed.into_iter().collect(),
+			negotiation_failure_reason: None,
+		}
 	}
 
 	fn with_negotiation_failure_reason(mut self, reason: NegotiationFailureReason) -> Self {
@@ -1215,11 +1223,13 @@ impl InteractiveTxMsgError {
 		self
 	}
 
+	/// Splits into the underlying error and, if any contribution of ours failed, the failed
+	/// contributions along with the reason to report for each.
 	pub(super) fn into_parts(
 		self,
-	) -> (ChannelError, Option<(SpliceFundingFailed, NegotiationFailureReason)>) {
+	) -> (ChannelError, Option<(Vec<SpliceFundingFailed>, NegotiationFailureReason)>) {
 		let Self { err, splice_funding_failed, negotiation_failure_reason } = self;
-		let splice_failure = splice_funding_failed.map(|splice_funding_failed| {
+		let splice_failure = (!splice_funding_failed.is_empty()).then(|| {
 			let reason =
 				negotiation_failure_reason.unwrap_or_else(|| Self::reason_from_channel_error(&err));
 			(splice_funding_failed, reason)
@@ -3434,6 +3444,17 @@ impl PendingFunding {
 				.any(|output| committed_output_scripts.contains(&output))
 	}
 
+	/// Whether the round under negotiation includes a contribution of ours: one we initiated
+	/// always does, and a counterparty-initiated round does when our queued contribution was
+	/// merged into it or a prior round's contribution was carried into it. A negotiation read
+	/// from data written before our contribution was stored alongside it is only known to
+	/// include ours when we initiated it.
+	fn is_negotiating_our_contribution(&self) -> bool {
+		self.funding_negotiation.as_ref().is_some_and(|funding_negotiation| {
+			funding_negotiation.is_initiator() || self.negotiation_contribution.is_some()
+		})
+	}
+
 	/// Our most recent contribution across rounds, including any round still under negotiation.
 	fn latest_contribution(&self) -> Option<&FundingContribution> {
 		self.negotiation_contribution.as_ref().or_else(|| {
@@ -4030,14 +4051,20 @@ trait InitialRemoteCommitmentReceiver<SP: SignerProvider> {
 		// TODO(RBF): When implementing RBF, the funding_txo passed here must only update
 		// ChannelMonitorImp::first_confirmed_funding_txo during channel establishment, not splicing
 		let channel_monitor = ChannelMonitor::new(
-			context.secp_ctx.clone(), monitor_signer, shutdown_script,
-			funding.get_holder_selected_contest_delay(), &context.destination_script,
-			&funding.channel_transaction_parameters, funding.is_outbound(), obscure_factor,
-			holder_commitment_tx, best_block, context.counterparty_node_id, context.channel_id(),
-			context.is_manual_broadcast,
-		);
-		channel_monitor.provide_initial_counterparty_commitment_tx(
+			context.secp_ctx.clone(),
+			monitor_signer,
+			shutdown_script,
+			funding.get_holder_selected_contest_delay(),
+			&context.destination_script,
+			&funding.channel_transaction_parameters,
+			funding.is_outbound(),
+			obscure_factor,
+			holder_commitment_tx,
 			counterparty_initial_commitment_tx.clone(),
+			best_block,
+			context.counterparty_node_id,
+			context.channel_id(),
+			context.is_manual_broadcast,
 		);
 
 		self.context_mut().counterparty_next_commitment_transaction_number -= 1;
@@ -10360,13 +10387,15 @@ where
 
 		// We will never broadcast the funding transaction when we're in MonitorUpdateInProgress
 		// (and we assume the user never directly broadcasts the funding transaction and waits for
-		// us to do it). Thus, we can only ever hit monitor_pending_channel_ready when we're
+		// us to do it). Thus, we can hit monitor_pending_channel_ready when we're
 		// * an inbound channel that failed to persist the monitor on funding_created and we got
-		//   the funding transaction confirmed before the monitor was persisted, or
-		// * a 0-conf channel and intended to send the channel_ready before any broadcast at all.
+		//   the funding transaction confirmed before the monitor was persisted,
+		// * a 0-conf channel and intended to send the channel_ready before any broadcast at all, or
+		// * an outbound channel resumed from a `ChannelManager` that was serialized while the
+		//   initial `ChannelMonitor` persistence was pending - a prior process broadcast the
+		//   funding transaction after that serialization, and chain sync can have seen it confirm
+		//   before the pending completion is processed here.
 		let channel_ready = if self.context.monitor_pending_channel_ready {
-			assert!(!self.funding.is_outbound() || self.context.minimum_depth == Some(0),
-				"Funding transaction broadcast by the local client before it should have - LDK didn't do it!");
 			self.context.monitor_pending_channel_ready = false;
 			let channel_ready = self.get_channel_ready(logger);
 			requires_channel_manager_persistence |= channel_ready.is_some();
@@ -13323,16 +13352,17 @@ where
 		}
 
 		if let Some(pending_splice) = &self.pending_splice {
-			if let Some(funding_negotiation) = &pending_splice.funding_negotiation {
-				debug_assert!(self.context.channel_state.is_quiescent());
-				if funding_negotiation.is_initiator() {
-					return Err(APIError::APIMisuseError {
-						err: format!(
-							"Channel {} cannot be spliced as one is currently being negotiated",
-							self.context.channel_id(),
-						),
-					});
-				}
+			debug_assert!(
+				pending_splice.funding_negotiation.is_none()
+					|| self.context.channel_state.is_quiescent()
+			);
+			if pending_splice.is_negotiating_our_contribution() {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} cannot be spliced as one is currently being negotiated",
+						self.context.channel_id(),
+					),
+				});
 			}
 		}
 
@@ -13568,8 +13598,7 @@ where
 			None => self
 				.pending_splice
 				.as_ref()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
-				.is_some_and(|funding_negotiation| funding_negotiation.is_initiator()),
+				.is_some_and(|pending_splice| pending_splice.is_negotiating_our_contribution()),
 		};
 		if already_contributing {
 			return Err(match contribution.unique_contributions() {
@@ -13682,16 +13711,16 @@ where
 			}
 		}
 
-		// A queued splice never coexists with a negotiation we initiated: we return early above if
-		// one is already in flight, and a queued action is cleared the moment it becomes our
-		// negotiation at quiescence. It may coexist with a counterparty-initiated negotiation (e.g.
-		// queuing our own contribution while accepting their splice), so we only rule out our own.
+		// A splice queued here never coexists with a negotiation that includes a contribution of
+		// ours: we return early above if one is already in flight, and a queued action is cleared
+		// the moment it becomes our negotiation at quiescence. It may coexist with a
+		// counterparty-initiated negotiation we did not contribute to (e.g. queuing our own
+		// contribution while accepting their splice), so we only rule out our own.
 		debug_assert!(
 			self.pending_splice
 				.as_ref()
-				.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref())
-				.map_or(true, |funding_negotiation| !funding_negotiation.is_initiator()),
-			"A queued splice must not coexist with a funding negotiation we initiated",
+				.map_or(true, |pending_splice| !pending_splice.is_negotiating_our_contribution()),
+			"A queued splice must not coexist with a funding negotiation we contributed to",
 		);
 
 		self.propose_quiescence(logger, QuiescentAction::Splice { contribution, locktime })
@@ -13794,63 +13823,41 @@ where
 		}
 	}
 
+	/// Cancels every pending funding contribution of ours: the one in the round under negotiation,
+	/// unless our signatures for it were already sent, and the one queued behind that round. A
+	/// round we did not contribute to is left alone.
+	///
+	/// Returns an error if there is nothing of ours to cancel. Otherwise, the returned error is
+	/// to be handled like one from processing an interactive-tx message: it aborts the round if
+	/// one was canceled and reports each canceled contribution as failed.
 	pub fn cancel_funding_contributed(&mut self) -> Result<InteractiveTxMsgError, APIError> {
-		if matches!(self.quiescent_action, Some(QuiescentAction::Splice { .. })) {
-			let splice_funding_failed = self.abandon_quiescent_action();
-			debug_assert!(splice_funding_failed.is_some());
-			let str = "Manually canceled funding contribution";
-			let err = if self.context.channel_state.is_local_stfu_sent()
-				&& !self.context.channel_state.is_remote_stfu_sent()
-			{
-				// If we've already sent `stfu` and haven't received the counterparty's yet, we know
-				// it corresponds to our action.
-				ChannelError::WarnAndDisconnect(str.into())
-			} else {
-				// We don't need to send `tx_abort` because our action still pending means we're not
-				// quiescent for it.
-				ChannelError::Ignore(str.into())
-			};
-			return Ok(InteractiveTxMsgError::new(err, splice_funding_failed)
-				.with_negotiation_failure_reason(NegotiationFailureReason::LocallyCanceled));
-		}
+		let has_queued_contribution =
+			matches!(self.quiescent_action, Some(QuiescentAction::Splice { .. }));
 
 		let funding_negotiation = self
 			.pending_splice
 			.as_ref()
 			.and_then(|pending_splice| pending_splice.funding_negotiation.as_ref());
-		let Some(funding_negotiation) = funding_negotiation else {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} does not have a pending splice negotiation",
-					self.context.channel_id()
-				),
-			});
-		};
-
 		let made_contribution = match funding_negotiation {
-			FundingNegotiation::AwaitingAck { context, .. } => {
+			None => false,
+			Some(FundingNegotiation::AwaitingAck { context, .. }) => {
 				context.contributed_inputs().next().is_some()
 					|| context.contributed_outputs().next().is_some()
 			},
-			FundingNegotiation::ConstructingTransaction { interactive_tx_constructor, .. } => {
+			Some(FundingNegotiation::ConstructingTransaction {
+				interactive_tx_constructor,
+				..
+			}) => {
 				interactive_tx_constructor.contributed_inputs().next().is_some()
 					|| interactive_tx_constructor.contributed_outputs().next().is_some()
 			},
-			FundingNegotiation::AwaitingSignatures { .. } => self
+			Some(FundingNegotiation::AwaitingSignatures { .. }) => self
 				.context
 				.interactive_tx_signing_session
 				.as_ref()
 				.expect("We have a pending splice awaiting signatures")
 				.has_local_contribution(),
 		};
-		if !made_contribution {
-			return Err(APIError::APIMisuseError {
-				err: format!(
-					"Channel {} has a pending splice negotiation with no contribution made",
-					self.context.channel_id()
-				),
-			});
-		}
 
 		// We typically don't reset the pending funding negotiation when we're in
 		// [`FundingNegotiation::AwaitingSignatures`] since we're able to resume it on
@@ -13858,13 +13865,32 @@ where
 		// cancel. If they've yet to call [`Channel::funding_transaction_signed`], then we can
 		// guarantee to never have sent any signatures to the counterparty, or have processed any
 		// signatures from them.
-		if matches!(funding_negotiation, FundingNegotiation::AwaitingSignatures { .. }) {
-			let already_signed = self
-				.context
-				.interactive_tx_signing_session
-				.as_ref()
-				.expect("We have a pending splice awaiting signatures")
-				.has_holder_witnesses();
+		let already_signed =
+			matches!(funding_negotiation, Some(FundingNegotiation::AwaitingSignatures { .. }))
+				&& self
+					.context
+					.interactive_tx_signing_session
+					.as_ref()
+					.expect("We have a pending splice awaiting signatures")
+					.has_holder_witnesses();
+
+		if !has_queued_contribution {
+			if funding_negotiation.is_none() {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} does not have a pending splice negotiation",
+						self.context.channel_id()
+					),
+				});
+			}
+			if !made_contribution {
+				return Err(APIError::APIMisuseError {
+					err: format!(
+						"Channel {} has a pending splice negotiation with no contribution made",
+						self.context.channel_id()
+					),
+				});
+			}
 			if already_signed {
 				return Err(APIError::APIMisuseError {
 					err: format!(
@@ -13875,15 +13901,48 @@ where
 			}
 		}
 
-		debug_assert!(self.context.channel_state.is_quiescent());
-		let (splice_funding_failed, splice_funding_negotiated) = self.reset_pending_splice_state();
-		debug_assert!(splice_funding_negotiated.is_none());
-		debug_assert!(splice_funding_failed.is_some());
-		Ok(InteractiveTxMsgError::new(
-			ChannelError::Abort(AbortReason::ManualIntervention),
-			splice_funding_failed,
-		)
-		.with_negotiation_failure_reason(NegotiationFailureReason::LocallyCanceled))
+		let queued_funding_failed = if has_queued_contribution {
+			let queued_funding_failed = self.abandon_quiescent_action();
+			debug_assert!(queued_funding_failed.is_some());
+			queued_funding_failed
+		} else {
+			None
+		};
+
+		if made_contribution && !already_signed {
+			debug_assert!(self.context.channel_state.is_quiescent());
+			let (negotiation_funding_failed, splice_funding_negotiated) =
+				self.reset_pending_splice_state();
+			debug_assert!(splice_funding_negotiated.is_none());
+			debug_assert!(negotiation_funding_failed.is_some());
+			let splice_funding_failed =
+				negotiation_funding_failed.into_iter().chain(queued_funding_failed);
+			return Ok(InteractiveTxMsgError::new(
+				ChannelError::Abort(AbortReason::ManualIntervention),
+				splice_funding_failed,
+			)
+			.with_negotiation_failure_reason(NegotiationFailureReason::LocallyCanceled));
+		}
+
+		// Only the queued contribution is canceled: either no round under negotiation includes a
+		// contribution of ours, or our signatures for it were already sent and it can no longer be
+		// aborted.
+		debug_assert!(queued_funding_failed.is_some());
+		let str = "Manually canceled funding contribution";
+		let err = if self.context.channel_state.is_local_stfu_sent()
+			&& !self.context.channel_state.is_remote_stfu_sent()
+		{
+			// If we've already sent `stfu` and haven't received the counterparty's yet, we know
+			// it corresponds to our action.
+			ChannelError::WarnAndDisconnect(str.into())
+		} else {
+			// No `tx_abort` is sent: a queued action has no round to abort, and any quiescence in
+			// effect belongs to a round that is left in place, either one we did not contribute to
+			// or one our signatures were already sent for.
+			ChannelError::Ignore(str.into())
+		};
+		Ok(InteractiveTxMsgError::new(err, queued_funding_failed)
+			.with_negotiation_failure_reason(NegotiationFailureReason::LocallyCanceled))
 	}
 
 	/// Checks during handling splice_init

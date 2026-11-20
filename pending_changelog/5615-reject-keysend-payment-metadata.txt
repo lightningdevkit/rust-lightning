@@ -1,0 +1,6 @@
+# Backwards Compatibility (0.3)
+ * Spontaneous payments (keysends) that include a `payment_metadata` TLV in the
+   onion are now failed back with `incorrect_or_unknown_payment_details` rather
+   than accepted. The metadata of an invoice payment is authenticated against
+   the payment secret we generated for it, which spontaneous payments do not
+   have, so LDK can no longer surface sender-chosen metadata on them (#5615).
