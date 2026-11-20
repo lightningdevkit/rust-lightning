@@ -12280,8 +12280,12 @@ where
 	}
 
 	pub fn is_shutdown_pending_signature(&self) -> bool {
-		matches!(self.context.channel_state, ChannelState::ChannelReady(_))
-			&& self.context.signer_pending_closing
+		matches!(
+			self.context.channel_state,
+			ChannelState::FundingNegotiated(_)
+				| ChannelState::AwaitingChannelReady(_)
+				| ChannelState::ChannelReady(_)
+		) && self.context.signer_pending_closing
 			&& self.context.last_received_closing_sig.is_some()
 	}
 
@@ -18245,6 +18249,169 @@ mod tests {
 
 	fn dummy_inbound_update_add() -> InboundUpdateAdd {
 		InboundUpdateAdd::Legacy
+	}
+
+	// While we're waiting on our signer to produce the final closing transaction signature, a
+	// malicious peer must not be able to renegotiate the fee. Otherwise we'd end up combining a
+	// fresh local signature for the renegotiated fee with the cached peer signature for the
+	// previously-agreed fee, producing an invalid closing transaction.
+	#[test]
+	fn pending_closing_signature_before_channel_ready_rejects_renegotiation() {
+		use crate::ln::functional_test_utils::*;
+		use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+		use crate::sign::ecdsa::EcdsaChannelSigner;
+		use crate::util::test_channel_signer::SignerOp;
+
+		let chanmon_cfgs = create_chanmon_cfgs(2);
+		let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+		let config = test_legacy_channel_config();
+		let node_chanmgrs =
+			create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+		let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+		let victim_id = nodes[0].node.get_our_node_id();
+		let peer_id = nodes[1].node.get_our_node_id();
+		// Exchange funding signatures, but do not confirm funding or exchange channel_ready.
+		let funding_tx =
+			create_chan_between_nodes_with_value_init(&nodes[0], &nodes[1], 100_000, 20_000_000);
+		let channel_id = nodes[0].node.list_channels()[0].channel_id;
+		{
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let chan =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id)
+					.as_funded()
+					.unwrap();
+			assert!(matches!(chan.context.channel_state, ChannelState::AwaitingChannelReady(_)));
+		}
+
+		nodes[0].node.close_channel(&channel_id, &peer_id).unwrap();
+		let shutdown = get_event_msg!(nodes[0], MessageSendEvent::SendShutdown, peer_id);
+		nodes[1].node.handle_shutdown(victim_id, &shutdown);
+		let shutdown = get_event_msg!(nodes[1], MessageSendEvent::SendShutdown, victim_id);
+		nodes[0].node.handle_shutdown(peer_id, &shutdown);
+		let proposal = get_event_msg!(nodes[0], MessageSendEvent::SendClosingSigned, peer_id);
+		let range = proposal.fee_range.as_ref().unwrap();
+		assert_eq!(proposal.fee_satoshis, range.min_fee_satoshis);
+		let accepted_fee = range.min_fee_satoshis + 1;
+		assert!(accepted_fee < range.max_fee_satoshis);
+
+		let sign_peer_close = |fee_satoshis: u64| {
+			let closing_tx = {
+				let per_peer_lock;
+				let mut peer_state_lock;
+				let chan = get_channel_ref!(
+					nodes[0],
+					nodes[1],
+					per_peer_lock,
+					peer_state_lock,
+					channel_id
+				)
+				.as_funded()
+				.unwrap();
+				chan.build_closing_transaction(fee_satoshis, false).unwrap().0
+			};
+			let signature = {
+				let per_peer_lock;
+				let mut peer_state_lock;
+				let chan = get_channel_ref!(
+					nodes[1],
+					nodes[0],
+					per_peer_lock,
+					peer_state_lock,
+					channel_id
+				)
+				.as_funded()
+				.unwrap();
+				chan.context
+					.holder_signer
+					.sign_closing_transaction(
+						&chan.funding.channel_transaction_parameters,
+						&closing_tx,
+						&chan.context.secp_ctx,
+					)
+					.unwrap()
+			};
+			msgs::ClosingSigned { channel_id, fee_satoshis, signature, fee_range: None }
+		};
+
+		nodes[0].disable_channel_signer_op(&peer_id, &channel_id, SignerOp::SignClosingTransaction);
+		let accepted = sign_peer_close(accepted_fee);
+		nodes[0].node.handle_closing_signed(peer_id, &accepted);
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		assert!(nodes[0].tx_broadcaster.txn_broadcast().is_empty());
+
+		// While our final signature is pending, the peer proposes a different fee. This must be
+		// rejected with a warning rather than renegotiated, as we've already cached the peer's
+		// signature.
+		let renegotiation = sign_peer_close(0);
+		let assert_renegotiation_warn = |renegotiation: &msgs::ClosingSigned| {
+			nodes[0].node.handle_closing_signed(peer_id, renegotiation);
+			let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+			assert_eq!(msg_events.len(), 1, "{msg_events:?}");
+			match &msg_events[0] {
+				MessageSendEvent::HandleError {
+					action: msgs::ErrorAction::SendWarningMessage { ref msg, .. },
+					..
+				} => assert!(msg.data.contains("waiting on the final closing signature")),
+				_ => panic!("Unexpected event {:?}", msg_events[0]),
+			}
+		};
+		assert_renegotiation_warn(&renegotiation);
+
+		// The same window exists on dual-funded (V2) channels that are still in
+		// `FundingNegotiated`: the initial `commitment_signed` has been received and we've sent
+		// our `tx_signatures`, but the counterparty's are outstanding, holding the state short of
+		// `AwaitingChannelReady`. V2 establishment cannot yet be driven between two test nodes,
+		// so mirror the state directly and repeat the renegotiation attempt.
+		use crate::ln::channel::FundingNegotiatedFlags;
+		let awaiting_flags = {
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let chan =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id)
+					.as_funded()
+					.unwrap();
+			match chan.context.channel_state {
+				ChannelState::AwaitingChannelReady(flags) => flags,
+				ref state => panic!("Unexpected channel state {:?}", state),
+			}
+		};
+		{
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let chan =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id)
+					.as_funded_mut()
+					.unwrap();
+			let shared_flags = chan.context.channel_state.with_funded_state_flags_mask();
+			chan.context.channel_state = ChannelState::FundingNegotiated(
+				FundingNegotiatedFlags::from_u32(shared_flags.0).unwrap(),
+			);
+		}
+		assert_renegotiation_warn(&renegotiation);
+		{
+			let per_peer_lock;
+			let mut peer_state_lock;
+			let chan =
+				get_channel_ref!(nodes[0], nodes[1], per_peer_lock, peer_state_lock, channel_id)
+					.as_funded_mut()
+					.unwrap();
+			chan.context.channel_state = ChannelState::AwaitingChannelReady(awaiting_flags);
+		}
+		nodes[0].enable_channel_signer_op(&peer_id, &channel_id, SignerOp::SignClosingTransaction);
+		// Once our signer is available again, the previously-agreed closing transaction is
+		// completed and broadcast.
+		nodes[0].node.signer_unblocked(None);
+		let broadcasts = nodes[0].tx_broadcaster.txn_broadcast();
+		assert!(!broadcasts.is_empty());
+		for tx in &broadcasts {
+			check_spends!(tx, funding_tx);
+		}
+		for node in &nodes {
+			node.node.get_and_clear_pending_msg_events();
+			node.node.get_and_clear_pending_events();
+			node.chain_monitor.added_monitors.lock().unwrap().clear();
+		}
 	}
 
 	// Checks only fulfillments credit the peer for adds and fee increases before our acknowledgment.
