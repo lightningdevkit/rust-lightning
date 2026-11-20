@@ -3520,7 +3520,7 @@ fn test_outbound_reload_funding_confirmed_during_downtime() {
 	expect_channel_pending_event(&nodes[0], &node_b_id);
 	assert_eq!(
 		nodes[0].tx_broadcaster.txn_broadcasted.lock().unwrap().split_off(0),
-		[funding_tx.clone()]
+		core::slice::from_ref(&funding_tx)
 	);
 
 	let mon_ser = get_monitor!(nodes[0], chan_id).encode();
