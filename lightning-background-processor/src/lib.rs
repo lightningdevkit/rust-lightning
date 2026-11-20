@@ -1488,6 +1488,10 @@ where
 	// Flush monitor operations that were pending before final persistence.
 	chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
 
+	if let Some(ref liquidity_manager) = liquidity_manager {
+		liquidity_manager.get_lm().persist().await?;
+	}
+
 	if let Some(ref scorer) = scorer {
 		kv_store
 			.write(
@@ -1946,6 +1950,10 @@ impl BackgroundProcessor {
 
 			// Flush monitor operations that were pending before final persistence.
 			chain_monitor.get_cm().flush(pending_monitor_writes, &logger);
+
+			if let Some(ref liquidity_manager) = liquidity_manager {
+				liquidity_manager.get_lm().persist()?;
+			}
 
 			if let Some(ref scorer) = scorer {
 				kv_store.write(
