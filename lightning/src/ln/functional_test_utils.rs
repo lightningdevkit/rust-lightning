@@ -4144,6 +4144,8 @@ pub struct ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	///
 	/// [`Event::PaymentClaimed`]: crate::events::Event::PaymentClaimed
 	pub expected_payment_context: Option<PaymentContext>,
+	/// If set, each HTLC in the recipient's `PaymentClaimed` event must report this skimmed fee.
+	pub expected_skimmed_fee_per_htlc_msat: Option<u64>,
 }
 
 impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
@@ -4162,6 +4164,7 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 			allow_1_msat_fee_overpay: false,
 			custom_tlvs: vec![],
 			expected_payment_context: None,
+			expected_skimmed_fee_per_htlc_msat: None,
 		}
 	}
 	pub fn skip_last(mut self, skip_last: bool) -> Self {
@@ -4190,6 +4193,10 @@ impl<'a, 'b, 'c, 'd> ClaimAlongRouteArgs<'a, 'b, 'c, 'd> {
 	}
 	pub fn with_expected_payment_context(mut self, payment_context: PaymentContext) -> Self {
 		self.expected_payment_context = Some(payment_context);
+		self
+	}
+	pub fn with_expected_skimmed_fee_per_htlc_msat(mut self, fee_msat: u64) -> Self {
+		self.expected_skimmed_fee_per_htlc_msat = Some(fee_msat);
 		self
 	}
 }
@@ -4226,6 +4233,16 @@ macro_rules! single_fulfill_commit_from_ev {
 pub fn pass_claimed_payment_along_route(args: ClaimAlongRouteArgs) -> u64 {
 	let claim_event = args.expected_paths[0].last().unwrap().node.get_and_clear_pending_events();
 	assert_eq!(claim_event.len(), 1, "{claim_event:?}");
+	if let Some(expected_fee_msat) = args.expected_skimmed_fee_per_htlc_msat {
+		match &claim_event[0] {
+			Event::PaymentClaimed { htlcs, .. } => {
+				for htlc in htlcs {
+					assert_eq!(htlc.counterparty_skimmed_fee_msat, expected_fee_msat);
+				}
+			},
+			_ => panic!("Expected Event::PaymentClaimed"),
+		}
+	}
 	if let Some(expected_context) = args.expected_payment_context.as_ref() {
 		match &claim_event[0] {
 			Event::PaymentClaimed { purpose, .. } => {
