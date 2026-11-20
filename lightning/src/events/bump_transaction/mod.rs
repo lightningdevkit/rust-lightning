@@ -1065,6 +1065,7 @@ mod tests {
 			fn select_confirmed_utxos(
 				&self, claim_id: Option<ClaimId>, must_spend: Vec<Input>, _must_pay_to: &[TxOut],
 				_target_feerate_sat_per_1000_weight: u32, _max_tx_weight: u64,
+				_max_input_prevtx_serialized_len: u64,
 			) -> Result<CoinSelection, ()> {
 				let (batch_size, expected_claim_id) =
 					self.expected_selects.lock().unwrap().remove(0);

@@ -325,10 +325,15 @@ fn unfunded_channel_with_reused_id_does_not_hide_balances() {
 	// `temporary_channel_id` matches the `channel_id` of a closed channel, doesn't cause
 	// `ChainMonitor::get_claimable_balances` to skip the closed channel's monitor when the caller
 	// passes `list_channels()` as `ignored_channels`.
-	let chanmon_cfgs = create_chanmon_cfgs(2);
-	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
-	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	//
+	// The closed channel's funding transaction confirmed, so it remains tracked by ID for
+	// potential `ChannelMonitorUpdate`s and we reject an `open_channel` reusing that ID from its
+	// former counterparty. The reuse therefore has to come from a third peer, which is exactly
+	// the case the `ChainMonitor` exclusion cannot rely on the `ChannelManager` to prevent.
+	let chanmon_cfgs = create_chanmon_cfgs(3);
+	let node_cfgs = create_node_cfgs(3, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(3, &node_cfgs, &[None, None, None]);
+	let nodes = create_network(3, &node_cfgs, &node_chanmgrs);
 
 	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
 	let commitment_tx = get_local_commitment_txn!(nodes[0], chan_id).remove(0);
@@ -352,12 +357,12 @@ fn unfunded_channel_with_reused_id_does_not_hide_balances() {
 	assert!(!closed_chan_balances.is_empty());
 	assert_eq!(nodes[0].chain_monitor.chain_monitor.get_claimable_balances(&[]), closed_chan_balances);
 
-	// nodes[1] now requests a new channel, reusing the closed channel's ID as the
+	// nodes[2] now requests a new channel, reusing the closed channel's ID as the
 	// `temporary_channel_id`, which nodes[0] accepts while it is still unfunded.
-	nodes[1].node.create_channel(nodes[0].node.get_our_node_id(), 100_000, 0, 42, Some(chan_id), None).unwrap();
-	let open_channel = get_event_msg!(nodes[1], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
-	handle_and_accept_open_channel(&nodes[0], nodes[1].node.get_our_node_id(), &open_channel);
-	let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, nodes[1].node.get_our_node_id());
+	nodes[2].node.create_channel(nodes[0].node.get_our_node_id(), 100_000, 0, 42, Some(chan_id), None).unwrap();
+	let open_channel = get_event_msg!(nodes[2], MessageSendEvent::SendOpenChannel, nodes[0].node.get_our_node_id());
+	handle_and_accept_open_channel(&nodes[0], nodes[2].node.get_our_node_id(), &open_channel);
+	let accept_channel = get_event_msg!(nodes[0], MessageSendEvent::SendAcceptChannel, nodes[2].node.get_our_node_id());
 
 	let channels = nodes[0].node.list_channels();
 	assert_eq!(channels.len(), 1);
@@ -371,19 +376,19 @@ fn unfunded_channel_with_reused_id_does_not_hide_balances() {
 
 	// Once the new channel is funded it gets a `ChannelMonitor` of its own, under its final ID,
 	// which is ignored while the closed channel's balances remain visible.
-	nodes[1].node.handle_accept_channel(nodes[0].node.get_our_node_id(), &accept_channel);
+	nodes[2].node.handle_accept_channel(nodes[0].node.get_our_node_id(), &accept_channel);
 	let (temporary_channel_id, tx, funding_outpoint) =
-		create_funding_transaction(&nodes[1], &nodes[0].node.get_our_node_id(), 100_000, 42);
-	nodes[1].node.funding_transaction_generated(temporary_channel_id, nodes[0].node.get_our_node_id(), tx.clone()).unwrap();
-	check_added_monitors(&nodes[1], 0);
-	let funding_created = get_event_msg!(nodes[1], MessageSendEvent::SendFundingCreated, nodes[0].node.get_our_node_id());
-	nodes[0].node.handle_funding_created(nodes[1].node.get_our_node_id(), &funding_created);
+		create_funding_transaction(&nodes[2], &nodes[0].node.get_our_node_id(), 100_000, 42);
+	nodes[2].node.funding_transaction_generated(temporary_channel_id, nodes[0].node.get_our_node_id(), tx.clone()).unwrap();
+	check_added_monitors(&nodes[2], 0);
+	let funding_created = get_event_msg!(nodes[2], MessageSendEvent::SendFundingCreated, nodes[0].node.get_our_node_id());
+	nodes[0].node.handle_funding_created(nodes[2].node.get_our_node_id(), &funding_created);
 	check_added_monitors(&nodes[0], 1);
-	expect_channel_pending_event(&nodes[0], &nodes[1].node.get_our_node_id());
-	let funding_signed = get_event_msg!(nodes[0], MessageSendEvent::SendFundingSigned, nodes[1].node.get_our_node_id());
-	nodes[1].node.handle_funding_signed(nodes[0].node.get_our_node_id(), &funding_signed);
-	check_added_monitors(&nodes[1], 1);
-	expect_channel_pending_event(&nodes[1], &nodes[0].node.get_our_node_id());
+	expect_channel_pending_event(&nodes[0], &nodes[2].node.get_our_node_id());
+	let funding_signed = get_event_msg!(nodes[0], MessageSendEvent::SendFundingSigned, nodes[2].node.get_our_node_id());
+	nodes[2].node.handle_funding_signed(nodes[0].node.get_our_node_id(), &funding_signed);
+	check_added_monitors(&nodes[2], 1);
+	expect_channel_pending_event(&nodes[2], &nodes[0].node.get_our_node_id());
 
 	let channels = nodes[0].node.list_channels();
 	assert_eq!(channels.len(), 1);
