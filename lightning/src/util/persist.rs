@@ -1655,7 +1655,15 @@ impl<
 					monitor_key,
 					update_name.as_str(),
 				);
-				self.archive_gapped_updates(monitor_key, &updates[idx..]).await;
+				if let Err(e) = self.archive_gapped_updates(monitor_key, &updates[idx..]).await {
+					log_error!(
+						self.logger,
+						"Failed to durably archive the gapped ChannelMonitorUpdates for monitor {}, refusing to restore it: {}. You should restart as soon as possible.",
+						monitor_key,
+						e
+					);
+					return Err(e);
+				}
 				break;
 			}
 			next_update_id = update_name.0.checked_add(1);
@@ -1686,8 +1694,11 @@ impl<
 	/// The gapped updates can never be replayed, but are preserved for manual disaster recovery
 	/// rather than deleted. Archiving them also ensures they cannot be replayed by a later
 	/// restore once newly written updates fill the gap, which would leave the monitor ahead of
-	/// the `ChannelManager`.
-	async fn archive_gapped_updates(&self, monitor_key: &str, gapped_updates: &[UpdateName]) {
+	/// the `ChannelManager`. The updates are therefore durably quarantined here before the
+	/// monitor is restored, and an error is returned if any of them cannot be moved.
+	async fn archive_gapped_updates(
+		&self, monitor_key: &str, gapped_updates: &[UpdateName],
+	) -> Result<(), io::Error> {
 		const LEGACY_CLOSED_CHANNEL_UPDATE_ID: u64 = u64::MAX;
 		let primary = CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
 		let archived_primary = ARCHIVED_CHANNEL_MONITOR_UPDATE_PERSISTENCE_PRIMARY_NAMESPACE;
@@ -1706,7 +1717,7 @@ impl<
 							update_name.as_str(),
 							e
 						);
-						continue;
+						return Err(e);
 					},
 				};
 			if let Err(e) = self
@@ -1722,10 +1733,14 @@ impl<
 					update_name.as_str(),
 					e
 				);
-				continue;
+				return Err(e);
 			}
+			// The removal is non-lazy so that the gapped update is durably excluded before the
+			// monitor is restored: a lazy removal may be lost on a crash, leaving the gapped
+			// update in place where newly written updates filling the gap would cause it to be
+			// replayed.
 			if let Err(e) =
-				self.kv_store.remove(primary, monitor_key, update_name.as_str(), true).await
+				self.kv_store.remove(primary, monitor_key, update_name.as_str(), false).await
 			{
 				log_error!(
 					self.logger,
@@ -1735,8 +1750,10 @@ impl<
 					update_name.as_str(),
 					e
 				);
+				return Err(e);
 			}
 		}
+		Ok(())
 	}
 
 	/// Read a channel monitor.
