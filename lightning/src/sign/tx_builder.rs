@@ -51,8 +51,9 @@ pub(crate) struct ChannelStats {
 }
 
 fn commit_plus_htlc_tx_fees_msat(
-	local: bool, next_commitment_htlcs: &[HTLCAmountDirection], dust_buffer_feerate: u32,
-	feerate: u32, broadcaster_dust_limit_satoshis: u64, channel_type: &ChannelTypeFeatures,
+	local: bool, next_commitment_htlcs: &[HTLCAmountDirection],
+	current_or_buffered_feerate_per_kw: u32, excess_feerate_over_local_estimate_per_kw: u32,
+	broadcaster_dust_limit_satoshis: u64, channel_type: &ChannelTypeFeatures,
 ) -> (u64, u64) {
 	let accepted_nondust_htlcs = next_commitment_htlcs
 		.iter()
@@ -60,7 +61,7 @@ fn commit_plus_htlc_tx_fees_msat(
 			htlc.outbound != local
 				&& !htlc.is_dust(
 					local,
-					dust_buffer_feerate,
+					current_or_buffered_feerate_per_kw,
 					broadcaster_dust_limit_satoshis,
 					channel_type,
 				)
@@ -72,26 +73,37 @@ fn commit_plus_htlc_tx_fees_msat(
 			htlc.outbound == local
 				&& !htlc.is_dust(
 					local,
-					dust_buffer_feerate,
+					current_or_buffered_feerate_per_kw,
 					broadcaster_dust_limit_satoshis,
 					channel_type,
 				)
 		})
 		.count();
 
-	let commitment_fee_sat =
-		commit_tx_fee_sat(feerate, accepted_nondust_htlcs + offered_nondust_htlcs, channel_type);
-	let second_stage_fees_sat =
-		htlc_tx_fees_sat(feerate, accepted_nondust_htlcs, offered_nondust_htlcs, channel_type);
+	let commitment_fee_sat = commit_tx_fee_sat(
+		excess_feerate_over_local_estimate_per_kw,
+		accepted_nondust_htlcs + offered_nondust_htlcs,
+		channel_type,
+	);
+	let second_stage_fees_sat = htlc_tx_fees_sat(
+		excess_feerate_over_local_estimate_per_kw,
+		accepted_nondust_htlcs,
+		offered_nondust_htlcs,
+		channel_type,
+	);
 	let total_fees_msat = (commitment_fee_sat + second_stage_fees_sat) * 1000;
 
 	let extra_accepted_htlc_commitment_fee_sat = commit_tx_fee_sat(
-		feerate,
+		excess_feerate_over_local_estimate_per_kw,
 		accepted_nondust_htlcs + 1 + offered_nondust_htlcs,
 		channel_type,
 	);
-	let extra_accepted_htlc_second_stage_fees_sat =
-		htlc_tx_fees_sat(feerate, accepted_nondust_htlcs + 1, offered_nondust_htlcs, channel_type);
+	let extra_accepted_htlc_second_stage_fees_sat = htlc_tx_fees_sat(
+		excess_feerate_over_local_estimate_per_kw,
+		accepted_nondust_htlcs + 1,
+		offered_nondust_htlcs,
+		channel_type,
+	);
 	let extra_accepted_htlc_total_fees_msat =
 		(extra_accepted_htlc_commitment_fee_sat + extra_accepted_htlc_second_stage_fees_sat) * 1000;
 
@@ -154,42 +166,56 @@ fn get_dust_exposure_stats(
 	dust_exposure_limiting_feerate: Option<u32>, broadcaster_dust_limit_satoshis: u64,
 	channel_type: &ChannelTypeFeatures,
 ) -> (u64, Option<u64>) {
-	let excess_feerate =
+	let excess_feerate_over_local_estimate_per_kw =
 		feerate_per_kw.saturating_sub(dust_exposure_limiting_feerate.unwrap_or(feerate_per_kw));
 	if channel_type.supports_anchor_zero_fee_commitments() {
 		debug_assert_eq!(feerate_per_kw, 0);
-		debug_assert_eq!(excess_feerate, 0);
+		debug_assert_eq!(excess_feerate_over_local_estimate_per_kw, 0);
 	}
 
 	// Increment the feerate by a buffer to calculate dust exposure
 	let dust_buffer_feerate = get_dust_buffer_feerate(feerate_per_kw);
 
-	// Calculate dust exposure on commitment transaction
-	let dust_exposure_msat = commitment_htlcs
-		.iter()
-		.filter_map(|htlc| {
-			htlc.is_dust(local, dust_buffer_feerate, broadcaster_dust_limit_satoshis, channel_type)
+	let dust_exposure_at_feerate = |current_or_buffered_feerate_per_kw| {
+		commitment_htlcs
+			.iter()
+			.filter_map(|htlc| {
+				htlc.is_dust(
+					local,
+					current_or_buffered_feerate_per_kw,
+					broadcaster_dust_limit_satoshis,
+					channel_type,
+				)
 				.then_some(htlc.amount_msat)
-		})
-		.sum();
+			})
+			.sum::<u64>()
+	};
 
-	if local || excess_feerate == 0 {
-		(dust_exposure_msat, None)
+	if local || excess_feerate_over_local_estimate_per_kw == 0 {
+		(dust_exposure_at_feerate(dust_buffer_feerate), None)
 	} else {
-		// Add any excess fees to dust exposure on counterparty transactions
-		let (excess_fees_msat, extra_accepted_htlc_excess_fees_msat) =
-			commit_plus_htlc_tx_fees_msat(
-				local,
-				&commitment_htlcs,
-				dust_buffer_feerate,
-				excess_feerate,
-				broadcaster_dust_limit_satoshis,
-				channel_type,
+		// An HTLC trimmed only at the buffered feerate may incur excess commitment and
+		// second-stage fees exceeding its amount at the current feerate. Bound both scenarios.
+		let mut exposure_msat = 0;
+		let mut extra_htlc_exposure_msat = 0;
+		for current_or_buffered_feerate_per_kw in [feerate_per_kw, dust_buffer_feerate] {
+			let dust_exposure_msat = dust_exposure_at_feerate(current_or_buffered_feerate_per_kw);
+			let (excess_fees_msat, extra_accepted_htlc_excess_fees_msat) =
+				commit_plus_htlc_tx_fees_msat(
+					local,
+					commitment_htlcs,
+					current_or_buffered_feerate_per_kw,
+					excess_feerate_over_local_estimate_per_kw,
+					broadcaster_dust_limit_satoshis,
+					channel_type,
+				);
+			exposure_msat = cmp::max(exposure_msat, dust_exposure_msat + excess_fees_msat);
+			extra_htlc_exposure_msat = cmp::max(
+				extra_htlc_exposure_msat,
+				dust_exposure_msat + extra_accepted_htlc_excess_fees_msat,
 			);
-		(
-			dust_exposure_msat + excess_fees_msat,
-			Some(dust_exposure_msat + extra_accepted_htlc_excess_fees_msat),
-		)
+		}
+		(exposure_msat, Some(extra_htlc_exposure_msat))
 	}
 }
 
@@ -607,11 +633,13 @@ fn adjust_min_max_htlc_for_dust_exposure(
 
 	if let Some(extra_htlc_remote_dust_exposure) = extra_htlc_remote_dust_exposure_msat {
 		if extra_htlc_remote_dust_exposure > max_dust_htlc_exposure_msat {
-			// If adding an extra HTLC would put us over the dust limit in total fees, we cannot
-			// send any non-dust HTLCs.
+			// Only HTLCs trimmed at the current feerate avoid the additional output fees.
+			let current_dust_limit_success_sat =
+				second_stage_tx_fees_sat(channel_type, feerate_per_kw).0
+					+ channel_constraints.counterparty_dust_limit_satoshis;
 			available_capacity_msat = cmp::min(
 				available_capacity_msat,
-				buffer_dust_limit_success_sat.saturating_mul(1000).saturating_sub(1),
+				current_dust_limit_success_sat.saturating_mul(1000).saturating_sub(1),
 			);
 		}
 	}

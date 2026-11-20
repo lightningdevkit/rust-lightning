@@ -9687,6 +9687,48 @@ fn do_test_nondust_htlc_fees_dust_exposure_delta(features: ChannelTypeFeatures) 
 }
 
 #[test]
+fn test_buffered_dust_htlc_excess_fees() {
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	for cfg in &chanmon_cfgs {
+		*cfg.fee_estimator.sat_per_kw.lock().unwrap() = 18_500;
+	}
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut config = test_legacy_channel_config();
+	config.channel_config.max_dust_htlc_exposure = MaxDustHTLCExposure::FeeRateMultiplier(10_000);
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	create_chan_between_nodes_with_value(&nodes[0], &nodes[1], 1_000_000, 200_000_000);
+
+	// This HTLC is untrimmed on the counterparty commitment at 18,500 sat/kw, but dust at
+	// the buffered 23,125 sat/kw. Cache a route before lowering the estimate to test send admission.
+	const HTLC_MSAT: u64 = 13_359_000;
+	let (route, payment_hash, _, payment_secret) =
+		get_route_and_payment_hash!(nodes[0], nodes[1], HTLC_MSAT);
+	let (preimage, _, _, _) = route_payment(&nodes[0], &[&nodes[1]], HTLC_MSAT);
+
+	// The negotiated feerate remains high while the local estimate and exposure limit fall.
+	*chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap() = 2_500;
+	// Excess commitment and HTLC-success fees: (724 + 172 + 703) * (18,500 - 2,500) msat.
+	assert_eq!(nodes[0].node.list_channels()[0].current_dust_exposure_msat, Some(25_584_000));
+	claim_payment(&nodes[0], &[&nodes[1]], preimage);
+
+	// A new untrimmed HTLC would exceed the 25,000,000-msat exposure limit.
+	assert_eq!(nodes[0].node.list_channels()[0].next_outbound_htlc_limit_msat, HTLC_MSAT - 1);
+	let onion = RecipientOnionFields::secret_only(payment_secret, route.get_total_amount());
+	let res = nodes[0].node.send_payment_with_route(
+		route,
+		payment_hash,
+		onion,
+		PaymentId(payment_hash.0),
+	);
+	unwrap_send_err!(nodes[0], res, true, APIError::ChannelUnavailable { err }, {
+		assert_eq!(err, "Cannot send more than our next-HTLC maximum - 13358999 msat");
+	});
+	check_added_monitors(&nodes[0], 0);
+	send_payment(&nodes[0], &[&nodes[1]], HTLC_MSAT - 1);
+}
+
+#[test]
 fn test_nondust_htlc_fees_dust_exposure_delta() {
 	do_test_nondust_htlc_fees_dust_exposure_delta(ChannelTypeFeatures::only_static_remote_key());
 	do_test_nondust_htlc_fees_dust_exposure_delta(
