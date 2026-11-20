@@ -19741,16 +19741,20 @@ impl<'a, ES: EntropySource, SP: SignerProvider, L: Logger>
 
 		const MAX_ALLOC_SIZE: usize = 1024 * 64;
 
+		// `args.config` only determines which channel types we'd negotiate for new channels.
+		// Existing channels may have been opened with a different config (e.g. via a
+		// `create_channel` `override_config` or `set_current_config`), so accept any channel type
+		// this build understands when reading them, not just the ones we'd currently negotiate.
+		let mut supported_channel_types = provided_channel_type_features(&args.config);
+		supported_channel_types.set_anchors_zero_fee_htlc_tx_optional();
+		supported_channel_types.set_anchor_zero_fee_commitments_optional();
+
 		let channel_count: u64 = Readable::read(reader)?;
 		let mut channels = Vec::with_capacity(cmp::min(channel_count as usize, 128));
 		for _ in 0..channel_count {
 			let channel: FundedChannel<SP> = FundedChannel::read(
 				reader,
-				(
-					args.entropy_source,
-					args.signer_provider,
-					&provided_channel_type_features(&args.config),
-				),
+				(args.entropy_source, args.signer_provider, &supported_channel_types),
 			)?;
 			channels.push(channel);
 		}
