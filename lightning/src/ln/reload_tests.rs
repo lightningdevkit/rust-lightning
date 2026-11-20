@@ -2603,6 +2603,50 @@ fn outbound_removed_holding_cell_resolved_no_double_forward() {
 	expect_payment_sent(&nodes[0], payment_preimage, None, true, true);
 }
 
+fn do_test_reload_with_channel_type_no_longer_negotiated(zero_fee_commitments: bool) {
+	// The channel type options in `ChannelHandshakeConfig` only apply to new channels. Check that
+	// we can still load an existing channel whose type the config we reload with would not
+	// negotiate.
+	let chanmon_cfgs = create_chanmon_cfgs(2);
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let persister;
+	let new_chain_monitor;
+	let mut config = test_default_channel_config();
+	config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = zero_fee_commitments;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
+	let nodes_0_deserialized;
+	let mut nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+	let node_0_id = nodes[0].node.get_our_node_id();
+
+	let (_, _, chan_id, _) = create_announced_chan_between_nodes(&nodes, 0, 1);
+	let channel_type = nodes[0].node.list_channels()[0].channel_type.clone().unwrap();
+	if zero_fee_commitments {
+		assert!(channel_type.supports_anchor_zero_fee_commitments());
+	} else {
+		assert!(channel_type.supports_anchors_zero_fee_htlc_tx());
+	}
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+
+	// Reload with neither anchor channel type enabled for new channels.
+	let mut reload_config = test_default_channel_config();
+	reload_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	reload_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let node_0_serialized = nodes[0].node.encode();
+	let monitor_serialized = get_monitor!(nodes[0], chan_id).encode();
+	reload_node!(nodes[0], reload_config, &node_0_serialized, &[&monitor_serialized], persister, new_chain_monitor, nodes_0_deserialized);
+	assert_eq!(nodes[0].node.list_channels()[0].channel_type, Some(channel_type));
+
+	nodes[1].node.peer_disconnected(node_0_id);
+	reconnect_nodes(ReconnectArgs::new(&nodes[0], &nodes[1]));
+	send_payment(&nodes[0], &[&nodes[1]], 1_000_000);
+}
+
+#[test]
+fn test_reload_with_channel_type_no_longer_negotiated() {
+	do_test_reload_with_channel_type_no_longer_negotiated(false);
+	do_test_reload_with_channel_type_no_longer_negotiated(true);
+}
+
 #[test]
 fn test_reload_node_with_preimage_in_monitor_claims_htlc() {
 	// Test that if a forwarding node has an HTLC that was irrevocably removed on the outbound edge
