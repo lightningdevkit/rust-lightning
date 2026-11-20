@@ -65,7 +65,9 @@ use crate::offers::nonce::Nonce;
 use crate::offers::offer::OfferBuilder;
 use crate::offers::parse::Bolt12SemanticError;
 use crate::offers::payer_proof::PayerProof;
-use crate::offers::test_utils::{recipient_pubkey, recipient_sign};
+use crate::offers::test_utils::{
+	invoice_with_record_above_experimental_range, recipient_pubkey, recipient_sign,
+};
 use crate::onion_message::messenger::{DefaultMessageRouter, Destination, MessageRouter, MessageSendInstructions, NodeIdMessageRouter, NullMessageRouter, PeeledOnion, DUMMY_HOPS_PATH_LENGTH, QR_CODED_DUMMY_HOPS_PATH_LENGTH};
 use crate::onion_message::offers::OffersMessage;
 use crate::routing::router::{DEFAULT_PAYMENT_DUMMY_HOPS, PaymentParameters, RouteParameters, RouteParametersConfig};
@@ -3065,6 +3067,17 @@ fn pay_for_bolt12_invoice_error_cases() {
 	assert_eq!(
 		bob.node.pay_for_bolt12_invoice(&other_chain_invoice, payment_id, Default::default()),
 		Err(Bolt12PaymentError::UnsupportedChain),
+	);
+
+	// An invoice containing an unknown TLV record above the experimental invoice range is
+	// rejected before any state is inserted.
+	let invoice_above_experimental_range =
+		invoice_with_record_above_experimental_range(Network::Testnet);
+	assert!(invoice_above_experimental_range.has_records_above_experimental_range());
+	assert_eq!(
+		bob.node
+			.pay_for_bolt12_invoice(&invoice_above_experimental_range, payment_id, Default::default()),
+		Err(Bolt12PaymentError::UnknownRequiredFeatures),
 	);
 
 	// First call succeeds and starts the payment.

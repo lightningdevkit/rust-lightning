@@ -16,8 +16,8 @@ use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
 	check_invoice_signing_pubkey, construct_payment_paths, filter_fallbacks,
-	ExperimentalInvoiceTlvStream, ExperimentalInvoiceTlvStreamRef, FallbackAddress,
-	InvoiceTlvStream, InvoiceTlvStreamRef,
+	has_records_above_experimental_range, ExperimentalInvoiceTlvStream,
+	ExperimentalInvoiceTlvStreamRef, FallbackAddress, InvoiceTlvStream, InvoiceTlvStreamRef,
 };
 #[cfg(test)]
 use crate::offers::invoice_macros::invoice_builder_methods_test_common;
@@ -405,6 +405,15 @@ impl StaticInvoice {
 		self.signature
 	}
 
+	/// Whether the invoice contains any TLV record with a type at or above the experimental
+	/// invoice range, i.e., a type of 4,000,000,000 or above.
+	///
+	/// Such records are valid per the spec, but unknown to this version of LDK, so invoices
+	/// containing them should generally not be paid.
+	pub fn has_records_above_experimental_range(&self) -> bool {
+		has_records_above_experimental_range(&self.bytes)
+	}
+
 	/// Whether the [`Offer`] that this invoice is based on is expired.
 	#[cfg(feature = "std")]
 	pub fn is_offer_expired(&self) -> bool {
@@ -747,7 +756,7 @@ mod tests {
 	use crate::ln::msgs::DecodeError;
 	use crate::offers::invoice::{
 		ExperimentalInvoiceTlvStreamRef, InvoiceTlvStreamRef, EXPERIMENTAL_INVOICE_TYPES,
-		INVOICE_TYPES,
+		EXPERIMENTAL_INVOICE_TYPES_END, INVOICE_TYPES,
 	};
 	use crate::offers::merkle;
 	use crate::offers::merkle::{SignatureTlvStreamRef, TaggedHash, TlvStream};
@@ -762,7 +771,7 @@ mod tests {
 	};
 	use crate::offers::test_utils::*;
 	use crate::types::features::{Bolt12InvoiceFeatures, OfferFeatures};
-	use crate::util::ser::{BigSize, Iterable, Writeable};
+	use crate::util::ser::{BigSize, Iterable, LengthReadable, Writeable};
 	use bitcoin::constants::ChainHash;
 	use bitcoin::secp256k1::{self, Secp256k1};
 	use bitcoin::Network;
@@ -1676,6 +1685,82 @@ mod tests {
 				Bolt12ParseError::InvalidSignature(secp256k1::Error::IncorrectSignature)
 			),
 		}
+	}
+
+	fn static_invoice_with_record_above_experimental_range() -> StaticInvoice {
+		let node_id = recipient_pubkey();
+		let expanded_key = ExpandedKey::new([42; 32]);
+		let entropy = FixedEntropy {};
+		let nonce = Nonce::from_entropy_source(&entropy);
+		let secp_ctx = Secp256k1::new();
+
+		let offer = OfferBuilder::deriving_signing_pubkey(node_id, &expanded_key, nonce, &secp_ctx)
+			.path(blinded_path())
+			.build()
+			.unwrap();
+
+		let (mut unsigned_invoice, keys) = StaticInvoiceBuilder::for_offer_using_derived_keys(
+			&offer,
+			payment_paths(),
+			vec![blinded_path()],
+			now(),
+			&expanded_key,
+			nonce,
+			&secp_ctx,
+		)
+		.unwrap()
+		.build()
+		.unwrap();
+
+		// The record is odd so it is unknown to the parser rather than indicating a required
+		// feature.
+		const UNKNOWN_ODD_TYPE: u64 = EXPERIMENTAL_INVOICE_TYPES_END + 1;
+		assert!(UNKNOWN_ODD_TYPE % 2 == 1);
+		let mut unknown_bytes = Vec::new();
+		BigSize(UNKNOWN_ODD_TYPE).write(&mut unknown_bytes).unwrap();
+		BigSize(32).write(&mut unknown_bytes).unwrap();
+		[42u8; 32].write(&mut unknown_bytes).unwrap();
+
+		unsigned_invoice.experimental_bytes.extend_from_slice(&unknown_bytes);
+
+		let tlv_stream = TlvStream::new(&unsigned_invoice.bytes)
+			.chain(TlvStream::new(&unsigned_invoice.experimental_bytes));
+		unsigned_invoice.tagged_hash = TaggedHash::from_tlv_stream(SIGNATURE_TAG, tlv_stream);
+
+		unsigned_invoice
+			.sign(|message: &UnsignedStaticInvoice| {
+				Ok(secp_ctx.sign_schnorr_no_aux_rand(message.as_ref().as_digest(), &keys))
+			})
+			.unwrap()
+	}
+
+	#[test]
+	fn parses_invoice_with_tlv_records_above_experimental_range() {
+		// LDK 0.2 and earlier read the experimental invoice range as open-ended and may have
+		// persisted invoices containing such records, which must remain deserializable.
+		let invoice = static_invoice_with_record_above_experimental_range();
+
+		let mut encoded_invoice = Vec::new();
+		invoice.write(&mut encoded_invoice).unwrap();
+
+		match StaticInvoice::try_from(encoded_invoice.clone()) {
+			Ok(invoice) => assert_eq!(invoice.bytes, encoded_invoice),
+			Err(e) => panic!("error parsing invoice: {:?}", e),
+		}
+
+		match StaticInvoice::read_from_fixed_length_buffer(&mut &encoded_invoice[..]) {
+			Ok(invoice) => assert_eq!(invoice.bytes, encoded_invoice),
+			Err(e) => panic!("error reading invoice: {:?}", e),
+		}
+	}
+
+	#[test]
+	fn detects_tlv_records_above_experimental_range() {
+		let invoice = static_invoice_with_record_above_experimental_range();
+		assert!(invoice.has_records_above_experimental_range());
+
+		let invoice = dummy_static_invoice();
+		assert!(!invoice.has_records_above_experimental_range());
 	}
 
 	#[test]

@@ -25,7 +25,7 @@ use crate::ln::inbound_payment::ExpandedKey;
 use crate::ln::msgs::DecodeError;
 use crate::offers::invoice::{
 	Bolt12Invoice, DerivedSigningPubkey, ExperimentalInvoiceTlvStream, ExplicitSigningPubkey,
-	InvoiceTlvStream, SigningPubkeyStrategy, EXPERIMENTAL_INVOICE_TYPES, INVOICE_AMOUNT_TYPE,
+	InvoiceTlvStream, SigningPubkeyStrategy, EXPERIMENTAL_INVOICE_TYPES_END, INVOICE_AMOUNT_TYPE,
 	INVOICE_CREATED_AT_TYPE, INVOICE_FEATURES_TYPE, INVOICE_NODE_ID_TYPE,
 	INVOICE_PAYMENT_HASH_TYPE, SIGNATURE_TAG,
 };
@@ -953,7 +953,7 @@ fn validate_omitted_markers_for_parsing(
 	for &marker in omitted_markers {
 		if SIGNATURE_TYPES.contains(&marker)
 			|| PAYER_PROOF_DATA_TYPES.contains(&marker)
-			|| marker >= EXPERIMENTAL_INVOICE_TYPES.end
+			|| marker >= EXPERIMENTAL_INVOICE_TYPES_END
 		{
 			return Err(DecodeError::InvalidValue);
 		}

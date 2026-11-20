@@ -899,6 +899,10 @@ pub enum PaymentFailureReason {
 	/// your router.
 	UnexpectedError,
 	/// An invoice was received that required unknown features.
+	///
+	/// Also used when an invoice contains TLV records with a type above the experimental invoice
+	/// range, which are valid per the spec but unknown to this version of LDK, and are refused
+	/// for payment.
 	UnknownRequiredFeatures,
 	/// A [`Bolt12Invoice`] was not received in a reasonable amount of time.
 	InvoiceRequestExpired,
