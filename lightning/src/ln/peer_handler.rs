@@ -1787,6 +1787,10 @@ where
 			Ok(res) => Ok(res),
 			Err(e) => {
 				self.disconnect_event_internal(peer_descriptor, "of a protocol error");
+				// Unlike `read_event`, which returns the error to the socket driver to
+				// close the socket, we process the stashed bytes ourselves and thus have
+				// to disconnect the socket directly.
+				peer_descriptor.disconnect_socket();
 				Err(e)
 			},
 		};
@@ -2305,11 +2309,24 @@ where
 
 			let our_features = self.init_features(their_node_id);
 			if msg.features.requires_unknown_bits_from(&our_features) {
+				// The peer controls how many bits it sets (up to the message size limit), so
+				// only scan for and log the first few to avoid letting it bloat our work and
+				// logs.
+				const MAX_LOGGED_UNKNOWN_REQ_BITS: usize = 16;
+				// Take one extra bit so that we know whether to append "..." to the log line.
+				let unknown_bits: Vec<_> = msg
+					.features
+					.required_unknown_bits_from_iter(&our_features)
+					.take(MAX_LOGGED_UNKNOWN_REQ_BITS + 1)
+					.collect();
+				let logged_bits =
+					&unknown_bits[..cmp::min(unknown_bits.len(), MAX_LOGGED_UNKNOWN_REQ_BITS)];
 				log_debug!(
 					logger,
-					"Peer {} requires features unknown to us: {:?}",
+					"Peer {} requires features unknown to us: {:?}{}",
 					their_node_id,
-					msg.features.required_unknown_bits_from(&our_features)
+					logged_bits,
+					if unknown_bits.len() > MAX_LOGGED_UNKNOWN_REQ_BITS { "..." } else { "" }
 				);
 				return Err(PeerHandleError {}.into());
 			}
@@ -5132,6 +5149,83 @@ mod tests {
 			assert!(!peer.sent_pause_read);
 		}
 		drain_queues!();
+	}
+
+	#[test]
+	fn test_stashed_read_protocol_error_disconnects_socket() {
+		use crate::routing::test_utils::channel_announcement;
+		use lightning_types::features::ChannelFeatures;
+
+		// Simple test which checks that if processing a peer's stashed read bytes fails with
+		// a protocol error, we disconnect the socket. We cannot return the error to the
+		// socket driver as we process the stashed bytes ourselves, so if we didn't close the
+		// socket here the peer would stay connected with reads paused, allowing a malicious
+		// peer to repeat the failure indefinitely.
+		let cfgs = create_peermgr_cfgs(2);
+		let peers = create_network(2, &cfgs);
+		let (mut fd_a, mut fd_b) = establish_connection(&peers[0], &peers[1]);
+
+		macro_rules! drain_queues {
+			() => {
+				loop {
+					peers[0].process_events();
+					peers[1].process_events();
+
+					let msg = fd_a.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[1].read_event(&mut fd_b, &msg).unwrap();
+						continue;
+					}
+					let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
+					if !msg.is_empty() {
+						peers[0].read_event(&mut fd_a, &msg).unwrap();
+						continue;
+					}
+					break;
+				}
+			};
+		}
+		drain_queues!();
+
+		let secp_ctx = Secp256k1::new();
+		let key = SecretKey::from_slice(&[1; 32]).unwrap();
+		let msg = channel_announcement(&key, &key, ChannelFeatures::empty(), 42, &secp_ctx);
+		let msg_ev = MessageSendEvent::BroadcastChannelAnnouncement { msg, update_msg: None };
+
+		// Hang A's writes and queue enough messages for A that its outbound buffer for B
+		// exceeds the stash-reads limit, then deliver a gossip broadcast from B to A which
+		// A will stash rather than process.
+		fd_a.hang_writes.store(true, Ordering::Relaxed);
+		loop {
+			cfgs[0].chan_handler.pending_events.lock().unwrap().push(msg_ev.clone());
+			peers[0].process_events();
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			let buf_len = peer_a_lock.get(&fd_a).unwrap().lock().unwrap().total_outbound_buffered();
+			if buf_len > OUTBOUND_BUFFER_SIZE_LIMIT_STASH_READS {
+				break;
+			}
+		}
+		cfgs[1].chan_handler.pending_events.lock().unwrap().push(msg_ev);
+		peers[1].process_events();
+		let msg = fd_b.outbound_data.lock().unwrap().split_off(0);
+		peers[0].read_event(&mut fd_a, &msg).unwrap();
+		{
+			let peer_a_lock = peers[0].peers.read().unwrap();
+			let peer = peer_a_lock.get(&fd_a).unwrap().lock().unwrap();
+			assert!(peer.stashed_read_data.is_some());
+		}
+
+		// While reads are stashed, any bytes B delivers are appended to the stash without
+		// being parsed. Deliver garbage which cannot decrypt as a message-length header, so
+		// that processing the stash fails with a protocol error.
+		peers[0].read_event(&mut fd_a, &[42u8; 18]).unwrap();
+
+		// Once A's writes are un-hung, `process_events` processes the stashed bytes, which
+		// should fail and disconnect the socket.
+		fd_a.hang_writes.store(false, Ordering::Relaxed);
+		peers[0].process_events();
+		assert!(fd_a.disconnect.load(Ordering::Acquire));
+		assert!(peers[0].peers.read().unwrap().get(&fd_a).is_none());
 	}
 
 	#[test]
