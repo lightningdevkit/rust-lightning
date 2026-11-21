@@ -350,12 +350,18 @@ pub enum ConfirmationTarget {
 pub trait FeeEstimator {
 	/// Gets estimated satoshis of fee required per 1000 Weight-Units.
 	///
-	/// LDK will wrap this method and ensure that the value returned is no smaller than 253
-	/// (ie 1 satoshi-per-byte rounded up to ensure later round-downs don't put us below 1 satoshi-per-byte).
-	///
 	/// The following unit conversions can be used to convert to sats/KW:
 	///  * satoshis-per-byte * 250
 	///  * satoshis-per-kbyte / 4
+	///
+	/// LDK bounds the feerates it uses for lightning protocol purposes below by
+	/// [`FEERATE_FLOOR_SATS_PER_KW`] (253 sats/KW, ie 1 satoshi-per-byte rounded up to ensure later
+	/// round-downs don't put us below 1 satoshi-per-byte). However, not all feerates LDK uses are
+	/// lightning protocol feerates, and some callers use the value returned here without applying
+	/// that bound. Most notably, [`OutputSweeper`] uses it as-is for
+	/// [`ConfirmationTarget::OutputSpendingFee`].
+	///
+	/// [`OutputSweeper`]: crate::util::sweep::OutputSweeper
 	fn get_est_sat_per_1000_weight(&self, confirmation_target: ConfirmationTarget) -> u32;
 }
 
