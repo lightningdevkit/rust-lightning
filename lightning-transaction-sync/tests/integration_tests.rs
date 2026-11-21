@@ -1,12 +1,16 @@
 #![cfg(all(
 	not(target_os = "windows"),
-	any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum")
+	any(
+		feature = "esplora-blocking",
+		feature = "esplora-async",
+		all(feature = "_electrum", buggy_electrum_sync)
+	)
 ))]
 
 use lightning::chain::transaction::{OutPoint, TransactionData};
 use lightning::chain::{Confirm, Filter, WatchedOutput};
 use lightning::util::test_utils::TestLogger;
-#[cfg(feature = "_electrum")]
+#[cfg(all(feature = "_electrum", buggy_electrum_sync))]
 use lightning_transaction_sync::ElectrumSyncClient;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 use lightning_transaction_sync::EsploraSyncClient;
@@ -332,7 +336,7 @@ async fn test_esplora_syncs() {
 }
 
 #[test]
-#[cfg(feature = "_electrum")]
+#[cfg(all(feature = "_electrum", buggy_electrum_sync))]
 fn test_electrum_syncs() {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	generate_blocks_and_wait(&bitcoind, &electrsd, 101);
@@ -343,7 +347,7 @@ fn test_electrum_syncs() {
 	test_syncing!(tx_sync, confirmable, bitcoind, electrsd);
 }
 
-#[cfg(feature = "_electrum")]
+#[cfg(all(feature = "_electrum", buggy_electrum_sync))]
 fn do_test_conflicting_output_watches(sync_between_registrations: bool, bogus_first: bool) {
 	let (bitcoind, electrsd) = setup_bitcoind_and_electrsd();
 	generate_blocks_and_wait(&bitcoind, &electrsd, 101);
@@ -405,14 +409,14 @@ fn do_test_conflicting_output_watches(sync_between_registrations: bool, bogus_fi
 }
 
 #[test]
-#[cfg(feature = "_electrum")]
+#[cfg(all(feature = "_electrum", buggy_electrum_sync))]
 fn test_conflicting_output_watches_same_sync() {
 	do_test_conflicting_output_watches(false, false);
 	do_test_conflicting_output_watches(false, true);
 }
 
 #[test]
-#[cfg(feature = "_electrum")]
+#[cfg(all(feature = "_electrum", buggy_electrum_sync))]
 fn test_conflicting_output_watches_separate_syncs() {
 	do_test_conflicting_output_watches(true, false);
 	do_test_conflicting_output_watches(true, true);

@@ -19,7 +19,7 @@ echo -e "\n\nChecking Transaction Sync Clients with features."
 cargo check -p lightning-transaction-sync --quiet --color always --features esplora-blocking
 cargo check -p lightning-transaction-sync --quiet --color always --features esplora-async
 cargo check -p lightning-transaction-sync --quiet --color always --features esplora-async-https
-cargo check -p lightning-transaction-sync --quiet --color always --features electrum
+RUSTFLAGS="$RUSTFLAGS --cfg=buggy_electrum_sync" cargo check -p lightning-transaction-sync --quiet --color always --features electrum
 
 if [ -z "$CI_ENV" ] && [[ -z "$BITCOIND_EXE" || -z "$ELECTRS_EXE" ]]; then
 	echo -e "\n\nSkipping testing Transaction Sync Clients due to BITCOIND_EXE or ELECTRS_EXE being unset."
@@ -29,5 +29,5 @@ else
 	cargo test -p lightning-transaction-sync --quiet --color always --features esplora-blocking
 	cargo test -p lightning-transaction-sync --quiet --color always --features esplora-async
 	cargo test -p lightning-transaction-sync --quiet --color always --features esplora-async-https
-	cargo test -p lightning-transaction-sync --quiet --color always --features electrum
+	RUSTFLAGS="$RUSTFLAGS --cfg=buggy_electrum_sync" cargo test -p lightning-transaction-sync --quiet --color always --features electrum
 fi
