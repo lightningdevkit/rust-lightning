@@ -69,4 +69,5 @@ check-cfg = [
     "cfg(peer_storage)",
     "cfg(tor)",
     "cfg(dual_funding)",
+    "cfg(buggy_electrum_sync)",
 ]

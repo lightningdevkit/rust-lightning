@@ -17,6 +17,11 @@
 //!- `esplora-blocking` enables syncing against an Esplora backend based on a blocking client.
 //!- `esplora-async` enables syncing against an Esplora backend based on an async client.
 //!- `esplora-async-https` enables the async Esplora client with support for HTTPS.
+//!- `electrum` enables syncing against an Electrum backend. However, the
+//!  transaction-based Electrum protocol is not well-suited to LDK's syncing
+//!  needs, and this client is known to be buggy when used with Lightning.
+//!  Thus, it is only available if the `buggy_electrum_sync` cfg flag is set,
+//!  e.g., via `RUSTFLAGS='--cfg buggy_electrum_sync'`.
 //!
 //! ## Version Compatibility
 //!
@@ -74,17 +79,29 @@
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 mod esplora;
 
-#[cfg(any(feature = "_electrum"))]
+#[cfg(all(feature = "_electrum", buggy_electrum_sync))]
 mod electrum;
 
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
+#[cfg(any(
+	feature = "esplora-blocking",
+	feature = "esplora-async",
+	all(feature = "_electrum", buggy_electrum_sync)
+))]
 mod common;
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
+#[cfg(any(
+	feature = "esplora-blocking",
+	feature = "esplora-async",
+	all(feature = "_electrum", buggy_electrum_sync)
+))]
 mod error;
-#[cfg(any(feature = "esplora-blocking", feature = "esplora-async", feature = "_electrum"))]
+#[cfg(any(
+	feature = "esplora-blocking",
+	feature = "esplora-async",
+	all(feature = "_electrum", buggy_electrum_sync)
+))]
 pub use error::TxSyncError;
 
-#[cfg(feature = "_electrum")]
+#[cfg(all(feature = "_electrum", buggy_electrum_sync))]
 pub use electrum::ElectrumSyncClient;
 #[cfg(any(feature = "esplora-blocking", feature = "esplora-async"))]
 pub use esplora::EsploraSyncClient;
