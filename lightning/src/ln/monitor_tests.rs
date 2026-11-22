@@ -23,7 +23,7 @@ use crate::ln::types::ChannelId;
 use crate::ln::chan_utils;
 use crate::ln::channelmanager::{BREAKDOWN_TIMEOUT, ChannelManagerReadArgs, ClaimFundsOptions, MIN_CLTV_EXPIRY_DELTA, PaymentId};
 use crate::ln::outbound_payment::RecipientOnionFields;
-use crate::ln::msgs::{BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
+use crate::ln::msgs::{self, BaseMessageHandler, ChannelMessageHandler, MessageSendEvent};
 use crate::crypto::utils::sign;
 use crate::util::ser::{ReadableArgs, Writeable};
 use crate::util::test_channel_signer::TestChannelSigner;
@@ -4317,4 +4317,101 @@ fn do_test_claim_split_from_resolved_holder_htlc_output(p2a_anchor: bool) {
 fn test_claim_split_from_resolved_holder_htlc_output() {
 	do_test_claim_split_from_resolved_holder_htlc_output(false);
 	do_test_claim_split_from_resolved_holder_htlc_output(true);
+}
+
+#[test]
+fn test_revoked_commitment_claim_urgent_conf_target() {
+	// Tests that a revoked counterparty commitment transaction's outputs are claimed at
+	// `ConfirmationTarget::UrgentOnChainSweep` even when no HTLCs are pending on the latest
+	// commitment transactions. Previously the justice transaction fell back to
+	// `ConfirmationTarget::OutputSpendingFee`, which integrators are expected to set near the
+	// mempool minimum, letting a cheating counterparty outlast the justice transaction's feerate
+	// bumps with a spend of its revoked to_self output once the CSV delay expires.
+	let mut chanmon_cfgs = create_chanmon_cfgs(2);
+	// We broadcast a second-to-latest commitment transaction, without providing the revocation
+	// secret to the counterparty. However, because we always immediately take the revocation
+	// secret from the keys_manager, we would panic at broadcast as we're trying to sign a
+	// transaction which, from the point of view of our keys_manager, is revoked.
+	chanmon_cfgs[0].keys_manager.disable_revocation_policy_check = true;
+	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
+	let mut user_config = test_default_channel_config();
+	user_config.channel_handshake_config.negotiate_anchors_zero_fee_htlc_tx = false;
+	user_config.channel_handshake_config.negotiate_anchor_zero_fee_commitments = false;
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(user_config.clone()), Some(user_config)]);
+	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
+
+	let node_a_id = nodes[0].node.get_our_node_id();
+	let node_b_id = nodes[1].node.get_our_node_id();
+
+	// Make the two conf targets easily distinguishable in the justice transaction's feerate.
+	nodes[1].fee_estimator.target_override.lock().unwrap().insert(ConfirmationTarget::OutputSpendingFee, 253);
+	nodes[1].fee_estimator.target_override.lock().unwrap().insert(ConfirmationTarget::UrgentOnChainSweep, 12_500);
+
+	let (_, _, chan_id, _) =
+		create_announced_chan_between_nodes_with_value(&nodes, 0, 1, 1_000_000, 100_000_000);
+
+	// The channel never carries HTLCs, so nothing but a revoked commitment transaction on chain
+	// could make B's claims urgent.
+	let as_revoked_txn = get_local_commitment_txn!(nodes[0], chan_id);
+	assert_eq!(as_revoked_txn.len(), 1);
+
+	// Have A push an update_fee through the channel. B signs A's new commitment and revokes the
+	// one above, leaving B's latest holder and counterparty commitment transactions without any
+	// HTLCs.
+	{
+		let mut feerate_lock = chanmon_cfgs[0].fee_estimator.sat_per_kw.lock().unwrap();
+		*feerate_lock += 20;
+	}
+	nodes[0].node.timer_tick_occurred();
+	check_added_monitors(&nodes[0], 1);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let (update_msg, commitment_signed) = match events[0] {
+		MessageSendEvent::UpdateHTLCs {
+			updates: msgs::CommitmentUpdate { ref update_fee, ref commitment_signed, .. },
+			..
+		} => (update_fee.as_ref(), commitment_signed),
+		_ => panic!("Unexpected event"),
+	};
+	nodes[1].node.handle_update_fee(node_a_id, update_msg.unwrap());
+	nodes[1].node.handle_commitment_signed_batch_test(node_a_id, commitment_signed);
+	check_added_monitors(&nodes[1], 1);
+
+	let (raa, cs) = get_revoke_commit_msgs(&nodes[1], &node_a_id);
+	nodes[0].node.handle_revoke_and_ack(node_b_id, &raa);
+	nodes[0].node.handle_commitment_signed_batch_test(node_b_id, &cs);
+	check_added_monitors(&nodes[0], 2);
+
+	let events = nodes[0].node.get_and_clear_pending_msg_events();
+	assert_eq!(events.len(), 1);
+	let raa = match events[0] {
+		MessageSendEvent::SendRevokeAndACK { ref node_id, ref msg } => {
+			assert_eq!(node_id, &node_b_id);
+			(*msg).clone()
+		},
+		_ => panic!("Unexpected event"),
+	};
+	nodes[1].node.handle_revoke_and_ack(node_a_id, &raa);
+	check_added_monitors(&nodes[1], 1);
+
+	// Confirm A's now-revoked commitment transaction. B claims its revoked to_self output with a
+	// justice transaction fee-rated at the `UrgentOnChainSweep` estimate.
+	mine_transaction(&nodes[1], &as_revoked_txn[0]);
+	check_closed_event(&nodes[1], 1, ClosureReason::CommitmentTxConfirmed, &[node_a_id], 1_000_000);
+	check_closed_broadcast(&nodes[1], 1, true);
+	check_added_monitors(&nodes[1], 1);
+
+	let claim_txn: Vec<_> = nodes[1].tx_broadcaster.txn_broadcasted.lock().unwrap().drain(..)
+		.filter(|tx| tx.input.iter().any(|inp| inp.previous_output.txid == as_revoked_txn[0].compute_txid()))
+		.collect();
+	assert_eq!(claim_txn.len(), 1);
+	let claim_fee = claim_txn[0].input.iter().map(|txin| {
+		assert_eq!(txin.previous_output.txid, as_revoked_txn[0].compute_txid());
+		as_revoked_txn[0].output[txin.previous_output.vout as usize].value.to_sat()
+	}).sum::<u64>() - claim_txn[0].output.iter().map(|txout| txout.value.to_sat()).sum::<u64>();
+	let claim_feerate = claim_fee * 1000 / claim_txn[0].weight().to_wu();
+	// Prior to the fix the justice transaction was fee-rated at the 253 sat/kW
+	// `OutputSpendingFee` estimate instead of the 12,500 sat/kW `UrgentOnChainSweep` one.
+	assert!(claim_feerate > 10_000, "justice tx feerate was {} sat/kW", claim_feerate);
 }
