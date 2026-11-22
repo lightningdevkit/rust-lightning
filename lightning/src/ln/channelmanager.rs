@@ -20772,7 +20772,7 @@ impl<
 						// The update id equality above implies the `ChannelMonitor` has applied
 						// every update the channel generated: a channel lagging its
 						// `ChannelMonitor` was force-closed above, and one ahead of it is
-						// rejected by the stale-`ChannelManager` check below.
+						// rejected by the stale-`ChannelMonitor` check below.
 						log_debug!(logger, "A ChannelMonitor persistence completed since the ChannelManager was last serialized");
 						pending_background_events.push(BackgroundEvent::MonitorUpdatesComplete {
 							counterparty_node_id: *counterparty_id,
