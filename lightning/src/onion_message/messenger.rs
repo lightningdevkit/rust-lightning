@@ -1250,7 +1250,7 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 		Ok((
 			Payload::Receive {
 				message,
-				forwarded_message: _,
+				forwarded_message,
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
 				reply_path,
 				control_tlvs_from_local_node,
@@ -1259,6 +1259,19 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 			None,
 		)) => match (message, context) {
 			(ParsedOnionMessageContents::Offers(msg), Some(MessageContext::Offers(ctx))) => {
+				// A message we forwarded on behalf of an async recipient is marked as such, since
+				// the recipient-provided forwarding path is opaque to us and may lead back to one
+				// of our own `StaticInvoiceRequested` paths, which would otherwise result in the
+				// message being handled as a new invoice request and forwarded again in a loop.
+				if forwarded_message.is_some()
+					&& matches!(ctx, OffersContext::StaticInvoiceRequested { .. })
+				{
+					log_trace!(
+						logger,
+						"Ignoring an offers message that we forwarded which arrived back at us on a static invoice request path"
+					);
+					return Err(());
+				}
 				match ctx {
 					OffersContext::InvoiceRequest { .. } => {
 						// Note: We introduced the `control_tlvs_from_*` check in LDK v0.2

@@ -61,7 +61,7 @@ use crate::sync::Mutex;
 use crate::types::features::Bolt12InvoiceFeatures;
 use crate::types::payment::{PaymentHash, PaymentPreimage, PaymentSecret};
 use crate::util::config::{HTLCInterceptionFlags, UserConfig};
-use crate::util::ser::Writeable;
+use crate::util::ser::{Readable, Writeable};
 use bitcoin::constants::ChainHash;
 use bitcoin::network::Network;
 use bitcoin::secp256k1;
@@ -2988,6 +2988,146 @@ fn invoice_request_forwarded_to_async_recipient() {
 
 	let peeled_msg = sender.onion_messenger.peel_onion_message(&static_invoice_om).unwrap();
 	assert!(matches!(peeled_msg, PeeledOnion::Offers(OffersMessage::StaticInvoice(_), _, _)));
+}
+
+/// Rewrites the introduction node of a blinded message path from a short channel id to the given
+/// node id, as an async recipient would when registering one of our own offer paths as its
+/// invoice request forwarding path, which we could otherwise not resolve nor send over.
+fn rewrite_introduction_node_as_node_id(
+	path: &BlindedMessagePath, node_id: PublicKey,
+) -> BlindedMessagePath {
+	let encoded = path.encode();
+	assert!(encoded[0] <= 1, "Introduction node is not short channel id-based");
+	let mut rewritten = Vec::with_capacity(path.serialized_length() + 24);
+	rewritten.extend_from_slice(&node_id.serialize());
+	rewritten.extend_from_slice(&encoded[9..]);
+	Readable::read(&mut rewritten.as_slice()).unwrap()
+}
+
+#[test]
+fn forwarded_invoice_request_loop_is_dropped() {
+	// An async recipient picks the path over which we forward its invoice requests, and it is
+	// opaque to us. A malicious recipient can register a forwarding path that terminates at one of
+	// our own static invoice request paths, such that every invoice request we forward arrives
+	// back at us as a new one, to be served and forwarded again indefinitely. Since we mark
+	// forwarded invoice requests as such, the returning request is dropped instead.
+	//
+	// Network:
+	//
+	//     sender -- forwarding_node -- invoice_server
+	//                        |
+	//                  graph_anchor_node
+	//
+	// The invoice server must be unannounced, so that the static invoice request paths it builds
+	// for the recipient run through its peer, giving the recipient a path to loop the forwards
+	// back through. The graph anchor node announces the forwarding node, and is otherwise
+	// disconnected from the sender and the invoice server so that a single path is built.
+	let chanmon_cfgs = create_chanmon_cfgs(4);
+	let node_cfgs = create_node_cfgs(4, &chanmon_cfgs);
+	let node_chanmgrs = create_node_chanmgrs(4, &node_cfgs, &[None, None, None, None]);
+	let nodes = create_network(4, &node_cfgs, &node_chanmgrs);
+	create_announced_chan_between_nodes_with_value(&nodes, 2, 3, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 0, 2, 1_000_000, 0);
+	create_unannounced_chan_between_nodes_with_value(&nodes, 1, 2, 1_000_000, 0);
+
+	let sender = &nodes[0];
+	let invoice_server = &nodes[1];
+	let recipient = &nodes[2];
+	let graph_anchor = &nodes[3];
+
+	for (a, b) in [(sender, graph_anchor), (invoice_server, graph_anchor)] {
+		let a_node_id = a.node.get_our_node_id();
+		let b_node_id = b.node.get_our_node_id();
+		a.node.peer_disconnected(b_node_id);
+		a.onion_messenger.peer_disconnected(b_node_id);
+		b.node.peer_disconnected(a_node_id);
+		b.onion_messenger.peer_disconnected(a_node_id);
+	}
+
+	let recipient_id = vec![42; 32];
+	let inv_server_paths =
+		invoice_server.node.blinded_paths_for_async_recipient(recipient_id.clone(), None).unwrap();
+	recipient.node.set_paths_to_static_invoice_server(inv_server_paths).unwrap();
+	expect_offer_paths_requests(recipient, &[sender, invoice_server]);
+
+	let invoice_flow_res =
+		pass_static_invoice_server_messages(invoice_server, recipient, recipient_id.clone());
+	let static_invoice = invoice_flow_res.invoice;
+
+	let offer = recipient.node.get_async_receive_offer().unwrap();
+	let amt_msat = 5000;
+	let payment_id = PaymentId([1; 32]);
+	sender.node.pay_for_offer(&offer, Some(amt_msat), payment_id, Default::default()).unwrap();
+
+	let sender_node_id = sender.node.get_our_node_id();
+	let recipient_node_id = recipient.node.get_our_node_id();
+	let server_node_id = invoice_server.node.get_our_node_id();
+
+	// The payer's invoice request reaches the server through the recipient, which is the
+	// introduction node of the offer path.
+	let invreq_om = sender.onion_messenger.next_onion_message_for_peer(recipient_node_id).unwrap();
+	recipient.onion_messenger.handle_onion_message(sender_node_id, &invreq_om);
+	let invreq_om = recipient.onion_messenger.next_onion_message_for_peer(server_node_id).unwrap();
+	invoice_server.onion_messenger.handle_onion_message(recipient_node_id, &invreq_om);
+
+	let mut events = invoice_server.node.get_and_clear_pending_events();
+	assert_eq!(events.len(), 1);
+	let (reply_path, invoice_request) = match events.pop().unwrap() {
+		Event::StaticInvoiceRequested {
+			recipient_id: ev_id,
+			invoice_slot: _,
+			reply_path,
+			invoice_request,
+		} => {
+			assert_eq!(recipient_id, ev_id);
+			(reply_path, invoice_request)
+		},
+		_ => panic!(),
+	};
+
+	// The recipient registers one of the server's own static invoice request paths as its
+	// forwarding path, with the introduction node rewritten to a node id, as the server cannot
+	// resolve the short channel id-based introduction node of a channel it is not a party of.
+	let looping_path = rewrite_introduction_node_as_node_id(&offer.paths()[0], recipient_node_id);
+
+	invoice_server
+		.node
+		.respond_to_static_invoice_request(
+			static_invoice,
+			reply_path,
+			invoice_request,
+			looping_path,
+		)
+		.unwrap();
+
+	// The server sends both the forwarded invoice request over the looping path and the static
+	// invoice to the payer via their shared introduction node, the recipient.
+	let forwarded_invreq_om =
+		invoice_server.onion_messenger.next_onion_message_for_peer(recipient_node_id).unwrap();
+	let static_invoice_om =
+		invoice_server.onion_messenger.next_onion_message_for_peer(recipient_node_id).unwrap();
+
+	// The static invoice still makes its way to the payer.
+	recipient.onion_messenger.handle_onion_message(server_node_id, &static_invoice_om);
+	let static_invoice_om =
+		recipient.onion_messenger.next_onion_message_for_peer(sender_node_id).unwrap();
+	let peeled_msg = sender.onion_messenger.peel_onion_message(&static_invoice_om).unwrap();
+	assert!(matches!(peeled_msg, PeeledOnion::Offers(OffersMessage::StaticInvoice(_), _, _)));
+
+	// The forwarded invoice request loops back to the server through the introduction node.
+	recipient.onion_messenger.handle_onion_message(server_node_id, &forwarded_invreq_om);
+	let looped_invreq_om =
+		recipient.onion_messenger.next_onion_message_for_peer(server_node_id).unwrap();
+	invoice_server.onion_messenger.handle_onion_message(recipient_node_id, &looped_invreq_om);
+
+	// The server neither serves the request again nor forwards it once more, which would otherwise
+	// continue until the static invoice request paths expire.
+	assert!(invoice_server.node.get_and_clear_pending_events().is_empty());
+	assert!(invoice_server
+		.onion_messenger
+		.next_onion_message_for_peer(recipient_node_id)
+		.is_none());
+	assert!(invoice_server.onion_messenger.next_onion_message_for_peer(sender_node_id).is_none());
 }
 
 #[test]
