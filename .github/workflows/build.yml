@@ -296,7 +296,7 @@ jobs:
   linting:
     runs-on: ubuntu-latest
     env:
-      TOOLCHAIN: stable
+      TOOLCHAIN: 1.96.0
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
