@@ -122,6 +122,9 @@ pub(super) enum Payload<T: OnionMessageContents> {
 	},
 	/// This payload is for the final hop.
 	Receive {
+		/// Set if the sender marked the message as one it is forwarding on behalf of another node,
+		/// per the `forwarded_message` TLV in BOLT 4's `onionmsg_tlv`.
+		forwarded_message: Option<()>,
 		/// The [`ReceiveControlTlvs`] were authenticated with the [`ReceiveAuthKey`] which was
 		/// provided to [`ReadableArgs::read`].
 		control_tlvs_from_local_node: bool,
@@ -239,6 +242,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 			},
 			Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Blinded(encrypted_bytes),
+				forwarded_message,
 				reply_path,
 				message,
 				control_tlvs_from_local_node: _,
@@ -247,6 +251,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
 					(4, encrypted_bytes, required_vec),
+					(5, forwarded_message, option),
 					(message.tlv_type(), message, required)
 				})
 			},
@@ -260,6 +265,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 			},
 			Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Unblinded(control_tlvs),
+				forwarded_message,
 				reply_path,
 				message,
 				control_tlvs_from_local_node: _,
@@ -269,6 +275,7 @@ impl<T: OnionMessageContents> Writeable for (Payload<T>, [u8; 32]) {
 				_encode_varint_length_prefixed_tlv!(w, {
 					(2, reply_path, option),
 					(4, write_adapter, required),
+					(5, forwarded_message, option),
 					(message.tlv_type(), message, required)
 				})
 			},
@@ -296,11 +303,13 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 			(rho, receive_tlvs_key.0, expanded_key.phantom_node_blinded_path_key);
 		let mut message_type: Option<u64> = None;
 		let mut has_unknown_control_tlv = false;
+		let mut forwarded_message: Option<()> = None;
 		let mut message = None;
 
 		decode_tlv_stream_with_custom_tlv_decode!(&mut rd, {
 			(2, reply_path, option),
 			(4, read_adapter, (option: LengthReadableArgs, read_adapter_args)),
+			(5, forwarded_message, option),
 		}, |msg_type, msg_reader| {
 			if msg_type < 64 {
 				// Whether unknown fields are allowed depends on whether the layer is final,
@@ -346,6 +355,7 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				if used_aad != TriPolyAADUsed::None
 					|| message_type.is_some()
 					|| reply_path.is_some()
+					|| forwarded_message.is_some()
 					|| has_unknown_control_tlv
 				{
 					return Err(DecodeError::InvalidValue);
@@ -353,7 +363,8 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 				Ok(Payload::Forward(ForwardControlTlvs::Unblinded(tlvs)))
 			},
 			Some(ChaChaTriPolyReadAdapter { readable: ControlTlvs::Dummy, used_aad }) => {
-				if message_type.is_some() || has_unknown_control_tlv {
+				if message_type.is_some() || forwarded_message.is_some() || has_unknown_control_tlv
+				{
 					return Err(DecodeError::InvalidValue);
 				}
 				Ok(Payload::Dummy { control_tlvs_authenticated: used_aad != TriPolyAADUsed::None })
@@ -361,6 +372,7 @@ impl<H: CustomOnionMessageHandler + ?Sized, L: Logger + ?Sized>
 			Some(ChaChaTriPolyReadAdapter { readable: ControlTlvs::Receive(tlvs), used_aad }) => {
 				Ok(Payload::Receive {
 					control_tlvs: ReceiveControlTlvs::Unblinded(tlvs),
+					forwarded_message,
 					reply_path,
 					message: message.ok_or(DecodeError::InvalidValue)?,
 					control_tlvs_from_local_node: used_aad == TriPolyAADUsed::First,
@@ -433,6 +445,8 @@ mod tests {
 	use super::*;
 	use crate::crypto::streams::chachapoly_encrypt_with_swapped_aad;
 	use crate::ln::peer_handler::IgnoringMessageHandler;
+	use crate::offers::invoice_error::InvoiceError;
+	use crate::offers::parse::Bolt12SemanticError;
 	use crate::util::test_utils::TestLogger;
 	use core::convert::Infallible;
 
@@ -469,5 +483,51 @@ mod tests {
 			);
 
 		assert!(matches!(decoded, Err(DecodeError::InvalidValue)));
+	}
+
+	/// The `forwarded_message` TLV survives a round trip through the final hop's payload, and is
+	/// absent when the message was not marked as forwarded.
+	#[test]
+	fn forwarded_message_marker_round_trip() {
+		let shared_secret = SharedSecret::from_bytes([2; 32]);
+		let rho = onion_utils::gen_rho_from_shared_secret(&shared_secret.secret_bytes());
+		let receive_auth_key = ReceiveAuthKey([3; 32]);
+		let expanded_key = ExpandedKey::new([4; 32]);
+		let logger = TestLogger::new();
+		let handler = IgnoringMessageHandler {};
+
+		let message: ParsedOnionMessageContents<Infallible> =
+			ParsedOnionMessageContents::Offers(OffersMessage::InvoiceError(InvoiceError::from(
+				Bolt12SemanticError::UnknownRequiredFeatures,
+			)));
+
+		for forwarded_message in [None, Some(())] {
+			let payload = Payload::Receive {
+				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
+				forwarded_message,
+				reply_path: None,
+				message: message.clone(),
+				control_tlvs_from_local_node: false,
+				control_tlvs_from_phantom_participant: false,
+			};
+			let encoded = (payload, rho).encode();
+
+			let decoded: Payload<ParsedOnionMessageContents<Infallible>> = ReadableArgs::read(
+				&mut encoded.as_slice(),
+				(shared_secret, &handler, receive_auth_key, &expanded_key, &logger),
+			)
+			.unwrap();
+
+			match decoded {
+				Payload::Receive { forwarded_message: decoded_marker, message, .. } => {
+					assert_eq!(decoded_marker, forwarded_message);
+					assert!(matches!(
+						message,
+						ParsedOnionMessageContents::Offers(OffersMessage::InvoiceError(_))
+					));
+				},
+				_ => panic!(),
+			}
+		}
 	}
 }

@@ -452,6 +452,9 @@ pub enum MessageSendInstructions {
 	/// DoS protection, forwards should never be buffered internally and instead will either be
 	/// dropped or generate an [`Event::OnionMessageIntercepted`] if the next-hop node is
 	/// disconnected.
+	///
+	/// The final hop's payload is marked with the BOLT 4 `forwarded_message` TLV, allowing us to
+	/// recognize the message should the destination path lead back to us.
 	ForwardedMessage {
 		/// The destination where we need to send the forwarded onion message.
 		destination: Destination,
@@ -1072,6 +1075,31 @@ pub fn create_onion_message<
 	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
 	reply_path: Option<BlindedMessagePath>,
 ) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError> {
+	create_onion_message_with_forward_marker(
+		entropy_source,
+		node_signer,
+		node_id_lookup,
+		secp_ctx,
+		path,
+		contents,
+		reply_path,
+		false,
+	)
+}
+
+/// Same as [`create_onion_message`], but with `forwarded` set, the final hop's payload is marked
+/// with the `forwarded_message` TLV, indicating we are sending the message on behalf of another
+/// node.
+fn create_onion_message_with_forward_marker<
+	ES: EntropySource,
+	NS: NodeSigner,
+	NL: NodeIdLookUp,
+	T: OnionMessageContents,
+>(
+	entropy_source: &ES, node_signer: &NS, node_id_lookup: &NL,
+	secp_ctx: &Secp256k1<secp256k1::All>, path: OnionMessagePath, contents: T,
+	reply_path: Option<BlindedMessagePath>, forwarded: bool,
+) -> Result<(PublicKey, OnionMessage, Vec<SocketAddress>), SendError> {
 	let OnionMessagePath { intermediate_nodes, mut destination, first_node_addresses } = path;
 	if let Destination::BlindedPath(ref path) = destination {
 		if path.blinded_hops().is_empty() {
@@ -1129,6 +1157,7 @@ pub fn create_onion_message<
 		contents,
 		reply_path,
 		&blinding_secret,
+		forwarded,
 	)?;
 
 	let prng_seed = entropy_source.get_secure_random_bytes();
@@ -1221,6 +1250,7 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 		Ok((
 			Payload::Receive {
 				message,
+				forwarded_message,
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context }),
 				reply_path,
 				control_tlvs_from_local_node,
@@ -1229,6 +1259,19 @@ pub fn peel_onion_message<NS: NodeSigner, L: Logger, CMH: CustomOnionMessageHand
 			None,
 		)) => match (message, context) {
 			(ParsedOnionMessageContents::Offers(msg), Some(MessageContext::Offers(ctx))) => {
+				// A message we forwarded on behalf of an async recipient is marked as such, since
+				// the recipient-provided forwarding path is opaque to us and may lead back to one
+				// of our own `StaticInvoiceRequested` paths, which would otherwise result in the
+				// message being handled as a new invoice request and forwarded again in a loop.
+				if forwarded_message.is_some()
+					&& matches!(ctx, OffersContext::StaticInvoiceRequested { .. })
+				{
+					log_trace!(
+						logger,
+						"Ignoring an offers message that we forwarded which arrived back at us on a static invoice request path"
+					);
+					return Err(());
+				}
 				match ctx {
 					OffersContext::InvoiceRequest { .. } => {
 						// Note: We introduced the `control_tlvs_from_*` check in LDK v0.2
@@ -1540,7 +1583,7 @@ impl<
 		let logger = WithContext::from(&self.logger, first_hop, None, None);
 
 		log_trace!(logger, "Constructing onion message {}: {:?}", log_suffix, contents);
-		let (first_node_id, onion_message, addresses) = create_onion_message(
+		let (first_node_id, onion_message, addresses) = create_onion_message_with_forward_marker(
 			&self.entropy_source,
 			&self.node_signer,
 			&self.node_id_lookup,
@@ -1548,6 +1591,7 @@ impl<
 			path,
 			contents,
 			reply_path,
+			is_forward,
 		)
 		.map_err(|e| {
 			log_warn!(logger, "Failed to create onion message with {:?} {}", e, log_suffix);
@@ -2452,7 +2496,7 @@ fn packet_payloads_and_keys<
 	S: secp256k1::Signing + secp256k1::Verification,
 >(
 	secp_ctx: &Secp256k1<S>, unblinded_path: Vec<PublicKey>, destination: Destination, message: T,
-	mut reply_path: Option<BlindedMessagePath>, session_priv: &SecretKey,
+	mut reply_path: Option<BlindedMessagePath>, session_priv: &SecretKey, forwarded: bool,
 ) -> Result<(Vec<(Payload<T>, [u8; 32])>, Vec<onion_utils::OnionKeys>), SendError> {
 	let num_hops = unblinded_path.len() + destination.num_hops();
 	let mut payloads = Vec::with_capacity(num_hops);
@@ -2529,10 +2573,12 @@ fn packet_payloads_and_keys<
 		},
 	);
 
+	let forwarded_message = if forwarded { Some(()) } else { None };
 	if let Some(control_tlvs) = final_control_tlvs {
 		payloads.push((
 			Payload::Receive {
 				control_tlvs,
+				forwarded_message,
 				reply_path: reply_path.take(),
 				message,
 				control_tlvs_from_local_node: false,
@@ -2544,6 +2590,7 @@ fn packet_payloads_and_keys<
 		payloads.push((
 			Payload::Receive {
 				control_tlvs: ReceiveControlTlvs::Unblinded(ReceiveTlvs { context: None }),
+				forwarded_message,
 				reply_path: reply_path.take(),
 				message,
 				control_tlvs_from_local_node: false,
