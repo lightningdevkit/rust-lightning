@@ -8866,10 +8866,20 @@ pub fn test_double_partial_claim() {
 	pass_along_path(&nodes[0], path, 15_000_000, hash, Some(payment_secret), msgs, false, None);
 
 	// At this point nodes[3] has received one half of the payment, and the user goes to handle
-	// that PaymentClaimable event they got hours ago and never handled...we should refuse to claim.
+	// that PaymentClaimable event they got hours ago and never handled...we should refuse to claim
+	// the incomplete payment, leaving its HTLC in the claimable payments set.
 	nodes[3].node.claim_funds(payment_preimage, Default::default());
 	check_added_monitors(&nodes[3], 0);
 	assert!(nodes[3].node.get_and_clear_pending_msg_events().is_empty());
+
+	// The remaining retry part now arrives, completing the payment and generating a new
+	// PaymentClaimable event.
+	let ev = remove_first_msg_event_to_node(&nodes[2].node.get_our_node_id(), &mut events);
+	let path = &[&nodes[2], &nodes[3]];
+	pass_along_path(&nodes[0], path, 15_000_000, hash, Some(payment_secret), ev, true, None);
+
+	// With both retry parts available, the payment can be claimed in full.
+	claim_payment_along_route(ClaimAlongRouteArgs::new(&nodes[0], paths, payment_preimage));
 }
 
 /// The possible events which may trigger a `max_dust_htlc_exposure` breach

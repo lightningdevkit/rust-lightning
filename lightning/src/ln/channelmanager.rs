@@ -1520,7 +1520,11 @@ impl ClaimablePayments {
 	/// failed by the caller as they will not be in either [`Self::claimable_payments`] or
 	/// [`Self::pending_claiming_payments`].
 	///
-	/// If `custom_tlvs_known` is true, and a matching payment is found, it will always be moved.
+	/// If the payment's HTLC set is incomplete (e.g. because MPP parts have been failed back
+	/// after their claim deadline or have not yet arrived), the payment is left in
+	/// [`Self::claimable_payments`] untouched and `Err(Vec::new())` is returned. This ensures
+	/// the HTLCs we do have can still be claimed once the payment completes, or otherwise time
+	/// out normally.
 	///
 	/// If no payment is found, `Err(Vec::new())` is returned.
 	#[rustfmt::skip]
@@ -1528,11 +1532,11 @@ impl ClaimablePayments {
 		&mut self, payment_hash: PaymentHash, node_signer: &S, logger: &L,
 		inbound_payment_id_secret: &[u8; 32], custom_tlvs_known: bool,
 	) -> Result<(Vec<ClaimableHTLC>, ClaimingPayment), Vec<ClaimableHTLC>> {
-		match self.claimable_payments.remove(&payment_hash) {
-			Some(payment) => {
+		match self.claimable_payments.entry(payment_hash) {
+			hash_map::Entry::Occupied(entry) => {
 				let mut receiver_node_id = node_signer.get_node_id(Recipient::Node)
 					.expect("Failed to get node_id for node recipient");
-				for htlc in payment.htlcs.iter() {
+				for htlc in entry.get().htlcs.iter() {
 					if htlc.mpp_part.prev_hop.phantom_shared_secret.is_some() {
 						let phantom_pubkey = node_signer.get_node_id(Recipient::PhantomNode)
 							.expect("Failed to get node_id for phantom node recipient");
@@ -1541,13 +1545,26 @@ impl ClaimablePayments {
 					}
 				}
 
-				let custom_tlvs = &payment.onion_fields.custom_tlvs;
+				let custom_tlvs = &entry.get().onion_fields.custom_tlvs;
 				if !custom_tlvs_known && custom_tlvs.iter().any(|(typ, _)| typ % 2 == 0) {
 					log_info!(logger, "Rejecting payment with payment hash {} as we cannot accept payment with unknown even TLVs: {}",
 						&payment_hash, log_iter!(custom_tlvs.iter().map(|(typ, _)| typ).filter(|typ| *typ % 2 == 0)));
-					return Err(payment.htlcs);
+					return Err(entry.remove().htlcs);
 				}
 
+				let expected_amt_msat =
+					entry.get().htlcs.first().map(|htlc| htlc.mpp_part.total_value_received);
+				let amt_msat_sum: u64 = entry.get().htlcs.iter().map(|htlc| htlc.mpp_part.value).sum();
+				let parts_agree = entry.get().htlcs.iter().all(|htlc| {
+					Some(htlc.mpp_part.total_value_received) == expected_amt_msat
+				});
+				if expected_amt_msat != Some(Some(amt_msat_sum)) || !parts_agree {
+					log_info!(logger, "Refusing to claim an incomplete payment, expected {} msat, had {} available to claim.",
+						expected_amt_msat.map(|amt| amt.unwrap_or(0)).unwrap_or(0), amt_msat_sum);
+					return Err(Vec::new());
+				}
+
+				let payment = entry.remove();
 				let payment_id = payment.inbound_payment_id(inbound_payment_id_secret);
 				let claiming_payment = self.pending_claiming_payments
 					.entry(payment_hash)
@@ -1583,7 +1600,7 @@ impl ClaimablePayments {
 
 				Ok((payment.htlcs, claiming_payment))
 			},
-			None => Err(Vec::new())
+			hash_map::Entry::Vacant(_) => Err(Vec::new())
 		}
 	}
 }
@@ -10371,43 +10388,8 @@ impl<
 		};
 		debug_assert!(!sources.is_empty());
 
-		// Just in case one HTLC has been failed between when we generated the `PaymentClaimable`
-		// and when we got here we need to check that the amount we're about to claim matches the
-		// amount we told the user in the last `PaymentClaimable`. We also do a sanity-check that
-		// the MPP parts all have the same `total_msat`.
-		let mut claimable_amt_msat = 0;
-		let mut expected_amt_msat = None;
-		let mut valid_mpp = true;
 		let mut errs = Vec::new();
-		let per_peer_state = self.per_peer_state.read().unwrap();
-		for htlc in sources.iter() {
-			if expected_amt_msat.is_some()
-				&& expected_amt_msat != htlc.mpp_part.total_value_received
-			{
-				log_error!(self.logger, "Somehow ended up with an MPP payment with different received total amounts - this should not be reachable!");
-				debug_assert!(false);
-				valid_mpp = false;
-				break;
-			}
-			expected_amt_msat = htlc.mpp_part.total_value_received;
-			claimable_amt_msat += htlc.mpp_part.value;
-		}
-		mem::drop(per_peer_state);
-		if sources.is_empty() || expected_amt_msat.is_none() {
-			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
-			log_info!(
-				self.logger,
-				"Attempted to claim an incomplete payment which no longer had any available HTLCs!"
-			);
-			return;
-		}
-		if claimable_amt_msat != expected_amt_msat.unwrap() {
-			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
-			log_info!(self.logger, "Attempted to claim an incomplete payment, expected {} msat, had {} available to claim.",
-				expected_amt_msat.unwrap(), claimable_amt_msat);
-			return;
-		}
-		if valid_mpp {
+		{
 			let mpp_parts: Vec<_> = sources
 				.iter()
 				.filter_map(|htlc| {
@@ -10494,21 +10476,6 @@ impl<
 					},
 				);
 			}
-		} else {
-			for htlc in sources {
-				let err_data = invalid_payment_err_data(
-					htlc.mpp_part.value,
-					self.best_block.read().unwrap().height,
-				);
-				let source = HTLCSource::PreviousHopData(htlc.mpp_part.prev_hop);
-				let reason = HTLCFailReason::reason(
-					LocalHTLCFailureReason::IncorrectPaymentDetails,
-					err_data,
-				);
-				let receiver = HTLCHandlingFailureType::Receive { payment_hash };
-				self.fail_htlc_backwards_internal(&source, &payment_hash, &reason, receiver, None);
-			}
-			self.claimable_payments.lock().unwrap().pending_claiming_payments.remove(&payment_hash);
 		}
 
 		// Now we can handle any errors which were generated.
