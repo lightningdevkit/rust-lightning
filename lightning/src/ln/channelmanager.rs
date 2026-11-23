@@ -7897,6 +7897,13 @@ impl<
 		Ok(())
 	}
 
+	/// Returns whether the intercepted HTLC indicated by `intercept_id` is still held, i.e., has
+	/// neither been forwarded nor failed back yet.
+	#[doc(hidden)]
+	pub fn is_intercepted_htlc_pending(&self, intercept_id: InterceptId) -> bool {
+		self.pending_intercepted_htlcs.lock().unwrap().contains_key(&intercept_id)
+	}
+
 	/// Fails the intercepted HTLC indicated by intercept_id. Should only be called in response to
 	/// an [`HTLCIntercepted`] event. See [`ChannelManager::forward_intercepted_htlc`].
 	///
@@ -11042,7 +11049,8 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 								htlc_claim_value_msat.unwrap(), event_prev_hop_data.channel_id);
 						}
 						debug_assert!(
-							skimmed_fee_msat <= total_fee_earned_msat,
+							total_fee_earned_msat.is_none()
+								|| skimmed_fee_msat <= total_fee_earned_msat,
 							"skimmed_fee_msat must always be included in total_fee_earned_msat"
 						);
 						let prev_htlc_amount_msat =
