@@ -3272,20 +3272,42 @@ fn test_reestablish_sends_tx_signatures_before_splice_locked() {
 
 #[test]
 fn test_splice_confirmed_before_tx_signatures_exchange_completes() {
-	do_test_splice_confirmed_before_tx_signatures_exchange_completes(false);
-	do_test_splice_confirmed_before_tx_signatures_exchange_completes(true);
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(false, false, false);
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(false, true, false);
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(true, false, false);
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(true, true, false);
+}
+
+#[test]
+fn test_one_conf_splice_confirmed_before_tx_signatures_exchange_completes() {
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(false, false, true);
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(false, true, true);
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(true, false, true);
+	do_test_splice_confirmed_before_tx_signatures_exchange_completes(true, true, true);
 }
 
 #[cfg(test)]
-fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before_exchange: bool) {
+fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(
+	disconnect_peers: bool, reorg_before_exchange: bool, one_conf: bool,
+) {
 	// The counterparty can broadcast the splice transaction as soon as it has our `tx_signatures`,
-	// so it may confirm while we are still waiting on theirs. Test that we track the confirmation
+	// so it may confirm while we are still waiting on theirs, either because theirs are still in
+	// flight or because they were lost to a disconnection. Test that we track the confirmation
 	// (and any reorg) while the splice is still awaiting signatures, send `splice_locked` as soon
 	// as the exchange completes, and promote the splice once the counterparty's `splice_locked`
-	// arrives.
+	// arrives. With `one_conf`, the splice requires a single confirmation, so the block confirming
+	// it is enough for both nodes to lock it.
 	let chanmon_cfgs = create_chanmon_cfgs(2);
 	let node_cfgs = create_node_cfgs(2, &chanmon_cfgs);
-	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[None, None]);
+	let mut config = test_default_channel_config();
+	let splice_depth = if one_conf {
+		config.channel_config.inbound_splice_min_depth = 1;
+		config.channel_config.outbound_splice_min_depth = 1;
+		1
+	} else {
+		CHAN_CONFIRM_DEPTH
+	};
+	let node_chanmgrs = create_node_chanmgrs(2, &node_cfgs, &[Some(config.clone()), Some(config)]);
 	let nodes = create_network(2, &node_cfgs, &node_chanmgrs);
 
 	let node_id_0 = nodes[0].node.get_our_node_id();
@@ -3340,7 +3362,9 @@ fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before
 	}
 
 	// Node 0 completes the exchange locally and broadcasts the splice, but its responding
-	// `tx_signatures` are lost. Node 1 therefore still has no negotiated candidate for the splice.
+	// `tx_signatures` only reach node 1 after the splice confirms, so node 1 still has no
+	// negotiated candidate for the splice. If the peers disconnect, the message is lost and node 1
+	// only receives it as a retransmission upon reestablishing the channel.
 	let tx_signatures_0 = get_event_msg!(nodes[0], MessageSendEvent::SendTxSignatures, node_id_1);
 	let splice_txid = tx_signatures_0.tx_hash;
 	let mut broadcast_transactions = nodes[0].tx_broadcaster.txn_broadcast();
@@ -3348,14 +3372,29 @@ fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before
 	let splice_tx = broadcast_transactions.remove(0);
 	assert_eq!(splice_tx.compute_txid(), splice_txid);
 
-	nodes[0].node.peer_disconnected(node_id_1);
-	nodes[1].node.peer_disconnected(node_id_0);
+	if disconnect_peers {
+		nodes[0].node.peer_disconnected(node_id_1);
+		nodes[1].node.peer_disconnected(node_id_0);
+	}
 
-	// Both nodes see the splice confirm while disconnected. Node 0 sent `splice_locked` upon
-	// confirmation, but node 1 cannot do so until it completes the `tx_signatures` exchange.
-	confirm_transaction(&nodes[0], &splice_tx);
-	assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
-	confirm_transaction(&nodes[1], &splice_tx);
+	let confirm_splice = |node: &Node| {
+		mine_transaction(node, &splice_tx);
+		if splice_depth > 1 {
+			connect_blocks(node, splice_depth - 1);
+		}
+	};
+
+	// Both nodes see the splice confirm. Node 0 sends `splice_locked` once the splice reaches the
+	// minimum depth (or upon reconnecting, if disconnected), but node 1 cannot do so until it
+	// completes the `tx_signatures` exchange.
+	confirm_splice(&nodes[0]);
+	let splice_locked_0 = if disconnect_peers {
+		assert!(nodes[0].node.get_and_clear_pending_msg_events().is_empty());
+		None
+	} else {
+		Some(get_event_msg!(nodes[0], MessageSendEvent::SendSpliceLocked, node_id_1))
+	};
+	confirm_splice(&nodes[1]);
 	assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
 
@@ -3369,36 +3408,48 @@ fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before
 	if reorg_before_exchange {
 		// Unconfirming the splice must be tracked as well so that `splice_locked` is not sent for
 		// it once the exchange completes.
-		disconnect_blocks(&nodes[1], CHAN_CONFIRM_DEPTH);
+		disconnect_blocks(&nodes[1], splice_depth);
 		assert!(!is_watching_splice(&nodes[1]));
 		assert!(nodes[1].node.get_and_clear_pending_msg_events().is_empty());
 	}
 
-	connect_nodes(&nodes[0], &nodes[1]);
-	let reestablish_0 =
-		get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, node_id_1);
-	let reestablish_1 =
-		get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, node_id_0);
-	assert_eq!(reestablish_1.next_funding.as_ref().map(|funding| funding.txid), Some(splice_txid));
+	let (tx_signatures_0, splice_locked_0) = if disconnect_peers {
+		connect_nodes(&nodes[0], &nodes[1]);
+		let reestablish_0 =
+			get_event_msg!(nodes[0], MessageSendEvent::SendChannelReestablish, node_id_1);
+		let reestablish_1 =
+			get_event_msg!(nodes[1], MessageSendEvent::SendChannelReestablish, node_id_0);
+		assert_eq!(
+			reestablish_1.next_funding.as_ref().map(|funding| funding.txid),
+			Some(splice_txid)
+		);
 
-	nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0);
-	let _ = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_id_0);
+		nodes[1].node.handle_channel_reestablish(node_id_0, &reestablish_0);
+		let _ = get_event_msg!(nodes[1], MessageSendEvent::SendChannelUpdate, node_id_0);
 
-	nodes[0].node.handle_channel_reestablish(node_id_1, &reestablish_1);
-	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
-	assert_eq!(msg_events.len(), 3, "{msg_events:?}");
-	if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[0] {
-		nodes[1].node.handle_tx_signatures(node_id_0, msg);
-		check_added_monitors(&nodes[1], 0);
+		nodes[0].node.handle_channel_reestablish(node_id_1, &reestablish_1);
+		let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
+		assert_eq!(msg_events.len(), 3, "{msg_events:?}");
+		let tx_signatures_0 = if let MessageSendEvent::SendTxSignatures { msg, .. } = &msg_events[0]
+		{
+			msg.clone()
+		} else {
+			panic!("Unexpected event {:?}", msg_events[0]);
+		};
+		let splice_locked_0 = if let MessageSendEvent::SendSpliceLocked { msg, .. } = &msg_events[1]
+		{
+			msg.clone()
+		} else {
+			panic!("Unexpected event {:?}", msg_events[1]);
+		};
+		assert!(matches!(msg_events[2], MessageSendEvent::SendChannelUpdate { .. }));
+		(tx_signatures_0, splice_locked_0)
 	} else {
-		panic!("Unexpected event {:?}", msg_events[0]);
-	}
-	let splice_locked_0 = if let MessageSendEvent::SendSpliceLocked { msg, .. } = &msg_events[1] {
-		msg
-	} else {
-		panic!("Unexpected event {:?}", msg_events[1]);
+		(tx_signatures_0, splice_locked_0.unwrap())
 	};
-	assert!(matches!(msg_events[2], MessageSendEvent::SendChannelUpdate { .. }));
+
+	nodes[1].node.handle_tx_signatures(node_id_0, &tx_signatures_0);
+	check_added_monitors(&nodes[1], 0);
 
 	if reorg_before_exchange {
 		// The splice was unconfirmed, so node 1 must wait for it to reach the minimum depth again
@@ -3408,11 +3459,12 @@ fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before
 		let broadcast_transactions = nodes[1].tx_broadcaster.txn_broadcast();
 		assert_eq!(broadcast_transactions.len(), 1, "{broadcast_transactions:?}");
 		assert_eq!(broadcast_transactions[0], splice_tx);
-		confirm_transaction(&nodes[1], &splice_tx);
+		confirm_splice(&nodes[1]);
 	}
 
 	// With the exchange complete, node 1 sends `splice_locked` as soon as it has seen the splice
-	// reach the minimum depth.
+	// reach the minimum depth. No block is connected in between, so a splice requiring a single
+	// confirmation is locked by the block confirming it.
 	let splice_locked_1 = get_event_msg!(nodes[1], MessageSendEvent::SendSpliceLocked, node_id_0);
 	assert_eq!(splice_locked_1.splice_txid, splice_txid);
 	assert!(nodes[1].node.get_and_clear_pending_events().is_empty());
@@ -3423,7 +3475,7 @@ fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before
 	}
 
 	// Each node promotes the splice upon receiving the other's `splice_locked`.
-	nodes[1].node.handle_splice_locked(node_id_0, splice_locked_0);
+	nodes[1].node.handle_splice_locked(node_id_0, &splice_locked_0);
 	check_added_monitors(&nodes[1], 1);
 	let new_funding_txo =
 		get_monitor!(nodes[1], channel_id).get_funding_txo().into_bitcoin_outpoint();
@@ -3433,8 +3485,6 @@ fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before
 		channel_ready_1, Event::ChannelReady { funding_txo, .. }
 		if funding_txo == Some(new_funding_txo)
 	));
-	let announcement_sigs_1 =
-		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_id_0);
 
 	nodes[0].node.handle_splice_locked(node_id_1, &splice_locked_1);
 	check_added_monitors(&nodes[0], 1);
@@ -3443,6 +3493,17 @@ fn do_test_splice_confirmed_before_tx_signatures_exchange_completes(reorg_before
 		channel_ready_0, Event::ChannelReady { funding_txo, .. }
 		if funding_txo == Some(new_funding_txo)
 	));
+
+	// Announcing the spliced channel requires six confirmations, so a splice locked after a single
+	// confirmation needs more blocks before the nodes exchange `announcement_signatures`.
+	if one_conf {
+		for node in nodes.iter() {
+			assert!(node.node.get_and_clear_pending_msg_events().is_empty());
+			connect_blocks(node, 5);
+		}
+	}
+	let announcement_sigs_1 =
+		get_event_msg!(nodes[1], MessageSendEvent::SendAnnouncementSignatures, node_id_0);
 	nodes[0].node.handle_announcement_signatures(node_id_1, &announcement_sigs_1);
 	let msg_events = nodes[0].node.get_and_clear_pending_msg_events();
 	assert_eq!(msg_events.len(), 2, "{msg_events:?}");
