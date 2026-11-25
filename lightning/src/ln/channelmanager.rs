@@ -1778,8 +1778,6 @@ pub(crate) struct PaymentCompleteUpdate {
 	channel_funding_outpoint: OutPoint,
 	channel_id: ChannelId,
 	htlc_id: SentHTLCId,
-	/// The [`MonitorEvent`] which reported the HTLC resolution behind the event this action is
-	/// attached to, if any. It is acknowledged once the event has been handled.
 	monitor_event_source: Option<MonitorEventSource>,
 }
 
@@ -1798,8 +1796,6 @@ pub(crate) enum EventCompletionAction {
 		// Was required until LDK 0.2. Always filled in as `Some`.
 		channel_funding_outpoint: Option<OutPoint>,
 		channel_id: ChannelId,
-		/// The [`MonitorEvent`] which reported the HTLC resolution behind the event this action
-		/// is attached to, if any. It is acknowledged once the event has been handled.
 		monitor_event_source: Option<MonitorEventSource>,
 	},
 
@@ -1839,8 +1835,6 @@ impl EventCompletionAction {
 		}
 	}
 
-	/// The [`MonitorEvent`] to acknowledge once the event this action is attached to has been
-	/// handled, if any.
 	fn monitor_event_source(&self) -> Option<MonitorEventSource> {
 		match self {
 			Self::ReleaseRAAChannelMonitorUpdate { monitor_event_source, .. } => {
@@ -13850,7 +13844,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 			if let Some(EventCompletionAction::ReleaseRAAChannelMonitorUpdate {
 				channel_funding_outpoint: _,
 				channel_id: ev_channel_id,
- 				counterparty_node_id: ev_counterparty_node_id,
+				counterparty_node_id: ev_counterparty_node_id,
 				monitor_event_source: _,
 			}) = action {
 				*ev_channel_id == channel_id && *ev_counterparty_node_id == counterparty_node_id
@@ -14668,7 +14662,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 							Some(htlc_update.payment_hash),
 						);
 						if let Some(preimage) = htlc_update.payment_preimage {
-							let is_channel_closed = htlc_update.from_onchain
+							let is_channel_closed = htlc_update.update_originated_in_monitor
 								// This check is racy, but that's ok because the worst that can happen if the
 								// channel closes later on is that we've queued the wrong EventCompletionAction
 								// below, which could leave the payment dangling until the next restart.
@@ -14712,7 +14706,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 												funding_outpoint,
 												counterparty_node_id,
 												is_channel_closed,
-												htlc_update.from_onchain,
+												htlc_update.update_originated_in_monitor,
 											));
 									}
 								}
@@ -14731,7 +14725,7 @@ This indicates a bug inside LDK. Please report this error at https://github.com/
 									preimage,
 									htlc_update.htlc_value_satoshis * 1000,
 									None,
-									htlc_update.from_onchain,
+									htlc_update.update_originated_in_monitor,
 									counterparty_node_id,
 									funding_outpoint,
 									channel_id,
@@ -21101,22 +21095,12 @@ impl<
 							} => {
 								if let Some(preimage) = preimage_opt {
 									let pending_events = Mutex::new(pending_events_read);
-									// The preimage may have been learned either on- or off-chain, so use
-									// the ID of whichever claim event is pending, if any. Otherwise, as
-									// the channel is closed, any later claim event will be from on-chain.
-									let event_id =
-										monitor.pending_claim_event_id(htlc_id).unwrap_or_else(
-											|| htlc_monitor_event_id(htlc_id, true, true),
-										);
 									let update = PaymentCompleteUpdate {
 										counterparty_node_id: monitor.get_counterparty_node_id(),
 										channel_funding_outpoint: monitor.get_funding_txo(),
 										channel_id: monitor.channel_id(),
 										htlc_id,
-										monitor_event_source: Some(MonitorEventSource {
-											event_id,
-											channel_id: monitor.channel_id(),
-										}),
+										monitor_event_source: None,
 									};
 									let mut compl_action = Some(
 									EventCompletionAction::ReleasePaymentCompleteChannelMonitorUpdate(update)
