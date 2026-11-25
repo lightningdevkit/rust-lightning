@@ -168,7 +168,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS1ClientHandler<ES, K> {
 
 				Err(LightningError {
 					err: format!(
-						"Received get_info error response for request {:?}: {:?}",
+						"Received get_info error response for request {:?}: {}",
 						request_id, error
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Error),
@@ -285,7 +285,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS1ClientHandler<ES, K> {
 
 				Err(LightningError {
 					err: format!(
-						"Received create_order error response for request {:?}: {:?}",
+						"Received create_order error response for request {:?}: {}",
 						request_id, error
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Error),
@@ -403,7 +403,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS1ClientHandler<ES, K> {
 
 				Err(LightningError {
 					err: format!(
-						"Received get_order error response for request {:?}: {:?}",
+						"Received get_order error response for request {:?}: {}",
 						request_id, error
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Error),

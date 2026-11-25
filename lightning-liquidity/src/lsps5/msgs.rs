@@ -19,7 +19,7 @@ use super::url_utils::LSPSUrl;
 use lightning::ln::msgs::DecodeError;
 use lightning::util::ser::{Readable, Writeable};
 use lightning::{impl_ser_tlv_based, impl_ser_tlv_based_enum};
-use lightning_types::string::UntrustedString;
+use lightning_types::string::{PrintableString, UntrustedString};
 
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::ser::SerializeMap;
@@ -335,7 +335,7 @@ impl Deref for LSPS5AppName {
 
 impl Display for LSPS5AppName {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-		f.write_str(self)
+		write!(f, "{}", self.0)
 	}
 }
 
@@ -369,7 +369,9 @@ impl AsRef<str> for LSPS5AppName {
 
 impl From<LSPS5AppName> for String {
 	fn from(app_name: LSPS5AppName) -> Self {
-		app_name.to_string()
+		// Yield the raw app name rather than the sanitized `Display` output, so
+		// values destined for storage or the wire are not mangled.
+		app_name.0 .0
 	}
 }
 
@@ -677,7 +679,12 @@ impl<'de> Deserialize<'de> for WebhookNotification {
 					LSPS5_ONION_MESSAGE_INCOMING_NOTIFICATION => {
 						WebhookNotificationMethod::LSPS5OnionMessageIncoming
 					},
-					_ => return Err(de::Error::custom(format!("Unknown method: {}", method))),
+					_ => {
+						return Err(de::Error::custom(format!(
+							"Unknown method: {}",
+							PrintableString(&method)
+						)))
+					},
 				};
 
 				Ok(WebhookNotification { method })
@@ -794,6 +801,35 @@ mod tests {
 		let app2 = LSPS5AppName::new("app2".to_string()).unwrap();
 		assert_eq!(response.app_names, vec![app1, app2]);
 		assert_eq!(response.max_webhooks, 5);
+	}
+
+	#[test]
+	fn app_name_display_sanitizes_peer_controlled_input() {
+		let raw = "bad\nname\u{0}\u{1b}[31m<html>".to_string();
+		let app_name = LSPS5AppName::new(raw.clone()).unwrap();
+
+		let rendered = format!("{}", app_name);
+		assert!(!rendered.contains('\n'), "{}", rendered);
+		assert!(!rendered.contains('\u{0}'), "{}", rendered);
+		assert!(!rendered.contains('\u{1b}'), "{}", rendered);
+
+		// Converting to `String` still yields the raw value, only the
+		// `Display` output is sanitized.
+		assert_eq!(String::from(app_name), raw);
+	}
+
+	#[test]
+	fn webhook_notification_unknown_method_error_is_sanitized() {
+		let json = concat!(
+			r#"{"jsonrpc":"2.0","method":"bad\nmethod"#,
+			r#"\u0000\u001b[31m<html>","params":{}}"#
+		);
+
+		let err = serde_json::from_str::<WebhookNotification>(json).unwrap_err().to_string();
+
+		assert!(!err.contains('\n'), "{}", err);
+		assert!(!err.contains('\u{0}'), "{}", err);
+		assert!(!err.contains('\u{1b}'), "{}", err);
 	}
 
 	#[test]

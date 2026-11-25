@@ -251,7 +251,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS2ClientHandler<ES, K> {
 
 				let lightning_error = LightningError {
 					err: format!(
-						"Received get_info error response for request {:?}: {:?}",
+						"Received get_info error response for request {:?}: {}",
 						request_id, error
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Error),
@@ -339,7 +339,7 @@ impl<ES: EntropySource, K: KVStore + Clone> LSPS2ClientHandler<ES, K> {
 
 				let lightning_error = LightningError {
 					err: format!(
-						"Received buy error response for request {:?}: {:?}",
+						"Received buy error response for request {:?}: {}",
 						request_id, error
 					),
 					action: ErrorAction::IgnoreAndLog(Level::Error),
