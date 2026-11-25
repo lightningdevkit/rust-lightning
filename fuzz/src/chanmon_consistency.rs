@@ -2216,10 +2216,10 @@ impl PaymentTracker {
 						}
 					})
 					.collect();
-				Path { hops, blinded_tail: None }
+				Path::new(hops, None).expect("payment path should contain at least one hop")
 			})
 			.collect();
-		Route { paths, route_params }
+		Route::new(paths, route_params).expect("route should contain at least one path")
 	}
 
 	fn allow_failure_for_hash(&mut self, payment_hash: PaymentHash) {
@@ -2307,11 +2307,11 @@ impl PaymentTracker {
 	fn route_min_final_cltv_expiry(route: &Route, source_best_block_height: u32) -> u32 {
 		let cur_height = source_best_block_height.saturating_add(1);
 		route
-			.paths
+			.paths()
 			.iter()
 			.map(|path| {
 				cur_height.saturating_add(
-					path.hops
+					path.hops()
 						.last()
 						.expect("payment path should contain at least one hop")
 						.cltv_expiry_delta,

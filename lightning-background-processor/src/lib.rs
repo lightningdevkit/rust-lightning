@@ -3917,7 +3917,7 @@ mod tests {
 			let node_1_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
 			let node_1_id = PublicKey::from_secret_key(&secp_ctx, &node_1_privkey);
 
-			let path = Path { hops: vec![RouteHop {
+			let path = Path::new(vec![RouteHop {
 				pubkey: node_1_id,
 				node_features: NodeFeatures::empty(),
 				short_channel_id: scored_scid,
@@ -3925,7 +3925,7 @@ mod tests {
 				fee_msat: 0,
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
 				maybe_announced_channel: true,
-			}], blinded_tail: None };
+			}], None).unwrap();
 
 			$nodes[0].scorer.write_lock().expect(TestResult::PaymentFailure { path: path.clone(), short_channel_id: scored_scid });
 			$nodes[0].node.push_pending_event(Event::PaymentPathFailed {
