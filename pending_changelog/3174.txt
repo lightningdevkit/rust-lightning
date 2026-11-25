@@ -1,0 +1,5 @@
+# API Updates
+
+ * `ChannelManager::pay_for_offer` now returns `Bolt12SemanticError::InsufficientLiquidity` before
+   sending an invoice request when the requested amount exceeds the aggregate outbound capacity of
+   all open channels (#3174).
