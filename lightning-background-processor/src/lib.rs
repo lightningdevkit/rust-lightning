@@ -3523,8 +3523,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let node_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &node_privkey);
-		let path = Path {
-			hops: vec![RouteHop {
+		let path = Path::new(
+			vec![RouteHop {
 				pubkey: node_id,
 				node_features: NodeFeatures::empty(),
 				short_channel_id: scored_scid,
@@ -3533,8 +3533,9 @@ mod tests {
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
 				maybe_announced_channel: true,
 			}],
-			blinded_tail: None,
-		};
+			None,
+		)
+		.unwrap();
 
 		// The scorer should only see a single failure, even though the event is handed to
 		// the (failing) event handler twice.
@@ -3629,8 +3630,8 @@ mod tests {
 		let secp_ctx = Secp256k1::new();
 		let node_privkey = SecretKey::from_slice(&[42; 32]).unwrap();
 		let node_id = PublicKey::from_secret_key(&secp_ctx, &node_privkey);
-		let path = Path {
-			hops: vec![RouteHop {
+		let path = Path::new(
+			vec![RouteHop {
 				pubkey: node_id,
 				node_features: NodeFeatures::empty(),
 				short_channel_id: scored_scid,
@@ -3639,8 +3640,9 @@ mod tests {
 				cltv_expiry_delta: MIN_CLTV_EXPIRY_DELTA as u32,
 				maybe_announced_channel: true,
 			}],
-			blinded_tail: None,
-		};
+			None,
+		)
+		.unwrap();
 
 		// The scorer should only see a single failure, even though the event is handed to
 		// the (failing) event handler twice.
