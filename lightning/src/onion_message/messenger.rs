@@ -532,6 +532,15 @@ impl<T: MessageRouter + ?Sized, R: Deref<Target = T>> MessageRouter for R {
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// message, and thus an `Err` is returned. The impact of this may be somewhat muted when
 /// additional dummy hops are added to the blinded path, but this protection is not complete.
+///
+/// Sending messages, including replies, may also affect privacy: unless the first hop of a path is
+/// already a connected peer, [`MessageRouter::find_path`] returns a path that is expected to be
+/// sent over a direct connection to the first hop. For an unannounced recipient, anyone who can
+/// reach it via a published [`BlindedMessagePath`] can thereby choose the first hop of the reply
+/// path and, if the recipient connects to it in response to [`Event::ConnectionNeeded`], learn its
+/// node id from the handshake, and its IP address as well unless the connection is made over Tor.
+///
+/// [`Event::ConnectionNeeded`]: crate::events::Event::ConnectionNeeded
 pub struct DefaultMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource> {
 	network_graph: G,
 	entropy_source: ES,
@@ -755,6 +764,9 @@ impl<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource> MessageRo
 /// node. Otherwise, there is no way to find a path to the introduction node in order to send a
 /// message, and thus an `Err` is returned. The impact of this may be somewhat muted when
 /// additional dummy hops are added to the blinded path, but this protection is not complete.
+///
+/// [`DefaultMessageRouter`]'s privacy notes on sending messages, including replies, apply here as
+/// well, as [`MessageRouter::find_path`] is shared between the two.
 pub struct NodeIdMessageRouter<G: Deref<Target = NetworkGraph<L>>, L: Logger, ES: EntropySource> {
 	network_graph: G,
 	entropy_source: ES,
